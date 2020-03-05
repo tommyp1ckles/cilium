@@ -288,6 +288,9 @@ func init() {
 	flags.Bool(option.EnableHealthChecking, defaults.EnableHealthChecking, "Enable connectivity health checking")
 	option.BindEnv(option.EnableHealthChecking)
 
+	flags.Bool(option.EnableEndpointCRDStatus, defaults.EnableEndpointCRDStatus, "Enable status section in CiliumEndpoint resource")
+	option.BindEnv(option.EnableEndpointCRDStatus)
+
 	flags.Bool(option.EnableEndpointHealthChecking, defaults.EnableEndpointHealthChecking, "Enable connectivity health checking between virtual endpoints")
 	option.BindEnv(option.EnableEndpointHealthChecking)
 

@@ -51,6 +51,7 @@ cilium-agent [flags]
       --disable-endpoint-crd                          Disable use of CiliumEndpoint CRD
       --disable-k8s-services                          Disable east-west K8s load balancing by cilium
       --egress-masquerade-interfaces string           Limit egress masquerading to interface selector
+      --enable-endpoint-crd-status                    Enable status section in CiliumEndpoint resource
       --enable-endpoint-health-checking               Enable connectivity health checking between virtual endpoints (default true)
       --enable-endpoint-routes                        Use per endpoint routes instead of routing via cilium_host
       --enable-external-ips                           Enable k8s service externalIPs feature (requires enabling enable-node-port) (default true)

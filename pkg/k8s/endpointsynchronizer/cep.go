@@ -76,9 +76,10 @@ func (epSync *EndpointSynchronizer) RunK8sCiliumEndpointSync(e *endpoint.Endpoin
 	}
 
 	var (
-		lastMdl  *cilium_v2.EndpointStatus
-		localCEP *cilium_v2.CiliumEndpoint // the local copy of the CEP object. Reused.
-		needInit = true                    // needInit indicates that we may need to create the CEP
+		lastMdl      *cilium_v2.EndpointStatus
+		localCEP     *cilium_v2.CiliumEndpoint // the local copy of the CEP object. Reused.
+		needInit     = true                    // needInit indicates that we may need to create the CEP
+		enableStatus = option.Config.EnableEndpointCRDStatus
 	)
 
 	// NOTE: The controller functions do NOT hold the endpoint locks
@@ -112,10 +113,13 @@ func (epSync *EndpointSynchronizer) RunK8sCiliumEndpointSync(e *endpoint.Endpoin
 
 				// Serialize the endpoint into a model. It is compared with the one
 				// from before, only updating on changes.
-				mdl := e.GetCiliumEndpointStatus()
-				if reflect.DeepEqual(mdl, lastMdl) {
-					scopedLog.Debug("Skipping CiliumEndpoint update because it has not changed")
-					return nil
+				var mdl *cilium_v2.EndpointStatus
+				if enableStatus {
+					mdl = e.GetCiliumEndpointStatus()
+					if reflect.DeepEqual(mdl, lastMdl) {
+						scopedLog.Debug("Skipping CiliumEndpoint update because it has not changed")
+						return nil
+					}
 				}
 
 				// Initialize the CEP by deleting the upstream instance and recreating
@@ -144,7 +148,9 @@ func (epSync *EndpointSynchronizer) RunK8sCiliumEndpointSync(e *endpoint.Endpoin
 						ObjectMeta: meta_v1.ObjectMeta{
 							Name: podName,
 						},
-						Status: *mdl,
+					}
+					if mdl != nil {
+						cep.Status = *mdl
 					}
 					localCEP, err = ciliumClient.CiliumEndpoints(namespace).Create(cep)
 					if err != nil {
@@ -156,6 +162,10 @@ func (epSync *EndpointSynchronizer) RunK8sCiliumEndpointSync(e *endpoint.Endpoin
 					// runs will update using localCEP.
 					needInit = false
 					return nil
+				}
+
+				if !enableStatus {
+					return controller.NewExitReason("status update is disabled")
 				}
 
 				// We have no localCEP copy. We need to fetch it for updates, below.

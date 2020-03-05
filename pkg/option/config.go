@@ -776,6 +776,10 @@ const (
 
 	// HubbleMetrics specifies enabled metrics and their configuration options.
 	HubbleMetrics = "hubble-metrics"
+
+	// EnableEndpointCRDStatus enables population of the status field in
+	// the EndpointStatus CRD
+	EnableEndpointCRDStatus = "enable-endpoint-crd-status"
 )
 
 // Default string arguments
@@ -1563,6 +1567,10 @@ type DaemonConfig struct {
 
 	// HubbleMetrics specifies enabled metrics and their configuration options.
 	HubbleMetrics []string
+
+	// EnableEndpointCRDStatus enables population of the status field in
+	// the EndpointStatus CRD
+	EnableEndpointCRDStatus bool
 }
 
 var (
@@ -1576,6 +1584,7 @@ var (
 		EnableHostIPRestore:          defaults.EnableHostIPRestore,
 		EnableHealthChecking:         defaults.EnableHealthChecking,
 		EnableEndpointHealthChecking: defaults.EnableEndpointHealthChecking,
+		EnableEndpointCRDStatus:      defaults.EnableEndpointCRDStatus,
 		EnableIPv4:                   defaults.EnableIPv4,
 		EnableIPv6:                   defaults.EnableIPv6,
 		EnableL7Proxy:                defaults.EnableL7Proxy,
@@ -1941,6 +1950,7 @@ func (c *DaemonConfig) Populate() {
 	c.EnableEndpointRoutes = viper.GetBool(EnableEndpointRoutes)
 	c.EnableHealthChecking = viper.GetBool(EnableHealthChecking)
 	c.EnableEndpointHealthChecking = viper.GetBool(EnableEndpointHealthChecking)
+	c.EnableEndpointCRDStatus = viper.GetBool(EnableEndpointCRDStatus)
 	c.EnableLocalNodeRoute = viper.GetBool(EnableLocalNodeRoute)
 	c.EnablePolicy = strings.ToLower(viper.GetString(EnablePolicy))
 	c.EnableExternalIPs = viper.GetBool(EnableExternalIPs)
