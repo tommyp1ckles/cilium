@@ -102,7 +102,7 @@ func (s CachedSelectorSlice) SelectsAllEndpoints() bool {
 // the CachedSelectors pushed by it.
 type CachedSelectionUser interface {
 	// IdentitySelectionUpdated implementations MUST NOT call back
-	// to selector cache while executing this function!
+	// to the name manager or the selector cache while executing this function!
 	//
 	// The caller is responsible for making sure the same identity is not
 	// present in both 'added' and 'deleted'.
@@ -147,8 +147,13 @@ type CachedSelectionUser interface {
 type identitySelector interface {
 	CachedSelector
 	addUser(CachedSelectionUser) (added bool)
-	removeUser(CachedSelectionUser) (last bool)
+
+	// If a non-nil 'cb' is returned, it MUST be called *after* the lock is released!
+	removeUser(CachedSelectionUser) (last bool, cb func())
+
+	// This may be called while the NameManager lock is held
 	notifyUsers(added, deleted []identity.NumericIdentity)
+
 	numUsers() int
 }
 
@@ -313,18 +318,19 @@ func (s *selectorManager) addUser(user CachedSelectionUser) (added bool) {
 }
 
 // lock must be held
-func (s *selectorManager) removeUser(user CachedSelectionUser) (last bool) {
+func (s *selectorManager) removeUser(user CachedSelectionUser) (last bool, cb func()) {
 	delete(s.users, user)
-	return len(s.users) == 0
+	return len(s.users) == 0, nil
 }
 
-func (f *fqdnSelector) removeUser(user CachedSelectionUser) (last bool) {
+// lock must be held
+// If a non-nil 'cb' is returned, it MUST be called *after* the lock is released!
+func (f *fqdnSelector) removeUser(user CachedSelectionUser) (last bool, cb func()) {
 	delete(f.users, user)
-	removed := len(f.users) == 0
-	if removed {
-		f.dnsProxy.UnregisterForIdentityUpdates(f.selector)
+	if len(f.users) == 0 {
+		return true, func() { f.dnsProxy.UnregisterForIdentityUpdates(f.selector) }
 	}
-	return removed
+	return false, nil
 }
 
 // lock must be held
@@ -368,6 +374,7 @@ type fqdnSelector struct {
 }
 
 // lock must be held
+// Name Manager lock may also be held, so this must not call back to 'f.dnsProxy'.
 //
 // The caller is responsible for making sure the same identity is not
 // present in both 'added' and 'deleted'.
@@ -705,21 +712,31 @@ func (sc *SelectorCache) AddIdentitySelector(user CachedSelectionUser, selector 
 	return newIDSel, true
 }
 
-func (sc *SelectorCache) removeSelectorLocked(selector CachedSelector, user CachedSelectionUser) {
+// lock must be held
+// If a non-nil 'cb' is returned, it MUST be called *after* the lock is released!
+func (sc *SelectorCache) removeSelectorLocked(selector CachedSelector, user CachedSelectionUser) func() {
 	key := selector.String()
 	sel, exists := sc.selectors[key]
 	if exists {
-		if sel.removeUser(user) {
+		last, cb := sel.removeUser(user)
+		if last {
 			delete(sc.selectors, key)
 		}
+		return cb
 	}
+	return nil
 }
 
 // RemoveSelector removes CachedSelector for the user.
 func (sc *SelectorCache) RemoveSelector(selector CachedSelector, user CachedSelectionUser) {
 	sc.mutex.Lock()
-	sc.removeSelectorLocked(selector, user)
+	cb := sc.removeSelectorLocked(selector, user)
 	sc.mutex.Unlock()
+
+	// Callback may lock the name manager, so it must be called after sc.mutex is unlocked!
+	if cb != nil {
+		cb()
+	}
 }
 
 // RemoveSelectors removes CachedSelectorSlice for the user.
@@ -741,6 +758,7 @@ func (sc *SelectorCache) ChangeUser(selector CachedSelector, from, to CachedSele
 		// Add before remove so that the count does not dip to zero in between,
 		// as this causes FQDN unregistration (if applicable).
 		idSel.addUser(to)
+		// ignoring the return values as we have just added a user above
 		idSel.removeUser(from)
 	}
 	sc.mutex.Unlock()
