@@ -51,6 +51,7 @@ static __always_inline int eth_load_saddr(struct __ctx_buff *ctx, __u8 *mac,
 					  int off)
 {
 	return ctx_load_bytes(ctx, off + ETH_ALEN, mac, ETH_ALEN);
+	
 }
 
 static __always_inline int eth_store_saddr(struct __ctx_buff *ctx, __u8 *mac,
