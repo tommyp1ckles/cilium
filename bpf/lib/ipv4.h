@@ -8,10 +8,18 @@
 
 #include "dbg.h"
 
+//static __always_inline int ipv4_load_daddr(struct __ctx_buff *ctx, int off,
 static __always_inline int ipv4_load_daddr(struct __ctx_buff *ctx, int off,
 					   __u32 *dst)
 {
-	return ctx_load_bytes(ctx, off + offsetof(struct iphdr, daddr), dst, 4);
+	void *data, *data_end;
+	struct iphdr *ip4;
+
+	if (!revalidate_data(ctx, &data, &data_end, &ip4))
+		return DROP_INVALID;
+	
+	*dst = ip4->daddr;
+	return 0;
 }
 
 static __always_inline int ipv4_dec_ttl(struct __ctx_buff *ctx, int off,
