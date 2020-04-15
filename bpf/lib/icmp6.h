@@ -10,7 +10,6 @@
 #include "eth.h"
 #include "drop.h"
 
-#define ICMP6_TYPE_OFFSET (sizeof(struct ipv6hdr) + offsetof(struct icmp6hdr, icmp6_type))
 #define ICMP6_CSUM_OFFSET (sizeof(struct ipv6hdr) + offsetof(struct icmp6hdr, icmp6_cksum))
 #define ICMP6_ND_TARGET_OFFSET (sizeof(struct ipv6hdr) + sizeof(struct icmp6hdr))
 #define ICMP6_ND_OPTS (sizeof(struct ipv6hdr) + sizeof(struct icmp6hdr) + sizeof(struct in6_addr))
@@ -20,13 +19,6 @@
 #ifndef ACTION_UNKNOWN_ICMP6_NS
 #define ACTION_UNKNOWN_ICMP6_NS DROP_UNKNOWN_TARGET
 #endif
-
-static __always_inline __u8 icmp6_load_type(struct __ctx_buff *ctx, int nh_off)
-{
-	__u8 type;
-	ctx_load_bytes(ctx, nh_off + ICMP6_TYPE_OFFSET, &type, sizeof(type));
-	return type;
-}
 
 static __always_inline int icmp6_send_reply(struct __ctx_buff *ctx, int nh_off)
 {
@@ -385,8 +377,17 @@ static __always_inline int icmp6_handle_ns(struct __ctx_buff *ctx, int nh_off,
 static __always_inline int icmp6_handle(struct __ctx_buff *ctx, int nh_off,
 					struct ipv6hdr *ip6, __u8 direction)
 {
+	__u8 type;
+	void *data, *data_end;
+	struct icmp6hdr *icmp6hdr;
+        struct ipv6hdr *ipv6hdr;
+
+	if (!revalidate_data(ctx, &data, &data_end, &ipv6hdr))
+		return DROP_INVALID;
+	icmp6hdr = data + nh_off + sizeof(struct ipv6hdr);
+	type = icmp6hdr->icmp6_type;
+
 	union v6addr router_ip;
-	__u8 type = icmp6_load_type(ctx, nh_off);
 
 	cilium_dbg(ctx, DBG_ICMP6_HANDLE, type, 0);
 	BPF_V6(router_ip, ROUTER_IP);

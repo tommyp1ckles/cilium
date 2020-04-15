@@ -198,8 +198,11 @@ static __always_inline int set_dsr_ext6(struct __ctx_buff *ctx,
 static __always_inline int find_dsr_v6(struct __ctx_buff *ctx, __u8 nexthdr,
 				       struct dsr_opt_v6 *dsr_opt, bool *found)
 {
+	void *data, *data_end;
+	struct ipv6hdr *ip6;
+
 	int i, len = sizeof(struct ipv6hdr);
-	struct ipv6_opt_hdr opthdr;
+	struct ipv6_opt_hdr *opthdr;
 	__u8 nh = nexthdr;
 
 #pragma unroll
@@ -215,12 +218,16 @@ static __always_inline int find_dsr_v6(struct __ctx_buff *ctx, __u8 nexthdr,
 		case NEXTHDR_ROUTING:
 		case NEXTHDR_AUTH:
 		case NEXTHDR_DEST:
-			if (ctx_load_bytes(ctx, ETH_HLEN + len, &opthdr, sizeof(opthdr)) < 0)
+			if (!revalidate_data(ctx, &data, &data_end, &ip6))
 				return DROP_INVALID;
+			opthdr = data + ETH_HLEN + len;
 
-			if (nh == NEXTHDR_DEST && opthdr.hdrlen == DSR_IPV6_EXT_LEN) {
+			if (nh == NEXTHDR_DEST && opthdr->hdrlen == DSR_IPV6_EXT_LEN) {
+				// use ctx_load_bytes to load into dsr_opt?
 				if (ctx_load_bytes(ctx, ETH_HLEN + len, dsr_opt,
 						   sizeof(*dsr_opt)) < 0)
+					return DROP_INVALID;
+				if (!revalidate_data(ctx, &data, &data_end, &ip6))
 					return DROP_INVALID;
 				if (dsr_opt->opt_type == DSR_IPV6_OPT_TYPE &&
 				    dsr_opt->opt_len == DSR_IPV6_OPT_LEN) {
@@ -229,11 +236,11 @@ static __always_inline int find_dsr_v6(struct __ctx_buff *ctx, __u8 nexthdr,
 				}
 			}
 
-			nh = opthdr.nexthdr;
+			nh = opthdr->nexthdr;
 			if (nh == NEXTHDR_AUTH)
-				len += ipv6_authlen(&opthdr);
+				len += ipv6_authlen(opthdr);
 			else
-				len += ipv6_optlen(&opthdr);
+				len += ipv6_optlen(opthdr);
 			break;
 
 		default:

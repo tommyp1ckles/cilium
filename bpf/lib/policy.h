@@ -90,34 +90,11 @@ __policy_can_access(const void *map, struct __ctx_buff *ctx, __u32 identity,
 		struct icmphdr *icmphdr;
 		struct iphdr *ip4;
 
-		// reval data
 		if (!revalidate_data(ctx, &data, &data_end, &ip4))
 			return DROP_INVALID;
 
-		// offset = address of ip header
-		// so in this case our offset is the sum of:
-		// 
-		// ((void *)ip4 - data) = size of ethernet frame header.
-		// ipv4_hdrlen(ip4) = length of ipv4 header
-		//
-		// so offset here is: len(ethhdr) + len(ipv4hdr)
-		//
-		// so its like
-		//
-		// +----------------------+
-		// | Eth Header		  |
-		// +----------------------+
-		// | IPV4 Header          |
-		// +----------------------+
-		// | ICMP Header          |
-		// +----------------------+
-		// | ???                  |
-		// |                      |
-		// +----------------------+
 		__u32 off = ((void *)ip4 - data) + ipv4_hdrlen(ip4);
 		icmphdr = data + off;
-		//if (ctx_load_bytes(ctx, off, &icmphdr, sizeof(icmphdr)) < 0)
-		//	return DROP_INVALID;
 
 		if(icmphdr->type == ICMP_DEST_UNREACH && icmphdr->code == ICMP_FRAG_NEEDED)
 			return CTX_ACT_OK;
