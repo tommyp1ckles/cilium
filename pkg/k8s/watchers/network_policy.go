@@ -20,7 +20,7 @@ import (
 )
 
 func (k *K8sWatcher) networkPoliciesInit(k8sClient kubernetes.Interface, swgKNPs *lock.StoppableWaitGroup) {
-
+	apiGroup := k8sAPIGroupNetworkingV1Core
 	store, policyController := informer.NewInformer(
 		cache.NewListWatchFromClient(k8sClient.NetworkingV1().RESTClient(),
 			"networkpolicies", v1.NamespaceAll, fields.Everything()),
@@ -29,7 +29,7 @@ func (k *K8sWatcher) networkPoliciesInit(k8sClient kubernetes.Interface, swgKNPs
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(metricKNP, metricCreate, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricKNP, metricCreate, valid, equal) }()
 				if k8sNP := k8s.ObjToV1NetworkPolicy(obj); k8sNP != nil {
 					valid = true
 					err := k.addK8sNetworkPolicyV1(k8sNP)
@@ -38,7 +38,7 @@ func (k *K8sWatcher) networkPoliciesInit(k8sClient kubernetes.Interface, swgKNPs
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(metricKNP, metricUpdate, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricKNP, metricUpdate, valid, equal) }()
 				if oldK8sNP := k8s.ObjToV1NetworkPolicy(oldObj); oldK8sNP != nil {
 					if newK8sNP := k8s.ObjToV1NetworkPolicy(newObj); newK8sNP != nil {
 						valid = true
@@ -54,7 +54,7 @@ func (k *K8sWatcher) networkPoliciesInit(k8sClient kubernetes.Interface, swgKNPs
 			},
 			DeleteFunc: func(obj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(metricKNP, metricDelete, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricKNP, metricDelete, valid, equal) }()
 				k8sNP := k8s.ObjToV1NetworkPolicy(obj)
 				if k8sNP == nil {
 					return
@@ -71,7 +71,7 @@ func (k *K8sWatcher) networkPoliciesInit(k8sClient kubernetes.Interface, swgKNPs
 	k.blockWaitGroupToSyncResources(k.stop, swgKNPs, policyController.HasSynced, k8sAPIGroupNetworkingV1Core)
 	go policyController.Run(k.stop)
 
-	k.k8sAPIGroups.AddAPI(k8sAPIGroupNetworkingV1Core)
+	k.k8sAPIGroups.AddAPI(apiGroup)
 }
 
 func (k *K8sWatcher) addK8sNetworkPolicyV1(k8sNP *slim_networkingv1.NetworkPolicy) error {

@@ -32,6 +32,7 @@ func (k *K8sWatcher) tlsSecretInit(k8sClient kubernetes.Interface, namespace str
 		options.FieldSelector = tlsFieldSelector
 	}
 
+	apiGroup := K8sAPIGroupSecretV1Core
 	_, secretController := informer.NewInformer(
 		cache.NewFilteredListWatchFromClient(k8sClient.CoreV1().RESTClient(),
 			"secrets", namespace,
@@ -43,7 +44,7 @@ func (k *K8sWatcher) tlsSecretInit(k8sClient kubernetes.Interface, namespace str
 			AddFunc: func(obj interface{}) {
 				var valid, equal bool
 				defer func() {
-					k.K8sEventReceived(metricSecret, metricCreate, valid, equal)
+					k.K8sEventReceived(apiGroup, metricSecret, metricCreate, valid, equal)
 				}()
 				if k8sSecret := k8s.ObjToV1Secret(obj); k8sSecret != nil {
 					valid = true
@@ -53,7 +54,7 @@ func (k *K8sWatcher) tlsSecretInit(k8sClient kubernetes.Interface, namespace str
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(metricSecret, metricUpdate, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricSecret, metricUpdate, valid, equal) }()
 				if oldSecret := k8s.ObjToV1Secret(oldObj); oldSecret != nil {
 					if newSecret := k8s.ObjToV1Secret(newObj); newSecret != nil {
 						valid = true
@@ -69,7 +70,7 @@ func (k *K8sWatcher) tlsSecretInit(k8sClient kubernetes.Interface, namespace str
 			DeleteFunc: func(obj interface{}) {
 				var valid, equal bool
 				defer func() {
-					k.K8sEventReceived(metricSecret, metricDelete, valid, equal)
+					k.K8sEventReceived(apiGroup, metricSecret, metricDelete, valid, equal)
 				}()
 				k8sSecret := k8s.ObjToV1Secret(obj)
 				if k8sSecret == nil {
@@ -84,7 +85,7 @@ func (k *K8sWatcher) tlsSecretInit(k8sClient kubernetes.Interface, namespace str
 	)
 	k.blockWaitGroupToSyncResources(k.stop, swgSecrets, secretController.HasSynced, K8sAPIGroupSecretV1Core)
 	go secretController.Run(k.stop)
-	k.k8sAPIGroups.AddAPI(K8sAPIGroupSecretV1Core)
+	k.k8sAPIGroups.AddAPI(apiGroup)
 }
 
 // addK8sSecretV1 performs Envoy upsert operation for newly added secret.

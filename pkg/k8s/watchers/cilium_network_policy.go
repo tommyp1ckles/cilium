@@ -82,6 +82,7 @@ func (r *ruleImportMetadataCache) get(cnp *types.SlimCNP) (policyImportMetadata,
 
 func (k *K8sWatcher) ciliumNetworkPoliciesInit(ciliumNPClient *k8s.K8sCiliumClient) {
 	cnpStore := cache.NewStore(cache.DeletionHandlingMetaNamespaceKeyFunc)
+	apiGroup := k8sAPIGroupCiliumNetworkPolicyV2
 	ciliumV2Controller := informer.NewInformerWithStore(
 		cache.NewListWatchFromClient(ciliumNPClient.CiliumV2().RESTClient(),
 			cilium_v2.CNPPluralName, v1.NamespaceAll, fields.Everything()),
@@ -90,7 +91,7 @@ func (k *K8sWatcher) ciliumNetworkPoliciesInit(ciliumNPClient *k8s.K8sCiliumClie
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(metricCNP, metricCreate, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricCNP, metricCreate, valid, equal) }()
 				if cnp := k8s.ObjToSlimCNP(obj); cnp != nil {
 					valid = true
 					if cnp.RequiresDerivative() {
@@ -108,7 +109,7 @@ func (k *K8sWatcher) ciliumNetworkPoliciesInit(ciliumNPClient *k8s.K8sCiliumClie
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(metricCNP, metricUpdate, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricCNP, metricUpdate, valid, equal) }()
 				if oldCNP := k8s.ObjToSlimCNP(oldObj); oldCNP != nil {
 					if newCNP := k8s.ObjToSlimCNP(newObj); newCNP != nil {
 						valid = true
@@ -134,7 +135,7 @@ func (k *K8sWatcher) ciliumNetworkPoliciesInit(ciliumNPClient *k8s.K8sCiliumClie
 			},
 			DeleteFunc: func(obj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(metricCNP, metricDelete, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricCNP, metricDelete, valid, equal) }()
 				cnp := k8s.ObjToSlimCNP(obj)
 				if cnp == nil {
 					return

@@ -1,11 +1,18 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Authors of Cilium
+
+//go:build !privileged_tests
+
 package synced
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
-	"github.com/cilium/cilium/pkg/lock"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/cilium/cilium/pkg/lock"
 )
 
 type waitForCacheTest struct {
@@ -13,65 +20,94 @@ type waitForCacheTest struct {
 	resourcesWithSyncDurations map[string]time.Duration
 	events                     map[string]time.Duration
 	resources                  []string
-	expectErr                  bool
+	expectErr                  error
 }
 
 func TestWaitForCacheSyncWithTimeout(t *testing.T) {
-	// Note: Polling for underlying cache sync only happens ever 100ms.
-	// So, in general, tests should be in hundreds of milliseconds.
-	unit := func(d int) time.Duration { return time.Millisecond * time.Duration(d) }
+	unit := func(d int) time.Duration { return syncedPollPeriod * time.Duration(d) }
 	assert := assert.New(t)
 	for msg, test := range map[string]waitForCacheTest{
 		"Event should bump timeout enough for it to sync": {
-			timeout: unit(500),
+			timeout: unit(5),
 			resourcesWithSyncDurations: map[string]time.Duration{
-				"foo": unit(750),
+				"foo": unit(7),
+				"bar": unit(7),
 			},
 			events: map[string]time.Duration{
-				"foo": unit(400),
+				"foo": unit(4),
 			},
 			resources: []string{"foo"},
 		},
 		"Should timeout": {
-			timeout: unit(100),
+			timeout: unit(1),
 			resourcesWithSyncDurations: map[string]time.Duration{
-				"foo": unit(200),
+				"foo": unit(3),
 			},
 			events:    map[string]time.Duration{},
 			resources: []string{"foo"},
-			expectErr: true,
+			expectErr: fmt.Errorf("timed out after 100ms, never received event for resource \"foo\""),
+		},
+		"Any one timeout should cause error": {
+			timeout: unit(5),
+			resourcesWithSyncDurations: map[string]time.Duration{
+				"foo": unit(7),
+				"bar": unit(7),
+			},
+			events: map[string]time.Duration{
+				"foo": unit(4),
+			},
+			resources: []string{"foo", "bar"},
+			expectErr: fmt.Errorf("timed out after 500ms, never received event for resource \"bar\""),
+		},
+		"No resources should always sync": {
+			timeout: unit(5),
+			resourcesWithSyncDurations: map[string]time.Duration{
+				"foo": unit(10),
+				"bar": unit(10),
+			},
+		},
+		"Test instant": {
+			timeout: unit(3),
+			resourcesWithSyncDurations: map[string]time.Duration{
+				"foo": unit(0),
+				"bar": unit(0),
+			},
 		},
 	} {
-		t.Run(msg, func(t *testing.T) {
-			r := &Resources{}
-			stop := make(chan struct{})
-			swg := lock.NewStoppableWaitGroup()
-			start := time.Now()
-			for resourceName, syncDurations := range test.resourcesWithSyncDurations {
-				hasSyncedFn := func() bool {
-					return time.Now().After(start.Add(syncDurations))
+		func(test waitForCacheTest) {
+			t.Run(msg, func(t *testing.T) {
+				t.Parallel()
+				r := &Resources{}
+				stop := make(chan struct{})
+				swg := lock.NewStoppableWaitGroup()
+				start := time.Now()
+				for resourceName, syncDurations := range test.resourcesWithSyncDurations {
+					hasSyncedFn := func() bool {
+						return time.Now().After(start.Add(syncDurations))
+					}
+					r.BlockWaitGroupToSyncResources(
+						stop,
+						swg,
+						hasSyncedFn,
+						resourceName,
+					)
 				}
-				r.BlockWaitGroupToSyncResources(
-					stop,
-					swg,
-					hasSyncedFn,
-					resourceName,
-				)
-			}
 
-			for resourceName, waitForEvent := range test.events {
-				// schedule an event.
-				time.AfterFunc(waitForEvent, func() {
-					r.Event(resourceName)
-				})
-			}
+				for resourceName, waitForEvent := range test.events {
+					// schedule an event.
+					rname := resourceName
+					time.AfterFunc(waitForEvent, func() {
+						r.Event(rname, "fooMetricName")
+					})
+				}
 
-			err := r.WaitForCacheSyncWithTimeout(test.timeout, test.resources...)
-			if test.expectErr {
-				assert.Error(err)
-			} else {
-				assert.NoError(err)
-			}
-		})
+				err := r.WaitForCacheSyncWithTimeout(test.timeout, test.resources...)
+				if test.expectErr == nil {
+					assert.NoError(err)
+				} else {
+					assert.EqualError(err, test.expectErr.Error())
+				}
+			})
+		}(test)
 	}
 }

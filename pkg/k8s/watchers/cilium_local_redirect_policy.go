@@ -17,7 +17,7 @@ import (
 )
 
 func (k *K8sWatcher) ciliumLocalRedirectPolicyInit(ciliumLRPClient *k8s.K8sCiliumClient) {
-
+	apiGroup := k8sAPIGroupCiliumLocalRedirectPolicyV2
 	_, lrpController := informer.NewInformer(
 		cache.NewListWatchFromClient(ciliumLRPClient.CiliumV2().RESTClient(),
 			"ciliumlocalredirectpolicies", v1.NamespaceAll, fields.Everything()),
@@ -26,7 +26,7 @@ func (k *K8sWatcher) ciliumLocalRedirectPolicyInit(ciliumLRPClient *k8s.K8sCiliu
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(metricCLRP, metricCreate, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricCLRP, metricCreate, valid, equal) }()
 				if cLRP := k8s.ObjToCLRP(obj); cLRP != nil {
 					valid = true
 					err := k.addCiliumLocalRedirectPolicy(cLRP)
@@ -40,7 +40,7 @@ func (k *K8sWatcher) ciliumLocalRedirectPolicyInit(ciliumLRPClient *k8s.K8sCiliu
 			},
 			DeleteFunc: func(obj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(metricCLRP, metricDelete, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricCLRP, metricDelete, valid, equal) }()
 				cLRP := k8s.ObjToCLRP(obj)
 				if cLRP == nil {
 					return

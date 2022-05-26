@@ -402,6 +402,10 @@ var (
 	// labeled by scope, action, valid data and equalness.
 	KubernetesEventReceived = NoOpCounterVec
 
+	// KubernetesDurationBetweenEvents is how long it has been since each internal
+	// control received an event.
+	KubernetesDurationBetweenEvents = NoOpObserverVec
+
 	// Kubernetes interactions
 
 	// KubernetesAPIInteractions is the total time taken to process an API call made
@@ -552,6 +556,7 @@ type Configuration struct {
 	SubprocessStartEnabled                  bool
 	KubernetesEventProcessedEnabled         bool
 	KubernetesEventReceivedEnabled          bool
+	KubernetesTimeBetweenEventsEnabled      bool
 	KubernetesAPIInteractionsEnabled        bool
 	KubernetesAPICallsEnabled               bool
 	KubernetesCNPStatusCompletionEnabled    bool
@@ -622,6 +627,7 @@ func DefaultMetrics() map[string]struct{} {
 		Namespace + "_subprocess_start_total":                                        {},
 		Namespace + "_kubernetes_events_total":                                       {},
 		Namespace + "_kubernetes_events_received_total":                              {},
+		Namespace + "_time_since_last_event":                                         {},
 		Namespace + "_" + SubsystemK8sClient + "_api_latency_time_seconds":           {},
 		Namespace + "_" + SubsystemK8sClient + "_api_calls_total":                    {},
 		Namespace + "_" + SubsystemK8s + "_cnp_status_completion_seconds":            {},
@@ -1093,6 +1099,16 @@ func CreateConfiguration(metricsEnabled []string) (Configuration, []prometheus.C
 
 			collectors = append(collectors, KubernetesEventReceived)
 			c.KubernetesEventReceivedEnabled = true
+
+		case Namespace + "_duration_between_events":
+			KubernetesDurationBetweenEvents = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemK8sClient,
+				Name:      "duration_between_events",
+				Help:      "Duration between Kubernetes events labeled by scope",
+			}, []string{LabelScope})
+			collectors = append(collectors, KubernetesDurationBetweenEvents)
+			c.KubernetesTimeBetweenEventsEnabled = true
 
 		case Namespace + "_" + SubsystemK8sClient + "_api_latency_time_seconds":
 			KubernetesAPIInteractions = prometheus.NewHistogramVec(prometheus.HistogramOpts{

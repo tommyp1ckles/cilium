@@ -15,7 +15,7 @@ import (
 
 func (k *K8sWatcher) ciliumClusterwideNetworkPoliciesInit(ciliumNPClient *k8s.K8sCiliumClient) {
 	ccnpStore := cache.NewStore(cache.DeletionHandlingMetaNamespaceKeyFunc)
-
+	apiGroup := k8sAPIGroupCiliumClusterwideNetworkPolicyV2
 	ciliumV2ClusterwidePolicyController := informer.NewInformerWithStore(
 		cache.NewListWatchFromClient(ciliumNPClient.CiliumV2().RESTClient(),
 			cilium_v2.CCNPPluralName, v1.NamespaceAll, fields.Everything()),
@@ -24,7 +24,7 @@ func (k *K8sWatcher) ciliumClusterwideNetworkPoliciesInit(ciliumNPClient *k8s.K8
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(metricCCNP, metricCreate, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricCCNP, metricCreate, valid, equal) }()
 				if cnp := k8s.ObjToSlimCNP(obj); cnp != nil {
 					valid = true
 					if cnp.RequiresDerivative() {
@@ -42,7 +42,7 @@ func (k *K8sWatcher) ciliumClusterwideNetworkPoliciesInit(ciliumNPClient *k8s.K8
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(metricCCNP, metricUpdate, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricCCNP, metricUpdate, valid, equal) }()
 				if oldCNP := k8s.ObjToSlimCNP(oldObj); oldCNP != nil {
 					if newCNP := k8s.ObjToSlimCNP(newObj); newCNP != nil {
 						valid = true
@@ -68,7 +68,7 @@ func (k *K8sWatcher) ciliumClusterwideNetworkPoliciesInit(ciliumNPClient *k8s.K8
 			},
 			DeleteFunc: func(obj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(metricCCNP, metricDelete, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricCCNP, metricDelete, valid, equal) }()
 				cnp := k8s.ObjToSlimCNP(obj)
 				if cnp == nil {
 					return
@@ -86,9 +86,9 @@ func (k *K8sWatcher) ciliumClusterwideNetworkPoliciesInit(ciliumNPClient *k8s.K8
 		k.stop,
 		nil,
 		ciliumV2ClusterwidePolicyController.HasSynced,
-		k8sAPIGroupCiliumClusterwideNetworkPolicyV2,
+		apiGroup,
 	)
 
 	go ciliumV2ClusterwidePolicyController.Run(k.stop)
-	k.k8sAPIGroups.AddAPI(k8sAPIGroupCiliumClusterwideNetworkPolicyV2)
+	k.k8sAPIGroups.AddAPI(apiGroup)
 }

@@ -904,20 +904,20 @@ func (k *K8sWatcher) addK8sSVCs(svcID k8s.ServiceID, oldSvc, svc *k8s.Service, e
 
 // K8sEventProcessed is called to do metrics accounting for each processed
 // Kubernetes event
-func (k *K8sWatcher) K8sEventProcessed(scope string, action string, status bool) {
+func (k *K8sWatcher) K8sEventProcessed(scope, action string, status bool) {
 	result := "success"
 	if status == false {
 		result = "failed"
 	}
-	k.k8sResourceSynced.Event(scope)
 
 	metrics.KubernetesEventProcessed.WithLabelValues(scope, action, result).Inc()
 }
 
 // K8sEventReceived does metric accounting for each received Kubernetes event
-func (k *K8sWatcher) K8sEventReceived(scope string, action string, valid, equal bool) {
+func (k *K8sWatcher) K8sEventReceived(apiResourceName, scope, action string, valid, equal bool) {
 	metrics.EventTSK8s.SetToCurrentTime()
 	k8smetrics.LastInteraction.Reset()
+	go k.k8sResourceSynced.Event(apiResourceName, scope)
 
 	metrics.KubernetesEventReceived.WithLabelValues(scope, action, strconv.FormatBool(valid), strconv.FormatBool(equal)).Inc()
 }

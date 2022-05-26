@@ -26,6 +26,7 @@ import (
 )
 
 func (k *K8sWatcher) namespacesInit(k8sClient kubernetes.Interface, asyncControllers *sync.WaitGroup) {
+	apiGroup := k8sAPIGroupNamespaceV1Core
 	namespaceStore, namespaceController := informer.NewInformer(
 		cache.NewListWatchFromClient(k8sClient.CoreV1().RESTClient(),
 			"namespaces", v1.NamespaceAll, fields.Everything()),
@@ -38,7 +39,7 @@ func (k *K8sWatcher) namespacesInit(k8sClient kubernetes.Interface, asyncControl
 			// pods belonging to that namespace are also deleted.
 			UpdateFunc: func(oldObj, newObj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(metricNS, metricUpdate, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricNS, metricUpdate, valid, equal) }()
 				if oldNS := k8s.ObjToV1Namespace(oldObj); oldNS != nil {
 					if newNS := k8s.ObjToV1Namespace(newObj); newNS != nil {
 						valid = true
@@ -58,7 +59,7 @@ func (k *K8sWatcher) namespacesInit(k8sClient kubernetes.Interface, asyncControl
 
 	k.namespaceStore = namespaceStore
 	k.blockWaitGroupToSyncResources(k.stop, nil, namespaceController.HasSynced, k8sAPIGroupNamespaceV1Core)
-	k.k8sAPIGroups.AddAPI(k8sAPIGroupNamespaceV1Core)
+	k.k8sAPIGroups.AddAPI(apiGroup)
 	asyncControllers.Done()
 	namespaceController.Run(k.stop)
 }

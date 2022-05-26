@@ -51,6 +51,7 @@ import (
 )
 
 func (k *K8sWatcher) createPodController(getter cache.Getter, fieldSelector fields.Selector) (cache.Store, cache.Controller) {
+	apiGroup := K8sAPIGroupPodV1Core
 	return informer.NewInformer(
 		cache.NewListWatchFromClient(getter,
 			"pods", v1.NamespaceAll, fieldSelector),
@@ -82,7 +83,7 @@ func (k *K8sWatcher) createPodController(getter cache.Getter, fieldSelector fiel
 					err := k.addK8sPodV1(pod)
 					k.K8sEventProcessed(metricPod, metricCreate, err == nil)
 				}
-				k.K8sEventReceived(metricPod, metricCreate, valid, false)
+				k.K8sEventReceived(apiGroup, metricPod, metricCreate, valid, false)
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
 				var valid, equal bool
@@ -97,7 +98,7 @@ func (k *K8sWatcher) createPodController(getter cache.Getter, fieldSelector fiel
 						}
 					}
 				}
-				k.K8sEventReceived(metricPod, metricUpdate, valid, equal)
+				k.K8sEventReceived(apiGroup, metricPod, metricUpdate, valid, equal)
 			},
 			DeleteFunc: func(obj interface{}) {
 				var valid bool
@@ -106,7 +107,7 @@ func (k *K8sWatcher) createPodController(getter cache.Getter, fieldSelector fiel
 					err := k.deleteK8sPodV1(pod)
 					k.K8sEventProcessed(metricPod, metricDelete, err == nil)
 				}
-				k.K8sEventReceived(metricPod, metricDelete, valid, false)
+				k.K8sEventReceived(apiGroup, metricPod, metricDelete, valid, false)
 			},
 		},
 		nil,

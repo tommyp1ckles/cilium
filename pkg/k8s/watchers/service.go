@@ -17,6 +17,7 @@ import (
 )
 
 func (k *K8sWatcher) servicesInit(k8sClient kubernetes.Interface, swgSvcs *lock.StoppableWaitGroup, optsModifier func(*v1meta.ListOptions)) {
+	apiGroup := K8sAPIGroupServiceV1Core
 	_, svcController := informer.NewInformer(
 		cache.NewFilteredListWatchFromClient(k8sClient.CoreV1().RESTClient(),
 			"services", v1.NamespaceAll, optsModifier),
@@ -25,7 +26,7 @@ func (k *K8sWatcher) servicesInit(k8sClient kubernetes.Interface, swgSvcs *lock.
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(metricService, metricCreate, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricService, metricCreate, valid, equal) }()
 				if k8sSvc := k8s.ObjToV1Services(obj); k8sSvc != nil {
 					valid = true
 					err := k.addK8sServiceV1(k8sSvc, swgSvcs)
@@ -34,7 +35,7 @@ func (k *K8sWatcher) servicesInit(k8sClient kubernetes.Interface, swgSvcs *lock.
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(metricService, metricUpdate, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricService, metricUpdate, valid, equal) }()
 				if oldk8sSvc := k8s.ObjToV1Services(oldObj); oldk8sSvc != nil {
 					if newk8sSvc := k8s.ObjToV1Services(newObj); newk8sSvc != nil {
 						valid = true
@@ -50,7 +51,7 @@ func (k *K8sWatcher) servicesInit(k8sClient kubernetes.Interface, swgSvcs *lock.
 			},
 			DeleteFunc: func(obj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(metricService, metricDelete, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricService, metricDelete, valid, equal) }()
 				k8sSvc := k8s.ObjToV1Services(obj)
 				if k8sSvc == nil {
 					return
@@ -65,7 +66,7 @@ func (k *K8sWatcher) servicesInit(k8sClient kubernetes.Interface, swgSvcs *lock.
 	)
 	k.blockWaitGroupToSyncResources(k.stop, swgSvcs, svcController.HasSynced, K8sAPIGroupServiceV1Core)
 	go svcController.Run(k.stop)
-	k.k8sAPIGroups.AddAPI(K8sAPIGroupServiceV1Core)
+	k.k8sAPIGroups.AddAPI(apiGroup)
 }
 
 func (k *K8sWatcher) addK8sServiceV1(svc *slim_corev1.Service, swg *lock.StoppableWaitGroup) error {

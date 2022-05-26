@@ -32,6 +32,7 @@ func (k *K8sWatcher) ciliumNodeInit(ciliumNPClient *k8s.K8sCiliumClient, asyncCo
 	// CiliumNode objects are used for node discovery until the key-value
 	// store is connected
 	var once sync.Once
+	apiGroup := k8sAPIGroupCiliumNodeV2
 	for {
 		swgNodes := lock.NewStoppableWaitGroup()
 		ciliumNodeStore, ciliumNodeInformer := informer.NewInformer(
@@ -42,7 +43,7 @@ func (k *K8sWatcher) ciliumNodeInit(ciliumNPClient *k8s.K8sCiliumClient, asyncCo
 			cache.ResourceEventHandlerFuncs{
 				AddFunc: func(obj interface{}) {
 					var valid, equal bool
-					defer func() { k.K8sEventReceived(metricCiliumNode, metricCreate, valid, equal) }()
+					defer func() { k.K8sEventReceived(apiGroup, metricCiliumNode, metricCreate, valid, equal) }()
 					if ciliumNode := k8s.ObjToCiliumNode(obj); ciliumNode != nil {
 						valid = true
 						n := nodeTypes.ParseCiliumNode(ciliumNode)
@@ -59,7 +60,7 @@ func (k *K8sWatcher) ciliumNodeInit(ciliumNPClient *k8s.K8sCiliumClient, asyncCo
 				},
 				UpdateFunc: func(oldObj, newObj interface{}) {
 					var valid, equal bool
-					defer func() { k.K8sEventReceived(metricCiliumNode, metricUpdate, valid, equal) }()
+					defer func() { k.K8sEventReceived(apiGroup, metricCiliumNode, metricUpdate, valid, equal) }()
 					if oldCN := k8s.ObjToCiliumNode(oldObj); oldCN != nil {
 						if ciliumNode := k8s.ObjToCiliumNode(newObj); ciliumNode != nil {
 							valid = true
@@ -91,7 +92,7 @@ func (k *K8sWatcher) ciliumNodeInit(ciliumNPClient *k8s.K8sCiliumClient, asyncCo
 				},
 				DeleteFunc: func(obj interface{}) {
 					var valid, equal bool
-					defer func() { k.K8sEventReceived(metricCiliumNode, metricDelete, valid, equal) }()
+					defer func() { k.K8sEventReceived(apiGroup, metricCiliumNode, metricDelete, valid, equal) }()
 					ciliumNode := k8s.ObjToCiliumNode(obj)
 					if ciliumNode == nil {
 						return
@@ -113,7 +114,7 @@ func (k *K8sWatcher) ciliumNodeInit(ciliumNPClient *k8s.K8sCiliumClient, asyncCo
 		isConnected := make(chan struct{})
 		// once isConnected is closed, it will stop waiting on caches to be
 		// synchronized.
-		k.blockWaitGroupToSyncResources(isConnected, swgNodes, ciliumNodeInformer.HasSynced, k8sAPIGroupCiliumNodeV2)
+		k.blockWaitGroupToSyncResources(isConnected, swgNodes, ciliumNodeInformer.HasSynced, apiGroup)
 
 		k.ciliumNodeStoreMU.Lock()
 		k.ciliumNodeStore = ciliumNodeStore
@@ -124,7 +125,7 @@ func (k *K8sWatcher) ciliumNodeInit(ciliumNPClient *k8s.K8sCiliumClient, asyncCo
 			// to sync resources.
 			asyncControllers.Done()
 		})
-		k.k8sAPIGroups.AddAPI(k8sAPIGroupCiliumNodeV2)
+		k.k8sAPIGroups.AddAPI(apiGroup)
 		go ciliumNodeInformer.Run(isConnected)
 
 		<-kvstore.Connected()
@@ -132,8 +133,8 @@ func (k *K8sWatcher) ciliumNodeInit(ciliumNPClient *k8s.K8sCiliumClient, asyncCo
 
 		log.Info("Connected to key-value store, stopping CiliumNode watcher")
 
-		k.cancelWaitGroupToSyncResources(k8sAPIGroupCiliumNodeV2)
-		k.k8sAPIGroups.RemoveAPI(k8sAPIGroupCiliumNodeV2)
+		k.cancelWaitGroupToSyncResources(apiGroup)
+		k.k8sAPIGroups.RemoveAPI(apiGroup)
 		// Create a new node controller when we are disconnected with the
 		// kvstore
 		<-kvstore.Client().Disconnected()

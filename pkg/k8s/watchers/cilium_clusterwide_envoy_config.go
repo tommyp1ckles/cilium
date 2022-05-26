@@ -23,7 +23,7 @@ import (
 
 func (k *K8sWatcher) ciliumClusterwideEnvoyConfigInit(ciliumNPClient *k8s.K8sCiliumClient) {
 	ccecStore := cache.NewStore(cache.DeletionHandlingMetaNamespaceKeyFunc)
-
+	apiGroup := k8sAPIGroupCiliumClusterwideEnvoyConfigV2
 	ccecController := informer.NewInformerWithStore(
 		cache.NewListWatchFromClient(ciliumNPClient.CiliumV2().RESTClient(),
 			cilium_v2.CCECPluralName, v1.NamespaceAll, fields.Everything()),
@@ -32,7 +32,7 @@ func (k *K8sWatcher) ciliumClusterwideEnvoyConfigInit(ciliumNPClient *k8s.K8sCil
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(metricCCEC, metricCreate, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricCCEC, metricCreate, valid, equal) }()
 				if ccec := k8s.ObjToCCEC(obj); ccec != nil {
 					valid = true
 					err := k.addCiliumClusterwideEnvoyConfig(ccec)
@@ -41,7 +41,7 @@ func (k *K8sWatcher) ciliumClusterwideEnvoyConfigInit(ciliumNPClient *k8s.K8sCil
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(metricCCEC, metricUpdate, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricCCEC, metricUpdate, valid, equal) }()
 
 				if oldCCEC := k8s.ObjToCCEC(oldObj); oldCCEC != nil {
 					if newCCEC := k8s.ObjToCCEC(newObj); newCCEC != nil {
@@ -57,7 +57,7 @@ func (k *K8sWatcher) ciliumClusterwideEnvoyConfigInit(ciliumNPClient *k8s.K8sCil
 			},
 			DeleteFunc: func(obj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(metricCCEC, metricDelete, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricCCEC, metricDelete, valid, equal) }()
 				ccec := k8s.ObjToCCEC(obj)
 				if ccec == nil {
 					return
@@ -75,11 +75,11 @@ func (k *K8sWatcher) ciliumClusterwideEnvoyConfigInit(ciliumNPClient *k8s.K8sCil
 		wait.NeverStop,
 		nil,
 		ccecController.HasSynced,
-		k8sAPIGroupCiliumClusterwideEnvoyConfigV2,
+		apiGroup,
 	)
 
 	go ccecController.Run(wait.NeverStop)
-	k.k8sAPIGroups.AddAPI(k8sAPIGroupCiliumClusterwideEnvoyConfigV2)
+	k.k8sAPIGroups.AddAPI(apiGroup)
 }
 
 func (k *K8sWatcher) addCiliumClusterwideEnvoyConfig(ccec *cilium_v2.CiliumClusterwideEnvoyConfig) error {
