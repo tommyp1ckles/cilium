@@ -145,6 +145,7 @@ func createDefaultClient(c *rest.Config, httpClient *http.Client) (rest.Interfac
 
 func createDefaultCiliumClient(c *rest.Config, httpClient *http.Client) error {
 	createdCiliumK8sClient, err := clientset.NewForConfigAndClient(c, httpClient)
+
 	if err != nil {
 		return fmt.Errorf("unable to create k8s client: %s", err)
 	}

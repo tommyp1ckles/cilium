@@ -4,6 +4,8 @@
 package synced
 
 import (
+	"fmt"
+	"sync"
 	"time"
 
 	"k8s.io/client-go/tools/cache"
@@ -21,6 +23,27 @@ type Resources struct {
 	resources map[string]<-chan struct{}
 	// stopWait contains the result of cache.WaitForCacheSync
 	stopWait map[string]bool
+
+	// timeSinceLastEvent contains the time each resource last received an event.
+	timeSinceLastEvent map[string]time.Time
+}
+
+func (r *Resources) getTimeOfLastEvent(resource string) (when time.Time, never bool) {
+	r.RLock()
+	defer r.RUnlock()
+	t, ok := r.timeSinceLastEvent[resource]
+	if !ok {
+		return time.Time{}, true
+	}
+	return t, false
+}
+
+func (r *Resources) Event(resource string) {
+	go func() {
+		r.Lock()
+		defer r.Unlock()
+		r.timeSinceLastEvent[resource] = time.Now()
+	}()
 }
 
 func (r *Resources) CancelWaitGroupToSyncResources(resourceName string) {
@@ -46,6 +69,7 @@ func (r *Resources) BlockWaitGroupToSyncResources(
 	if r.resources == nil {
 		r.resources = make(map[string]<-chan struct{})
 		r.stopWait = make(map[string]bool)
+		r.timeSinceLastEvent = make(map[string]time.Time)
 	}
 	r.resources[resourceName] = ch
 	r.Unlock()
@@ -116,4 +140,58 @@ func (r *Resources) WaitForCacheSync(resourceNames ...string) {
 			}
 		}
 	}
+}
+
+// WaitForCacheSyncWithTimeout waits for K8s resources represented by resourceNames to be synced.
+// For every resource type, if an event happens after starting the wait, the timeout will be pushed out
+// to be time time of the last event plus the timeout duration.
+func (r *Resources) WaitForCacheSyncWithTimeout(timeout time.Duration, resourceNames ...string) error {
+	wg := &sync.WaitGroup{}
+	errs := make(chan error, len(resourceNames))
+	for _, resource := range resourceNames {
+		done := make(chan struct{}) // closing done stops the timeout watcher goroutine.
+		wg.Add(1)
+		go func(resource string) {
+			defer wg.Done()
+			r.WaitForCacheSync(resource)
+			close(done)
+		}(resource)
+
+		go func(resource string) {
+			currTimeout := timeout
+			for {
+				// Wait until timeout ends or sync is completed.
+				// If timeout is reached, check if an event occured that would
+				// have pushed back the timeout and wait for that amount of time.
+				// If timeout is exceeded, check if errors channel is still open.
+				// Closed error channel means the sync has actually finished in the
+				// meantime in which case ignore the timeout.
+				select {
+				case now := <-time.After(currTimeout):
+					lastEvent, never := r.getTimeOfLastEvent(resource)
+					if never {
+						errs <- fmt.Errorf("timed out after %s, never received event for resource %q", timeout, resource)
+						return
+					}
+					if now.After(lastEvent.Add(timeout)) {
+						errs <- fmt.Errorf("timed out after %s since receiving last event for resource %q", timeout, resource)
+						return
+					}
+					// We reset the timer to wait the timeout period minus the
+					// time since the last event.
+					currTimeout = timeout - time.Since(lastEvent)
+				case <-done:
+					log.Debugf("resource %q cache has synced, stopping timeout watcher", resource)
+					return
+				}
+			}
+		}(resource)
+	}
+
+	go func() {
+		wg.Wait()
+		errs <- nil
+	}()
+
+	return <-errs
 }
