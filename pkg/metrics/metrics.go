@@ -150,8 +150,12 @@ const (
 	// started by cilium (Envoy, monitor, etc..)
 	LabelSubsystem = "subsystem"
 
-	// LabelKind is the kind a label
+	// LabelKind is the kind of a label
 	LabelKind = "kind"
+
+	// LabelEventSource is the source of a label for event metrics
+	// i.e. k8s, containerd, api.
+	LabelEventSource = "source"
 
 	// LabelPath is the label for the API path
 	LabelPath = "path"
@@ -285,17 +289,11 @@ var (
 	// event that we will handle
 	// source is one of k8s, docker or apia
 
-	// EventTSK8s is the timestamp of k8s events
-	EventTSK8s = NoOpGauge
+	// EventTS is the timestamp of k8s resource events.
+	EventTS = NoOpGaugeVec
 
 	// EventLagK8s is the lag calculation for k8s Pod events.
 	EventLagK8s = NoOpGauge
-
-	// EventTSContainerd is the timestamp of docker events
-	EventTSContainerd = NoOpGauge
-
-	// EventTSAPI is the timestamp of docker events
-	EventTSAPI = NoOpGauge
 
 	// L7 statistics
 
@@ -401,10 +399,6 @@ var (
 	// KubernetesEventReceived is the number of Kubernetes events received
 	// labeled by scope, action, valid data and equalness.
 	KubernetesEventReceived = NoOpCounterVec
-
-	// KubernetesDurationBetweenEvents is how long it has been since each internal
-	// control received an event.
-	KubernetesDurationBetweenEvents = NoOpObserverVec
 
 	// Kubernetes interactions
 
@@ -527,7 +521,7 @@ type Configuration struct {
 	PolicyEndpointStatusEnabled             bool
 	PolicyImplementationDelayEnabled        bool
 	IdentityCountEnabled                    bool
-	EventTSK8sEnabled                       bool
+	EventTSEnabled                          bool
 	EventLagK8sEnabled                      bool
 	EventTSContainerdEnabled                bool
 	EventTSAPIEnabled                       bool
@@ -627,7 +621,6 @@ func DefaultMetrics() map[string]struct{} {
 		Namespace + "_subprocess_start_total":                                        {},
 		Namespace + "_kubernetes_events_total":                                       {},
 		Namespace + "_kubernetes_events_received_total":                              {},
-		Namespace + "_time_since_last_event":                                         {},
 		Namespace + "_" + SubsystemK8sClient + "_api_latency_time_seconds":           {},
 		Namespace + "_" + SubsystemK8sClient + "_api_calls_total":                    {},
 		Namespace + "_" + SubsystemK8s + "_cnp_status_completion_seconds":            {},
@@ -786,15 +779,14 @@ func CreateConfiguration(metricsEnabled []string) (Configuration, []prometheus.C
 			c.IdentityCountEnabled = true
 
 		case Namespace + "_event_ts":
-			EventTSK8s = prometheus.NewGauge(prometheus.GaugeOpts{
-				Namespace:   Namespace,
-				Name:        "event_ts",
-				Help:        "Last timestamp when we received an event",
-				ConstLabels: prometheus.Labels{"source": LabelEventSourceK8s},
-			})
+			EventTS = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+				Namespace: Namespace,
+				Name:      "event_ts",
+				Help:      "Last timestamp when we received an event",
+			}, []string{LabelEventSource, LabelScope, LabelAction})
 
-			collectors = append(collectors, EventTSK8s)
-			c.EventTSK8sEnabled = true
+			collectors = append(collectors, EventTS)
+			c.EventTSEnabled = true
 
 			EventLagK8s = prometheus.NewGauge(prometheus.GaugeOpts{
 				Namespace:   Namespace,
@@ -805,26 +797,6 @@ func CreateConfiguration(metricsEnabled []string) (Configuration, []prometheus.C
 
 			collectors = append(collectors, EventLagK8s)
 			c.EventLagK8sEnabled = true
-
-			EventTSContainerd = prometheus.NewGauge(prometheus.GaugeOpts{
-				Namespace:   Namespace,
-				Name:        "event_ts",
-				Help:        "Last timestamp when we received an event",
-				ConstLabels: prometheus.Labels{"source": LabelEventSourceContainerd},
-			})
-
-			collectors = append(collectors, EventTSContainerd)
-			c.EventTSContainerdEnabled = true
-
-			EventTSAPI = prometheus.NewGauge(prometheus.GaugeOpts{
-				Namespace:   Namespace,
-				Name:        "event_ts",
-				Help:        "Last timestamp when we received an event",
-				ConstLabels: prometheus.Labels{"source": LabelEventSourceAPI},
-			})
-
-			collectors = append(collectors, EventTSAPI)
-			c.EventTSAPIEnabled = true
 
 		case Namespace + "_proxy_redirects":
 			ProxyRedirects = prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -1099,16 +1071,6 @@ func CreateConfiguration(metricsEnabled []string) (Configuration, []prometheus.C
 
 			collectors = append(collectors, KubernetesEventReceived)
 			c.KubernetesEventReceivedEnabled = true
-
-		case Namespace + "_duration_between_events":
-			KubernetesDurationBetweenEvents = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-				Namespace: Namespace,
-				Subsystem: SubsystemK8sClient,
-				Name:      "duration_between_events",
-				Help:      "Duration between Kubernetes events labeled by scope",
-			}, []string{LabelScope})
-			collectors = append(collectors, KubernetesDurationBetweenEvents)
-			c.KubernetesTimeBetweenEventsEnabled = true
 
 		case Namespace + "_" + SubsystemK8sClient + "_api_latency_time_seconds":
 			KubernetesAPIInteractions = prometheus.NewHistogramVec(prometheus.HistogramOpts{

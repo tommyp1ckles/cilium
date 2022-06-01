@@ -39,7 +39,7 @@ func (k *K8sWatcher) namespacesInit(k8sClient kubernetes.Interface, asyncControl
 			// pods belonging to that namespace are also deleted.
 			UpdateFunc: func(oldObj, newObj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(apiGroup, metricNS, metricUpdate, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricNS, MetricUpdate, valid, equal) }()
 				if oldNS := k8s.ObjToV1Namespace(oldObj); oldNS != nil {
 					if newNS := k8s.ObjToV1Namespace(newObj); newNS != nil {
 						valid = true
@@ -49,7 +49,7 @@ func (k *K8sWatcher) namespacesInit(k8sClient kubernetes.Interface, asyncControl
 						}
 
 						err := k.updateK8sV1Namespace(oldNS, newNS)
-						k.K8sEventProcessed(metricNS, metricUpdate, err == nil)
+						k.K8sEventProcessed(metricNS, MetricUpdate, err == nil)
 					}
 				}
 			},

@@ -29,16 +29,16 @@ func (k *K8sWatcher) networkPoliciesInit(k8sClient kubernetes.Interface, swgKNPs
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(apiGroup, metricKNP, metricCreate, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricKNP, MetricCreate, valid, equal) }()
 				if k8sNP := k8s.ObjToV1NetworkPolicy(obj); k8sNP != nil {
 					valid = true
 					err := k.addK8sNetworkPolicyV1(k8sNP)
-					k.K8sEventProcessed(metricKNP, metricCreate, err == nil)
+					k.K8sEventProcessed(metricKNP, MetricCreate, err == nil)
 				}
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(apiGroup, metricKNP, metricUpdate, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricKNP, MetricUpdate, valid, equal) }()
 				if oldK8sNP := k8s.ObjToV1NetworkPolicy(oldObj); oldK8sNP != nil {
 					if newK8sNP := k8s.ObjToV1NetworkPolicy(newObj); newK8sNP != nil {
 						valid = true
@@ -48,13 +48,13 @@ func (k *K8sWatcher) networkPoliciesInit(k8sClient kubernetes.Interface, swgKNPs
 						}
 
 						err := k.updateK8sNetworkPolicyV1(oldK8sNP, newK8sNP)
-						k.K8sEventProcessed(metricKNP, metricUpdate, err == nil)
+						k.K8sEventProcessed(metricKNP, MetricUpdate, err == nil)
 					}
 				}
 			},
 			DeleteFunc: func(obj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(apiGroup, metricKNP, metricDelete, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricKNP, MetricDelete, valid, equal) }()
 				k8sNP := k8s.ObjToV1NetworkPolicy(obj)
 				if k8sNP == nil {
 					return
@@ -62,7 +62,7 @@ func (k *K8sWatcher) networkPoliciesInit(k8sClient kubernetes.Interface, swgKNPs
 
 				valid = true
 				err := k.deleteK8sNetworkPolicyV1(k8sNP)
-				k.K8sEventProcessed(metricKNP, metricDelete, err == nil)
+				k.K8sEventProcessed(metricKNP, MetricDelete, err == nil)
 			},
 		},
 		nil,

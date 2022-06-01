@@ -75,9 +75,9 @@ func (k *K8sWatcher) NodesInit(k8sClient *k8s.K8sClient) {
 					if node := k8s.ObjToV1Node(obj); node != nil {
 						valid = true
 						errs := k.NodeChain.OnAddNode(node, swg)
-						k.K8sEventProcessed(metricNode, metricCreate, errs == nil)
+						k.K8sEventProcessed(metricNode, MetricCreate, errs == nil)
 					}
-					k.K8sEventReceived(apiGroup, metricNode, metricCreate, valid, false)
+					k.K8sEventReceived(apiGroup, metricNode, MetricCreate, valid, false)
 				},
 				UpdateFunc: func(oldObj, newObj interface{}) {
 					var valid, equal bool
@@ -87,11 +87,11 @@ func (k *K8sWatcher) NodesInit(k8sClient *k8s.K8sClient) {
 							equal = nodeEventsAreEqual(oldNode, newNode)
 							if !equal {
 								errs := k.NodeChain.OnUpdateNode(oldNode, newNode, swg)
-								k.K8sEventProcessed(metricNode, metricCreate, errs == nil)
+								k.K8sEventProcessed(metricNode, MetricCreate, errs == nil)
 							}
 						}
 					}
-					k.K8sEventReceived(apiGroup, metricNode, metricCreate, valid, false)
+					k.K8sEventReceived(apiGroup, metricNode, MetricCreate, valid, false)
 				},
 				DeleteFunc: func(obj interface{}) {
 				},

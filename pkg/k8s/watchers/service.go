@@ -26,16 +26,16 @@ func (k *K8sWatcher) servicesInit(k8sClient kubernetes.Interface, swgSvcs *lock.
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(apiGroup, metricService, metricCreate, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, MetricService, MetricCreate, valid, equal) }()
 				if k8sSvc := k8s.ObjToV1Services(obj); k8sSvc != nil {
 					valid = true
 					err := k.addK8sServiceV1(k8sSvc, swgSvcs)
-					k.K8sEventProcessed(metricService, metricCreate, err == nil)
+					k.K8sEventProcessed(MetricService, MetricCreate, err == nil)
 				}
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(apiGroup, metricService, metricUpdate, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, MetricService, MetricUpdate, valid, equal) }()
 				if oldk8sSvc := k8s.ObjToV1Services(oldObj); oldk8sSvc != nil {
 					if newk8sSvc := k8s.ObjToV1Services(newObj); newk8sSvc != nil {
 						valid = true
@@ -45,13 +45,13 @@ func (k *K8sWatcher) servicesInit(k8sClient kubernetes.Interface, swgSvcs *lock.
 						}
 
 						err := k.updateK8sServiceV1(oldk8sSvc, newk8sSvc, swgSvcs)
-						k.K8sEventProcessed(metricService, metricUpdate, err == nil)
+						k.K8sEventProcessed(MetricService, MetricUpdate, err == nil)
 					}
 				}
 			},
 			DeleteFunc: func(obj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(apiGroup, metricService, metricDelete, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, MetricService, MetricDelete, valid, equal) }()
 				k8sSvc := k8s.ObjToV1Services(obj)
 				if k8sSvc == nil {
 					return
@@ -59,7 +59,7 @@ func (k *K8sWatcher) servicesInit(k8sClient kubernetes.Interface, swgSvcs *lock.
 
 				valid = true
 				err := k.deleteK8sServiceV1(k8sSvc, swgSvcs)
-				k.K8sEventProcessed(metricService, metricDelete, err == nil)
+				k.K8sEventProcessed(MetricService, MetricDelete, err == nil)
 			},
 		},
 		nil,

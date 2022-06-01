@@ -74,10 +74,6 @@ const (
 	K8sAPIGroupEndpointSliceV1Beta1Discovery    = "discovery/v1beta1::EndpointSlice"
 	K8sAPIGroupEndpointSliceV1Discovery         = "discovery/v1::EndpointSlice"
 
-	metricCNP            = "CiliumNetworkPolicy"
-	metricCCNP           = "CiliumClusterwideNetworkPolicy"
-	metricEndpoint       = "Endpoint"
-	metricEndpointSlice  = "EndpointSlice"
 	metricKNP            = "NetworkPolicy"
 	metricNS             = "Namespace"
 	metricSecret         = "Secret"
@@ -90,10 +86,21 @@ const (
 	metricCEC            = "CiliumEnvoyConfig"
 	metricPod            = "Pod"
 	metricNode           = "Node"
-	metricService        = "Service"
-	metricCreate         = "create"
-	metricDelete         = "delete"
-	metricUpdate         = "update"
+
+	// MetricCNP is the scope label for CiliumNetworkPolicy event metrics.
+	MetricCNP = "CiliumNetworkPolicy"
+	// MetricCCNP is the scope label for CiliumClusterwideNetworkPolicy event metrics.
+	MetricCCNP = "CiliumClusterwideNetworkPolicy"
+	// MetricService is the scope label for Kubernetes Service event metrics.
+	MetricService = "Service"
+	// MetricEndpoint is the scope label for Kubernetes Endpoint event metrics.
+	MetricEndpoint = "Endpoint"
+	// MetricEndpointSlice is the scope label for Kubernetes EndpointSlice event metrics.
+	MetricEndpointSlice = "EndpointSlice"
+
+	MetricCreate = "create"
+	MetricDelete = "delete"
+	MetricUpdate = "update"
 )
 
 func init() {
@@ -913,13 +920,18 @@ func (k *K8sWatcher) K8sEventProcessed(scope, action string, status bool) {
 	metrics.KubernetesEventProcessed.WithLabelValues(scope, action, result).Inc()
 }
 
-// K8sEventReceived does metric accounting for each received Kubernetes event
+// K8sEventReceived does metric accounting for each received Kubernetes event, as well
+// as notifying of events for k8s resources synced.
 func (k *K8sWatcher) K8sEventReceived(apiResourceName, scope, action string, valid, equal bool) {
-	metrics.EventTSK8s.SetToCurrentTime()
 	k8smetrics.LastInteraction.Reset()
-	go k.k8sResourceSynced.Event(apiResourceName, scope)
 
-	metrics.KubernetesEventReceived.WithLabelValues(scope, action, strconv.FormatBool(valid), strconv.FormatBool(equal)).Inc()
+	metrics.EventTS.WithLabelValues(metrics.LabelEventSourceK8s, scope, action).SetToCurrentTime()
+	validStr := strconv.FormatBool(valid)
+	equalStr := strconv.FormatBool(equal)
+	metrics.KubernetesEventReceived.WithLabelValues(scope, action, validStr, equalStr).Inc()
+
+	// todo: release this after being done sync?
+	k.k8sResourceSynced.Event(apiResourceName)
 }
 
 // GetStore returns the k8s cache store for the given resource name.

@@ -12,7 +12,6 @@ import (
 
 	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/lock"
-	"github.com/cilium/cilium/pkg/metrics"
 )
 
 // Resources maps resource names to channels that are closed upon initial
@@ -40,13 +39,9 @@ func (r *Resources) getTimeOfLastEvent(resource string) (when time.Time, never b
 	return t, false
 }
 
-func (r *Resources) Event(resource, metricScope string) {
+func (r *Resources) Event(resource string) {
 	r.Lock()
 	defer r.Unlock()
-	prev, ok := r.timeSinceLastEvent[resource]
-	if ok {
-		metrics.KubernetesDurationBetweenEvents.WithLabelValues(metricScope).Observe(float64(time.Since(prev)))
-	}
 	r.timeSinceLastEvent[resource] = time.Now()
 }
 

@@ -91,7 +91,7 @@ func (k *K8sWatcher) ciliumNetworkPoliciesInit(ciliumNPClient *k8s.K8sCiliumClie
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(apiGroup, metricCNP, metricCreate, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, MetricCNP, MetricCreate, valid, equal) }()
 				if cnp := k8s.ObjToSlimCNP(obj); cnp != nil {
 					valid = true
 					if cnp.RequiresDerivative() {
@@ -104,12 +104,12 @@ func (k *K8sWatcher) ciliumNetworkPoliciesInit(ciliumNPClient *k8s.K8sCiliumClie
 					cnpCpy := cnp.DeepCopy()
 
 					err := k.addCiliumNetworkPolicyV2(ciliumNPClient, cnpCpy)
-					k.K8sEventProcessed(metricCNP, metricCreate, err == nil)
+					k.K8sEventProcessed(MetricCNP, MetricCreate, err == nil)
 				}
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(apiGroup, metricCNP, metricUpdate, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, MetricCNP, MetricUpdate, valid, equal) }()
 				if oldCNP := k8s.ObjToSlimCNP(oldObj); oldCNP != nil {
 					if newCNP := k8s.ObjToSlimCNP(newObj); newCNP != nil {
 						valid = true
@@ -129,20 +129,20 @@ func (k *K8sWatcher) ciliumNetworkPoliciesInit(ciliumNPClient *k8s.K8sCiliumClie
 						newCNPCpy := newCNP.DeepCopy()
 
 						err := k.updateCiliumNetworkPolicyV2(ciliumNPClient, oldCNPCpy, newCNPCpy)
-						k.K8sEventProcessed(metricCNP, metricUpdate, err == nil)
+						k.K8sEventProcessed(MetricCNP, MetricUpdate, err == nil)
 					}
 				}
 			},
 			DeleteFunc: func(obj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(apiGroup, metricCNP, metricDelete, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, MetricCNP, MetricDelete, valid, equal) }()
 				cnp := k8s.ObjToSlimCNP(obj)
 				if cnp == nil {
 					return
 				}
 				valid = true
 				err := k.deleteCiliumNetworkPolicyV2(cnp)
-				k.K8sEventProcessed(metricCNP, metricDelete, err == nil)
+				k.K8sEventProcessed(MetricCNP, MetricDelete, err == nil)
 			},
 		},
 		k8s.ConvertToCNP,

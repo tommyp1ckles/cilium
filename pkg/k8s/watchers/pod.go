@@ -81,9 +81,9 @@ func (k *K8sWatcher) createPodController(getter cache.Getter, fieldSelector fiel
 						metrics.EventLagK8s.Set(0)
 					}
 					err := k.addK8sPodV1(pod)
-					k.K8sEventProcessed(metricPod, metricCreate, err == nil)
+					k.K8sEventProcessed(metricPod, MetricCreate, err == nil)
 				}
-				k.K8sEventReceived(apiGroup, metricPod, metricCreate, valid, false)
+				k.K8sEventReceived(apiGroup, metricPod, MetricCreate, valid, false)
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
 				var valid, equal bool
@@ -94,20 +94,20 @@ func (k *K8sWatcher) createPodController(getter cache.Getter, fieldSelector fiel
 							equal = true
 						} else {
 							err := k.updateK8sPodV1(oldPod, newPod)
-							k.K8sEventProcessed(metricPod, metricUpdate, err == nil)
+							k.K8sEventProcessed(metricPod, MetricUpdate, err == nil)
 						}
 					}
 				}
-				k.K8sEventReceived(apiGroup, metricPod, metricUpdate, valid, equal)
+				k.K8sEventReceived(apiGroup, metricPod, MetricUpdate, valid, equal)
 			},
 			DeleteFunc: func(obj interface{}) {
 				var valid bool
 				if pod := k8s.ObjTov1Pod(obj); pod != nil {
 					valid = true
 					err := k.deleteK8sPodV1(pod)
-					k.K8sEventProcessed(metricPod, metricDelete, err == nil)
+					k.K8sEventProcessed(metricPod, MetricDelete, err == nil)
 				}
-				k.K8sEventReceived(apiGroup, metricPod, metricDelete, valid, false)
+				k.K8sEventReceived(apiGroup, metricPod, MetricDelete, valid, false)
 			},
 		},
 		nil,

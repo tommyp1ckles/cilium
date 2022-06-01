@@ -35,16 +35,16 @@ func (k *K8sWatcher) endpointsInit(k8sClient kubernetes.Interface, swgEps *lock.
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(apiGroup, metricEndpoint, metricCreate, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, MetricEndpoint, MetricCreate, valid, equal) }()
 				if k8sEP := k8s.ObjToV1Endpoints(obj); k8sEP != nil {
 					valid = true
 					err := k.addK8sEndpointV1(k8sEP, swgEps)
-					k.K8sEventProcessed(metricEndpoint, metricCreate, err == nil)
+					k.K8sEventProcessed(MetricEndpoint, MetricCreate, err == nil)
 				}
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(apiGroup, metricEndpoint, metricUpdate, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, MetricEndpoint, MetricUpdate, valid, equal) }()
 				if oldk8sEP := k8s.ObjToV1Endpoints(oldObj); oldk8sEP != nil {
 					if newk8sEP := k8s.ObjToV1Endpoints(newObj); newk8sEP != nil {
 						valid = true
@@ -54,20 +54,20 @@ func (k *K8sWatcher) endpointsInit(k8sClient kubernetes.Interface, swgEps *lock.
 						}
 
 						err := k.updateK8sEndpointV1(oldk8sEP, newk8sEP, swgEps)
-						k.K8sEventProcessed(metricEndpoint, metricUpdate, err == nil)
+						k.K8sEventProcessed(MetricEndpoint, MetricUpdate, err == nil)
 					}
 				}
 			},
 			DeleteFunc: func(obj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(apiGroup, metricEndpoint, metricDelete, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, MetricEndpoint, MetricDelete, valid, equal) }()
 				k8sEP := k8s.ObjToV1Endpoints(obj)
 				if k8sEP == nil {
 					return
 				}
 				valid = true
 				err := k.deleteK8sEndpointV1(k8sEP, swgEps)
-				k.K8sEventProcessed(metricEndpoint, metricDelete, err == nil)
+				k.K8sEventProcessed(MetricEndpoint, MetricDelete, err == nil)
 			},
 		},
 		nil,

@@ -45,16 +45,16 @@ func (k *K8sWatcher) endpointSlicesInit(k8sClient kubernetes.Interface, swgEps *
 				close(hasEndpointSlices)
 			})
 			var valid, equal bool
-			defer func() { k.K8sEventReceived(apiGroup, metricEndpointSlice, metricCreate, valid, equal) }()
+			defer func() { k.K8sEventReceived(apiGroup, MetricEndpointSlice, MetricCreate, valid, equal) }()
 			if k8sEP := k8s.ObjToV1EndpointSlice(obj); k8sEP != nil {
 				valid = true
 				k.updateK8sEndpointSliceV1(k8sEP, swgEps)
-				k.K8sEventProcessed(metricEndpointSlice, metricCreate, true)
+				k.K8sEventProcessed(MetricEndpointSlice, MetricCreate, true)
 			}
 		}
 		updateFunc = func(oldObj, newObj interface{}) {
 			var valid, equal bool
-			defer func() { k.K8sEventReceived(apiGroup, metricEndpointSlice, metricUpdate, valid, equal) }()
+			defer func() { k.K8sEventReceived(apiGroup, MetricEndpointSlice, MetricUpdate, valid, equal) }()
 			if oldk8sEP := k8s.ObjToV1EndpointSlice(oldObj); oldk8sEP != nil {
 				if newk8sEP := k8s.ObjToV1EndpointSlice(newObj); newk8sEP != nil {
 					valid = true
@@ -64,20 +64,20 @@ func (k *K8sWatcher) endpointSlicesInit(k8sClient kubernetes.Interface, swgEps *
 					}
 
 					k.updateK8sEndpointSliceV1(newk8sEP, swgEps)
-					k.K8sEventProcessed(metricEndpointSlice, metricUpdate, true)
+					k.K8sEventProcessed(MetricEndpointSlice, MetricUpdate, true)
 				}
 			}
 		}
 		delFunc = func(obj interface{}) {
 			var valid, equal bool
-			defer func() { k.K8sEventReceived(apiGroup, metricEndpointSlice, metricDelete, valid, equal) }()
+			defer func() { k.K8sEventReceived(apiGroup, MetricEndpointSlice, MetricDelete, valid, equal) }()
 			k8sEP := k8s.ObjToV1EndpointSlice(obj)
 			if k8sEP == nil {
 				return
 			}
 			valid = true
 			k.K8sSvcCache.DeleteEndpointSlices(k8sEP, swgEps)
-			k.K8sEventProcessed(metricEndpointSlice, metricDelete, true)
+			k.K8sEventProcessed(MetricEndpointSlice, MetricDelete, true)
 		}
 	} else {
 		apiGroup = K8sAPIGroupEndpointSliceV1Beta1Discovery
@@ -90,16 +90,16 @@ func (k *K8sWatcher) endpointSlicesInit(k8sClient kubernetes.Interface, swgEps *
 				close(hasEndpointSlices)
 			})
 			var valid, equal bool
-			defer func() { k.K8sEventReceived(apiGroup, metricEndpointSlice, metricCreate, valid, equal) }()
+			defer func() { k.K8sEventReceived(apiGroup, MetricEndpointSlice, MetricCreate, valid, equal) }()
 			if k8sEP := k8s.ObjToV1Beta1EndpointSlice(obj); k8sEP != nil {
 				valid = true
 				k.updateK8sEndpointSliceV1Beta1(k8sEP, swgEps)
-				k.K8sEventProcessed(metricEndpointSlice, metricCreate, true)
+				k.K8sEventProcessed(MetricEndpointSlice, MetricCreate, true)
 			}
 		}
 		updateFunc = func(oldObj, newObj interface{}) {
 			var valid, equal bool
-			defer func() { k.K8sEventReceived(apiGroup, metricEndpointSlice, metricUpdate, valid, equal) }()
+			defer func() { k.K8sEventReceived(apiGroup, MetricEndpointSlice, MetricUpdate, valid, equal) }()
 			if oldk8sEP := k8s.ObjToV1Beta1EndpointSlice(oldObj); oldk8sEP != nil {
 				if newk8sEP := k8s.ObjToV1Beta1EndpointSlice(newObj); newk8sEP != nil {
 					valid = true
@@ -109,20 +109,20 @@ func (k *K8sWatcher) endpointSlicesInit(k8sClient kubernetes.Interface, swgEps *
 					}
 
 					k.updateK8sEndpointSliceV1Beta1(newk8sEP, swgEps)
-					k.K8sEventProcessed(metricEndpointSlice, metricUpdate, true)
+					k.K8sEventProcessed(MetricEndpointSlice, MetricUpdate, true)
 				}
 			}
 		}
 		delFunc = func(obj interface{}) {
 			var valid, equal bool
-			defer func() { k.K8sEventReceived(apiGroup, metricEndpointSlice, metricDelete, valid, equal) }()
+			defer func() { k.K8sEventReceived(apiGroup, MetricEndpointSlice, MetricDelete, valid, equal) }()
 			k8sEP := k8s.ObjToV1Beta1EndpointSlice(obj)
 			if k8sEP == nil {
 				return
 			}
 			valid = true
 			k.K8sSvcCache.DeleteEndpointSlices(k8sEP, swgEps)
-			k.K8sEventProcessed(metricEndpointSlice, metricDelete, true)
+			k.K8sEventProcessed(MetricEndpointSlice, MetricDelete, true)
 		}
 	}
 

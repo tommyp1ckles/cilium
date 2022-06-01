@@ -44,17 +44,17 @@ func (k *K8sWatcher) tlsSecretInit(k8sClient kubernetes.Interface, namespace str
 			AddFunc: func(obj interface{}) {
 				var valid, equal bool
 				defer func() {
-					k.K8sEventReceived(apiGroup, metricSecret, metricCreate, valid, equal)
+					k.K8sEventReceived(apiGroup, metricSecret, MetricCreate, valid, equal)
 				}()
 				if k8sSecret := k8s.ObjToV1Secret(obj); k8sSecret != nil {
 					valid = true
 					err := k.addK8sSecretV1(k8sSecret)
-					k.K8sEventProcessed(metricSecret, metricCreate, err == nil)
+					k.K8sEventProcessed(metricSecret, MetricCreate, err == nil)
 				}
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(apiGroup, metricSecret, metricUpdate, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricSecret, MetricUpdate, valid, equal) }()
 				if oldSecret := k8s.ObjToV1Secret(oldObj); oldSecret != nil {
 					if newSecret := k8s.ObjToV1Secret(newObj); newSecret != nil {
 						valid = true
@@ -63,14 +63,14 @@ func (k *K8sWatcher) tlsSecretInit(k8sClient kubernetes.Interface, namespace str
 							return
 						}
 						err := k.updateK8sSecretV1(oldSecret, newSecret)
-						k.K8sEventProcessed(metricSecret, metricUpdate, err == nil)
+						k.K8sEventProcessed(metricSecret, MetricUpdate, err == nil)
 					}
 				}
 			},
 			DeleteFunc: func(obj interface{}) {
 				var valid, equal bool
 				defer func() {
-					k.K8sEventReceived(apiGroup, metricSecret, metricDelete, valid, equal)
+					k.K8sEventReceived(apiGroup, metricSecret, MetricDelete, valid, equal)
 				}()
 				k8sSecret := k8s.ObjToV1Secret(obj)
 				if k8sSecret == nil {
@@ -78,7 +78,7 @@ func (k *K8sWatcher) tlsSecretInit(k8sClient kubernetes.Interface, namespace str
 				}
 				valid = true
 				err := k.deleteK8sSecretV1(k8sSecret)
-				k.K8sEventProcessed(metricSecret, metricDelete, err == nil)
+				k.K8sEventProcessed(metricSecret, MetricDelete, err == nil)
 			},
 		},
 		nil,
