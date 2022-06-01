@@ -178,6 +178,7 @@ func (r *Resources) WaitForCacheSyncWithTimeout(timeout time.Duration, resourceN
 					// We reset the timer to wait the timeout period minus the
 					// time since the last event.
 					currTimeout = timeout - time.Since(lastEvent)
+					log.Debugf("resource %q received event %s ago, waiting for additional %s before timing out", resource, time.Since(lastEvent), currTimeout)
 				case <-done:
 					log.Debugf("resource %q cache has synced, stopping timeout watcher", resource)
 					// WaitGroup must be decremented here, to ensure that if close(errs) is called, that
