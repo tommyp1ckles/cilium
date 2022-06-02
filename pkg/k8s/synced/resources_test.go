@@ -21,6 +21,7 @@ type waitForCacheTest struct {
 	events                     map[string]time.Duration
 	resources                  []string
 	expectErr                  error
+	dontStartController        bool
 }
 
 func TestWaitForCacheSyncWithTimeout(t *testing.T) {
@@ -66,12 +67,14 @@ func TestWaitForCacheSyncWithTimeout(t *testing.T) {
 				"bar": unit(10),
 			},
 		},
-		"Test instant": {
-			timeout: unit(3),
+		"No controller started should mean that wait returns immediately": {
+			timeout: unit(60),
 			resourcesWithSyncDurations: map[string]time.Duration{
-				"foo": unit(0),
-				"bar": unit(0),
+				"foo": unit(360),
+				"bar": unit(360),
 			},
+			resources:           []string{"foo", "bar"},
+			dontStartController: true,
 		},
 	} {
 		func(test waitForCacheTest) {
@@ -84,6 +87,9 @@ func TestWaitForCacheSyncWithTimeout(t *testing.T) {
 				for resourceName, syncDurations := range test.resourcesWithSyncDurations {
 					hasSyncedFn := func() bool {
 						return time.Now().After(start.Add(syncDurations))
+					}
+					if test.dontStartController {
+						continue
 					}
 					r.BlockWaitGroupToSyncResources(
 						stop,

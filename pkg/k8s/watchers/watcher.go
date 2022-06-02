@@ -332,6 +332,10 @@ func (k *K8sWatcher) WaitForCacheSync(resourceNames ...string) {
 	k.k8sResourceSynced.WaitForCacheSync(resourceNames...)
 }
 
+func (k *K8sWatcher) WaitForCacheSyncWithTimeout(timeout time.Duration, resourceNames ...string) error {
+	return k.k8sResourceSynced.WaitForCacheSyncWithTimeout(timeout, resourceNames...)
+}
+
 func (k *K8sWatcher) cancelWaitGroupToSyncResources(resourceName string) {
 	k.k8sResourceSynced.CancelWaitGroupToSyncResources(resourceName)
 }
@@ -477,7 +481,7 @@ func (k *K8sWatcher) InitK8sSubsystem(ctx context.Context, cachesSynced chan str
 			return
 		}
 		log.Info("Waiting until all pre-existing resources have been received")
-		if err := k.k8sResourceSynced.WaitForCacheSyncWithTimeout(option.Config.K8sSyncTimeout, append(resources, afterNodeInitResources...)...); err != nil {
+		if err := k.WaitForCacheSyncWithTimeout(option.Config.K8sSyncTimeout, append(resources, afterNodeInitResources...)...); err != nil {
 			log.WithError(err).Fatal("Timed out waiting for pre-existing resources to be received; exiting")
 		}
 		close(cachesSynced)
