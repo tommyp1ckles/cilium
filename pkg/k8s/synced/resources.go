@@ -39,6 +39,8 @@ func (r *Resources) getTimeOfLastEvent(resource string) (when time.Time, never b
 	return t, false
 }
 
+// Event records a K8s api resource event. This is used to determining
+// dynamic timeouts while waiting for caches to sync.
 func (r *Resources) Event(resource string) {
 	r.Lock()
 	defer r.Unlock()

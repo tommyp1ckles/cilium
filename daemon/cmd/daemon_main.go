@@ -553,7 +553,7 @@ func initializeFlags() {
 		option.KVStoreOpt, "Key-value store options e.g. etcd.address=127.0.0.1:4001")
 	option.BindEnv(option.KVStoreOpt)
 
-	flags.Duration(option.K8sSyncTimeoutName, defaults.K8sSyncTimeout, "Timeout after last controller event for synchronizing k8s resources before exiting")
+	flags.Duration(option.K8sSyncTimeoutName, defaults.K8sSyncTimeout, "Timeout after last K8s event for synchronizing k8s resources before exiting")
 	flags.MarkHidden(option.K8sSyncTimeoutName)
 	option.BindEnv(option.K8sSyncTimeoutName)
 
