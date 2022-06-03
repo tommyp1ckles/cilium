@@ -32,6 +32,9 @@ type Resources struct {
 func (r *Resources) getTimeOfLastEvent(resource string) (when time.Time, never bool) {
 	r.RLock()
 	defer r.RUnlock()
+	if r.timeSinceLastEvent == nil {
+		return time.Time{}, true
+	}
 	t, ok := r.timeSinceLastEvent[resource]
 	if !ok {
 		return time.Time{}, true
@@ -43,6 +46,9 @@ func (r *Resources) getTimeOfLastEvent(resource string) (when time.Time, never b
 // dynamic timeouts while waiting for caches to sync.
 func (r *Resources) Event(resource string) {
 	r.Lock()
+	if r.timeSinceLastEvent == nil {
+		return // no-op
+	}
 	defer r.Unlock()
 	r.timeSinceLastEvent[resource] = time.Now()
 }
@@ -196,6 +202,10 @@ func (r *Resources) WaitForCacheSyncWithTimeout(timeout time.Duration, resourceN
 		wg.Wait()
 		close(errs)
 	}()
+
+	r.Lock()
+	r.timeSinceLastEvent = nil
+	r.Unlock()
 
 	return <-errs
 }

@@ -332,6 +332,10 @@ func (k *K8sWatcher) WaitForCacheSync(resourceNames ...string) {
 	k.k8sResourceSynced.WaitForCacheSync(resourceNames...)
 }
 
+// WaitForCacheSyncWithTimeout calls WaitForCacheSync to block until given resources have had their caches
+// synced from K8s. This will wait up to the timeout duration after starting or since the last K8s
+// registered watcher event (i.e. each event causes the timeout to be pushed back). Events are recorded
+// using K8sResourcesSynced.Event function. If the timeout is exceeded, an error is returned.
 func (k *K8sWatcher) WaitForCacheSyncWithTimeout(timeout time.Duration, resourceNames ...string) error {
 	return k.k8sResourceSynced.WaitForCacheSyncWithTimeout(timeout, resourceNames...)
 }
@@ -935,7 +939,7 @@ func (k *K8sWatcher) K8sEventReceived(apiResourceName, scope, action string, val
 	metrics.KubernetesEventReceived.WithLabelValues(scope, action, validStr, equalStr).Inc()
 
 	// todo: release this after being done sync?
-	k.k8sResourceSynced.Event(apiResourceName)
+	go k.k8sResourceSynced.Event(apiResourceName)
 }
 
 // GetStore returns the k8s cache store for the given resource name.
