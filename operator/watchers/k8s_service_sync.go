@@ -25,6 +25,7 @@ import (
 	slim_discover_v1beta1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/discovery/v1beta1"
 	"github.com/cilium/cilium/pkg/k8s/utils"
 	"github.com/cilium/cilium/pkg/k8s/watchers"
+	"github.com/cilium/cilium/pkg/k8s/watchers/resources"
 	"github.com/cilium/cilium/pkg/k8s/watchers/subscriber"
 	"github.com/cilium/cilium/pkg/kvstore/store"
 	"github.com/cilium/cilium/pkg/loadbalancer"
@@ -201,13 +202,13 @@ func InitServiceWatcher(
 			0,
 			cache.ResourceEventHandlerFuncs{
 				AddFunc: func(obj interface{}) {
-					k8sEventMetric(watchers.MetricService, watchers.MetricCreate)
+					k8sEventMetric(resources.MetricService, watchers.MetricCreate)
 					if k8sSvc := k8s.ObjToV1Services(obj); k8sSvc != nil {
 						serviceSubscribers.OnAddService(k8sSvc)
 					}
 				},
 				UpdateFunc: func(oldObj, newObj interface{}) {
-					k8sEventMetric(watchers.MetricService, watchers.MetricUpdate)
+					k8sEventMetric(resources.MetricService, watchers.MetricUpdate)
 					if oldk8sSvc := k8s.ObjToV1Services(oldObj); oldk8sSvc != nil {
 						if newk8sSvc := k8s.ObjToV1Services(newObj); newk8sSvc != nil {
 							if oldk8sSvc.DeepEqual(newk8sSvc) {
@@ -218,7 +219,7 @@ func InitServiceWatcher(
 					}
 				},
 				DeleteFunc: func(obj interface{}) {
-					k8sEventMetric(watchers.MetricService, watchers.MetricDelete)
+					k8sEventMetric(resources.MetricService, watchers.MetricDelete)
 					k8sSvc := k8s.ObjToV1Services(obj)
 					if k8sSvc == nil {
 						return
@@ -257,13 +258,13 @@ func endpointsInit(k8sClient kubernetes.Interface, swgEps *lock.StoppableWaitGro
 		0,
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
-				k8sEventMetric(watchers.MetricEndpoint, watchers.MetricCreate)
+				k8sEventMetric(resources.MetricEndpoint, watchers.MetricCreate)
 				if k8sEP := k8s.ObjToV1Endpoints(obj); k8sEP != nil {
 					K8sSvcCache.UpdateEndpoints(k8sEP, swgEps)
 				}
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
-				k8sEventMetric(watchers.MetricEndpoint, watchers.MetricUpdate)
+				k8sEventMetric(resources.MetricEndpoint, watchers.MetricUpdate)
 				if oldk8sEP := k8s.ObjToV1Endpoints(oldObj); oldk8sEP != nil {
 					if newk8sEP := k8s.ObjToV1Endpoints(newObj); newk8sEP != nil {
 						if oldk8sEP.DeepEqual(newk8sEP) {
@@ -274,7 +275,7 @@ func endpointsInit(k8sClient kubernetes.Interface, swgEps *lock.StoppableWaitGro
 				}
 			},
 			DeleteFunc: func(obj interface{}) {
-				k8sEventMetric(watchers.MetricEndpoint, watchers.MetricDelete)
+				k8sEventMetric(resources.MetricEndpoint, watchers.MetricDelete)
 				k8sEP := k8s.ObjToV1Endpoints(obj)
 				if k8sEP == nil {
 					return
@@ -306,13 +307,13 @@ func endpointSlicesInit(k8sClient kubernetes.Interface, swgEps *lock.StoppableWa
 				// so it means the cluster has endpoint slices enabled.
 				close(hasEndpointSlices)
 			})
-			k8sEventMetric(watchers.MetricEndpointSlice, watchers.MetricCreate)
+			k8sEventMetric(resources.MetricEndpointSlice, watchers.MetricCreate)
 			if k8sEP := k8s.ObjToV1EndpointSlice(obj); k8sEP != nil {
 				K8sSvcCache.UpdateEndpointSlicesV1(k8sEP, swgEps)
 			}
 		}
 		updateFunc = func(oldObj, newObj interface{}) {
-			k8sEventMetric(watchers.MetricEndpointSlice, watchers.MetricUpdate)
+			k8sEventMetric(resources.MetricEndpointSlice, watchers.MetricUpdate)
 			if oldk8sEP := k8s.ObjToV1EndpointSlice(oldObj); oldk8sEP != nil {
 				if newk8sEP := k8s.ObjToV1EndpointSlice(newObj); newk8sEP != nil {
 					if oldk8sEP.DeepEqual(newk8sEP) {
@@ -323,7 +324,7 @@ func endpointSlicesInit(k8sClient kubernetes.Interface, swgEps *lock.StoppableWa
 			}
 		}
 		delFunc = func(obj interface{}) {
-			k8sEventMetric(watchers.MetricEndpointSlice, watchers.MetricDelete)
+			k8sEventMetric(resources.MetricEndpointSlice, watchers.MetricDelete)
 			k8sEP := k8s.ObjToV1EndpointSlice(obj)
 			if k8sEP == nil {
 				return
@@ -339,13 +340,13 @@ func endpointSlicesInit(k8sClient kubernetes.Interface, swgEps *lock.StoppableWa
 				// so it means the cluster has endpoint slices enabled.
 				close(hasEndpointSlices)
 			})
-			k8sEventMetric(watchers.MetricEndpointSlice, watchers.MetricCreate)
+			k8sEventMetric(resources.MetricEndpointSlice, watchers.MetricCreate)
 			if k8sEP := k8s.ObjToV1Beta1EndpointSlice(obj); k8sEP != nil {
 				K8sSvcCache.UpdateEndpointSlicesV1Beta1(k8sEP, swgEps)
 			}
 		}
 		updateFunc = func(oldObj, newObj interface{}) {
-			k8sEventMetric(watchers.MetricEndpointSlice, watchers.MetricUpdate)
+			k8sEventMetric(resources.MetricEndpointSlice, watchers.MetricUpdate)
 			if oldk8sEP := k8s.ObjToV1Beta1EndpointSlice(oldObj); oldk8sEP != nil {
 				if newk8sEP := k8s.ObjToV1Beta1EndpointSlice(newObj); newk8sEP != nil {
 					if oldk8sEP.DeepEqual(newk8sEP) {
@@ -356,7 +357,7 @@ func endpointSlicesInit(k8sClient kubernetes.Interface, swgEps *lock.StoppableWa
 			}
 		}
 		delFunc = func(obj interface{}) {
-			k8sEventMetric(watchers.MetricEndpointSlice, watchers.MetricDelete)
+			k8sEventMetric(resources.MetricEndpointSlice, watchers.MetricDelete)
 			k8sEP := k8s.ObjToV1Beta1EndpointSlice(obj)
 			if k8sEP == nil {
 				return

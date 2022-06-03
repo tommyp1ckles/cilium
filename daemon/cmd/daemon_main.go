@@ -51,7 +51,7 @@ import (
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	"github.com/cilium/cilium/pkg/ipmasq"
 	"github.com/cilium/cilium/pkg/k8s"
-	"github.com/cilium/cilium/pkg/k8s/watchers"
+	"github.com/cilium/cilium/pkg/k8s/watchers/resources"
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/labelsfilter"
@@ -1630,10 +1630,10 @@ func (d *Daemon) initKVStore() {
 		// to the service IP as well perform the service -> backend IPs for
 		// that service IP.
 		d.k8sWatcher.WaitForCacheSync(
-			watchers.K8sAPIGroupServiceV1Core,
-			watchers.K8sAPIGroupEndpointV1Core,
-			watchers.K8sAPIGroupEndpointSliceV1Discovery,
-			watchers.K8sAPIGroupEndpointSliceV1Beta1Discovery,
+			K8sAPIGroupServiceV1Core,
+			K8sAPIGroupEndpointV1Core,
+			resources.K8sAPIGroupEndpointSliceV1Discovery,
+			resources.K8sAPIGroupEndpointSliceV1Beta1Discovery,
 		)
 		log := log.WithField(logfields.LogSubsys, "etcd")
 		goopts.DialOption = []grpc.DialOption{

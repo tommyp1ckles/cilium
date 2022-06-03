@@ -10,6 +10,7 @@ import (
 	"github.com/cilium/cilium/pkg/k8s"
 	cilium_v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	"github.com/cilium/cilium/pkg/k8s/informer"
+	"github.com/cilium/cilium/pkg/k8s/watchers/resources"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/service"
@@ -32,11 +33,11 @@ func (k *K8sWatcher) ciliumClusterwideEnvoyConfigInit(ciliumNPClient *k8s.K8sCil
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(apiGroup, metricCCEC, MetricCreate, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricCCEC, resources.MetricCreate, valid, equal) }()
 				if ccec := k8s.ObjToCCEC(obj); ccec != nil {
 					valid = true
 					err := k.addCiliumClusterwideEnvoyConfig(ccec)
-					k.K8sEventProcessed(metricCCEC, MetricCreate, err == nil)
+					k.K8sEventProcessed(metricCCEC, resources.MetricCreate, err == nil)
 				}
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
@@ -57,14 +58,14 @@ func (k *K8sWatcher) ciliumClusterwideEnvoyConfigInit(ciliumNPClient *k8s.K8sCil
 			},
 			DeleteFunc: func(obj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(apiGroup, metricCCEC, MetricDelete, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricCCEC, resources.MetricDelete, valid, equal) }()
 				ccec := k8s.ObjToCCEC(obj)
 				if ccec == nil {
 					return
 				}
 				valid = true
 				err := k.deleteCiliumClusterwideEnvoyConfig(ccec)
-				k.K8sEventProcessed(metricCCEC, MetricDelete, err == nil)
+				k.K8sEventProcessed(metricCCEC, resources.MetricDelete, err == nil)
 			},
 		},
 		k8s.ConvertToCiliumClusterwideEnvoyConfig,

@@ -13,6 +13,7 @@ import (
 	"github.com/cilium/cilium/pkg/k8s"
 	"github.com/cilium/cilium/pkg/k8s/informer"
 	slim_networkingv1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/networking/v1"
+	"github.com/cilium/cilium/pkg/k8s/watchers/resources"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/metrics"
@@ -29,16 +30,16 @@ func (k *K8sWatcher) networkPoliciesInit(k8sClient kubernetes.Interface, swgKNPs
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(apiGroup, metricKNP, MetricCreate, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricKNP, resources.MetricCreate, valid, equal) }()
 				if k8sNP := k8s.ObjToV1NetworkPolicy(obj); k8sNP != nil {
 					valid = true
 					err := k.addK8sNetworkPolicyV1(k8sNP)
-					k.K8sEventProcessed(metricKNP, MetricCreate, err == nil)
+					k.K8sEventProcessed(metricKNP, resources.MetricCreate, err == nil)
 				}
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(apiGroup, metricKNP, MetricUpdate, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricKNP, resources.MetricUpdate, valid, equal) }()
 				if oldK8sNP := k8s.ObjToV1NetworkPolicy(oldObj); oldK8sNP != nil {
 					if newK8sNP := k8s.ObjToV1NetworkPolicy(newObj); newK8sNP != nil {
 						valid = true
@@ -48,13 +49,13 @@ func (k *K8sWatcher) networkPoliciesInit(k8sClient kubernetes.Interface, swgKNPs
 						}
 
 						err := k.updateK8sNetworkPolicyV1(oldK8sNP, newK8sNP)
-						k.K8sEventProcessed(metricKNP, MetricUpdate, err == nil)
+						k.K8sEventProcessed(metricKNP, resources.MetricUpdate, err == nil)
 					}
 				}
 			},
 			DeleteFunc: func(obj interface{}) {
 				var valid, equal bool
-				defer func() { k.K8sEventReceived(apiGroup, metricKNP, MetricDelete, valid, equal) }()
+				defer func() { k.K8sEventReceived(apiGroup, metricKNP, resources.MetricDelete, valid, equal) }()
 				k8sNP := k8s.ObjToV1NetworkPolicy(obj)
 				if k8sNP == nil {
 					return
@@ -62,7 +63,7 @@ func (k *K8sWatcher) networkPoliciesInit(k8sClient kubernetes.Interface, swgKNPs
 
 				valid = true
 				err := k.deleteK8sNetworkPolicyV1(k8sNP)
-				k.K8sEventProcessed(metricKNP, MetricDelete, err == nil)
+				k.K8sEventProcessed(metricKNP, resources.MetricDelete, err == nil)
 			},
 		},
 		nil,

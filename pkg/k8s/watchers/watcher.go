@@ -56,10 +56,7 @@ import (
 const (
 	k8sAPIGroupNodeV1Core                       = "core/v1::Node"
 	k8sAPIGroupNamespaceV1Core                  = "core/v1::Namespace"
-	K8sAPIGroupServiceV1Core                    = "core/v1::Service"
-	K8sAPIGroupEndpointV1Core                   = "core/v1::Endpoint"
-	K8sAPIGroupPodV1Core                        = "core/v1::Pods"
-	K8sAPIGroupSecretV1Core                     = "core/v1::Secrets"
+	resources.K8sAPIGroupServiceV1Core                    = "core/v1::Service"
 	k8sAPIGroupNetworkingV1Core                 = "networking.k8s.io/v1::NetworkPolicy"
 	k8sAPIGroupCiliumNetworkPolicyV2            = "cilium/v2::CiliumNetworkPolicy"
 	k8sAPIGroupCiliumClusterwideNetworkPolicyV2 = "cilium/v2::CiliumClusterwideNetworkPolicy"
@@ -71,8 +68,6 @@ const (
 	k8sAPIGroupCiliumEndpointSliceV2Alpha1      = "cilium/v2alpha1::CiliumEndpointSlice"
 	k8sAPIGroupCiliumClusterwideEnvoyConfigV2   = "cilium/v2::CiliumClusterwideEnvoyConfig"
 	k8sAPIGroupCiliumEnvoyConfigV2              = "cilium/v2::CiliumEnvoyConfig"
-	K8sAPIGroupEndpointSliceV1Beta1Discovery    = "discovery/v1beta1::EndpointSlice"
-	K8sAPIGroupEndpointSliceV1Discovery         = "discovery/v1::EndpointSlice"
 
 	metricKNP            = "NetworkPolicy"
 	metricNS             = "Namespace"
@@ -86,21 +81,6 @@ const (
 	metricCEC            = "CiliumEnvoyConfig"
 	metricPod            = "Pod"
 	metricNode           = "Node"
-
-	// MetricCNP is the scope label for CiliumNetworkPolicy event metrics.
-	MetricCNP = "CiliumNetworkPolicy"
-	// MetricCCNP is the scope label for CiliumClusterwideNetworkPolicy event metrics.
-	MetricCCNP = "CiliumClusterwideNetworkPolicy"
-	// MetricService is the scope label for Kubernetes Service event metrics.
-	MetricService = "Service"
-	// MetricEndpoint is the scope label for Kubernetes Endpoint event metrics.
-	MetricEndpoint = "Endpoint"
-	// MetricEndpointSlice is the scope label for Kubernetes EndpointSlice event metrics.
-	MetricEndpointSlice = "EndpointSlice"
-
-	MetricCreate = "create"
-	MetricDelete = "delete"
-	MetricUpdate = "update"
 )
 
 func init() {
@@ -407,7 +387,7 @@ func (k *K8sWatcher) resourceGroups() (beforeNodeInitGroups, afterNodeInitGroups
 	k8sGroups := []string{
 		// To perform the service translation and have the BPF LB datapath
 		// with the right service -> backend (k8s endpoints) translation.
-		K8sAPIGroupServiceV1Core,
+		resources.K8sAPIGroupServiceV1Core,
 
 		// We need all network policies in place before restoring to
 		// make sure we are enforcing the correct policies for each
@@ -418,7 +398,7 @@ func (k *K8sWatcher) resourceGroups() (beforeNodeInitGroups, afterNodeInitGroups
 		k8sAPIGroupNamespaceV1Core,
 		// Pods can contain labels which are essential for endpoints
 		// being restored to have the right identity.
-		K8sAPIGroupPodV1Core,
+		resources.K8sAPIGroupPodV1Core,
 		// We need to know the node labels to populate the host
 		// endpoint labels.
 		k8sAPIGroupNodeV1Core,
@@ -427,17 +407,17 @@ func (k *K8sWatcher) resourceGroups() (beforeNodeInitGroups, afterNodeInitGroups
 	if k.cfg.K8sIngressControllerEnabled() {
 		// While Ingress controller is part of operator, we need to watch
 		// TLS secrets in pre-defined namespace for populating Envoy xDS SDS cache.
-		k8sGroups = append(k8sGroups, K8sAPIGroupSecretV1Core)
+		k8sGroups = append(k8sGroups, resources.K8sAPIGroupSecretV1Core)
 	}
 
 	// To perform the service translation and have the BPF LB datapath
 	// with the right service -> backend (k8s endpoints) translation.
 	if k8s.SupportsEndpointSlice() {
-		k8sGroups = append(k8sGroups, K8sAPIGroupEndpointSliceV1Beta1Discovery)
+		k8sGroups = append(k8sGroups, resources.K8sAPIGroupEndpointSliceV1Beta1Discovery)
 	} else if k8s.SupportsEndpointSliceV1() {
-		k8sGroups = append(k8sGroups, K8sAPIGroupEndpointSliceV1Discovery)
+		k8sGroups = append(k8sGroups, resources.K8sAPIGroupEndpointSliceV1Discovery)
 	}
-	k8sGroups = append(k8sGroups, K8sAPIGroupEndpointV1Core)
+	k8sGroups = append(k8sGroups, resources.K8sAPIGroupEndpointV1Core)
 	ciliumResources := synced.AgentCRDResourceNames()
 	ciliumGroups := make([]string, 0, len(ciliumResources))
 	for _, r := range ciliumResources {
@@ -515,7 +495,7 @@ func (k *K8sWatcher) enableK8sWatchers(ctx context.Context, resources []string) 
 	for _, r := range resources {
 		switch r {
 		// Core Cilium
-		case K8sAPIGroupPodV1Core:
+		case resources.K8sAPIGroupPodV1Core:
 			asyncControllers.Add(1)
 			go k.podsInit(k8s.WatcherClient(), asyncControllers)
 		case k8sAPIGroupNodeV1Core:
@@ -530,16 +510,16 @@ func (k *K8sWatcher) enableK8sWatchers(ctx context.Context, resources []string) 
 		case k8sAPIGroupNetworkingV1Core:
 			swgKNP := lock.NewStoppableWaitGroup()
 			k.networkPoliciesInit(k8s.WatcherClient(), swgKNP)
-		case K8sAPIGroupServiceV1Core:
+		case resources.K8sAPIGroupServiceV1Core:
 			swgSvcs := lock.NewStoppableWaitGroup()
 			k.servicesInit(k8s.WatcherClient(), swgSvcs, serviceOptModifier)
-		case K8sAPIGroupEndpointSliceV1Beta1Discovery:
-			// no-op; handled in K8sAPIGroupEndpointV1Core.
-		case K8sAPIGroupEndpointSliceV1Discovery:
-			// no-op; handled in K8sAPIGroupEndpointV1Core.
-		case K8sAPIGroupEndpointV1Core:
+		case resources.K8sAPIGroupEndpointSliceV1Beta1Discovery:
+			// no-op; handled in resources.K8sAPIGroupEndpointV1Core.
+		case resources.K8sAPIGroupEndpointSliceV1Discovery:
+			// no-op; handled in resources.K8sAPIGroupEndpointV1Core.
+		case resources.K8sAPIGroupEndpointV1Core:
 			k.initEndpointsOrSlices(k8s.WatcherClient(), serviceOptModifier)
-		case K8sAPIGroupSecretV1Core:
+		case resources.K8sAPIGroupSecretV1Core:
 			swgSecret := lock.NewStoppableWaitGroup()
 			// only watch tls secret
 			k.tlsSecretInit(k8s.WatcherClient(), option.Config.EnvoySecretNamespace, swgSecret)
