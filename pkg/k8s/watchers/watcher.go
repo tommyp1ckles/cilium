@@ -236,6 +236,9 @@ type K8sWatcher struct {
 	ciliumNodeStoreMU lock.RWMutex
 	ciliumNodeStore   cache.Store
 
+	ciliumEndpointStoreMU lock.RWMutex
+	ciliumEndpointStore   cache.Store
+
 	namespaceStore cache.Store
 	datapath       datapath.Datapath
 
@@ -938,6 +941,10 @@ func (k *K8sWatcher) GetStore(name string) cache.Store {
 		k.podStoreMU.RLock()
 		defer k.podStoreMU.RUnlock()
 		return k.podStore
+	case "ciliumendpoint":
+		k.ciliumEndpointStoreMU.RLock()
+		defer k.ciliumEndpointStoreMU.RUnlock()
+		return k.ciliumEndpointStore
 	default:
 		return nil
 	}

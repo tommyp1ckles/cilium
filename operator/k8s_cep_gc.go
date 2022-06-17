@@ -5,7 +5,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -61,8 +60,6 @@ func enableCiliumEndpointSyncGC(once bool) {
 	<-k8sCiliumNodesCacheSynced
 
 	// this dummy manager is needed only to add this controller to the global list
-	// @tom: this is a periodic GC controller that cleans up stale CEPs.
-	// I don't think this *controller* has anything to do with k8s controllers.
 	controller.NewManager().UpdateController(controllerName,
 		controller.ControllerParams{
 			RunInterval: gcInterval,
@@ -72,41 +69,7 @@ func enableCiliumEndpointSyncGC(once bool) {
 		})
 }
 
-func ipsMatch(pod *slim_corev1.Pod, cep *cilium_v2.CiliumEndpoint) bool {
-	if len(cep.Status.Networking.Addressing) > 0 {
-		fmt.Println("[tom-debug] Checking if IPs match for:", pod.GetName(), ", cep:", cep.Name, *cep.Status.Networking.Addressing[0])
-	}
-	// todo: use a map.
-	podAddrs := map[string]struct{}{}
-	for _, ip := range pod.Status.PodIPs {
-		fmt.Println("[tom-debug2] PodIP for:", pod.Name, ip.IP)
-		podAddrs[ip.IP] = struct{}{}
-	}
-	for _, cepAddr := range cep.Status.Networking.Addressing {
-		fmt.Println("[tom-debug2] comparing cepAddr:", cepAddr.IPV4, cepAddr.IPV6)
-		_, ip4ok := podAddrs[cepAddr.IPV4]
-		_, ip6ok := podAddrs[cepAddr.IPV6]
-		if ip4ok || ip6ok {
-			return true
-		}
-	}
-	return false
-	/*for _, addr := range pod.Status.PodIPs {
-		for _, cepAddr := range cep.Status.Networking.Addressing {
-			fmt.Println("	* Checking:", addr.IP, "=>", cepAddr.IPV4, cepAddr.IPV6)
-			if cepAddr.IPV4 == addr.IP || cepAddr.IPV6 == addr.IP {
-				fmt.Println("		* Found matching CEP Addr:", cepAddr)
-				return true
-			}
-		}
-	}
-	*/
-	fmt.Println("[tom-debug] No matching IPs for, will mark for deletion:", pod.GetName()) // TODO: Need to mark into the future?
-	return false
-}
-
 func doCiliumEndpointSyncGC(ctx context.Context, once bool, stopCh chan struct{}, scopedLog *logrus.Entry) error {
-	fmt.Println("[tom-debug2] Doing Endpoint GC!")
 	ciliumClient := ciliumK8sClient.CiliumV2()
 	// For each CEP we fetched, check if we know about it
 	for _, cepObj := range watchers.CiliumEndpointStore.List() {
@@ -117,7 +80,6 @@ func doCiliumEndpointSyncGC(ctx context.Context, once bool, stopCh chan struct{}
 			continue
 		}
 		cepFullName := cep.Namespace + "/" + cep.Name
-		fmt.Println("[tom-debug] controller found CEP:", cepFullName)
 		scopedLog = scopedLog.WithFields(logrus.Fields{
 			logfields.K8sPodName: cepFullName,
 		})
@@ -162,29 +124,15 @@ func doCiliumEndpointSyncGC(ctx context.Context, once bool, stopCh chan struct{}
 				case *cilium_v2.CiliumNode:
 					continue
 				case *slim_corev1.Pod:
-
 					// In Kubernetes Jobs, Pods can be left in Kubernetes until the Job
 					// is deleted. If the Job is never deleted, Cilium will never receive a Pod
 					// delete event, causing the IP to be left in the ipcache.
 					// For this reason we should delete the ipcache entries whenever the pod
 					// status is either PodFailed or PodSucceeded as it means the IP address
 					// is no longer in use.
-					// TODO(@tom): Under what circumstance can there be more than one pod IP?
-					// @tom I think I actually need to do a mark for termination, and think about
-					// how this would work in conjunction with the agent startup endpointRestore.
-					// Key points on this:
-					// * A CEP can only be related to a pod on a single node. The Pod is ephemeral.
-					//	 Thus, basically if the pod has been running a while *or* perhaps, the pod
-					//   has already been scheduled (i.e. CNI sandbox), at that point the CEPs status
-					//   will not change?
-					// * The only time that the CEP could change would be a node restart or pause
-					//   container.
-					// * So, if we mark for deletion the CEP, the node might get restarted or something,
-					//   in which case we might want to abort the deletion (todo: Check if the agent would do this)
-					if k8sUtils.IsPodRunning(pod.Status) && ipsMatch(pod, cep) {
+					if k8sUtils.IsPodRunning(pod.Status) {
 						continue
 					}
-
 				default:
 					log.WithField(logfields.Object, podObj).
 						Errorf("Saw %T object while expecting *slim_corev1.Pod or *cilium_v2.CiliumNode", podObj)

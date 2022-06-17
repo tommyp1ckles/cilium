@@ -33,7 +33,7 @@ func (k *K8sWatcher) ciliumEndpointsInit(ciliumNPClient *k8s.K8sCiliumClient, as
 	var once sync.Once
 	apiGroup := k8sAPIGroupCiliumEndpointV2
 	for {
-		_, ciliumEndpointInformer := informer.NewInformer(
+		cepStore, ciliumEndpointInformer := informer.NewInformer(
 			cache.NewListWatchFromClient(ciliumNPClient.CiliumV2().RESTClient(),
 				cilium_v2.CEPPluralName, v1.NamespaceAll, fields.Everything()),
 			&cilium_v2.CiliumEndpoint{},
@@ -78,6 +78,9 @@ func (k *K8sWatcher) ciliumEndpointsInit(ciliumNPClient *k8s.K8sCiliumClient, as
 			},
 			k8s.ConvertToCiliumEndpoint,
 		)
+		k.ciliumEndpointStoreMU.Lock()
+		k.ciliumEndpointStore = cepStore
+		k.ciliumEndpointStoreMU.Unlock()
 		isConnected := make(chan struct{})
 		// once isConnected is closed, it will stop waiting on caches to be
 		// synchronized.
@@ -117,7 +120,7 @@ func (k *K8sWatcher) endpointUpdated(oldEndpoint, endpoint *types.CiliumEndpoint
 			k.policyManager.TriggerPolicyUpdates(true, "Named ports added or updated")
 		}
 	}()
-
+	fmt.Println("[tom-debug123] Updating CEP from informer:", endpoint.Name, endpoint.GetOwnerReferences())
 	var ipsAdded []string
 	if oldEndpoint != nil && oldEndpoint.Networking != nil {
 		// Delete the old IP addresses from the IP cache
