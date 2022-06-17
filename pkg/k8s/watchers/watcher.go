@@ -957,6 +957,12 @@ func (k *K8sWatcher) initCiliumEndpointOrSlices(ciliumNPClient *k8s.K8sCiliumCli
 	// feature is enabled.
 	asyncControllers.Add(1)
 	if option.Config.EnableCiliumEndpointSlice {
+		fmt.Println("[tom-debug] SLICES INIT!")
+		fmt.Println("[tom-debug] SLICES INIT!")
+		fmt.Println("[tom-debug] SLICES INIT!")
+		fmt.Println("[tom-debug] SLICES INIT!")
+		fmt.Println("[tom-debug] SLICES INIT!")
+		fmt.Println("[tom-debug] SLICES INIT!")
 		go k.ciliumEndpointSliceInit(ciliumNPClient, asyncControllers)
 	} else {
 		go k.ciliumEndpointsInit(ciliumNPClient, asyncControllers)

@@ -877,6 +877,19 @@ func ObjToCiliumNode(obj interface{}) *cilium_v2.CiliumNode {
 	return nil
 }
 
+// @tom: TODO: See if theres already a function for this.
+func convertToSlimOwnerReferences(concreteObj *cilium_v2.CiliumEndpoint) []slim_metav1.OwnerReference {
+	ownerRefs := []slim_metav1.OwnerReference{}
+	// @tom: TODO: See if theres already a function for this.
+	for _, ref := range concreteObj.OwnerReferences {
+		ownerRefs = append(ownerRefs, slim_metav1.OwnerReference{
+			Kind: ref.Kind,
+			Name: ref.Name,
+		})
+	}
+	return ownerRefs
+}
+
 // ConvertToCiliumEndpoint converts a *cilium_v2.CiliumEndpoint into a
 // *types.CiliumEndpoint or a cache.DeletedFinalStateUnknown into a
 // cache.DeletedFinalStateUnknown with a *types.CiliumEndpoint in its Obj.
@@ -895,6 +908,7 @@ func ConvertToCiliumEndpoint(obj interface{}) interface{} {
 				Namespace:       concreteObj.ObjectMeta.Namespace,
 				UID:             concreteObj.ObjectMeta.UID,
 				ResourceVersion: concreteObj.ObjectMeta.ResourceVersion,
+				OwnerReferences: convertToSlimOwnerReferences(concreteObj),
 				// We don't need to store labels nor annotations because
 				// they are not used by the CEP handlers.
 				Labels:      nil,
@@ -915,6 +929,13 @@ func ConvertToCiliumEndpoint(obj interface{}) interface{} {
 		if !ok {
 			return obj
 		}
+		ownerRefs := []slim_metav1.OwnerReference{}
+		for _, ref := range ciliumEndpoint.OwnerReferences {
+			ownerRefs = append(ownerRefs, slim_metav1.OwnerReference{
+				Kind: ref.Kind,
+				Name: ref.Name,
+			})
+		}
 		dfsu := cache.DeletedFinalStateUnknown{
 			Key: concreteObj.Key,
 			Obj: &types.CiliumEndpoint{
@@ -927,6 +948,7 @@ func ConvertToCiliumEndpoint(obj interface{}) interface{} {
 					Namespace:       ciliumEndpoint.ObjectMeta.Namespace,
 					UID:             ciliumEndpoint.ObjectMeta.UID,
 					ResourceVersion: ciliumEndpoint.ObjectMeta.ResourceVersion,
+					OwnerReferences: convertToSlimOwnerReferences(ciliumEndpoint),
 					// We don't need to store labels nor annotations because
 					// they are not used by the CEP handlers.
 					Labels:      nil,

@@ -1675,12 +1675,7 @@ func (d *Daemon) cleanStaleCEPs(ctx context.Context) error {
 	// if err != nil {
 	// 	log.WithError(err).Fatal("Could not get endpoints")
 	// }
-	eps := d.endpointManager.GetEndpoints()
-	for _, ep := range eps {
-		fmt.Println("-----------")
-		fmt.Println("[tom-debug123] EP Pod:", fmt.Sprintf("%s/%s", ep.K8sNamespace, ep.K8sPodName))
-		fmt.Println("[tom-debug123] EP CEP ID:", ep.GetCiliumEndpointUID())
-	}
+
 	cepObjs := d.k8sWatcher.GetStore("ciliumendpoint").List()
 	podUIDToCEP := map[string]*types.CiliumEndpoint{}
 	for _, cepObj := range cepObjs {
