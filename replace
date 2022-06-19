@@ -1,0 +1,9 @@
+#!/bin/bash
+# Get pod that isn't running on control-plane node.
+pod_name=$(kubectl get pods -l=k8s-app=cilium --field-selector='spec.nodeName=kind-worker' -o json | jq -r .items[0].metadata.name)
+echo "[info] replacing: $pod_name"
+GOOS=linux GOARCH=amd64 go build -o cilium-agent daemon/main.go
+echo "[info] injecting new cilium-agent: ${pod_name}:/usr/bin/cilium-agent"
+kubectl cp cilium-agent ${pod_name}:/usr/bin/
+kubectl port-forward ${pod_name} 1234 &
+echo "Stop forwarding: kill $!"

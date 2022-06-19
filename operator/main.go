@@ -348,7 +348,9 @@ func runOperator() {
 func onOperatorStartLeading(ctx context.Context) {
 	isLeader.Store(true)
 
-	ciliumK8sClient = k8s.CiliumClient()
+	// @tom: This is where the client interface get initialized.
+	ciliumK8sClient = k8s.CiliumClient() // <- this returns an empty client, which is just the default client.
+	// I guess, default works fine in-cluster, so you can just init to an empty one?
 
 	// If CiliumEndpointSlice feature is enabled, create CESController, start CEP watcher and run controller.
 	if !option.Config.DisableCiliumEndpointCRD && option.Config.EnableCiliumEndpointSlice {

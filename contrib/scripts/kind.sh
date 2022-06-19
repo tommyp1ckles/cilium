@@ -89,7 +89,7 @@ nodes:
 $(control_planes)
 $(workers)
 networking:
-  disableDefaultCNI: true
+  disableDefaultCNI: false
   kubeProxyMode: ${kubeproxy_mode}
   ipFamily: ${ipfamily}
 containerdConfigPatches:

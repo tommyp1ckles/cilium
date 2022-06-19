@@ -273,6 +273,7 @@ func (d *Daemon) regenerateRestoredEndpoints(state *endpointRestoreState) (resto
 		// not in a goroutine) because regenerateRestoredEndpoints must guarantee
 		// upon returning that endpoints are exposed to other subsystems via
 		// endpointmanager.
+		// @tom: RestoreEndpoint is what makes the call to the API to update/create the CRD.
 		if err := d.endpointManager.RestoreEndpoint(ep); err != nil {
 			log.WithError(err).Warning("Unable to restore endpoint")
 			// remove endpoint from slice of endpoints to restore
@@ -388,6 +389,9 @@ func (d *Daemon) initRestore(restoredEndpoints *endpointRestoreState) chan struc
 		// When we regenerate restored endpoints, it is guaranteed tha we have
 		// received the full list of policies present at the time the daemon
 		// is bootstrapped.
+		for _, ep := range restoredEndpoints.restored {
+			fmt.Println("[tom-debug3] Restored endpoint:", ep.ID, ep.K8sPodName)
+		}
 		restoreComplete = d.regenerateRestoredEndpoints(restoredEndpoints)
 		go func() {
 			<-restoreComplete

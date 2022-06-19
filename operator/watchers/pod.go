@@ -22,6 +22,10 @@ var (
 	// PodStore has a minimal copy of all pods running in the cluster.
 	// Warning: The pods stored in the cache are not intended to be used for Update
 	// operations in k8s as some of its fields are not populated.
+	// @tom: OK, interesting, this could force the technical decision here.
+	// 		Pods stored on the Operators cached are minimal versions.
+	// 		We probably don't want to store the IP addresses as that might add up to
+	// 		a lot of data for a large cluster.
 	PodStore cache.Store
 
 	// PodStoreSynced is closed once the PodStore is synced with k8s.

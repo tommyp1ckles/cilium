@@ -21,6 +21,7 @@ import (
 	"github.com/spf13/viper"
 	"github.com/vishvananda/netlink"
 	"google.golang.org/grpc"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/cilium/cilium/api/v1/server"
 	"github.com/cilium/cilium/api/v1/server/restapi"
@@ -51,6 +52,8 @@ import (
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	"github.com/cilium/cilium/pkg/ipmasq"
 	"github.com/cilium/cilium/pkg/k8s"
+	v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
+	corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	"github.com/cilium/cilium/pkg/k8s/watchers/resources"
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/labels"
@@ -1658,6 +1661,69 @@ func (d *Daemon) initKVStore() {
 	}
 }
 
+func (d *Daemon) cleanStaleCEPs(ctx context.Context) error {
+	ciliumClient := k8s.CiliumClient().CiliumV2()
+	// @tom: Should this be from the cache store as well?
+	eps, err := ciliumClient.CiliumEndpoints("").List(ctx, v1.ListOptions{})
+	if err != nil {
+		log.WithError(err).Fatal("Could not get endpoints")
+	}
+	podUIDToCEP := map[string]*v2.CiliumEndpoint{}
+	for _, ep := range eps.Items {
+		fmt.Println("[tom-debug4] CEP:", ep.Status.ID, ep.Status.Networking.NodeIP)
+		//podUIDToCEP[string(ep.OwnerReferences)] = ep.DeepCopy()
+		for _, ownerRef := range ep.OwnerReferences {
+			if ownerRef.Kind == "Pod" {
+				// tie the pod UID back to the CEP.
+				podUIDToCEP[string(ownerRef.UID)] = ep.DeepCopy()
+				break
+			}
+		}
+	}
+	// @tom: Is this the correct way to grab this client to ensure it uses
+	// local cache?
+	// @tom: Should this whole thing be periodic?
+	for _, podObj := range d.k8sWatcher.GetStore("pod").List() {
+		pod, ok := podObj.(*corev1.Pod)
+		if !ok {
+			log.Warn("got unexpected object type from pod store")
+			continue
+		}
+		// NOTE: The clients here are only fetching from the *local* cache, which
+		// contains only *local* pods.
+		fmt.Println("[tom-debug7] found pod:", pod.Name, "=>", pod.Spec.NodeName)
+		// @tom: Does this function already exist somewhere?
+		cep, ok := podUIDToCEP[string(pod.UID)]
+		if pod.Spec.HostNetwork {
+			fmt.Println("[tom-debug5] host network is on for, skipping:", pod.Name, pod.UID)
+			continue
+		}
+		if !ok {
+			fmt.Println("[tom-debug5] no found cep for:", pod.Name, pod.UID)
+			continue
+		}
+		found := false
+		for _, addr := range cep.Status.Networking.Addressing {
+			if pod.Status.PodIP == addr.IPV4 || pod.Status.PodIP == addr.IPV6 {
+				fmt.Println("[tom-debug9] Found matching CEP addr:", *addr, ":=>", pod.Name)
+				found = true
+				break
+			}
+		}
+		if !found {
+			fmt.Println("[tom-debug5] Found bad CEP/POD:", cep.Name, pod.Name)
+			cep = cep.DeepCopy()
+			now := v1.Now()
+			cep.DeletionTimestamp = &now
+			if err := ciliumClient.CiliumEndpoints(cep.Namespace).Delete(ctx, cep.Name, v1.DeleteOptions{}); err != nil {
+				log.WithError(err).WithField("namespace", cep.GetNamespace()).WithField("ciliumEndpoint", cep.GetName()).Error("could not mark stale CEP for deletion")
+			}
+
+		}
+	}
+	return nil
+}
+
 func runDaemon() {
 	datapathConfig := linuxdatapath.DatapathConfiguration{
 		HostDevice: defaults.HostDevice,
@@ -1741,9 +1807,17 @@ func runDaemon() {
 	if k8s.IsEnabled() {
 		// Wait only for certain caches, but not all!
 		// (Check Daemon.InitK8sSubsystem() for more info)
+		// @tom
+		// I need to wait for:
+		// * Pods
+		// * CEPs
 		<-d.k8sCachesSynced
 	}
+	fmt.Println("[tom-debug2] Done caches synced")
 	bootstrapStats.k8sInit.End(true)
+	// @tom: So this launches some controllers for each of the endpoints that are restored.
+	// I believe this does the api client actions necessary to create/update the CEP.
+	// So, at this point, the endpoints are already synced.
 	restoreComplete := d.initRestore(restoredEndpoints)
 	if wgAgent != nil {
 		if err := wgAgent.RestoreFinished(); err != nil {
@@ -1762,6 +1836,8 @@ func runDaemon() {
 			log.WithError(err).Fatal("Unable to create host endpoint")
 		}
 	}
+
+	d.cleanStaleCEPs(ctx)
 
 	if option.Config.EnableIPMasqAgent {
 		ipmasqAgent, err := ipmasq.NewIPMasqAgent(option.Config.IPMasqAgentConfigPath)

@@ -425,7 +425,9 @@ spec:
         # distros installed on the underlying host. Copy the binary to the
         # same directory where we install cilium cni plugin so that exec permissions
         # are available.
+        # @tom
         - |
+          sleep 1 
           cp /usr/bin/cilium-mount /hostbin/cilium-mount;
           nsenter --cgroup=/hostproc/1/ns/cgroup --mount=/hostproc/1/ns/mnt "${BIN_PATH}/cilium-mount" $CGROUP_ROOT;
           rm /hostbin/cilium-mount

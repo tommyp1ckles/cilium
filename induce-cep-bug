@@ -1,0 +1,64 @@
+#!/bin/bash
+# Enable default Kind CNI.
+
+# sed -i contrib/scripts/kind.sh "s/  disableDefaultCNI: true/  disableDefaultCNI: false/g"
+# make kind WORKERS=3
+# install-cilium -a
+
+cat > pod.yaml <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: curl
+  labels:
+    app: curl
+spec:
+  containers:
+  - name: curl
+    image: alpine:latest
+    command: ["sleep", "9999"]
+EOF
+
+cat > policy.yaml <<EOF
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: curl
+spec:
+  endpointSelector:
+    matchLabels:
+      app: curl
+  egress:
+  - toFQDNs:
+    - matchName: "api.twitter.com"
+EOF
+
+kubectl apply -f policy.yaml
+kubectl apply -f pod.yaml
+
+echo "Waiting for curl pod to become ready..."
+kubectl wait --for condition=Ready pods -l=app=curl
+
+node=$(kubectl get pod curl -o json | jq -r .spec.nodeName)
+
+echo "Running on node: ${node}"
+
+echo "-----------------------------------------------------------------"
+echo "Before:"
+kubectl get pod curl -o wide
+kubectl get cep curl
+echo "-----------------------------------------------------------------"
+
+docker exec ${node} rm -rf /etc/cni/net.d/05-cilium.conf /run/cilium/state
+
+docker stop ${node}
+sleep 3
+docker start ${node}
+
+echo "-----------------------------------------------------------------"
+echo "After:"
+kubectl get pod curl -o wide
+kubectl get cep curl
+echo "-----------------------------------------------------------------"
+
+kubectl wait --for condition=Ready pods -l=app=curl

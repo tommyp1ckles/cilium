@@ -1,0 +1,11 @@
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: curl
+spec:
+  endpointSelector:
+    matchLabels:
+      app: curl
+  egress:
+  - toFQDNs:
+    - matchName: "api.twitter.com"

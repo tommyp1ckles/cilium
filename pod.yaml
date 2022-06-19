@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: curl
+  labels:
+    app: curl
+spec:
+  containers:
+  - name: curl
+    image: alpine:latest
+    command: ["sleep", "9999"]
