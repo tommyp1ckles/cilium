@@ -21,7 +21,6 @@ import (
 	"github.com/spf13/viper"
 	"github.com/vishvananda/netlink"
 	"google.golang.org/grpc"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/cilium/cilium/api/v1/server"
 	"github.com/cilium/cilium/api/v1/server/restapi"
@@ -52,8 +51,6 @@ import (
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	"github.com/cilium/cilium/pkg/ipmasq"
 	"github.com/cilium/cilium/pkg/k8s"
-	corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
-	"github.com/cilium/cilium/pkg/k8s/types"
 	"github.com/cilium/cilium/pkg/k8s/watchers/resources"
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/labels"
@@ -1661,88 +1658,6 @@ func (d *Daemon) initKVStore() {
 	}
 }
 
-func (d *Daemon) cleanStaleCEPs(ctx context.Context) error {
-	ciliumClient := k8s.CiliumClient().CiliumV2()
-	// @tom: Should this be from the cache store as well?
-	// @tom: Should this be from the cache store as well?
-	// @tom: So the cached version lacks status information, which is kind of annoying.
-	//		This seems potentially problematic - if you do like `k restart ds cilium`
-	//		then all those pods will do a list API call at the same time, potentially
-	//		causing issues with Kube-API.
-	//		So, one question is, why do pods come with a Status? I guess that's just
-	//		how the slim schema is designed.
-	// eps, err := ciliumClient.CiliumEndpoints("").List(ctx, v1.ListOptions{})
-	// if err != nil {
-	// 	log.WithError(err).Fatal("Could not get endpoints")
-	// }
-
-	cepObjs := d.k8sWatcher.GetStore("ciliumendpoint").List()
-	podUIDToCEP := map[string]*types.CiliumEndpoint{}
-	for _, cepObj := range cepObjs {
-		cep, ok := cepObj.(*types.CiliumEndpoint)
-		if !ok {
-			return fmt.Errorf("unexpected obj type found in ciliumendpoint store")
-		}
-		fmt.Println("[tom-debug11] OwnerREFS:", cep.OwnerReferences)
-		fmt.Println("[tom-debug11] OwnerREFS:", cep.OwnerReferences)
-		fmt.Println("[tom-debug11] OwnerREFS:", cep.OwnerReferences)
-		fmt.Println("[tom-debug11] OwnerREFS:", cep.OwnerReferences)
-		fmt.Println("[tom-debug11] OwnerREFS:", cep.OwnerReferences)
-		fmt.Println("[tom-debug11] OwnerREFS:", cep.OwnerReferences)
-		fmt.Println("[tom-debug11] OwnerREFS:", cep.OwnerReferences)
-		for _, ownerRef := range cep.OwnerReferences {
-			fmt.Println("[tom-debug11] Ownerref->", ownerRef)
-			if ownerRef.Kind == "Pod" {
-				// tie the pod name back to the CEP.
-				fmt.Printf("[tom-debug11] Mapping CEP %q under -> %s/%s\n", cep.Name, cep.Namespace, ownerRef.Name)
-				podUIDToCEP[fmt.Sprintf("%s/%s", cep.Namespace, ownerRef.Name)] = cep
-				break
-			}
-		}
-	}
-	// @tom: Is this the correct way to grab this client to ensure it uses
-	// local cache?
-	// @tom: Should this whole thing be periodic?
-	for _, podObj := range d.k8sWatcher.GetStore("pod").List() {
-		pod, ok := podObj.(*corev1.Pod)
-		if !ok {
-			log.Warn("got unexpected object type from pod store")
-			continue
-		}
-		// NOTE: The clients here are only fetching from the *local* cache, which
-		// contains only *local* pods.
-		fmt.Println("[tom-debug7] found pod:", pod.Name, "=>", pod.Spec.NodeName)
-
-		if pod.Spec.HostNetwork {
-			fmt.Println("[tom-debug5] host network is on for, skipping:", pod.Name, pod.UID)
-			continue
-		}
-		// @tom: Does this function already exist somewhere?
-		fmt.Printf("[tom-debug11] looking for CEP matching: %s/%s\n", pod.Namespace, pod.Name)
-		cep, ok := podUIDToCEP[fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)]
-		if !ok {
-			fmt.Println("[tom-debug5] no found cep for:", pod.Name, pod.UID)
-			continue
-		}
-		found := false
-		for _, addr := range cep.Networking.Addressing {
-			if pod.Status.PodIP == addr.IPV4 || pod.Status.PodIP == addr.IPV6 {
-				fmt.Println("[tom-debug9] Found matching CEP addr:", *addr, ":=>", pod.Name)
-				found = true
-				break
-			}
-		}
-		if !found {
-			fmt.Println("[tom-debug5] Found bad CEP/POD:", cep.Name, pod.Name)
-			if err := ciliumClient.CiliumEndpoints(cep.Namespace).Delete(ctx, cep.Name, v1.DeleteOptions{}); err != nil {
-				log.WithError(err).WithField("namespace", cep.GetNamespace()).WithField("ciliumEndpoint", cep.GetName()).Error("could not mark stale CEP for deletion")
-			}
-
-		}
-	}
-	return nil
-}
-
 func runDaemon() {
 	datapathConfig := linuxdatapath.DatapathConfiguration{
 		HostDevice: defaults.HostDevice,
@@ -1856,7 +1771,7 @@ func runDaemon() {
 		}
 	}
 
-	d.cleanStaleCEPs(ctx)
+	d.cleanStaleCEPs(ctx, k8s.CiliumClient().CiliumV2())
 
 	if option.Config.EnableIPMasqAgent {
 		ipmasqAgent, err := ipmasq.NewIPMasqAgent(option.Config.IPMasqAgentConfigPath)

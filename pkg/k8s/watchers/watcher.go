@@ -950,6 +950,30 @@ func (k *K8sWatcher) GetStore(name string) cache.Store {
 	}
 }
 
+// SetStore lets you set a named cache store, only used for testing.
+// Note: Does not synchronize podStore channel.
+func (k *K8sWatcher) SetStore(name string, store cache.Store) error {
+	switch name {
+	case "networkpolicy":
+		k.networkpolicyStore = store
+	case "namespace":
+		k.namespaceStore = store
+	case "pod":
+		k.podStoreMU.Lock()
+		defer k.podStoreMU.Unlock()
+		k.podStore = store
+		k.podStoreSet = make(chan struct{})
+		close(k.podStoreSet)
+	case "ciliumendpoint":
+		k.ciliumEndpointStoreMU.Lock()
+		defer k.ciliumEndpointStoreMU.Unlock()
+		k.ciliumEndpointStore = store
+	default:
+		return fmt.Errorf("unexpected store name")
+	}
+	return nil
+}
+
 // initCiliumEndpointOrSlices intializes the ciliumEndpoints or ciliumEndpointSlice
 func (k *K8sWatcher) initCiliumEndpointOrSlices(ciliumNPClient *k8s.K8sCiliumClient, asyncControllers *sync.WaitGroup) {
 	// If CiliumEndpointSlice feature is enabled, Cilium-agent watches CiliumEndpointSlice
@@ -957,12 +981,6 @@ func (k *K8sWatcher) initCiliumEndpointOrSlices(ciliumNPClient *k8s.K8sCiliumCli
 	// feature is enabled.
 	asyncControllers.Add(1)
 	if option.Config.EnableCiliumEndpointSlice {
-		fmt.Println("[tom-debug] SLICES INIT!")
-		fmt.Println("[tom-debug] SLICES INIT!")
-		fmt.Println("[tom-debug] SLICES INIT!")
-		fmt.Println("[tom-debug] SLICES INIT!")
-		fmt.Println("[tom-debug] SLICES INIT!")
-		fmt.Println("[tom-debug] SLICES INIT!")
 		go k.ciliumEndpointSliceInit(ciliumNPClient, asyncControllers)
 	} else {
 		go k.ciliumEndpointsInit(ciliumNPClient, asyncControllers)
