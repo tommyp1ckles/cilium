@@ -209,12 +209,10 @@ func (k *K8sWatcher) addK8sPodV1(pod *slim_corev1.Pod) error {
 	// status is either PodFailed or PodSucceeded as it means the IP address
 	// is no longer in use.
 	if !k8sUtils.IsPodRunning(pod.Status) {
-		fmt.Println("[tom-debug99] Deleting non running Pod:", pod.Name)
 		return k.deleteK8sPodV1(pod)
 	}
 
 	if pod.Spec.HostNetwork && !option.Config.EnableLocalRedirectPolicy {
-		fmt.Println("[tom-debug99] Skipping due to host network:", pod.Name)
 		logger.Debug("Skip pod event using host networking")
 		return nil
 	}

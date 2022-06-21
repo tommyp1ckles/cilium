@@ -1771,7 +1771,9 @@ func runDaemon() {
 		}
 	}
 
-	d.cleanStaleCEPs(ctx, k8s.CiliumClient().CiliumV2())
+	if err := d.CleanStaleCEPs(ctx, k8s.CiliumClient().CiliumV2()); err != nil {
+		log.WithError(err).Fatal("Failed to clean stale CEPs")
+	}
 
 	if option.Config.EnableIPMasqAgent {
 		ipmasqAgent, err := ipmasq.NewIPMasqAgent(option.Config.IPMasqAgentConfigPath)

@@ -52,8 +52,10 @@ echo "-----------------------------------------------------------------"
 docker exec ${node} rm -rf /etc/cni/net.d/05-cilium.conf /run/cilium/state
 
 docker stop ${node}
-sleep 3
 docker start ${node}
+
+kubectl wait --for condition=Unknown pods -l=app=curl
+kubectl wait --for condition=Ready pods -l=app=curl
 
 echo "-----------------------------------------------------------------"
 echo "After:"
@@ -61,4 +63,3 @@ kubectl get pod curl -o wide
 kubectl get cep curl
 echo "-----------------------------------------------------------------"
 
-kubectl wait --for condition=Ready pods -l=app=curl

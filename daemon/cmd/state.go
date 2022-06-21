@@ -389,9 +389,6 @@ func (d *Daemon) initRestore(restoredEndpoints *endpointRestoreState) chan struc
 		// When we regenerate restored endpoints, it is guaranteed tha we have
 		// received the full list of policies present at the time the daemon
 		// is bootstrapped.
-		for _, ep := range restoredEndpoints.restored {
-			fmt.Println("[tom-debug3] Restored endpoint:", ep.ID, ep.K8sPodName)
-		}
 		restoreComplete = d.regenerateRestoredEndpoints(restoredEndpoints)
 		go func() {
 			<-restoreComplete

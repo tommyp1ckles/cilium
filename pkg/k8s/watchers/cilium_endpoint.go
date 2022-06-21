@@ -110,10 +110,6 @@ func (k *K8sWatcher) ciliumEndpointsInit(ciliumNPClient *k8s.K8sCiliumClient, as
 }
 
 func (k *K8sWatcher) endpointUpdated(oldEndpoint, endpoint *types.CiliumEndpoint) {
-	if oldEndpoint == nil {
-		// this is a global cluster resource.
-		fmt.Println("[tom-debug2] new endpoint created:", endpoint)
-	}
 	var namedPortsChanged bool
 	defer func() {
 		if namedPortsChanged {
