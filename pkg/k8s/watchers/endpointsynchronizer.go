@@ -43,11 +43,6 @@ type EndpointSynchronizer struct{}
 // updates are pushed up.
 // CiliumEndpoint objects have the same name as the pod they represent.
 func (epSync *EndpointSynchronizer) RunK8sCiliumEndpointSync(e *endpoint.Endpoint, conf endpoint.EndpointStatusConfiguration) {
-	// @tom: Remember, theres one of these for *every* endpoint.
-	fmt.Println("[tom-debug3] Starting agent endpoint sync controller:", e.ID, e.K8sPodName)
-	defer func() {
-		fmt.Println("[tom-debug3] Stopping agent endpoint sync controller:", e.ID, e.K8sPodName)
-	}()
 	var (
 		endpointID     = e.ID
 		controllerName = endpoint.EndpointSyncControllerName(endpointID)
@@ -86,6 +81,7 @@ func (epSync *EndpointSynchronizer) RunK8sCiliumEndpointSync(e *endpoint.Endpoin
 			DoFunc: func(ctx context.Context) (err error) {
 				// Update logger as scopeLog might not have the podName when it
 				// was created.
+				fmt.Println("[tom-debug1] Running CEP K8s Sync Controller:", e.ID, e.SecurityIdentity, e.GetK8sNamespaceAndPodName())
 				scopedLog = e.Logger(subsysEndpointSync).WithField("controller", controllerName)
 
 				if k8sversion.Version().Equals(semver.Version{}) {
@@ -141,7 +137,6 @@ func (epSync *EndpointSynchronizer) RunK8sCiliumEndpointSync(e *endpoint.Endpoin
 					}
 
 					scopedLog.Debug("Getting CEP during an initialization")
-					fmt.Println("[tom-debug3] Creating cilium endpoint:", podName)
 					localCEP, err = ciliumClient.CiliumEndpoints(namespace).Get(ctx, podName, meta_v1.GetOptions{})
 					// It's only an error if it exists but something else happened
 					switch {

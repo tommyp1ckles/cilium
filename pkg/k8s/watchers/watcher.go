@@ -239,6 +239,9 @@ type K8sWatcher struct {
 	ciliumEndpointStoreMU lock.RWMutex
 	ciliumEndpointStore   cache.Store
 
+	ciliumEndpointSliceStoreMU lock.RWMutex
+	ciliumEndpointSliceStore   cache.Store
+
 	namespaceStore cache.Store
 	datapath       datapath.Datapath
 
@@ -472,6 +475,7 @@ func (k *K8sWatcher) InitK8sSubsystem(ctx context.Context, cachesSynced chan str
 		if err := k.WaitForCacheSyncWithTimeout(option.Config.K8sSyncTimeout, append(resources, afterNodeInitResources...)...); err != nil {
 			log.WithError(err).Fatal("Timed out waiting for pre-existing resources to be received; exiting")
 		}
+		fmt.Println("[tom-debug] Done cache sync")
 		close(cachesSynced)
 	}()
 }
@@ -945,6 +949,10 @@ func (k *K8sWatcher) GetStore(name string) cache.Store {
 		k.ciliumEndpointStoreMU.RLock()
 		defer k.ciliumEndpointStoreMU.RUnlock()
 		return k.ciliumEndpointStore
+	case "ciliumendpointslice":
+		k.ciliumEndpointSliceStoreMU.RLock()
+		defer k.ciliumEndpointSliceStoreMU.RUnlock()
+		return k.ciliumEndpointSliceStore
 	default:
 		return nil
 	}

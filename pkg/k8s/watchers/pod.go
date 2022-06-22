@@ -124,6 +124,13 @@ func (k *K8sWatcher) podsInit(k8sClient kubernetes.Interface, asyncControllers *
 			fields.ParseSelectorOrDie("spec.nodeName="+nodeTypes.GetName()))
 		isConnected := make(chan struct{})
 		k.podStoreMU.Lock()
+		fmt.Println("[tom-debug] Pod store has been set:", podStore)
+		fmt.Println("[tom-debug] Pod store has been set:", podStore)
+		fmt.Println("[tom-debug] Pod store has been set:", podStore)
+		fmt.Println("[tom-debug] Pod store has been set:", podStore)
+		fmt.Println("[tom-debug] Pod store has been set:", podStore)
+		fmt.Println("[tom-debug] Pod store has been set:", podStore)
+		fmt.Println("[tom-debug] Pod store has been set:", podStore)
 		k.podStore = podStore
 		k.podStoreMU.Unlock()
 		k.podStoreOnce.Do(func() {

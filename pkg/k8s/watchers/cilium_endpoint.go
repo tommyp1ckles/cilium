@@ -46,6 +46,8 @@ func (k *K8sWatcher) ciliumEndpointsInit(ciliumNPClient *k8s.K8sCiliumClient, as
 					}()
 					if ciliumEndpoint, ok := obj.(*types.CiliumEndpoint); ok {
 						valid = true
+						fmt.Println("[tom-debug] Adding CEP to cache:", ciliumEndpoint.Name)
+						fmt.Println("[tom-debug] CEP DATA:", *ciliumEndpoint)
 						k.endpointUpdated(nil, ciliumEndpoint)
 						k.K8sEventProcessed(metricCiliumEndpoint, resources.MetricCreate, true)
 					}
@@ -116,7 +118,6 @@ func (k *K8sWatcher) endpointUpdated(oldEndpoint, endpoint *types.CiliumEndpoint
 			k.policyManager.TriggerPolicyUpdates(true, "Named ports added or updated")
 		}
 	}()
-	fmt.Println("[tom-debug123] Updating CEP from informer:", endpoint.Name, endpoint.GetOwnerReferences())
 	var ipsAdded []string
 	if oldEndpoint != nil && oldEndpoint.Networking != nil {
 		// Delete the old IP addresses from the IP cache
