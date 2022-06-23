@@ -124,13 +124,6 @@ func (k *K8sWatcher) podsInit(k8sClient kubernetes.Interface, asyncControllers *
 			fields.ParseSelectorOrDie("spec.nodeName="+nodeTypes.GetName()))
 		isConnected := make(chan struct{})
 		k.podStoreMU.Lock()
-		fmt.Println("[tom-debug] Pod store has been set:", podStore)
-		fmt.Println("[tom-debug] Pod store has been set:", podStore)
-		fmt.Println("[tom-debug] Pod store has been set:", podStore)
-		fmt.Println("[tom-debug] Pod store has been set:", podStore)
-		fmt.Println("[tom-debug] Pod store has been set:", podStore)
-		fmt.Println("[tom-debug] Pod store has been set:", podStore)
-		fmt.Println("[tom-debug] Pod store has been set:", podStore)
 		k.podStore = podStore
 		k.podStoreMU.Unlock()
 		k.podStoreOnce.Do(func() {
@@ -886,4 +879,27 @@ func (k *K8sWatcher) GetCachedPod(namespace, name string) (*slim_corev1.Pod, err
 		}, name)
 	}
 	return podInterface.(*slim_corev1.Pod).DeepCopy(), nil
+}
+
+// GetCachedPods returns pods from local store. Similarily to GetCachedPods, this may
+// only return local pods if and only if ciliumendpoints are disabled and k8sEventHandover
+// is not enabled.
+// Will return error if unexpected object type is found in podStore.
+func (k *K8sWatcher) GetCachedPods() ([]*slim_corev1.Pod, error) {
+	<-k.controllersStarted
+	k.WaitForCacheSync(resources.K8sAPIGroupPodV1Core)
+	<-k.podStoreSet
+	k.podStoreMU.RLock()
+	defer k.podStoreMU.RUnlock()
+
+	podObjs := k.podStore.List()
+	pods := make([]*slim_corev1.Pod, 0, len(podObjs))
+	for _, podObj := range podObjs {
+		pod, ok := podObj.(*slim_corev1.Pod)
+		if !ok {
+			return nil, fmt.Errorf("got unexpected object from pod store")
+		}
+		pods = append(pods, pod.DeepCopy())
+	}
+	return pods, nil
 }

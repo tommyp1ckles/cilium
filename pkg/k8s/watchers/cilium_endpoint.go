@@ -275,6 +275,7 @@ func (k *ciliumEndpointManager) markForDeletion(cep *types.CiliumEndpoint) {
 }
 
 func (k *ciliumEndpointManager) sweep(ctx context.Context) error {
+	fmt.Println("[tom-debug] performing cep gc sweep")
 	k.Lock()
 	defer k.Unlock()
 	for i := len(k.markedForGC) - 1; i >= 0; i-- {
@@ -297,9 +298,10 @@ func (k *ciliumEndpointManager) setCiliumEndpointCleanupEnabled(enabled bool) {
 func (k *ciliumEndpointManager) ciliumEndpointCleanupEnabled() bool {
 	k.RLock()
 	defer k.RUnlock()
+	fmt.Println("[tom-debug] Starting cep local gc")
 	k8sCM.UpdateController("ciliumendpoint-local-gc", controller.ControllerParams{
 		DoFunc:      k.sweep,
-		RunInterval: time.Minute * 5, //todo
+		RunInterval: time.Second * 10, //todo
 	})
 	return k.ciliumEndpointsCleanupEnabled
 }
