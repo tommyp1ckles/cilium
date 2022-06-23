@@ -81,7 +81,6 @@ func (epSync *EndpointSynchronizer) RunK8sCiliumEndpointSync(e *endpoint.Endpoin
 			DoFunc: func(ctx context.Context) (err error) {
 				// Update logger as scopeLog might not have the podName when it
 				// was created.
-				fmt.Println("[tom-debug1] Running CEP K8s Sync Controller:", e.ID, e.SecurityIdentity, e.GetK8sNamespaceAndPodName())
 				scopedLog = e.Logger(subsysEndpointSync).WithField("controller", controllerName)
 
 				if k8sversion.Version().Equals(semver.Version{}) {

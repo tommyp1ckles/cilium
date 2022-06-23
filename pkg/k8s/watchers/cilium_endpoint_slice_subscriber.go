@@ -39,6 +39,8 @@ func (cs *cesSubscriber) OnAdd(ces *cilium_v2a1.CiliumEndpointSlice) {
 		if p := cs.kWatcher.endpointManager.LookupPodName(k8sUtils.GetObjNamespaceName(c)); p != nil {
 			timeSinceCepCreated := time.Since(p.GetCreatedAt())
 			metrics.EndpointPropagationDelay.WithLabelValues().Observe(timeSinceCepCreated.Seconds())
+		} else if cs.kWatcher.ciliumEndpointManager.ciliumEndpointCleanupEnabled() {
+			cs.kWatcher.ciliumEndpointManager.markForDeletion(c)
 		}
 		cs.kWatcher.endpointUpdated(nil, c)
 	}

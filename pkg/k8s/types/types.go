@@ -22,6 +22,7 @@ type CiliumEndpoint struct {
 	slim_metav1.TypeMeta
 	// +deepequal-gen=false
 	slim_metav1.ObjectMeta
+	EndpointID string
 	Identity   *v2.EndpointIdentity
 	Networking *v2.EndpointNetworking
 	Encryption *v2.EncryptionSpec

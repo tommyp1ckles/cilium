@@ -206,7 +206,8 @@ type K8sWatcher struct {
 	// have their event handling methods called in order of registration.
 	CiliumNodeChain *subscriber.CiliumNodeChain
 
-	endpointManager endpointManager
+	endpointManager       endpointManager
+	ciliumEndpointManager *ciliumEndpointManager
 
 	nodeDiscoverManager   nodeDiscoverManager
 	policyManager         policyManager
@@ -267,6 +268,7 @@ func NewK8sWatcher(
 	return &K8sWatcher{
 		K8sSvcCache:           k8s.NewServiceCache(datapath.LocalNodeAddressing()),
 		endpointManager:       endpointManager,
+		ciliumEndpointManager: newCiliumEndpointManager(),
 		nodeDiscoverManager:   nodeDiscoverManager,
 		policyManager:         policyManager,
 		policyRepository:      policyRepository,
@@ -993,4 +995,12 @@ func (k *K8sWatcher) initCiliumEndpointOrSlices(ciliumNPClient *k8s.K8sCiliumCli
 	} else {
 		go k.ciliumEndpointsInit(ciliumNPClient, asyncControllers)
 	}
+}
+
+// SetCiliumEndpointCleanupEnabled sets whether future ciliumendpoint or ciliumendpointslice
+// events will attempt to clean stale ciliumendpoints.
+// CEPs should only begin to be marked for removal after all local node endpoint
+// synchronization is complete.
+func (k *K8sWatcher) SetCiliumEndpointCleanupEnabled(enabled bool) {
+	k.ciliumEndpointManager.setCiliumEndpointCleanupEnabled(enabled)
 }
