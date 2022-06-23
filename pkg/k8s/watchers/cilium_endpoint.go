@@ -263,6 +263,7 @@ type ciliumEndpointManager struct {
 
 func newCiliumEndpointManager() *ciliumEndpointManager {
 	return &ciliumEndpointManager{
+		RWMutex:     &sync.RWMutex{},
 		markedForGC: make([]*types.CiliumEndpoint, 0),
 	}
 }

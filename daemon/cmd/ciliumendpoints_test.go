@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/cilium/cilium/pkg/endpoint"
 	"github.com/cilium/cilium/pkg/k8s"
 	ciliumv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	"github.com/cilium/cilium/pkg/k8s/client/clientset/versioned/fake"
@@ -20,31 +21,44 @@ import (
 )
 
 type fakeStore struct {
-	list []interface{}
+	cache map[interface{}]interface{}
 }
 
 func (s *fakeStore) Add(obj interface{}) error    { return nil }
 func (s *fakeStore) Update(obj interface{}) error { return nil }
 func (s *fakeStore) Delete(obj interface{}) error { return nil }
-func (s *fakeStore) List() []interface{}          { return s.list }
-func (s *fakeStore) ListKeys() []string           { return nil }
+func (s *fakeStore) List() []interface{} {
+	arr := []interface{}{}
+	for _, obj := range s.cache {
+		arr = append(arr, obj)
+	}
+	return arr
+}
+func (s *fakeStore) ListKeys() []string { return nil }
 func (s *fakeStore) Get(obj interface{}) (item interface{}, exists bool, err error) {
 	return nil, false, nil
 }
 func (s *fakeStore) GetByKey(key string) (item interface{}, exists bool, err error) {
-	return nil, false, nil
+	obj, exists := s.cache[key]
+	return obj, exists, nil
 }
 func (s *fakeStore) Replace([]interface{}, string) error { return nil }
 func (s *fakeStore) Resync() error                       { return nil }
 
+type fakeEPManager struct {
+	byPodName map[string]*endpoint.Endpoint
+}
+
+func (epm *fakeEPManager) LookupPodName(name string) *endpoint.Endpoint {
+	ep, ok := epm.byPodName[name]
+	if !ok {
+		return nil
+	}
+	return ep
+}
+
 func TestCleanStaleCeps(t *testing.T) {
 	assert := assert.New(t)
-	// In this test - for each test I want to create:
-	// * A mock Pod store.
-	// * A mock CEP store.
-	// * Populate stores with slim Pods/CEPS.
-	// * Check that desired CEPs get marked for deletion.
-	//
 	// Edge cases to consider:
 	// * Empty names?
 	// * Other reasons CEP might be stale?
@@ -54,41 +68,69 @@ func TestCleanStaleCeps(t *testing.T) {
 	tests := map[string]struct {
 		ceps               []types.CiliumEndpoint
 		pods               []slimcorev1.Pod
+		managedEndpoints   map[string]*endpoint.Endpoint
 		expectedDeletedSet []string
 	}{
-
-		"Ensure good CEPs are not GCd": {
+		"CEPs with local pods without endpoints should be GCd": {
 			ceps: []types.CiliumEndpoint{
 				{
 					ObjectMeta: slimmetav1.ObjectMeta{
 						Name:      "foo",
 						Namespace: "x",
-						OwnerReferences: []slimmetav1.OwnerReference{
-							{Kind: "Pod", Name: "foo"},
-						},
 					},
-					Networking: &ciliumv2.EndpointNetworking{
-						Addressing: ciliumv2.AddressPairList{
-							{IPV4: "10.20.0.1"},
-						},
+				},
+				{
+					ObjectMeta: slimmetav1.ObjectMeta{
+						Name:      "foo",
+						Namespace: "y",
 					},
 				},
 			},
 			pods: []slimcorev1.Pod{
-				slimcorev1.Pod{
+				{
 					ObjectMeta: slimmetav1.ObjectMeta{
 						Name:      "foo",
 						Namespace: "x",
 					},
-					Spec: slimcorev1.PodSpec{HostNetwork: false},
-					Status: slimcorev1.PodStatus{
-						PodIPs: []slimcorev1.PodIP{
-							{IP: "10.20.0.1"},
-						}, // todo: why are there two fields.
-						PodIP: "10.20.0.1",
+				},
+				{
+					ObjectMeta: slimmetav1.ObjectMeta{
+						Name:      "foo",
+						Namespace: "y",
 					},
 				},
 			},
+			managedEndpoints:   map[string]*endpoint.Endpoint{"y/foo": {}},
+			expectedDeletedSet: []string{"x/foo"},
+		},
+		"CEPs with local pods with endpoints should be GCd": {
+			ceps: []types.CiliumEndpoint{
+				{
+					ObjectMeta: slimmetav1.ObjectMeta{
+						Name:      "foo",
+						Namespace: "x",
+					},
+				},
+			},
+			pods: []slimcorev1.Pod{
+				{
+					ObjectMeta: slimmetav1.ObjectMeta{
+						Name:      "foo",
+						Namespace: "x",
+					},
+				},
+			},
+			managedEndpoints:   map[string]*endpoint.Endpoint{"x/foo": {}},
+			expectedDeletedSet: []string{},
+		},
+		"empty test": {
+			ceps: []types.CiliumEndpoint{
+				{ObjectMeta: slimmetav1.ObjectMeta{}},
+			},
+			pods: []slimcorev1.Pod{
+				{ObjectMeta: slimmetav1.ObjectMeta{}},
+			},
+			managedEndpoints:   map[string]*endpoint.Endpoint{},
 			expectedDeletedSet: []string{},
 		},
 	}
@@ -103,8 +145,12 @@ func TestCleanStaleCeps(t *testing.T) {
 				cep := action.(k8stesting.CreateAction).GetObject().(*ciliumv2.CiliumEndpoint)
 				return false, cep, nil
 			}))
-			cepStore := &fakeStore{}
-			podStore := &fakeStore{}
+			cepStore := &fakeStore{
+				cache: map[interface{}]interface{}{},
+			}
+			podStore := &fakeStore{
+				cache: map[interface{}]interface{}{},
+			}
 			for _, cep := range test.ceps {
 				_, err := fakeClient.CiliumV2().CiliumEndpoints(cep.Namespace).Create(context.Background(), &ciliumv2.CiliumEndpoint{
 					ObjectMeta: metav1.ObjectMeta{
@@ -113,10 +159,10 @@ func TestCleanStaleCeps(t *testing.T) {
 					},
 				}, metav1.CreateOptions{})
 				assert.NoError(err)
-				cepStore.list = append(cepStore.list, &cep)
+				cepStore.cache[fmt.Sprintf("%s/%s", cep.Namespace, cep.Name)] = cep.DeepCopy()
 			}
 			for _, pod := range test.pods {
-				podStore.list = append(podStore.list, &pod)
+				podStore.cache[fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)] = pod.DeepCopy()
 			}
 			d.k8sWatcher.SetStore("ciliumendpoint", cepStore)
 			d.k8sWatcher.SetStore("pod", podStore)
@@ -125,21 +171,18 @@ func TestCleanStaleCeps(t *testing.T) {
 			fakeClient.PrependReactor("delete", "ciliumendpoints", k8stesting.ReactionFunc(func(action k8stesting.Action) (bool, runtime.Object, error) {
 				l.Lock()
 				defer l.Unlock()
-				deletedSet = append(deletedSet, action.(k8stesting.DeleteAction).GetName())
+				a := action.(k8stesting.DeleteAction)
+				deletedSet = append(deletedSet, fmt.Sprintf("%s/%s", a.GetNamespace(), a.GetName()))
 				return false, nil, nil
 			}))
-			// _, err := fakeClient.CiliumV2().CiliumEndpoints("x").Create(context.Background(), &ciliumv2.CiliumEndpoint{
-			// 	ObjectMeta: metav1.ObjectMeta{
-			// 		Name: "foo",
-			// 	},
-			// }, v1.CreateOptions{})
 
-			err := d.CleanStaleCEPs(context.Background(), k8s.K8sCiliumClient{
+			epm := &fakeEPManager{test.managedEndpoints}
+
+			err := d.cleanStaleCEPs(context.Background(), epm, k8s.K8sCiliumClient{
 				Interface: fakeClient,
 			}.CiliumV2())
 
 			assert.NoError(err)
-			fmt.Println("RESULT:", deletedSet)
 			assert.ElementsMatch(test.expectedDeletedSet, deletedSet)
 		})
 

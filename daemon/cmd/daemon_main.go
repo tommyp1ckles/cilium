@@ -1741,17 +1741,9 @@ func runDaemon() {
 	if k8s.IsEnabled() {
 		// Wait only for certain caches, but not all!
 		// (Check Daemon.InitK8sSubsystem() for more info)
-		// @tom
-		// I need to wait for:
-		// * Pods
-		// * CEPs
 		<-d.k8sCachesSynced
 	}
-	fmt.Println("[tom-debug2] Done caches synced")
 	bootstrapStats.k8sInit.End(true)
-	// @tom: So this launches some controllers for each of the endpoints that are restored.
-	// I believe this does the api client actions necessary to create/update the CEP.
-	// So, at this point, the endpoints are already synced.
 	restoreComplete := d.initRestore(restoredEndpoints)
 	if wgAgent != nil {
 		if err := wgAgent.RestoreFinished(); err != nil {
@@ -1771,10 +1763,6 @@ func runDaemon() {
 		}
 	}
 
-	if err := d.CleanStaleCEPs(ctx, k8s.CiliumClient().CiliumV2()); err != nil {
-		log.WithError(err).Fatal("Failed to clean stale CEPs")
-	}
-
 	if option.Config.EnableIPMasqAgent {
 		ipmasqAgent, err := ipmasq.NewIPMasqAgent(option.Config.IPMasqAgentConfigPath)
 		if err != nil {
@@ -1788,6 +1776,16 @@ func runDaemon() {
 			if restoreComplete != nil {
 				<-restoreComplete
 			}
+			// Check if there are any stale CEPs for any local pod once. Further cleanup will be performed
+			// by k8s watchers.
+			// if err := d.cleanStaleCEPs(ctx, d.endpointManager, k8s.CiliumClient().CiliumV2()); err != nil {
+			// 	log.WithError(err).Fatal("Failed to clean up stale CEPs")
+			// }
+
+			// This begins running local stale cep GC, can only be started after k8s caches are synced
+			// and local endpoints are restored.
+			d.k8sWatcher.SetCiliumEndpointCleanupEnabled(true)
+
 			d.dnsNameManager.CompleteBootstrap()
 
 			ms := maps.NewMapSweeper(&EndpointMapManager{

@@ -324,6 +324,9 @@ func (mgr *EndpointManager) LookupIP(ip net.IP) (ep *endpoint.Endpoint) {
 // LookupPodName looks up endpoint by namespace + pod name
 func (mgr *EndpointManager) LookupPodName(name string) *endpoint.Endpoint {
 	mgr.mutex.RLock()
+	for k, v := range mgr.endpointsAux {
+		fmt.Println("[tom-debug] --->", k, v)
+	}
 	ep := mgr.lookupPodNameLocked(name)
 	mgr.mutex.RUnlock()
 	return ep
@@ -580,6 +583,7 @@ func (mgr *EndpointManager) expose(ep *endpoint.Endpoint) error {
 	ep.Start(newID)
 	mgr.AddIPv6Address(ep.IPv6)
 	mgr.updateIDReferenceLocked(ep)
+	fmt.Println("[tom-debug] Updating references locked w/ identifiers:", ep.K8sPodName, identifiers)
 	mgr.updateReferencesLocked(ep, identifiers)
 	mgr.mutex.Unlock()
 
