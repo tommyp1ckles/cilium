@@ -7,7 +7,6 @@ import (
 	"github.com/cilium/cilium/pkg/endpoint"
 	cilium_v2a1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	ciliumv2 "github.com/cilium/cilium/pkg/k8s/client/clientset/versioned/typed/cilium.io/v2"
-	slimcorev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	"github.com/cilium/cilium/pkg/k8s/types"
 	"github.com/cilium/cilium/pkg/option"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -48,17 +47,19 @@ func (d *Daemon) cleanStaleCEPs(ctx context.Context, eps endpointAccessor, ciliu
 		}
 	}
 
-	for _, podObj := range d.getStore("pod").List() {
-		pod := podObj.(*slimcorev1.Pod)
+	// GetCachedPods will only return local pods in cases where ciliumendpoint CRD is disabled.
+	pods, err := d.k8sWatcher.GetCachedPods()
+	if err != nil {
+		return fmt.Errorf("could not get pods from local cache:", err)
+	}
 
+	for _, pod := range pods {
 		if pod.Spec.HostNetwork {
 			continue
 		}
 
 		var cepName, cepNamespace string
 		store := d.getStore("ciliumendpoint")
-		// Ceps may not be stored locally due to ciliumendpointslices being enabled, in which case
-		// we need to reach out to kube-api directly.
 		if store == nil {
 			cep, ok := cesContainedCEPLookup[keyFn(pod.Namespace, pod.Name)]
 			if !ok {
@@ -86,7 +87,6 @@ func (d *Daemon) cleanStaleCEPs(ctx context.Context, eps endpointAccessor, ciliu
 		}
 
 		// See if local endpoint exists for this pod.
-		fmt.Println("[tom-debug7] CEPPAIR:", cepName, cepNamespace)
 		podName := keyFn(cepNamespace, cepName)
 		ep := eps.LookupPodName(podName)
 		if ep != nil {
@@ -95,7 +95,7 @@ func (d *Daemon) cleanStaleCEPs(ctx context.Context, eps endpointAccessor, ciliu
 			continue
 		}
 
-		// There now exists a local pod that has a CEP but references no local EP.
+		// There now exists a local pod that has a ciliumendpoint but has not local endpoint being managed.
 		// At this point know that the pod:
 		// * Is running locally.
 		// * Has a CEP associated with it.

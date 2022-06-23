@@ -1776,15 +1776,21 @@ func runDaemon() {
 			if restoreComplete != nil {
 				<-restoreComplete
 			}
-			// Check if there are any stale CEPs for any local pod once. Further cleanup will be performed
-			// by k8s watchers.
-			// if err := d.cleanStaleCEPs(ctx, d.endpointManager, k8s.CiliumClient().CiliumV2()); err != nil {
-			// 	log.WithError(err).Fatal("Failed to clean up stale CEPs")
-			// }
 
-			// This begins running local stale cep GC, can only be started after k8s caches are synced
-			// and local endpoints are restored.
-			d.k8sWatcher.SetCiliumEndpointCleanupEnabled(true)
+			if k8s.IsEnabled() && !option.Config.DisableCiliumEndpointCRD {
+				// Use restored endpoints to delete ciliumendpoints which have Pods running on this node
+				// but are not in the restored endpoint cache.
+				// This will clear out any ciliumendpoints that may be stale.
+				// Likely causes for this are Pods having their init container restarted or the node being restarted.
+				// This must wait for both K8s watcher caches to be synced and local endpoint restoration to be complete.
+				if err := d.cleanStaleCEPs(ctx, d.endpointManager, k8s.CiliumClient().CiliumV2()); err != nil {
+					log.WithError(err).Fatal("Failed to clean up stale CEPs")
+				}
+
+				// After local endpoint sync is complete, begin having ciliumendpoint or ciliumendpointslice watcher
+				// mark stale ceps.
+				d.k8sWatcher.SetCiliumEndpointCleanupEnabled(true)
+			}
 
 			d.dnsNameManager.CompleteBootstrap()
 
