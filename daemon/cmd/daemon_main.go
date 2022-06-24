@@ -1792,7 +1792,7 @@ func runDaemon() {
 				// After local endpoint sync is complete, begin having ciliumendpoint or ciliumendpointslice watcher
 				// mark stale ceps.
 				if option.Config.LocalCiliumEndpointGCInterval != 0 {
-					d.k8sWatcher.EnabledCiliumEndpointCleanup()
+					d.k8sWatcher.EnableCiliumEndpointCleanup()
 				}
 			}
 

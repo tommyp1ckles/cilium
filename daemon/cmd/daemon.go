@@ -651,6 +651,7 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 		d.l7Proxy,
 		option.Config,
 		d.ipcache,
+		k8s.CiliumClient().CiliumV2(),
 	)
 	nd.RegisterK8sNodeGetter(d.k8sWatcher)
 	d.ipcache.RegisterK8sSyncedChecker(&d)
