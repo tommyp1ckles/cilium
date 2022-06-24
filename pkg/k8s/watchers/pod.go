@@ -885,10 +885,8 @@ func (k *K8sWatcher) GetCachedPod(namespace, name string) (*slim_corev1.Pod, err
 // only return local pods if and only if ciliumendpoints are disabled and k8sEventHandover
 // is not enabled.
 // Will return error if unexpected object type is found in podStore.
+// GetCachedPods does not wait for synchronization for k8s pod cache.
 func (k *K8sWatcher) GetCachedPods() ([]*slim_corev1.Pod, error) {
-	<-k.controllersStarted
-	k.WaitForCacheSync(resources.K8sAPIGroupPodV1Core)
-	<-k.podStoreSet
 	k.podStoreMU.RLock()
 	defer k.podStoreMU.RUnlock()
 

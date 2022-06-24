@@ -1133,7 +1133,9 @@ func initializeFlags() {
 	flags.Bool(option.EnableBGPControlPlane, false, "Enable the BGP control plane.")
 	option.BindEnv(option.EnableBGPControlPlane)
 
-	viper.BindPFlags(flags)
+	flags.Duration(option.LocalCiliumEndpointGCInterval, defaults.LocalCiliumEndpointGCInterval, "Kubernetes watcher will mark CiliumEndpoints running locally that do not have endpoints, this controls how often GC is run on stale CEPs (0 will disable CEP GC)")
+	flags.MarkHidden(option.LocalCiliumEndpointGCInterval)
+	viper.BindEnv(option.LocalCiliumEndpointGCInterval)
 }
 
 // restoreExecPermissions restores file permissions to 0740 of all files inside
@@ -1789,7 +1791,9 @@ func runDaemon() {
 
 				// After local endpoint sync is complete, begin having ciliumendpoint or ciliumendpointslice watcher
 				// mark stale ceps.
-				d.k8sWatcher.SetCiliumEndpointCleanupEnabled(true)
+				if option.Config.LocalCiliumEndpointGCInterval != 0 {
+					d.k8sWatcher.EnabledCiliumEndpointCleanup()
+				}
 			}
 
 			d.dnsNameManager.CompleteBootstrap()

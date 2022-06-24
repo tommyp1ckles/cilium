@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"sync"
-	"time"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/fields"
@@ -19,6 +18,7 @@ import (
 	"github.com/cilium/cilium/pkg/ipcache"
 	"github.com/cilium/cilium/pkg/k8s"
 	cilium_v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
+	v2 "github.com/cilium/cilium/pkg/k8s/client/clientset/versioned/typed/cilium.io/v2"
 	"github.com/cilium/cilium/pkg/k8s/informer"
 	"github.com/cilium/cilium/pkg/k8s/types"
 	k8sUtils "github.com/cilium/cilium/pkg/k8s/utils"
@@ -259,49 +259,55 @@ type ciliumEndpointManager struct {
 	*sync.RWMutex
 	ciliumEndpointsCleanupEnabled bool
 	markedForGC                   []*types.CiliumEndpoint
+	client                        v2.CiliumV2Interface
 }
 
-func newCiliumEndpointManager() *ciliumEndpointManager {
+func newCiliumEndpointManager(ciliumClient v2.CiliumV2Interface) *ciliumEndpointManager {
 	return &ciliumEndpointManager{
-		RWMutex:     &sync.RWMutex{},
-		markedForGC: make([]*types.CiliumEndpoint, 0),
+		RWMutex: &sync.RWMutex{},
+		client:  ciliumClient,
 	}
 }
 
-func (k *ciliumEndpointManager) markForDeletion(cep *types.CiliumEndpoint) {
-	k.Lock()
-	defer k.Unlock()
-	k.markedForGC = append(k.markedForGC, cep)
+func (cpm *ciliumEndpointManager) markForDeletion(cep *types.CiliumEndpoint) {
+	cpm.Lock()
+	defer cpm.Unlock()
+	cpm.markedForGC = append(cpm.markedForGC, cep)
 }
 
-func (k *ciliumEndpointManager) sweep(ctx context.Context) error {
-	fmt.Println("[tom-debug] performing cep gc sweep")
-	k.Lock()
-	defer k.Unlock()
-	for i := len(k.markedForGC) - 1; i >= 0; i-- {
-		cep := k.markedForGC[i]
-		if err := k8s.CiliumClient().CiliumV2().CiliumEndpoints(cep.Namespace).Delete(ctx, cep.Name, metav1.DeleteOptions{}); err != nil {
+func (cpm *ciliumEndpointManager) sweep(ctx context.Context) error {
+	cpm.Lock()
+	defer cpm.Unlock()
+	if cpm.markedForGC == nil {
+		return nil
+	}
+	fmt.Println("---->", len(cpm.markedForGC))
+	for i := len(cpm.markedForGC) - 1; i >= 0; i-- {
+		cep := cpm.markedForGC[i]
+		if err := cpm.client.CiliumEndpoints(cep.Namespace).Delete(ctx, cep.Name, metav1.DeleteOptions{}); err != nil {
+			fmt.Println("err:", err)
 			return fmt.Errorf("failed to cleanup ciliumendpoint %q: %w", k8sUtils.GetObjNamespaceName(cep), err)
 		}
-		k.markedForGC = k.markedForGC[:len(k.markedForGC)-1]
+		cpm.markedForGC = cpm.markedForGC[:len(cpm.markedForGC)-1]
+		fmt.Println("Doing SWEEP", cpm.markedForGC)
 	}
 	return nil
 }
 
-func (k *ciliumEndpointManager) setCiliumEndpointCleanupEnabled(enabled bool) {
-	k.Lock()
-	defer k.Unlock()
-	k.ciliumEndpointsCleanupEnabled = enabled
+func (cpm *ciliumEndpointManager) enableCiliumEndpointCleanup() {
+	cpm.Lock()
+	defer cpm.Unlock()
+	k8sCM.UpdateController("ciliumendpoint-local-gc", controller.ControllerParams{
+		DoFunc:       cpm.sweep,
+		RunInterval:  option.Config.LocalCiliumEndpointGCInterval,
+		NoErrorRetry: false,
+	})
+	cpm.ciliumEndpointsCleanupEnabled = true
 }
 
 // ciliumEndpointCleanupEnabled enables marking stale ciliumendpoints for removal.
-func (k *ciliumEndpointManager) ciliumEndpointCleanupEnabled() bool {
-	k.RLock()
-	defer k.RUnlock()
-	fmt.Println("[tom-debug] Starting cep local gc")
-	k8sCM.UpdateController("ciliumendpoint-local-gc", controller.ControllerParams{
-		DoFunc:      k.sweep,
-		RunInterval: time.Second * 10, //todo
-	})
-	return k.ciliumEndpointsCleanupEnabled
+func (cpm *ciliumEndpointManager) ciliumEndpointCleanupEnabled() bool {
+	cpm.RLock()
+	defer cpm.RUnlock()
+	return cpm.ciliumEndpointsCleanupEnabled
 }

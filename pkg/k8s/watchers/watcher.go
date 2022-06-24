@@ -268,7 +268,7 @@ func NewK8sWatcher(
 	return &K8sWatcher{
 		K8sSvcCache:           k8s.NewServiceCache(datapath.LocalNodeAddressing()),
 		endpointManager:       endpointManager,
-		ciliumEndpointManager: newCiliumEndpointManager(),
+		ciliumEndpointManager: newCiliumEndpointManager(k8s.CiliumClient().CiliumV2()),
 		nodeDiscoverManager:   nodeDiscoverManager,
 		policyManager:         policyManager,
 		policyRepository:      policyRepository,
@@ -1001,6 +1001,6 @@ func (k *K8sWatcher) initCiliumEndpointOrSlices(ciliumNPClient *k8s.K8sCiliumCli
 // events will attempt to clean stale ciliumendpoints.
 // CEPs should only begin to be marked for removal after all local node endpoint
 // synchronization is complete.
-func (k *K8sWatcher) SetCiliumEndpointCleanupEnabled(enabled bool) {
-	k.ciliumEndpointManager.setCiliumEndpointCleanupEnabled(enabled)
+func (k *K8sWatcher) EnableCiliumEndpointCleanup() {
+	k.ciliumEndpointManager.enableCiliumEndpointCleanup()
 }

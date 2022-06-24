@@ -50,7 +50,7 @@ func (d *Daemon) cleanStaleCEPs(ctx context.Context, eps endpointAccessor, ciliu
 	// GetCachedPods will only return local pods in cases where ciliumendpoint CRD is disabled.
 	pods, err := d.k8sWatcher.GetCachedPods()
 	if err != nil {
-		return fmt.Errorf("could not get pods from local cache:", err)
+		return fmt.Errorf("could not get pods from local cache: %w", err)
 	}
 
 	for _, pod := range pods {
