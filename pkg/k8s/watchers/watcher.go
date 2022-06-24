@@ -31,6 +31,7 @@ import (
 	"github.com/cilium/cilium/pkg/k8s"
 	v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	"github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
+	ciliumClient "github.com/cilium/cilium/pkg/k8s/client/clientset/versioned/typed/cilium.io/v2"
 	k8smetrics "github.com/cilium/cilium/pkg/k8s/metrics"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	slim_discover_v1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/discovery/v1"
@@ -264,11 +265,12 @@ func NewK8sWatcher(
 	envoyConfigManager envoyConfigManager,
 	cfg WatcherConfiguration,
 	ipcache *ipcache.IPCache,
+	ciliumClient ciliumClient.CiliumV2Interface,
 ) *K8sWatcher {
 	return &K8sWatcher{
 		K8sSvcCache:           k8s.NewServiceCache(datapath.LocalNodeAddressing()),
 		endpointManager:       endpointManager,
-		ciliumEndpointManager: newCiliumEndpointManager(k8s.CiliumClient().CiliumV2()),
+		ciliumEndpointManager: newCiliumEndpointManager(ciliumClient),
 		nodeDiscoverManager:   nodeDiscoverManager,
 		policyManager:         policyManager,
 		policyRepository:      policyRepository,
