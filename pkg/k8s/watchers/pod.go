@@ -880,3 +880,24 @@ func (k *K8sWatcher) GetCachedPod(namespace, name string) (*slim_corev1.Pod, err
 	}
 	return podInterface.(*slim_corev1.Pod).DeepCopy(), nil
 }
+
+// GetCachedPods returns pods from local store. Similarly to GetCachedPods, this may
+// only return local pods if and only if ciliumendpoints are disabled and k8sEventHandover
+// is not enabled.
+// Will return error if unexpected object type is found in podStore.
+// GetCachedPods does not wait for synchronization for k8s pod cache.
+func (k *K8sWatcher) GetCachedPods() ([]*slim_corev1.Pod, error) {
+	k.podStoreMU.RLock()
+	defer k.podStoreMU.RUnlock()
+
+	podObjs := k.podStore.List()
+	pods := make([]*slim_corev1.Pod, 0, len(podObjs))
+	for _, podObj := range podObjs {
+		pod, ok := podObj.(*slim_corev1.Pod)
+		if !ok {
+			return nil, fmt.Errorf("got unexpected object from pod store")
+		}
+		pods = append(pods, pod.DeepCopy())
+	}
+	return pods, nil
+}

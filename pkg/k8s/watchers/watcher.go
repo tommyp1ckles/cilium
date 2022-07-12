@@ -236,6 +236,12 @@ type K8sWatcher struct {
 	ciliumNodeStoreMU lock.RWMutex
 	ciliumNodeStore   cache.Store
 
+	ciliumEndpointStoreMU lock.RWMutex
+	ciliumEndpointStore   cache.Store
+
+	ciliumEndpointSliceStoreMU lock.RWMutex
+	ciliumEndpointSliceStore   cache.Store
+
 	namespaceStore cache.Store
 	datapath       datapath.Datapath
 
@@ -938,9 +944,45 @@ func (k *K8sWatcher) GetStore(name string) cache.Store {
 		k.podStoreMU.RLock()
 		defer k.podStoreMU.RUnlock()
 		return k.podStore
+	case "ciliumendpoint":
+		k.ciliumEndpointStoreMU.RLock()
+		defer k.ciliumEndpointStoreMU.RUnlock()
+		return k.ciliumEndpointStore
+	case "ciliumendpointslice":
+		k.ciliumEndpointSliceStoreMU.RLock()
+		defer k.ciliumEndpointSliceStoreMU.RUnlock()
+		return k.ciliumEndpointSliceStore
 	default:
 		return nil
 	}
+}
+
+// SetStore lets you set a named cache store, only used for testing.
+// Note: Does not synchronize podStore channel.
+func (k *K8sWatcher) SetStore(name string, store cache.Store) error {
+	switch name {
+	case "networkpolicy":
+		k.networkpolicyStore = store
+	case "namespace":
+		k.namespaceStore = store
+	case "pod":
+		k.podStoreMU.Lock()
+		defer k.podStoreMU.Unlock()
+		k.podStore = store
+		k.podStoreSet = make(chan struct{})
+		close(k.podStoreSet)
+	case "ciliumendpoint":
+		k.ciliumEndpointStoreMU.Lock()
+		defer k.ciliumEndpointStoreMU.Unlock()
+		k.ciliumEndpointStore = store
+	case "ciliumendpointslice":
+		k.ciliumEndpointSliceStoreMU.Lock()
+		defer k.ciliumEndpointSliceStoreMU.Unlock()
+		k.ciliumEndpointSliceStore = store
+	default:
+		return fmt.Errorf("unexpected store name")
+	}
+	return nil
 }
 
 // initCiliumEndpointOrSlices intializes the ciliumEndpoints or ciliumEndpointSlice

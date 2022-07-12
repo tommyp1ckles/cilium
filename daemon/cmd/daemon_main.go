@@ -1793,6 +1793,20 @@ func runDaemon() {
 			if restoreComplete != nil {
 				<-restoreComplete
 			}
+
+			if k8s.IsEnabled() {
+				// Use restored endpoints to delete CiliumEndpoints which have Pods running on this node
+				// but are not in the restored endpoint cache.
+				// This will clear out any CiliumEndpoints that may be stale.
+				// Likely causes for this are Pods having their init container restarted or the node being restarted.
+				// This must wait for both K8s watcher caches to be synced and local endpoint restoration to be complete.
+				// Note: Synchronization of endpoints to their CEPs may not be complete at this point, but we only have to
+				// know what endpoints exist post-restoration in our endpointManager cache to perform cleanup.
+				if err := d.cleanStaleCEPs(ctx, d.endpointManager, k8s.CiliumClient().CiliumV2(), option.Config.DisableCiliumEndpointCRD); err != nil {
+					log.WithError(err).Fatal("Failed to clean up stale CEPs")
+				}
+			}
+
 			d.dnsNameManager.CompleteBootstrap()
 
 			ms := maps.NewMapSweeper(&EndpointMapManager{
