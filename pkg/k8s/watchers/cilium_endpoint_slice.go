@@ -31,7 +31,7 @@ func (k *K8sWatcher) ciliumEndpointSliceInit(client *k8s.K8sCiliumClient, asyncC
 	cesNotify.Register(newCESSubscriber(k))
 
 	for {
-		_, cesInformer := informer.NewInformer(
+		cesStore, cesInformer := informer.NewInformer(
 			cache.NewListWatchFromClient(client.CiliumV2alpha1().RESTClient(),
 				cilium_v2a1.CESPluralName, v1.NamespaceAll, fields.Everything()),
 			&cilium_v2a1.CiliumEndpointSlice{},
@@ -60,6 +60,9 @@ func (k *K8sWatcher) ciliumEndpointSliceInit(client *k8s.K8sCiliumClient, asyncC
 			},
 			nil,
 		)
+		k.ciliumEndpointSliceStoreMU.Lock()
+		k.ciliumEndpointSliceStore = cesStore
+		k.ciliumEndpointSliceStoreMU.Unlock()
 		isConnected := make(chan struct{})
 		// once isConnected is closed, it will stop waiting on caches to be
 		// synchronized.

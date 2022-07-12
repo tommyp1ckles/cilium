@@ -1089,6 +1089,11 @@ const (
 	// EnableRuntimeDeviceDetection is the name of the option to enable detection
 	// of new and removed datapath devices during the agent runtime.
 	EnableRuntimeDeviceDetection = "enable-runtime-device-detection"
+
+	// LocalCiliumEndpointGCInterval configures interval between when marked stale CiliumEndpoint
+	// resources are garbage-collected.
+	// Setting this to 0 will disable continued stale-CiliumEndpoint garbage collection.
+	LocalCiliumEndpointGCInterval = "local-cilium-endpoint-gc-interval"
 )
 
 // Default string arguments
@@ -2250,49 +2255,54 @@ type DaemonConfig struct {
 
 	// EnvoySecretNamespace for TLS secrets. Used by CiliumEnvoyConfig via SDS.
 	EnvoySecretNamespace string
+
+	// LocalCiliumEndpointGCInterval sets the time interval between local marked stale CiliumEndpoint
+	// are garbage collected.
+	LocalCiliumEndpointGCInterval time.Duration
 }
 
 var (
 	// Config represents the daemon configuration
 	Config = &DaemonConfig{
-		CreationTime:                 time.Now(),
-		Opts:                         NewIntOptions(&DaemonOptionLibrary),
-		Monitor:                      &models.MonitorStatus{Cpus: int64(runtime.NumCPU()), Npages: 64, Pagesize: int64(os.Getpagesize()), Lost: 0, Unknown: 0},
-		IPv6ClusterAllocCIDR:         defaults.IPv6ClusterAllocCIDR,
-		IPv6ClusterAllocCIDRBase:     defaults.IPv6ClusterAllocCIDRBase,
-		EnableHostIPRestore:          defaults.EnableHostIPRestore,
-		EnableHealthChecking:         defaults.EnableHealthChecking,
-		EnableEndpointHealthChecking: defaults.EnableEndpointHealthChecking,
-		EnableHealthCheckNodePort:    defaults.EnableHealthCheckNodePort,
-		EnableIPv4:                   defaults.EnableIPv4,
-		EnableIPv6:                   defaults.EnableIPv6,
-		EnableIPv6NDP:                defaults.EnableIPv6NDP,
-		EnableL7Proxy:                defaults.EnableL7Proxy,
-		EndpointStatus:               make(map[string]struct{}),
-		DNSMaxIPsPerRestoredRule:     defaults.DNSMaxIPsPerRestoredRule,
-		ToFQDNsMaxIPsPerHost:         defaults.ToFQDNsMaxIPsPerHost,
-		KVstorePeriodicSync:          defaults.KVstorePeriodicSync,
-		KVstoreConnectivityTimeout:   defaults.KVstoreConnectivityTimeout,
-		IPAllocationTimeout:          defaults.IPAllocationTimeout,
-		IdentityChangeGracePeriod:    defaults.IdentityChangeGracePeriod,
-		IdentityRestoreGracePeriod:   defaults.IdentityRestoreGracePeriod,
-		FixedIdentityMapping:         make(map[string]string),
-		KVStoreOpt:                   make(map[string]string),
-		LogOpt:                       make(map[string]string),
-		SelectiveRegeneration:        defaults.SelectiveRegeneration,
-		LoopbackIPv4:                 defaults.LoopbackIPv4,
-		ForceLocalPolicyEvalAtSource: defaults.ForceLocalPolicyEvalAtSource,
-		EnableEndpointRoutes:         defaults.EnableEndpointRoutes,
-		AnnotateK8sNode:              defaults.AnnotateK8sNode,
-		K8sServiceCacheSize:          defaults.K8sServiceCacheSize,
-		AutoCreateCiliumNodeResource: defaults.AutoCreateCiliumNodeResource,
-		IdentityAllocationMode:       IdentityAllocationModeKVstore,
-		AllowICMPFragNeeded:          defaults.AllowICMPFragNeeded,
-		EnableWellKnownIdentities:    defaults.EnableWellKnownIdentities,
-		K8sEnableK8sEndpointSlice:    defaults.K8sEnableEndpointSlice,
-		K8sEnableAPIDiscovery:        defaults.K8sEnableAPIDiscovery,
-		AllocatorListTimeout:         defaults.AllocatorListTimeout,
-		EnableICMPRules:              defaults.EnableICMPRules,
+		CreationTime:                  time.Now(),
+		Opts:                          NewIntOptions(&DaemonOptionLibrary),
+		Monitor:                       &models.MonitorStatus{Cpus: int64(runtime.NumCPU()), Npages: 64, Pagesize: int64(os.Getpagesize()), Lost: 0, Unknown: 0},
+		IPv6ClusterAllocCIDR:          defaults.IPv6ClusterAllocCIDR,
+		IPv6ClusterAllocCIDRBase:      defaults.IPv6ClusterAllocCIDRBase,
+		EnableHostIPRestore:           defaults.EnableHostIPRestore,
+		EnableHealthChecking:          defaults.EnableHealthChecking,
+		EnableEndpointHealthChecking:  defaults.EnableEndpointHealthChecking,
+		EnableHealthCheckNodePort:     defaults.EnableHealthCheckNodePort,
+		EnableIPv4:                    defaults.EnableIPv4,
+		EnableIPv6:                    defaults.EnableIPv6,
+		EnableIPv6NDP:                 defaults.EnableIPv6NDP,
+		EnableL7Proxy:                 defaults.EnableL7Proxy,
+		EndpointStatus:                make(map[string]struct{}),
+		DNSMaxIPsPerRestoredRule:      defaults.DNSMaxIPsPerRestoredRule,
+		ToFQDNsMaxIPsPerHost:          defaults.ToFQDNsMaxIPsPerHost,
+		KVstorePeriodicSync:           defaults.KVstorePeriodicSync,
+		KVstoreConnectivityTimeout:    defaults.KVstoreConnectivityTimeout,
+		IPAllocationTimeout:           defaults.IPAllocationTimeout,
+		IdentityChangeGracePeriod:     defaults.IdentityChangeGracePeriod,
+		IdentityRestoreGracePeriod:    defaults.IdentityRestoreGracePeriod,
+		FixedIdentityMapping:          make(map[string]string),
+		KVStoreOpt:                    make(map[string]string),
+		LogOpt:                        make(map[string]string),
+		SelectiveRegeneration:         defaults.SelectiveRegeneration,
+		LoopbackIPv4:                  defaults.LoopbackIPv4,
+		ForceLocalPolicyEvalAtSource:  defaults.ForceLocalPolicyEvalAtSource,
+		EnableEndpointRoutes:          defaults.EnableEndpointRoutes,
+		AnnotateK8sNode:               defaults.AnnotateK8sNode,
+		K8sServiceCacheSize:           defaults.K8sServiceCacheSize,
+		AutoCreateCiliumNodeResource:  defaults.AutoCreateCiliumNodeResource,
+		IdentityAllocationMode:        IdentityAllocationModeKVstore,
+		AllowICMPFragNeeded:           defaults.AllowICMPFragNeeded,
+		EnableWellKnownIdentities:     defaults.EnableWellKnownIdentities,
+		K8sEnableK8sEndpointSlice:     defaults.K8sEnableEndpointSlice,
+		K8sEnableAPIDiscovery:         defaults.K8sEnableAPIDiscovery,
+		AllocatorListTimeout:          defaults.AllocatorListTimeout,
+		EnableICMPRules:               defaults.EnableICMPRules,
+		LocalCiliumEndpointGCInterval: defaults.LocalCiliumEndpointGCInterval,
 
 		K8sEnableLeasesFallbackDiscovery: defaults.K8sEnableLeasesFallbackDiscovery,
 		APIRateLimit:                     make(map[string]string),
@@ -3231,6 +3241,7 @@ func (c *DaemonConfig) Populate() {
 	c.EnableICMPRules = viper.GetBool(EnableICMPRules)
 	c.BypassIPAvailabilityUponRestore = viper.GetBool(BypassIPAvailabilityUponRestore)
 	c.EnableK8sTerminatingEndpoint = viper.GetBool(EnableK8sTerminatingEndpoint)
+	c.LocalCiliumEndpointGCInterval = viper.GetDuration(LocalCiliumEndpointGCInterval)
 
 	// Disable Envoy version check if L7 proxy is disabled.
 	c.DisableEnvoyVersionCheck = viper.GetBool(DisableEnvoyVersionCheck)

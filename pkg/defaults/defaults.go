@@ -479,4 +479,8 @@ const (
 
 	// Enable BGP control plane features.
 	EnableBGPControlPlane = false
+
+	// LocalCiliumEndpointGCInterval is the duration for the local ciliumendpoint gc controller.
+	// stale CiliumEndpoints are also cleaned on daemon init so this doesn't have to be too frequent.
+	LocalCiliumEndpointGCInterval = time.Minute
 )

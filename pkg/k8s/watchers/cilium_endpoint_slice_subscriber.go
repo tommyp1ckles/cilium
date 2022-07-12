@@ -10,9 +10,11 @@ import (
 
 	"github.com/cilium/cilium/pkg/k8s"
 	cilium_v2a1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
+	"github.com/cilium/cilium/pkg/k8s/types"
 	k8sUtils "github.com/cilium/cilium/pkg/k8s/utils"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/metrics"
+	"github.com/cilium/cilium/pkg/node"
 )
 
 type cesSubscriber struct {
@@ -22,6 +24,16 @@ type cesSubscriber struct {
 func newCESSubscriber(k *K8sWatcher) *cesSubscriber {
 	return &cesSubscriber{
 		kWatcher: k,
+	}
+}
+
+// Checks if ceps should be marked for cleanup, if so marks the cep.
+func (cs *cesSubscriber) checkCEPForMark(cep *types.CiliumEndpoint) {
+	if !cs.kWatcher.ciliumEndpointManager.ciliumEndpointCleanupEnabled() {
+		return
+	}
+	if cep.Networking.NodeIP == node.GetCiliumEndpointNodeIP() {
+		cs.kWatcher.ciliumEndpointManager.markForDeletion(cep)
 	}
 }
 
@@ -39,6 +51,8 @@ func (cs *cesSubscriber) OnAdd(ces *cilium_v2a1.CiliumEndpointSlice) {
 		if p := cs.kWatcher.endpointManager.LookupPodName(k8sUtils.GetObjNamespaceName(c)); p != nil {
 			timeSinceCepCreated := time.Since(p.GetCreatedAt())
 			metrics.EndpointPropagationDelay.WithLabelValues().Observe(timeSinceCepCreated.Seconds())
+		} else {
+			cs.checkCEPForMark(c)
 		}
 		cs.kWatcher.endpointUpdated(nil, c)
 	}
@@ -74,6 +88,9 @@ func (cs *cesSubscriber) OnUpdate(oldCES, newCES *cilium_v2a1.CiliumEndpointSlic
 			// Hence, skip processing endpointupdate for localNode CEPs.
 			if p := cs.kWatcher.endpointManager.LookupPodName(k8sUtils.GetObjNamespaceName(c)); p != nil {
 				continue
+			} else {
+				// If there does not exist such a endpoint locally, check if cep requires cleanup.
+				cs.checkCEPForMark(c)
 			}
 			// Delete CEP if and only if that CEP is owned by a CES, that was used during CES updated.
 			// Delete CEP only if there is match in CEPToCES map and also delete CEPName in CEPToCES map.
@@ -95,6 +112,8 @@ func (cs *cesSubscriber) OnUpdate(oldCES, newCES *cilium_v2a1.CiliumEndpointSlic
 			if p := cs.kWatcher.endpointManager.LookupPodName(k8sUtils.GetObjNamespaceName(c)); p != nil {
 				timeSinceCepCreated := time.Since(p.GetCreatedAt())
 				metrics.EndpointPropagationDelay.WithLabelValues().Observe(timeSinceCepCreated.Seconds())
+			} else {
+				cs.checkCEPForMark(c)
 			}
 			cs.kWatcher.endpointUpdated(nil, c)
 			cepMap.insertCEP(CEPName, oldCES.GetName())

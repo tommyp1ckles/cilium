@@ -31,6 +31,7 @@ import (
 	"github.com/cilium/cilium/pkg/k8s"
 	v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	"github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
+	ciliumClient "github.com/cilium/cilium/pkg/k8s/client/clientset/versioned/typed/cilium.io/v2"
 	k8smetrics "github.com/cilium/cilium/pkg/k8s/metrics"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	slim_discover_v1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/discovery/v1"
@@ -206,7 +207,8 @@ type K8sWatcher struct {
 	// have their event handling methods called in order of registration.
 	CiliumNodeChain *subscriber.CiliumNodeChain
 
-	endpointManager endpointManager
+	endpointManager       endpointManager
+	ciliumEndpointManager *ciliumEndpointManager
 
 	nodeDiscoverManager   nodeDiscoverManager
 	policyManager         policyManager
@@ -263,10 +265,12 @@ func NewK8sWatcher(
 	envoyConfigManager envoyConfigManager,
 	cfg WatcherConfiguration,
 	ipcache *ipcache.IPCache,
+	ciliumClient ciliumClient.CiliumV2Interface,
 ) *K8sWatcher {
 	return &K8sWatcher{
 		K8sSvcCache:           k8s.NewServiceCache(datapath.LocalNodeAddressing()),
 		endpointManager:       endpointManager,
+		ciliumEndpointManager: newCiliumEndpointManager(ciliumClient),
 		nodeDiscoverManager:   nodeDiscoverManager,
 		policyManager:         policyManager,
 		policyRepository:      policyRepository,
@@ -996,4 +1000,12 @@ func (k *K8sWatcher) initCiliumEndpointOrSlices(ciliumNPClient *k8s.K8sCiliumCli
 	} else {
 		go k.ciliumEndpointsInit(ciliumNPClient, asyncControllers)
 	}
+}
+
+// SetCiliumEndpointCleanupEnabled sets whether future ciliumendpoint or ciliumendpointslice
+// events will attempt to clean stale ciliumendpoints.
+// CEPs should only begin to be marked for removal after all local node endpoint
+// synchronization is complete.
+func (k *K8sWatcher) EnableCiliumEndpointCleanup() {
+	k.ciliumEndpointManager.enableCiliumEndpointCleanup()
 }
