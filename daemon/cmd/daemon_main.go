@@ -1733,7 +1733,9 @@ func runDaemon() {
 	ctx, cancel := context.WithCancel(server.ServerCtx)
 	d, restoredEndpoints, err := NewDaemon(ctx, cancel,
 		WithDefaultEndpointManager(ctx, endpoint.CheckHealth),
-		linuxdatapath.NewDatapath(datapathConfig, iptablesManager, wgAgent))
+		linuxdatapath.NewDatapath(datapathConfig, iptablesManager, wgAgent),
+		k8s.CiliumClient().CiliumV2(),
+	)
 	if err != nil {
 		select {
 		case <-server.ServerCtx.Done():
