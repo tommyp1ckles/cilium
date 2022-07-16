@@ -25,7 +25,6 @@ import (
 	"github.com/cilium/cilium/pkg/k8s/types"
 	"github.com/cilium/cilium/pkg/k8s/watchers"
 	"github.com/cilium/cilium/pkg/lock"
-	"github.com/cilium/cilium/pkg/option"
 )
 
 func TestCleanStaleCeps(t *testing.T) {
@@ -35,8 +34,8 @@ func TestCleanStaleCeps(t *testing.T) {
 		// should only be used if disableCEPCRD is true.
 		ciliumEndpointSlices []cilium_v2a1.CiliumEndpointSlice
 		// if true, simulates running CiliumEndpointSlice watcher instead of CEP.
-		disableCEPCRD bool
-		pods          []slimcorev1.Pod
+		enableCES bool
+		pods      []slimcorev1.Pod
 		// endpoints in endpointManaged.
 		managedEndpoints map[string]*endpoint.Endpoint
 		// expectedDeletedSet contains CiliumEndpoints that are expected to be deleted
@@ -81,7 +80,7 @@ func TestCleanStaleCeps(t *testing.T) {
 			},
 			ciliumEndpoints:    []types.CiliumEndpoint{cep("bar", "x"), cep("foo", "x")},
 			pods:               []slimcorev1.Pod{pod("bar", "x"), pod("foo", "x")},
-			disableCEPCRD:      true,
+			enableCES:          true,
 			managedEndpoints:   map[string]*endpoint.Endpoint{"x/bar": {}},
 			expectedDeletedSet: []string{"x/foo"},
 		},
@@ -97,7 +96,6 @@ func TestCleanStaleCeps(t *testing.T) {
 				cep := action.(k8stesting.CreateAction).GetObject().(*ciliumv2.CiliumEndpoint)
 				return false, cep, nil
 			}))
-			option.Config.DisableCiliumEndpointCRD = test.disableCEPCRD
 			cepStore := &fakeStore{cache: map[interface{}]interface{}{}}
 			ciliumEndpointSlicesStore := &fakeStore{cache: map[interface{}]interface{}{}}
 			podStore := &fakeStore{cache: map[interface{}]interface{}{}}
@@ -134,7 +132,7 @@ func TestCleanStaleCeps(t *testing.T) {
 
 			err := d.cleanStaleCEPs(context.Background(), epm, k8s.K8sCiliumClient{
 				Interface: fakeClient,
-			}.CiliumV2(), !test.disableCEPCRD)
+			}.CiliumV2(), test.enableCES)
 
 			assert.NoError(err)
 			assert.ElementsMatch(test.expectedDeletedSet, deletedSet)

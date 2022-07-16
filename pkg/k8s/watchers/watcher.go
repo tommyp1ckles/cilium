@@ -242,7 +242,7 @@ type K8sWatcher struct {
 	ciliumEndpointStore   cache.Store
 
 	ciliumEndpointSliceStoreMU lock.RWMutex
-	ciliumEndpointSliceStore   cache.Store
+	ciliumEndpointSliceStore   cache.Indexer
 
 	namespaceStore cache.Store
 	datapath       datapath.Datapath
@@ -934,6 +934,17 @@ func (k *K8sWatcher) K8sEventReceived(apiResourceName, scope, action string, val
 	k.k8sResourceSynced.SetEventTimestamp(apiResourceName)
 }
 
+func (k *K8sWatcher) GetIndexer(name string) cache.Indexer {
+	switch name {
+	case "ciliumendpointslice":
+		k.ciliumEndpointSliceStoreMU.Lock()
+		defer k.ciliumEndpointSliceStoreMU.Unlock()
+		return k.ciliumEndpointSliceStore
+	default:
+		return nil
+	}
+}
+
 // GetStore returns the k8s cache store for the given resource name.
 func (k *K8sWatcher) GetStore(name string) cache.Store {
 	switch name {
@@ -979,10 +990,10 @@ func (k *K8sWatcher) SetStore(name string, store cache.Store) error {
 		k.ciliumEndpointStoreMU.Lock()
 		defer k.ciliumEndpointStoreMU.Unlock()
 		k.ciliumEndpointStore = store
-	case "ciliumendpointslice":
-		k.ciliumEndpointSliceStoreMU.Lock()
-		defer k.ciliumEndpointSliceStoreMU.Unlock()
-		k.ciliumEndpointSliceStore = store
+	// case "ciliumendpointslice":
+	// 	k.ciliumEndpointSliceStoreMU.Lock()
+	// 	defer k.ciliumEndpointSliceStoreMU.Unlock()
+	// 	k.ciliumEndpointSliceStore = store
 	default:
 		return fmt.Errorf("unexpected store name")
 	}

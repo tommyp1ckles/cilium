@@ -1794,6 +1794,7 @@ func runDaemon() {
 		ipmasqAgent.Start()
 	}
 
+	fmt.Println("[tom-debug1] DisableCEP:", option.Config.EnableCiliumEndpointSlice)
 	if !option.Config.DryMode {
 		go func() {
 			if restoreComplete != nil {
@@ -1808,7 +1809,8 @@ func runDaemon() {
 				// This must wait for both K8s watcher caches to be synced and local endpoint restoration to be complete.
 				// Note: Synchronization of endpoints to their CEPs may not be complete at this point, but we only have to
 				// know what endpoints exist post-restoration in our endpointManager cache to perform cleanup.
-				if err := d.cleanStaleCEPs(ctx, d.endpointManager, k8s.CiliumClient().CiliumV2(), option.Config.DisableCiliumEndpointCRD); err != nil {
+				fmt.Println("[tom-debug] DisableCEP:", option.Config.EnableCiliumEndpointSlice)
+				if err := d.cleanStaleCEPs(ctx, d.endpointManager, k8s.CiliumClient().CiliumV2(), option.Config.EnableCiliumEndpointSlice); err != nil {
 					log.WithError(err).Fatal("Failed to clean up stale CEPs")
 				}
 

@@ -27,20 +27,29 @@ func (d *Daemon) getStore(name string) cache.Store {
 	return d.k8sWatcher.GetStore(name)
 }
 
+func (d *Daemon) getIndexer(name string) cache.Indexer {
+	return d.k8sWatcher.GetIndexer(name)
+}
+
 // cleanStaleCEPs runs on Daemon init, attempting to delete any CiliumEndpoints that are referencing local
 // Pods that are not being managed (i.e. do not have Endpoints).
 // This must only be run after K8s Pod and CES/CEP caches are synced and local endpoint restoration is complete.
-func (d *Daemon) cleanStaleCEPs(ctx context.Context, eps endpointCache, ciliumClient ciliumv2.CiliumV2Interface, disableCEPCRD bool) error {
+func (d *Daemon) cleanStaleCEPs(ctx context.Context, eps endpointCache, ciliumClient ciliumv2.CiliumV2Interface, enableCiliumEndpointSlice bool) error {
 	keyFn := func(ns string, name string) string { return ns + "/" + name }
 
 	cesContainedCEPLookup := map[string]*cilium_v2a1.CoreCiliumEndpoint{}
-	if disableCEPCRD {
-		cesObjs := d.getStore("ciliumendpointslice").List()
+	if enableCiliumEndpointSlice {
+		fmt.Println("[tom-debug] CES ENABLED!")
+		cesObjs, err := d.getIndexer("ciliumendpointslice").ByIndex("nodes", node.GetCiliumEndpointNodeIP())
+		if err != nil {
+			return fmt.Errorf("could not index ciliumendpointslice store by nodes: %w", err)
+		}
 		for _, cesObj := range cesObjs {
 			ces, ok := cesObj.(*cilium_v2a1.CiliumEndpointSlice)
 			if !ok {
-				return fmt.Errorf("unexpected object type returned from ciliumendpointslice store")
+				return fmt.Errorf("unexpected object type returned from ciliumendpointslice store: %T", cesObj)
 			}
+			fmt.Println("[tom-debug] CES:", ces)
 			for i := range ces.Endpoints {
 				cep := ces.Endpoints[i]
 				if cep.Networking.NodeIP == node.GetCiliumEndpointNodeIP() {

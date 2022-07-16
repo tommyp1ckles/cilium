@@ -617,13 +617,10 @@ hostPort:
   # -- Enable hostPort service support.
   enabled: false
 
-# -- Configure ClusterIP service handling in the host namespace (the node).
-hostServices:
-  # -- Enable host reachable services.
+# -- Configure socket LB
+socketLB:
+  # -- Enable socket LB
   enabled: false
-
-  # -- Supported list of protocols to apply ClusterIP translation to.
-  protocols: tcp,udp
 
   # -- Disable socket lb for non-root ns. This is used to enable Istio routing rules.
   # hostNamespaceOnly: false
@@ -1449,7 +1446,7 @@ tls:
 tunnel: "vxlan"
 
 # -- Disable the usage of CiliumEndpoint CRD.
-disableEndpointCRD: "false"
+disableEndpointCRD: "true"
 
 wellKnownIdentities:
   # -- Enable the use of well-known identities.
