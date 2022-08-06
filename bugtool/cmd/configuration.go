@@ -361,13 +361,12 @@ func copyConfigCommands(confDir string, k8sPods []string) []string {
 
 func copyCiliumInfoCommands(cmdDir string, k8sPods []string) []string {
 	// Most of the output should come via debuginfo but also adding
-	// these ones for skimming purposes
+	// these ones for skimming purposes.
+	// All commands here need to be able accept the '-o json' flag.
 	ciliumCommands := []string{
-		fmt.Sprintf("cilium debuginfo --output=markdown,json -f --output-directory=%s", cmdDir),
 		"cilium metrics list",
 		"cilium fqdn cache list",
 		"cilium config -a",
-		"cilium encrypt status",
 		"cilium bpf bandwidth list",
 		"cilium bpf tunnel list",
 		"cilium bpf lb list",
@@ -381,25 +380,28 @@ func copyCiliumInfoCommands(cmdDir string, k8sPods []string) []string {
 		"cilium bpf nat list",
 		"cilium bpf ipmasq list",
 		"cilium bpf ipcache list",
+		"cilium bpf ipcache list",
 		"cilium bpf policy get --all --numeric",
 		"cilium bpf sha list",
 		"cilium bpf fs show",
 		"cilium bpf recorder list",
-		"cilium ip list -n -o json",
+		"cilium ip list -n",
 		"cilium map list --verbose",
 		"cilium service list",
-		"cilium service list -o json",
 		"cilium recorder list",
 		"cilium status --verbose",
 		"cilium identity list",
 		"cilium-health status --verbose",
-		"cilium-health status -o json",
-		"cilium policy selectors -o json",
+		"cilium-health status",
+		"cilium policy selectors",
 		"cilium node list",
-		"cilium node list -o json",
 		"cilium lrp list",
 	}
-	var commands []string
+
+	commands := []string{
+		fmt.Sprintf("cilium debuginfo --output=markdown,json -f --output-directory=%s", cmdDir),
+		"cilium encrypt status",
+	}
 
 	stateDir := filepath.Join(defaults.RuntimePath, defaults.StateDir)
 	if len(k8sPods) == 0 { // Assuming this is a non k8s deployment
@@ -411,6 +413,9 @@ func copyCiliumInfoCommands(cmdDir string, k8sPods []string) []string {
 				cmd = fmt.Sprintf("%s -H %s", cmd, host)
 			}
 			commands = append(commands, cmd)
+			if jsonOutput {
+				commands = append(commands, cmd+" -o json")
+			}
 		}
 	} else { // Found k8s pods
 		for _, pod := range k8sPods {
@@ -424,6 +429,9 @@ func copyCiliumInfoCommands(cmdDir string, k8sPods []string) []string {
 					cmd = fmt.Sprintf("%s -H %s", cmd, host)
 				}
 				commands = append(commands, podPrefix(pod, cmd))
+				if jsonOutput {
+					commands = append(commands, cmd+" -o json")
+				}
 			}
 		}
 	}

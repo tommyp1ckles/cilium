@@ -72,6 +72,7 @@ var (
 	pprofPort       int
 	traceSeconds    int
 	parallelWorkers int
+	jsonOutput      bool
 )
 
 func init() {
@@ -97,6 +98,7 @@ func init() {
 	BugtoolRootCmd.Flags().BoolVar(&enableMarkdown, "enable-markdown", false, "Dump output of commands in markdown format")
 	BugtoolRootCmd.Flags().StringVarP(&archivePrefix, "archive-prefix", "", "", "String to prefix to name of archive if created (e.g., with cilium pod-name)")
 	BugtoolRootCmd.Flags().IntVar(&parallelWorkers, "parallel-workers", 0, "Maximum number of parallel worker tasks, use 0 for number of CPUs")
+	BugtoolRootCmd.Flags().BoolVar(&jsonOutput, "json-output", true, "If true, all Cilium commands that support json output format will be read as both plaintext and json")
 }
 
 func getVerifyCiliumPods() (k8sPods []string) {
