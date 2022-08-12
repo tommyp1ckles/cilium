@@ -2257,7 +2257,6 @@ var (
 		EnableIPv4:                   defaults.EnableIPv4,
 		EnableIPv6:                   defaults.EnableIPv6,
 		EnableIPv6NDP:                defaults.EnableIPv6NDP,
-		EnableSCTP:                   defaults.EnableSCTP,
 		EnableL7Proxy:                defaults.EnableL7Proxy,
 		EndpointStatus:               make(map[string]struct{}),
 		DNSMaxIPsPerRestoredRule:     defaults.DNSMaxIPsPerRestoredRule,

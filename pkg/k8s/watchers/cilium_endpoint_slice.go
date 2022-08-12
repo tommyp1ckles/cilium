@@ -25,11 +25,10 @@ var (
 	cepMap = newCEPToCESMap()
 )
 
-// CreateLocalNodeIndexFunc returns an IndexFunc that can index CiliumEndpointSlice objects
-// by the specified nodeIP (i.e. you can use this maintain an index of CES with endpoints
-// referencing the local node).
-// If nodeIP is empty, this will simply maintain an index of all referenced nodes.
-func CreateLocalNodeIndexFunc(nodeIP string) cache.IndexFunc {
+// CreateCiliumEndpointSliceLocalPodIndexFunc returns an IndexFunc that indexes CiliumEndpointSlices
+// by their corresponding Pod, which are running locally on this Node.
+func CreateCiliumEndpointSliceLocalPodIndexFunc() cache.IndexFunc {
+	nodeIP := node.GetCiliumEndpointNodeIP()
 	return func(obj interface{}) ([]string, error) {
 		ces, ok := obj.(*v2alpha1.CiliumEndpointSlice)
 		if !ok {
@@ -37,16 +36,10 @@ func CreateLocalNodeIndexFunc(nodeIP string) cache.IndexFunc {
 		}
 		indices := []string{}
 		for _, ep := range ces.Endpoints {
-			if nodeIP == "" {
+			if ep.Networking.NodeIP == nodeIP {
+				//indices = append(indices, ces.Namespace+"/"+ep.Name)
 				indices = append(indices, ep.Networking.NodeIP)
-			} else {
-				if ep.Networking.NodeIP == nodeIP {
-					// If we're only indexing a particular nodeIP, then as soon as we
-					// find a local endpoint in a ces we just return a positive index
-					// containing the specified nodeIP.
-					indices = append(indices, ep.Networking.NodeIP)
-					return indices, nil
-				}
+				break
 			}
 		}
 		return indices, nil
@@ -91,12 +84,12 @@ func (k *K8sWatcher) ciliumEndpointSliceInit(client *k8s.K8sCiliumClient, asyncC
 			},
 			nil,
 			cache.Indexers{
-				"localNode": CreateLocalNodeIndexFunc(node.GetCiliumEndpointNodeIP()),
+				"localNode": CreateCiliumEndpointSliceLocalPodIndexFunc(),
 			},
 		)
-		k.ciliumEndpointSliceStoreMU.Lock()
-		k.ciliumEndpointSliceStore = cesIndexer
-		k.ciliumEndpointSliceStoreMU.Unlock()
+		k.ciliumEndpointSliceIndexerMU.Lock()
+		k.ciliumEndpointSliceIndexer = cesIndexer
+		k.ciliumEndpointSliceIndexerMU.Unlock()
 		isConnected := make(chan struct{})
 		// once isConnected is closed, it will stop waiting on caches to be
 		// synchronized.

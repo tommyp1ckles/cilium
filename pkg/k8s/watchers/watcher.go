@@ -32,6 +32,7 @@ import (
 	"github.com/cilium/cilium/pkg/k8s"
 	v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	"github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
+	ciliumClientv2 "github.com/cilium/cilium/pkg/k8s/client/clientset/versioned/typed/cilium.io/v2"
 	k8smetrics "github.com/cilium/cilium/pkg/k8s/metrics"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	slim_discover_v1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/discovery/v1"
@@ -115,6 +116,8 @@ type endpointManager interface {
 	LookupPodName(string) *endpoint.Endpoint
 	WaitForEndpointsAtPolicyRev(ctx context.Context, rev uint64) error
 	UpdatePolicyMaps(context.Context, *sync.WaitGroup) *sync.WaitGroup
+
+	OnMissingEndpoint(string, string, func() error) error
 }
 
 type nodeDiscoverManager interface {
@@ -246,11 +249,12 @@ type K8sWatcher struct {
 	ciliumNodeStoreMU lock.RWMutex
 	ciliumNodeStore   cache.Store
 
-	ciliumEndpointStoreMU lock.RWMutex
-	ciliumEndpointStore   cache.Store
+	ciliumEndpointIndexerMU lock.RWMutex
+	ciliumEndpointIndexer   cache.Indexer
 
-	ciliumEndpointSliceStoreMU lock.RWMutex
-	ciliumEndpointSliceStore   cache.Indexer
+	ciliumEndpointSliceIndexerMU lock.RWMutex
+	// note: this store only contains endpointslices referencing local endpoints.
+	ciliumEndpointSliceIndexer cache.Indexer
 
 	namespaceStore cache.Store
 	datapath       datapath.Datapath
@@ -274,6 +278,7 @@ func NewK8sWatcher(
 	cfg WatcherConfiguration,
 	ipcache *ipcache.IPCache,
 	cgroupManager cgroupManager,
+	ciliumClient ciliumClientv2.CiliumV2Interface,
 ) *K8sWatcher {
 	return &K8sWatcher{
 		K8sSvcCache:           k8s.NewServiceCache(datapath.LocalNodeAddressing()),
@@ -960,21 +965,31 @@ func (k *K8sWatcher) K8sEventReceived(apiResourceName, scope, action string, val
 func (k *K8sWatcher) GetIndexer(name string) cache.Indexer {
 	switch name {
 	case "ciliumendpointslice":
-		k.ciliumEndpointSliceStoreMU.Lock()
-		defer k.ciliumEndpointSliceStoreMU.Unlock()
-		return k.ciliumEndpointSliceStore
+		k.ciliumEndpointSliceIndexerMU.RLock()
+		defer k.ciliumEndpointSliceIndexerMU.RUnlock()
+		return k.ciliumEndpointSliceIndexer
+	case "ciliumendpoint":
+		k.ciliumEndpointIndexerMU.RLock()
+		defer k.ciliumEndpointIndexerMU.RUnlock()
+		return k.ciliumEndpointIndexer
 	default:
 		panic("no such indexer: " + name)
 	}
 }
 
-// SetStore lets you set a named cache store, only used for testing.
+// SetIndexer lets you set a named cache store, only used for testing.
 func (k *K8sWatcher) SetIndexer(name string, indexer cache.Indexer) {
 	switch name {
 	case "ciliumendpointslice":
-		k.ciliumEndpointSliceStoreMU.Lock()
-		defer k.ciliumEndpointSliceStoreMU.Unlock()
-		k.ciliumEndpointSliceStore = indexer
+		k.ciliumEndpointSliceIndexerMU.Lock()
+		defer k.ciliumEndpointSliceIndexerMU.Unlock()
+		k.ciliumEndpointSliceIndexer = indexer
+	case "ciliumendpoint":
+		k.ciliumEndpointIndexerMU.Lock()
+		defer k.ciliumEndpointIndexerMU.Unlock()
+		k.ciliumEndpointIndexer = indexer
+	default:
+		panic("no such indexer: " + name)
 	}
 }
 
@@ -997,13 +1012,13 @@ func (k *K8sWatcher) GetStore(name string) cache.Store {
 		defer k.podStoreMU.RUnlock()
 		return k.podStore
 	case "ciliumendpoint":
-		k.ciliumEndpointStoreMU.RLock()
-		defer k.ciliumEndpointStoreMU.RUnlock()
-		return k.ciliumEndpointStore
+		k.ciliumEndpointIndexerMU.RLock()
+		defer k.ciliumEndpointIndexerMU.RUnlock()
+		return k.ciliumEndpointIndexer
 	case "ciliumendpointslice":
-		k.ciliumEndpointSliceStoreMU.RLock()
-		defer k.ciliumEndpointSliceStoreMU.RUnlock()
-		return k.ciliumEndpointSliceStore
+		k.ciliumEndpointSliceIndexerMU.RLock()
+		defer k.ciliumEndpointSliceIndexerMU.RUnlock()
+		return k.ciliumEndpointSliceIndexer
 	default:
 		return nil
 	}
@@ -1023,10 +1038,6 @@ func (k *K8sWatcher) SetStore(name string, store cache.Store) error {
 		k.podStore = store
 		k.podStoreSet = make(chan struct{})
 		close(k.podStoreSet)
-	case "ciliumendpoint":
-		k.ciliumEndpointStoreMU.Lock()
-		defer k.ciliumEndpointStoreMU.Unlock()
-		k.ciliumEndpointStore = store
 	default:
 		return fmt.Errorf("unexpected store name")
 	}

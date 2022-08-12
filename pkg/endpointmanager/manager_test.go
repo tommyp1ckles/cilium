@@ -20,6 +20,7 @@ import (
 	"github.com/cilium/cilium/pkg/endpoint/regeneration"
 	"github.com/cilium/cilium/pkg/fqdn/restore"
 	"github.com/cilium/cilium/pkg/ipcache"
+	"github.com/cilium/cilium/pkg/k8s/types"
 	"github.com/cilium/cilium/pkg/lock"
 	monitorAPI "github.com/cilium/cilium/pkg/monitor/api"
 	"github.com/cilium/cilium/pkg/option"
@@ -107,13 +108,27 @@ func (d *DummyRuleCacheOwner) ClearPolicyConsumers(id uint16) *sync.WaitGroup {
 	return &sync.WaitGroup{}
 }
 
-type dummyEpSyncher struct{}
+type dummyEpSyncher struct {
+	events []string
+}
+
+func (epSync *dummyEpSyncher) newEvent(event string) {
+	epSync.events = append(epSync.events, event)
+}
 
 func (epSync *dummyEpSyncher) RunK8sCiliumEndpointSync(e *endpoint.Endpoint, conf endpoint.EndpointStatusConfiguration) {
 }
 
 func (epSync *dummyEpSyncher) DeleteK8sCiliumEndpointSync(e *endpoint.Endpoint) {
 }
+
+func (epSync *dummyEpSyncher) CiliumEndpointCleanupEnabled() bool      { return true }
+func (epSync *dummyEpSyncher) EnableCiliumEndpointCleanup()            {}
+func (epSync *dummyEpSyncher) MarkForDeletion(_ *types.CiliumEndpoint) {}
+func (epSync *dummyEpSyncher) LockGCAndUnmarkEndpoint(ns, n string) {
+	epSync.newEvent("lock-gc:" + ns + "/" + n)
+}
+func (epSync *dummyEpSyncher) UnlockGC() { epSync.newEvent("gc-unlock") }
 
 func (s *EndpointManagerSuite) TestLookup(c *C) {
 	ep := endpoint.NewEndpointWithState(s, s, ipcache.NewIPCache(nil), &endpoint.FakeEndpointProxy{}, testidentity.NewMockIdentityAllocator(nil), 10, endpoint.StateReady)

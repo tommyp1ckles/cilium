@@ -577,6 +577,8 @@ func (mgr *EndpointManager) expose(ep *endpoint.Endpoint) error {
 		return err
 	}
 
+	// Inside this critical section, an endpoint becomes "managed"
+	// according to the state of the endpoint manager.
 	mgr.mutex.Lock()
 	// Get a copy of the identifiers before exposing the endpoint
 	identifiers := ep.IdentifiersLocked()
@@ -688,4 +690,17 @@ func (mgr *EndpointManager) CallbackForEndpointsAtPolicyRev(ctx context.Context,
 // EndpointExists returns whether the endpoint with id exists.
 func (mgr *EndpointManager) EndpointExists(id uint16) bool {
 	return mgr.LookupCiliumID(id) != nil
+}
+
+// OnMissingEndpoint atomically checks then handles if the endpoint for namespace/name is missing
+// from the endpoint manager.
+// It is guaranteed that while checking for endpoint and invoking the callback, no new endpoints will
+// be added to the manager.
+func (mgr *EndpointManager) OnMissingEndpoint(namespace, name string, callbackFn func() error) error {
+	mgr.mutex.RLock()
+	defer mgr.mutex.RUnlock()
+	if ep := mgr.lookupPodNameLocked(namespace + "/" + name); ep == nil {
+		callbackFn()
+	}
+	return nil
 }

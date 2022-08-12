@@ -57,6 +57,7 @@ import (
 	"github.com/cilium/cilium/pkg/k8s"
 	k8sConst "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
+	ciliumClient "github.com/cilium/cilium/pkg/k8s/client/clientset/versioned/typed/cilium.io/v2"
 	"github.com/cilium/cilium/pkg/k8s/watchers"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/lock"
@@ -373,9 +374,13 @@ func removeOldRouterState(ipv6 bool, restoredIP net.IP) error {
 }
 
 // NewDaemon creates and returns a new Daemon with the parameters set in c.
-func NewDaemon(ctx context.Context, cleaner *daemonCleanup,
-	epMgr *endpointmanager.EndpointManager, dp datapath.Datapath,
+func NewDaemon(
+	ctx context.Context,
+	cleaner *daemonCleanup,
+	epMgr *endpointmanager.EndpointManager,
+	dp datapath.Datapath,
 	clientset k8sClient.Clientset,
+	ciliumClient ciliumClient.CiliumV2Interface,
 ) (*Daemon, *endpointRestoreState, error) {
 
 	var (
@@ -671,8 +676,10 @@ func NewDaemon(ctx context.Context, cleaner *daemonCleanup,
 		option.Config,
 		d.ipcache,
 		d.cgroupManager,
+		ciliumClient,
 	)
 	nd.RegisterK8sGetters(d.k8sWatcher)
+
 	d.ipcache.RegisterK8sSyncedChecker(&d)
 
 	d.k8sWatcher.RegisterNodeSubscriber(d.endpointManager)
@@ -1280,7 +1287,7 @@ func NewDaemon(ctx context.Context, cleaner *daemonCleanup,
 // WithDefaultEndpointManager creates the default endpoint manager with a
 // functional endpoint synchronizer.
 func WithDefaultEndpointManager(ctx context.Context, checker endpointmanager.EndpointCheckerFunc) *endpointmanager.EndpointManager {
-	mgr := WithCustomEndpointManager(&watchers.EndpointSynchronizer{})
+	mgr := WithCustomEndpointManager(watchers.NewEndpointSynchronizer())
 	if option.Config.EndpointGCInterval > 0 {
 		mgr = mgr.WithPeriodicEndpointGC(ctx, checker, option.Config.EndpointGCInterval)
 	}

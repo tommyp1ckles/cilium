@@ -33,8 +33,17 @@ const (
 	subsysEndpointSync = "endpointsynchronizer"
 )
 
-// EndpointSynchronizer currently is an empty type, which wraps around syncing
-// of CiliumEndpoint resources.
+// NewEndpointSynchronizer constructs a new EndpointSynchronizer.
+func NewEndpointSynchronizer() *EndpointSynchronizer {
+	return &EndpointSynchronizer{}
+}
+
+// EndpointSynchronizer encapsulates logic around syncing and managing CiliumEndpoint
+// resources against the state of the EndpointManager.
+// In general, calls to apiserver relating to managing loacl CiliumEndpoint resources
+// should be contained in EndpointSynchronizer.
+// EndpointSynchronizer is also responsible for performing GC on unmanaged CEPs that are
+// handled by the relevant K8s watchers.
 type EndpointSynchronizer struct{}
 
 // RunK8sCiliumEndpointSync starts a controller that synchronizes the endpoint
@@ -84,7 +93,7 @@ func (epSync *EndpointSynchronizer) RunK8sCiliumEndpointSync(e *endpoint.Endpoin
 				scopedLog = e.Logger(subsysEndpointSync).WithField("controller", controllerName)
 
 				if k8sversion.Version().Equals(semver.Version{}) {
-					return fmt.Errorf("Kubernetes apiserver is not available")
+					return fmt.Errorf("kubernetes apiserver is not available")
 				}
 
 				// K8sPodName and K8sNamespace are not always available when an

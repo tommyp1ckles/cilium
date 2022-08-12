@@ -139,8 +139,8 @@ func (ds *DaemonSuite) SetUpTest(c *C) {
 	d, _, err := NewDaemon(ctx, NewDaemonCleanup(),
 		WithCustomEndpointManager(&dummyEpSyncher{}),
 		fakedatapath.NewDatapath(),
-		clientset)
-	c.Assert(err, IsNil)
+		clientset,
+	)
 	ds.d = d
 
 	kvstore.Client().DeletePrefix(context.TODO(), kvstore.OperationalPath)
