@@ -246,6 +246,12 @@ type K8sWatcher struct {
 	ciliumNodeStoreMU lock.RWMutex
 	ciliumNodeStore   cache.Store
 
+	ciliumEndpointStoreMU lock.RWMutex
+	ciliumEndpointStore   cache.Store
+
+	ciliumEndpointSliceStoreMU lock.RWMutex
+	ciliumEndpointSliceStore   cache.Indexer
+
 	namespaceStore cache.Store
 	datapath       datapath.Datapath
 
@@ -948,7 +954,35 @@ func (k *K8sWatcher) K8sEventReceived(apiResourceName, scope, action string, val
 	k.k8sResourceSynced.SetEventTimestamp(apiResourceName)
 }
 
+// GetIndexer returns an index to a k8s cache store for the given resource name.
+// Objects gotten using returned stores should *not* be mutated as they
+// are references to internal k8s watcher store state.
+func (k *K8sWatcher) GetIndexer(name string) cache.Indexer {
+	switch name {
+	case "ciliumendpointslice":
+		k.ciliumEndpointSliceStoreMU.Lock()
+		defer k.ciliumEndpointSliceStoreMU.Unlock()
+		return k.ciliumEndpointSliceStore
+	default:
+		panic("no such indexer: " + name)
+	}
+}
+
+// SetStore lets you set a named cache store, only used for testing.
+func (k *K8sWatcher) SetIndexer(name string, indexer cache.Indexer) {
+	switch name {
+	case "ciliumendpointslice":
+		k.ciliumEndpointSliceStoreMU.Lock()
+		defer k.ciliumEndpointSliceStoreMU.Unlock()
+		k.ciliumEndpointSliceStore = indexer
+	}
+}
+
 // GetStore returns the k8s cache store for the given resource name.
+// It's possible for valid resource names to return nil stores if that
+// watcher is not in user.
+// Objects gotten using returned stores should *not* be mutated as they
+// are references to internal k8s watcher store state.
 func (k *K8sWatcher) GetStore(name string) cache.Store {
 	switch name {
 	case "networkpolicy":
@@ -962,9 +996,41 @@ func (k *K8sWatcher) GetStore(name string) cache.Store {
 		k.podStoreMU.RLock()
 		defer k.podStoreMU.RUnlock()
 		return k.podStore
+	case "ciliumendpoint":
+		k.ciliumEndpointStoreMU.RLock()
+		defer k.ciliumEndpointStoreMU.RUnlock()
+		return k.ciliumEndpointStore
+	case "ciliumendpointslice":
+		k.ciliumEndpointSliceStoreMU.RLock()
+		defer k.ciliumEndpointSliceStoreMU.RUnlock()
+		return k.ciliumEndpointSliceStore
 	default:
 		return nil
 	}
+}
+
+// SetStore lets you set a named cache store, only used for testing.
+// Note: Does not synchronize podStore channel.
+func (k *K8sWatcher) SetStore(name string, store cache.Store) error {
+	switch name {
+	case "networkpolicy":
+		k.networkpolicyStore = store
+	case "namespace":
+		k.namespaceStore = store
+	case "pod":
+		k.podStoreMU.Lock()
+		defer k.podStoreMU.Unlock()
+		k.podStore = store
+		k.podStoreSet = make(chan struct{})
+		close(k.podStoreSet)
+	case "ciliumendpoint":
+		k.ciliumEndpointStoreMU.Lock()
+		defer k.ciliumEndpointStoreMU.Unlock()
+		k.ciliumEndpointStore = store
+	default:
+		return fmt.Errorf("unexpected store name")
+	}
+	return nil
 }
 
 // initCiliumEndpointOrSlices intializes the ciliumEndpoints or ciliumEndpointSlice

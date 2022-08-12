@@ -4,16 +4,19 @@
 package watchers
 
 import (
+	"fmt"
 	"sync"
 
 	"k8s.io/client-go/tools/cache"
 
 	"github.com/cilium/cilium/pkg/k8s"
+	"github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	cilium_v2a1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	"github.com/cilium/cilium/pkg/k8s/informer"
 	"github.com/cilium/cilium/pkg/k8s/utils"
 	"github.com/cilium/cilium/pkg/k8s/watchers/subscriber"
 	"github.com/cilium/cilium/pkg/kvstore"
+	"github.com/cilium/cilium/pkg/node"
 )
 
 var (
@@ -21,6 +24,34 @@ var (
 	// cepMap maps CEPName to CEBName.
 	cepMap = newCEPToCESMap()
 )
+
+// CreateLocalNodeIndexFunc returns an IndexFunc that can index CiliumEndpointSlice objects
+// by the specified nodeIP (i.e. you can use this maintain an index of CES with endpoints
+// referencing the local node).
+// If nodeIP is empty, this will simply maintain an index of all referenced nodes.
+func CreateLocalNodeIndexFunc(nodeIP string) cache.IndexFunc {
+	return func(obj interface{}) ([]string, error) {
+		ces, ok := obj.(*v2alpha1.CiliumEndpointSlice)
+		if !ok {
+			return nil, fmt.Errorf("unexpected object type: %T", obj)
+		}
+		indices := []string{}
+		for _, ep := range ces.Endpoints {
+			if nodeIP == "" {
+				indices = append(indices, ep.Networking.NodeIP)
+			} else {
+				if ep.Networking.NodeIP == nodeIP {
+					// If we're only indexing a particular nodeIP, then as soon as we
+					// find a local endpoint in a ces we just return a positive index
+					// containing the specified nodeIP.
+					indices = append(indices, ep.Networking.NodeIP)
+					return indices, nil
+				}
+			}
+		}
+		return indices, nil
+	}
+}
 
 func (k *K8sWatcher) ciliumEndpointSliceInit(client *k8s.K8sCiliumClient, asyncControllers *sync.WaitGroup) {
 	log.Info("Initializing CES controller")
@@ -30,7 +61,8 @@ func (k *K8sWatcher) ciliumEndpointSliceInit(client *k8s.K8sCiliumClient, asyncC
 	cesNotify.Register(newCESSubscriber(k))
 
 	for {
-		_, cesInformer := informer.NewInformer(
+		// note: cesStore is has an index on node ips.
+		cesIndexer, cesInformer := informer.NewIndexerInformer(
 			utils.ListerWatcherFromTyped[*cilium_v2a1.CiliumEndpointSliceList](
 				client.CiliumV2alpha1().CiliumEndpointSlices()),
 			&cilium_v2a1.CiliumEndpointSlice{},
@@ -58,7 +90,13 @@ func (k *K8sWatcher) ciliumEndpointSliceInit(client *k8s.K8sCiliumClient, asyncC
 				},
 			},
 			nil,
+			cache.Indexers{
+				"localNode": CreateLocalNodeIndexFunc(node.GetCiliumEndpointNodeIP()),
+			},
 		)
+		k.ciliumEndpointSliceStoreMU.Lock()
+		k.ciliumEndpointSliceStore = cesIndexer
+		k.ciliumEndpointSliceStoreMU.Unlock()
 		isConnected := make(chan struct{})
 		// once isConnected is closed, it will stop waiting on caches to be
 		// synchronized.
