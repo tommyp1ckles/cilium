@@ -18,6 +18,7 @@ import (
 // information, k8s, node monitor and immutable and mutable configuration
 // settings.
 //
+//
 // swagger:model DaemonConfigurationStatus
 type DaemonConfigurationStatus struct {
 

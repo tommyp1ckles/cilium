@@ -32,13 +32,14 @@ func NewPatchEndpointIDConfig(ctx *middleware.Context, handler PatchEndpointIDCo
 	return &PatchEndpointIDConfig{Context: ctx, Handler: handler}
 }
 
-/*
-PatchEndpointIDConfig swagger:route PATCH /endpoint/{id}/config endpoint patchEndpointIdConfig
+/*PatchEndpointIDConfig swagger:route PATCH /endpoint/{id}/config endpoint patchEndpointIdConfig
 
-# Modify mutable endpoint configuration
+Modify mutable endpoint configuration
 
 Update the configuration of an existing endpoint and regenerates &
 recompiles the corresponding programs automatically.
+
+
 */
 type PatchEndpointIDConfig struct {
 	Context *middleware.Context

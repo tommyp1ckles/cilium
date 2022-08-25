@@ -19,8 +19,7 @@ import (
 // GetPrefilterOKCode is the HTTP code returned for type GetPrefilterOK
 const GetPrefilterOKCode int = 200
 
-/*
-GetPrefilterOK Success
+/*GetPrefilterOK Success
 
 swagger:response getPrefilterOK
 */
@@ -64,8 +63,7 @@ func (o *GetPrefilterOK) WriteResponse(rw http.ResponseWriter, producer runtime.
 // GetPrefilterFailureCode is the HTTP code returned for type GetPrefilterFailure
 const GetPrefilterFailureCode int = 500
 
-/*
-GetPrefilterFailure Prefilter get failed
+/*GetPrefilterFailure Prefilter get failed
 
 swagger:response getPrefilterFailure
 */

@@ -49,8 +49,7 @@ func NewGetFqdnNamesOK() *GetFqdnNamesOK {
 	return &GetFqdnNamesOK{}
 }
 
-/*
-GetFqdnNamesOK handles this case with default header values.
+/*GetFqdnNamesOK handles this case with default header values.
 
 Success
 */
@@ -83,8 +82,7 @@ func NewGetFqdnNamesBadRequest() *GetFqdnNamesBadRequest {
 	return &GetFqdnNamesBadRequest{}
 }
 
-/*
-GetFqdnNamesBadRequest handles this case with default header values.
+/*GetFqdnNamesBadRequest handles this case with default header values.
 
 Invalid request (error parsing parameters)
 */

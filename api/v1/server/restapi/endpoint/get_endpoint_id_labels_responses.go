@@ -19,8 +19,7 @@ import (
 // GetEndpointIDLabelsOKCode is the HTTP code returned for type GetEndpointIDLabelsOK
 const GetEndpointIDLabelsOKCode int = 200
 
-/*
-GetEndpointIDLabelsOK Success
+/*GetEndpointIDLabelsOK Success
 
 swagger:response getEndpointIdLabelsOK
 */
@@ -64,8 +63,7 @@ func (o *GetEndpointIDLabelsOK) WriteResponse(rw http.ResponseWriter, producer r
 // GetEndpointIDLabelsNotFoundCode is the HTTP code returned for type GetEndpointIDLabelsNotFound
 const GetEndpointIDLabelsNotFoundCode int = 404
 
-/*
-GetEndpointIDLabelsNotFound Endpoint not found
+/*GetEndpointIDLabelsNotFound Endpoint not found
 
 swagger:response getEndpointIdLabelsNotFound
 */
@@ -89,8 +87,7 @@ func (o *GetEndpointIDLabelsNotFound) WriteResponse(rw http.ResponseWriter, prod
 // GetEndpointIDLabelsTooManyRequestsCode is the HTTP code returned for type GetEndpointIDLabelsTooManyRequests
 const GetEndpointIDLabelsTooManyRequestsCode int = 429
 
-/*
-GetEndpointIDLabelsTooManyRequests Rate-limiting too many requests in the given time frame
+/*GetEndpointIDLabelsTooManyRequests Rate-limiting too many requests in the given time frame
 
 swagger:response getEndpointIdLabelsTooManyRequests
 */

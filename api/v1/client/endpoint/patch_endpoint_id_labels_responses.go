@@ -61,8 +61,7 @@ func NewPatchEndpointIDLabelsOK() *PatchEndpointIDLabelsOK {
 	return &PatchEndpointIDLabelsOK{}
 }
 
-/*
-PatchEndpointIDLabelsOK handles this case with default header values.
+/*PatchEndpointIDLabelsOK handles this case with default header values.
 
 Success
 */
@@ -83,8 +82,7 @@ func NewPatchEndpointIDLabelsNotFound() *PatchEndpointIDLabelsNotFound {
 	return &PatchEndpointIDLabelsNotFound{}
 }
 
-/*
-PatchEndpointIDLabelsNotFound handles this case with default header values.
+/*PatchEndpointIDLabelsNotFound handles this case with default header values.
 
 Endpoint not found
 */
@@ -105,8 +103,7 @@ func NewPatchEndpointIDLabelsTooManyRequests() *PatchEndpointIDLabelsTooManyRequ
 	return &PatchEndpointIDLabelsTooManyRequests{}
 }
 
-/*
-PatchEndpointIDLabelsTooManyRequests handles this case with default header values.
+/*PatchEndpointIDLabelsTooManyRequests handles this case with default header values.
 
 Rate-limiting too many requests in the given time frame
 */
@@ -127,8 +124,7 @@ func NewPatchEndpointIDLabelsUpdateFailed() *PatchEndpointIDLabelsUpdateFailed {
 	return &PatchEndpointIDLabelsUpdateFailed{}
 }
 
-/*
-PatchEndpointIDLabelsUpdateFailed handles this case with default header values.
+/*PatchEndpointIDLabelsUpdateFailed handles this case with default header values.
 
 Error while updating labels
 */

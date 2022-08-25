@@ -58,8 +58,7 @@ func NewGetLrpParamsWithHTTPClient(client *http.Client) *GetLrpParams {
 	}
 }
 
-/*
-GetLrpParams contains all the parameters to send to the API endpoint
+/*GetLrpParams contains all the parameters to send to the API endpoint
 for the get lrp operation typically these are written to a http.Request
 */
 type GetLrpParams struct {

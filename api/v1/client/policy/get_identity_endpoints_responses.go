@@ -49,8 +49,7 @@ func NewGetIdentityEndpointsOK() *GetIdentityEndpointsOK {
 	return &GetIdentityEndpointsOK{}
 }
 
-/*
-GetIdentityEndpointsOK handles this case with default header values.
+/*GetIdentityEndpointsOK handles this case with default header values.
 
 Success
 */
@@ -81,8 +80,7 @@ func NewGetIdentityEndpointsNotFound() *GetIdentityEndpointsNotFound {
 	return &GetIdentityEndpointsNotFound{}
 }
 
-/*
-GetIdentityEndpointsNotFound handles this case with default header values.
+/*GetIdentityEndpointsNotFound handles this case with default header values.
 
 Set of identities which are being used by local endpoints could not be found.
 */

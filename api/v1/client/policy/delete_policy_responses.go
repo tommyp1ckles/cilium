@@ -61,8 +61,7 @@ func NewDeletePolicyOK() *DeletePolicyOK {
 	return &DeletePolicyOK{}
 }
 
-/*
-DeletePolicyOK handles this case with default header values.
+/*DeletePolicyOK handles this case with default header values.
 
 Success
 */
@@ -95,8 +94,7 @@ func NewDeletePolicyInvalid() *DeletePolicyInvalid {
 	return &DeletePolicyInvalid{}
 }
 
-/*
-DeletePolicyInvalid handles this case with default header values.
+/*DeletePolicyInvalid handles this case with default header values.
 
 Invalid request
 */
@@ -127,8 +125,7 @@ func NewDeletePolicyNotFound() *DeletePolicyNotFound {
 	return &DeletePolicyNotFound{}
 }
 
-/*
-DeletePolicyNotFound handles this case with default header values.
+/*DeletePolicyNotFound handles this case with default header values.
 
 Policy not found
 */
@@ -149,8 +146,7 @@ func NewDeletePolicyFailure() *DeletePolicyFailure {
 	return &DeletePolicyFailure{}
 }
 
-/*
-DeletePolicyFailure handles this case with default header values.
+/*DeletePolicyFailure handles this case with default header values.
 
 Error while deleting policy
 */

@@ -55,8 +55,7 @@ func NewGetEndpointIDConfigOK() *GetEndpointIDConfigOK {
 	return &GetEndpointIDConfigOK{}
 }
 
-/*
-GetEndpointIDConfigOK handles this case with default header values.
+/*GetEndpointIDConfigOK handles this case with default header values.
 
 Success
 */
@@ -89,8 +88,7 @@ func NewGetEndpointIDConfigNotFound() *GetEndpointIDConfigNotFound {
 	return &GetEndpointIDConfigNotFound{}
 }
 
-/*
-GetEndpointIDConfigNotFound handles this case with default header values.
+/*GetEndpointIDConfigNotFound handles this case with default header values.
 
 Endpoint not found
 */
@@ -111,8 +109,7 @@ func NewGetEndpointIDConfigTooManyRequests() *GetEndpointIDConfigTooManyRequests
 	return &GetEndpointIDConfigTooManyRequests{}
 }
 
-/*
-GetEndpointIDConfigTooManyRequests handles this case with default header values.
+/*GetEndpointIDConfigTooManyRequests handles this case with default header values.
 
 Rate-limiting too many requests in the given time frame
 */

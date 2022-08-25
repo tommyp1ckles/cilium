@@ -67,8 +67,7 @@ func NewPutEndpointIDCreated() *PutEndpointIDCreated {
 	return &PutEndpointIDCreated{}
 }
 
-/*
-PutEndpointIDCreated handles this case with default header values.
+/*PutEndpointIDCreated handles this case with default header values.
 
 Created
 */
@@ -89,8 +88,7 @@ func NewPutEndpointIDInvalid() *PutEndpointIDInvalid {
 	return &PutEndpointIDInvalid{}
 }
 
-/*
-PutEndpointIDInvalid handles this case with default header values.
+/*PutEndpointIDInvalid handles this case with default header values.
 
 Invalid endpoint in request
 */
@@ -121,8 +119,7 @@ func NewPutEndpointIDExists() *PutEndpointIDExists {
 	return &PutEndpointIDExists{}
 }
 
-/*
-PutEndpointIDExists handles this case with default header values.
+/*PutEndpointIDExists handles this case with default header values.
 
 Endpoint already exists
 */
@@ -143,8 +140,7 @@ func NewPutEndpointIDTooManyRequests() *PutEndpointIDTooManyRequests {
 	return &PutEndpointIDTooManyRequests{}
 }
 
-/*
-PutEndpointIDTooManyRequests handles this case with default header values.
+/*PutEndpointIDTooManyRequests handles this case with default header values.
 
 Rate-limiting too many requests in the given time frame
 */
@@ -165,8 +161,7 @@ func NewPutEndpointIDFailed() *PutEndpointIDFailed {
 	return &PutEndpointIDFailed{}
 }
 
-/*
-PutEndpointIDFailed handles this case with default header values.
+/*PutEndpointIDFailed handles this case with default header values.
 
 Endpoint creation failed
 */

@@ -19,8 +19,7 @@ import (
 // GetPolicyOKCode is the HTTP code returned for type GetPolicyOK
 const GetPolicyOKCode int = 200
 
-/*
-GetPolicyOK Success
+/*GetPolicyOK Success
 
 swagger:response getPolicyOK
 */
@@ -64,8 +63,7 @@ func (o *GetPolicyOK) WriteResponse(rw http.ResponseWriter, producer runtime.Pro
 // GetPolicyNotFoundCode is the HTTP code returned for type GetPolicyNotFound
 const GetPolicyNotFoundCode int = 404
 
-/*
-GetPolicyNotFound No policy rules found
+/*GetPolicyNotFound No policy rules found
 
 swagger:response getPolicyNotFound
 */

@@ -49,8 +49,7 @@ func NewGetDebuginfoOK() *GetDebuginfoOK {
 	return &GetDebuginfoOK{}
 }
 
-/*
-GetDebuginfoOK handles this case with default header values.
+/*GetDebuginfoOK handles this case with default header values.
 
 Success
 */
@@ -83,8 +82,7 @@ func NewGetDebuginfoFailure() *GetDebuginfoFailure {
 	return &GetDebuginfoFailure{}
 }
 
-/*
-GetDebuginfoFailure handles this case with default header values.
+/*GetDebuginfoFailure handles this case with default header values.
 
 DebugInfo get failed
 */

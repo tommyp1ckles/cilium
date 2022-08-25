@@ -49,8 +49,7 @@ func NewGetRecorderIDOK() *GetRecorderIDOK {
 	return &GetRecorderIDOK{}
 }
 
-/*
-GetRecorderIDOK handles this case with default header values.
+/*GetRecorderIDOK handles this case with default header values.
 
 Success
 */
@@ -83,8 +82,7 @@ func NewGetRecorderIDNotFound() *GetRecorderIDNotFound {
 	return &GetRecorderIDNotFound{}
 }
 
-/*
-GetRecorderIDNotFound handles this case with default header values.
+/*GetRecorderIDNotFound handles this case with default header values.
 
 Recorder not found
 */

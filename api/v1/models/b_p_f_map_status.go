@@ -20,6 +20,7 @@ import (
 //
 // +k8s:deepcopy-gen=true
 //
+//
 // swagger:model BPFMapStatus
 type BPFMapStatus struct {
 

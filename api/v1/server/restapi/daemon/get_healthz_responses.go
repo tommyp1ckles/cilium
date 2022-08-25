@@ -19,8 +19,7 @@ import (
 // GetHealthzOKCode is the HTTP code returned for type GetHealthzOK
 const GetHealthzOKCode int = 200
 
-/*
-GetHealthzOK Success
+/*GetHealthzOK Success
 
 swagger:response getHealthzOK
 */

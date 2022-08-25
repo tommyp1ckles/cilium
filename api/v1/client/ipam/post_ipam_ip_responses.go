@@ -67,8 +67,7 @@ func NewPostIpamIPOK() *PostIpamIPOK {
 	return &PostIpamIPOK{}
 }
 
-/*
-PostIpamIPOK handles this case with default header values.
+/*PostIpamIPOK handles this case with default header values.
 
 Success
 */
@@ -89,8 +88,7 @@ func NewPostIpamIPInvalid() *PostIpamIPInvalid {
 	return &PostIpamIPInvalid{}
 }
 
-/*
-PostIpamIPInvalid handles this case with default header values.
+/*PostIpamIPInvalid handles this case with default header values.
 
 Invalid IP address
 */
@@ -111,8 +109,7 @@ func NewPostIpamIPExists() *PostIpamIPExists {
 	return &PostIpamIPExists{}
 }
 
-/*
-PostIpamIPExists handles this case with default header values.
+/*PostIpamIPExists handles this case with default header values.
 
 IP already allocated
 */
@@ -133,8 +130,7 @@ func NewPostIpamIPFailure() *PostIpamIPFailure {
 	return &PostIpamIPFailure{}
 }
 
-/*
-PostIpamIPFailure handles this case with default header values.
+/*PostIpamIPFailure handles this case with default header values.
 
 IP allocation failure. Details in message.
 */
@@ -165,8 +161,7 @@ func NewPostIpamIPDisabled() *PostIpamIPDisabled {
 	return &PostIpamIPDisabled{}
 }
 
-/*
-PostIpamIPDisabled handles this case with default header values.
+/*PostIpamIPDisabled handles this case with default header values.
 
 Allocation for address family disabled
 */

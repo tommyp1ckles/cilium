@@ -19,8 +19,7 @@ import (
 // DeletePrefilterOKCode is the HTTP code returned for type DeletePrefilterOK
 const DeletePrefilterOKCode int = 200
 
-/*
-DeletePrefilterOK Deleted
+/*DeletePrefilterOK Deleted
 
 swagger:response deletePrefilterOK
 */
@@ -64,8 +63,7 @@ func (o *DeletePrefilterOK) WriteResponse(rw http.ResponseWriter, producer runti
 // DeletePrefilterInvalidCIDRCode is the HTTP code returned for type DeletePrefilterInvalidCIDR
 const DeletePrefilterInvalidCIDRCode int = 461
 
-/*
-DeletePrefilterInvalidCIDR Invalid CIDR prefix
+/*DeletePrefilterInvalidCIDR Invalid CIDR prefix
 
 swagger:response deletePrefilterInvalidCIdR
 */
@@ -107,8 +105,7 @@ func (o *DeletePrefilterInvalidCIDR) WriteResponse(rw http.ResponseWriter, produ
 // DeletePrefilterFailureCode is the HTTP code returned for type DeletePrefilterFailure
 const DeletePrefilterFailureCode int = 500
 
-/*
-DeletePrefilterFailure Prefilter delete failed
+/*DeletePrefilterFailure Prefilter delete failed
 
 swagger:response deletePrefilterFailure
 */

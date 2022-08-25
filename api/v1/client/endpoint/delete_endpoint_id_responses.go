@@ -67,8 +67,7 @@ func NewDeleteEndpointIDOK() *DeleteEndpointIDOK {
 	return &DeleteEndpointIDOK{}
 }
 
-/*
-DeleteEndpointIDOK handles this case with default header values.
+/*DeleteEndpointIDOK handles this case with default header values.
 
 Success
 */
@@ -89,8 +88,7 @@ func NewDeleteEndpointIDErrors() *DeleteEndpointIDErrors {
 	return &DeleteEndpointIDErrors{}
 }
 
-/*
-DeleteEndpointIDErrors handles this case with default header values.
+/*DeleteEndpointIDErrors handles this case with default header values.
 
 Deleted with a number of errors encountered
 */
@@ -121,11 +119,11 @@ func NewDeleteEndpointIDInvalid() *DeleteEndpointIDInvalid {
 	return &DeleteEndpointIDInvalid{}
 }
 
-/*
-DeleteEndpointIDInvalid handles this case with default header values.
+/*DeleteEndpointIDInvalid handles this case with default header values.
 
 Invalid endpoint ID format for specified type. Details in error
 message
+
 */
 type DeleteEndpointIDInvalid struct {
 	Payload models.Error
@@ -154,8 +152,7 @@ func NewDeleteEndpointIDNotFound() *DeleteEndpointIDNotFound {
 	return &DeleteEndpointIDNotFound{}
 }
 
-/*
-DeleteEndpointIDNotFound handles this case with default header values.
+/*DeleteEndpointIDNotFound handles this case with default header values.
 
 Endpoint not found
 */
@@ -176,8 +173,7 @@ func NewDeleteEndpointIDTooManyRequests() *DeleteEndpointIDTooManyRequests {
 	return &DeleteEndpointIDTooManyRequests{}
 }
 
-/*
-DeleteEndpointIDTooManyRequests handles this case with default header values.
+/*DeleteEndpointIDTooManyRequests handles this case with default header values.
 
 Rate-limiting too many requests in the given time frame
 */

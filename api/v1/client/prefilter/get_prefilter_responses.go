@@ -49,8 +49,7 @@ func NewGetPrefilterOK() *GetPrefilterOK {
 	return &GetPrefilterOK{}
 }
 
-/*
-GetPrefilterOK handles this case with default header values.
+/*GetPrefilterOK handles this case with default header values.
 
 Success
 */
@@ -83,8 +82,7 @@ func NewGetPrefilterFailure() *GetPrefilterFailure {
 	return &GetPrefilterFailure{}
 }
 
-/*
-GetPrefilterFailure handles this case with default header values.
+/*GetPrefilterFailure handles this case with default header values.
 
 Prefilter get failed
 */

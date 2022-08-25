@@ -60,8 +60,7 @@ func NewGetPolicyResolveParamsWithHTTPClient(client *http.Client) *GetPolicyReso
 	}
 }
 
-/*
-GetPolicyResolveParams contains all the parameters to send to the API endpoint
+/*GetPolicyResolveParams contains all the parameters to send to the API endpoint
 for the get policy resolve operation typically these are written to a http.Request
 */
 type GetPolicyResolveParams struct {

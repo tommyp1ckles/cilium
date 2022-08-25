@@ -14,6 +14,7 @@ import (
 
 // ConfigurationMap Map of configuration key/value pairs.
 //
+//
 // swagger:model ConfigurationMap
 type ConfigurationMap map[string]string
 

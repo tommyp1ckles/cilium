@@ -43,8 +43,7 @@ func NewGetMapOK() *GetMapOK {
 	return &GetMapOK{}
 }
 
-/*
-GetMapOK handles this case with default header values.
+/*GetMapOK handles this case with default header values.
 
 Success
 */

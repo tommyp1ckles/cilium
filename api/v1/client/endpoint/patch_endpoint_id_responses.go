@@ -67,8 +67,7 @@ func NewPatchEndpointIDOK() *PatchEndpointIDOK {
 	return &PatchEndpointIDOK{}
 }
 
-/*
-PatchEndpointIDOK handles this case with default header values.
+/*PatchEndpointIDOK handles this case with default header values.
 
 Success
 */
@@ -89,8 +88,7 @@ func NewPatchEndpointIDInvalid() *PatchEndpointIDInvalid {
 	return &PatchEndpointIDInvalid{}
 }
 
-/*
-PatchEndpointIDInvalid handles this case with default header values.
+/*PatchEndpointIDInvalid handles this case with default header values.
 
 Invalid modify endpoint request
 */
@@ -121,8 +119,7 @@ func NewPatchEndpointIDNotFound() *PatchEndpointIDNotFound {
 	return &PatchEndpointIDNotFound{}
 }
 
-/*
-PatchEndpointIDNotFound handles this case with default header values.
+/*PatchEndpointIDNotFound handles this case with default header values.
 
 Endpoint does not exist
 */
@@ -143,8 +140,7 @@ func NewPatchEndpointIDTooManyRequests() *PatchEndpointIDTooManyRequests {
 	return &PatchEndpointIDTooManyRequests{}
 }
 
-/*
-PatchEndpointIDTooManyRequests handles this case with default header values.
+/*PatchEndpointIDTooManyRequests handles this case with default header values.
 
 Rate-limiting too many requests in the given time frame
 */
@@ -165,8 +161,7 @@ func NewPatchEndpointIDFailed() *PatchEndpointIDFailed {
 	return &PatchEndpointIDFailed{}
 }
 
-/*
-PatchEndpointIDFailed handles this case with default header values.
+/*PatchEndpointIDFailed handles this case with default header values.
 
 Endpoint update failed
 */

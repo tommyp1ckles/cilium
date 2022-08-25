@@ -19,8 +19,7 @@ import (
 // PutServiceIDOKCode is the HTTP code returned for type PutServiceIDOK
 const PutServiceIDOKCode int = 200
 
-/*
-PutServiceIDOK Updated
+/*PutServiceIDOK Updated
 
 swagger:response putServiceIdOK
 */
@@ -44,8 +43,7 @@ func (o *PutServiceIDOK) WriteResponse(rw http.ResponseWriter, producer runtime.
 // PutServiceIDCreatedCode is the HTTP code returned for type PutServiceIDCreated
 const PutServiceIDCreatedCode int = 201
 
-/*
-PutServiceIDCreated Created
+/*PutServiceIDCreated Created
 
 swagger:response putServiceIdCreated
 */
@@ -69,8 +67,7 @@ func (o *PutServiceIDCreated) WriteResponse(rw http.ResponseWriter, producer run
 // PutServiceIDInvalidFrontendCode is the HTTP code returned for type PutServiceIDInvalidFrontend
 const PutServiceIDInvalidFrontendCode int = 460
 
-/*
-PutServiceIDInvalidFrontend Invalid frontend in service configuration
+/*PutServiceIDInvalidFrontend Invalid frontend in service configuration
 
 swagger:response putServiceIdInvalidFrontend
 */
@@ -112,8 +109,7 @@ func (o *PutServiceIDInvalidFrontend) WriteResponse(rw http.ResponseWriter, prod
 // PutServiceIDInvalidBackendCode is the HTTP code returned for type PutServiceIDInvalidBackend
 const PutServiceIDInvalidBackendCode int = 461
 
-/*
-PutServiceIDInvalidBackend Invalid backend in service configuration
+/*PutServiceIDInvalidBackend Invalid backend in service configuration
 
 swagger:response putServiceIdInvalidBackend
 */
@@ -155,8 +151,7 @@ func (o *PutServiceIDInvalidBackend) WriteResponse(rw http.ResponseWriter, produ
 // PutServiceIDFailureCode is the HTTP code returned for type PutServiceIDFailure
 const PutServiceIDFailureCode int = 500
 
-/*
-PutServiceIDFailure Error while creating service
+/*PutServiceIDFailure Error while creating service
 
 swagger:response putServiceIdFailure
 */
@@ -198,8 +193,7 @@ func (o *PutServiceIDFailure) WriteResponse(rw http.ResponseWriter, producer run
 // PutServiceIDUpdateBackendFailureCode is the HTTP code returned for type PutServiceIDUpdateBackendFailure
 const PutServiceIDUpdateBackendFailureCode int = 501
 
-/*
-PutServiceIDUpdateBackendFailure Error while updating backend states
+/*PutServiceIDUpdateBackendFailure Error while updating backend states
 
 swagger:response putServiceIdUpdateBackendFailure
 */

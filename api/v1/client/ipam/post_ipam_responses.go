@@ -49,8 +49,7 @@ func NewPostIpamCreated() *PostIpamCreated {
 	return &PostIpamCreated{}
 }
 
-/*
-PostIpamCreated handles this case with default header values.
+/*PostIpamCreated handles this case with default header values.
 
 Success
 */
@@ -83,8 +82,7 @@ func NewPostIpamFailure() *PostIpamFailure {
 	return &PostIpamFailure{}
 }
 
-/*
-PostIpamFailure handles this case with default header values.
+/*PostIpamFailure handles this case with default header values.
 
 Allocation failure
 */

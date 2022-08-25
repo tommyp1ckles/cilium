@@ -43,8 +43,7 @@ func NewGetRecorderOK() *GetRecorderOK {
 	return &GetRecorderOK{}
 }
 
-/*
-GetRecorderOK handles this case with default header values.
+/*GetRecorderOK handles this case with default header values.
 
 Success
 */

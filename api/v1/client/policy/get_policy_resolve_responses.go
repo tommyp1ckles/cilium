@@ -43,8 +43,7 @@ func NewGetPolicyResolveOK() *GetPolicyResolveOK {
 	return &GetPolicyResolveOK{}
 }
 
-/*
-GetPolicyResolveOK handles this case with default header values.
+/*GetPolicyResolveOK handles this case with default header values.
 
 Success
 */

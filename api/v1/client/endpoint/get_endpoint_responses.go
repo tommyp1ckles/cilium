@@ -55,8 +55,7 @@ func NewGetEndpointOK() *GetEndpointOK {
 	return &GetEndpointOK{}
 }
 
-/*
-GetEndpointOK handles this case with default header values.
+/*GetEndpointOK handles this case with default header values.
 
 Success
 */
@@ -87,8 +86,7 @@ func NewGetEndpointNotFound() *GetEndpointNotFound {
 	return &GetEndpointNotFound{}
 }
 
-/*
-GetEndpointNotFound handles this case with default header values.
+/*GetEndpointNotFound handles this case with default header values.
 
 Endpoints with provided parameters not found
 */
@@ -109,8 +107,7 @@ func NewGetEndpointTooManyRequests() *GetEndpointTooManyRequests {
 	return &GetEndpointTooManyRequests{}
 }
 
-/*
-GetEndpointTooManyRequests handles this case with default header values.
+/*GetEndpointTooManyRequests handles this case with default header values.
 
 Rate-limiting too many requests in the given time frame
 */

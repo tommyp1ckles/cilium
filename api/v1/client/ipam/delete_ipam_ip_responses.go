@@ -67,8 +67,7 @@ func NewDeleteIpamIPOK() *DeleteIpamIPOK {
 	return &DeleteIpamIPOK{}
 }
 
-/*
-DeleteIpamIPOK handles this case with default header values.
+/*DeleteIpamIPOK handles this case with default header values.
 
 Success
 */
@@ -89,8 +88,7 @@ func NewDeleteIpamIPInvalid() *DeleteIpamIPInvalid {
 	return &DeleteIpamIPInvalid{}
 }
 
-/*
-DeleteIpamIPInvalid handles this case with default header values.
+/*DeleteIpamIPInvalid handles this case with default header values.
 
 Invalid IP address
 */
@@ -111,8 +109,7 @@ func NewDeleteIpamIPNotFound() *DeleteIpamIPNotFound {
 	return &DeleteIpamIPNotFound{}
 }
 
-/*
-DeleteIpamIPNotFound handles this case with default header values.
+/*DeleteIpamIPNotFound handles this case with default header values.
 
 IP address not found
 */
@@ -133,8 +130,7 @@ func NewDeleteIpamIPFailure() *DeleteIpamIPFailure {
 	return &DeleteIpamIPFailure{}
 }
 
-/*
-DeleteIpamIPFailure handles this case with default header values.
+/*DeleteIpamIPFailure handles this case with default header values.
 
 Address release failure
 */
@@ -165,8 +161,7 @@ func NewDeleteIpamIPDisabled() *DeleteIpamIPDisabled {
 	return &DeleteIpamIPDisabled{}
 }
 
-/*
-DeleteIpamIPDisabled handles this case with default header values.
+/*DeleteIpamIPDisabled handles this case with default header values.
 
 Allocation for address family disabled
 */

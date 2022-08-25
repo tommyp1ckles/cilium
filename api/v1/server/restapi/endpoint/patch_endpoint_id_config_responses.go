@@ -19,8 +19,7 @@ import (
 // PatchEndpointIDConfigOKCode is the HTTP code returned for type PatchEndpointIDConfigOK
 const PatchEndpointIDConfigOKCode int = 200
 
-/*
-PatchEndpointIDConfigOK Success
+/*PatchEndpointIDConfigOK Success
 
 swagger:response patchEndpointIdConfigOK
 */
@@ -44,8 +43,7 @@ func (o *PatchEndpointIDConfigOK) WriteResponse(rw http.ResponseWriter, producer
 // PatchEndpointIDConfigInvalidCode is the HTTP code returned for type PatchEndpointIDConfigInvalid
 const PatchEndpointIDConfigInvalidCode int = 400
 
-/*
-PatchEndpointIDConfigInvalid Invalid configuration request
+/*PatchEndpointIDConfigInvalid Invalid configuration request
 
 swagger:response patchEndpointIdConfigInvalid
 */
@@ -69,8 +67,7 @@ func (o *PatchEndpointIDConfigInvalid) WriteResponse(rw http.ResponseWriter, pro
 // PatchEndpointIDConfigNotFoundCode is the HTTP code returned for type PatchEndpointIDConfigNotFound
 const PatchEndpointIDConfigNotFoundCode int = 404
 
-/*
-PatchEndpointIDConfigNotFound Endpoint not found
+/*PatchEndpointIDConfigNotFound Endpoint not found
 
 swagger:response patchEndpointIdConfigNotFound
 */
@@ -94,8 +91,7 @@ func (o *PatchEndpointIDConfigNotFound) WriteResponse(rw http.ResponseWriter, pr
 // PatchEndpointIDConfigTooManyRequestsCode is the HTTP code returned for type PatchEndpointIDConfigTooManyRequests
 const PatchEndpointIDConfigTooManyRequestsCode int = 429
 
-/*
-PatchEndpointIDConfigTooManyRequests Rate-limiting too many requests in the given time frame
+/*PatchEndpointIDConfigTooManyRequests Rate-limiting too many requests in the given time frame
 
 swagger:response patchEndpointIdConfigTooManyRequests
 */
@@ -119,8 +115,7 @@ func (o *PatchEndpointIDConfigTooManyRequests) WriteResponse(rw http.ResponseWri
 // PatchEndpointIDConfigFailedCode is the HTTP code returned for type PatchEndpointIDConfigFailed
 const PatchEndpointIDConfigFailedCode int = 500
 
-/*
-PatchEndpointIDConfigFailed Update failed. Details in message.
+/*PatchEndpointIDConfigFailed Update failed. Details in message.
 
 swagger:response patchEndpointIdConfigFailed
 */

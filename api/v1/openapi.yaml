@@ -831,7 +831,20 @@ paths:
             "$ref": "#/definitions/BPFMap"
         '404':
           description: Map not found
-
+  "/map/{name}/events":
+    get:
+      summary: Retrieves the recent event logs associated with this endpoint.
+      tags:
+      - daemon
+      parameters:
+      - "$ref": "#/parameters/map-name"
+      responses:
+        '200':
+          description: Success
+          schema:
+            "$ref": "#/definitions/MapEventList"
+        '404':
+          description: Map not found
   "/metrics/":
     get:
       summary: Retrieve cilium metrics
@@ -2988,6 +3001,55 @@ definitions:
           last-failure-msg:
             description: Error message of last failed run
             type: string
+  MapEvent:
+    description: Event on Map
+    type: object
+    properties:
+      timestamp:
+        description: Timestamp when the event occurred
+        type: string
+        format: date-time
+      key:
+        description: Map key on which the event occured
+        type: string
+      value:
+        description: Map value on which the event occured
+        type: string
+      action:
+        description: Action type for event
+        type: string
+        enum:
+        - update
+        - delete
+      desired-action:
+        description: Desired action to be performed after this event
+        type: string
+        enum:
+        - ok
+        - insert
+        - delete
+      last-error:
+        description: Last error seen while performing desired action
+        type: string
+  MapEventList:
+    description: Ordered list of MapEvents
+    type: object
+    properties:
+      events:
+        description: Ordered MapEvents
+        type: array
+        items:
+          "$ref": "#/definitions/MapEvent"
+      metadata:
+        "$ref": "#/definitions/MapEventListMetadata" 
+  MapEventListMetadata: # TODO(@Tom)
+    description: Metadata about a MapEventList
+    type: object
+    properties:
+      bufferSize:
+        type: integer
+      map:
+        type: string
   BPFMapList:
     description: List of BPF Maps
     type: object

@@ -55,8 +55,7 @@ func NewDeletePrefilterOK() *DeletePrefilterOK {
 	return &DeletePrefilterOK{}
 }
 
-/*
-DeletePrefilterOK handles this case with default header values.
+/*DeletePrefilterOK handles this case with default header values.
 
 Deleted
 */
@@ -89,8 +88,7 @@ func NewDeletePrefilterInvalidCIDR() *DeletePrefilterInvalidCIDR {
 	return &DeletePrefilterInvalidCIDR{}
 }
 
-/*
-DeletePrefilterInvalidCIDR handles this case with default header values.
+/*DeletePrefilterInvalidCIDR handles this case with default header values.
 
 Invalid CIDR prefix
 */
@@ -121,8 +119,7 @@ func NewDeletePrefilterFailure() *DeletePrefilterFailure {
 	return &DeletePrefilterFailure{}
 }
 
-/*
-DeletePrefilterFailure handles this case with default header values.
+/*DeletePrefilterFailure handles this case with default header values.
 
 Prefilter delete failed
 */

@@ -59,8 +59,7 @@ func NewDeleteRecorderIDParamsWithHTTPClient(client *http.Client) *DeleteRecorde
 	}
 }
 
-/*
-DeleteRecorderIDParams contains all the parameters to send to the API endpoint
+/*DeleteRecorderIDParams contains all the parameters to send to the API endpoint
 for the delete recorder ID operation typically these are written to a http.Request
 */
 type DeleteRecorderIDParams struct {

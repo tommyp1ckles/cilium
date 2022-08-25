@@ -55,8 +55,7 @@ func NewDeleteRecorderIDOK() *DeleteRecorderIDOK {
 	return &DeleteRecorderIDOK{}
 }
 
-/*
-DeleteRecorderIDOK handles this case with default header values.
+/*DeleteRecorderIDOK handles this case with default header values.
 
 Success
 */
@@ -77,8 +76,7 @@ func NewDeleteRecorderIDNotFound() *DeleteRecorderIDNotFound {
 	return &DeleteRecorderIDNotFound{}
 }
 
-/*
-DeleteRecorderIDNotFound handles this case with default header values.
+/*DeleteRecorderIDNotFound handles this case with default header values.
 
 Recorder not found
 */
@@ -99,8 +97,7 @@ func NewDeleteRecorderIDFailure() *DeleteRecorderIDFailure {
 	return &DeleteRecorderIDFailure{}
 }
 
-/*
-DeleteRecorderIDFailure handles this case with default header values.
+/*DeleteRecorderIDFailure handles this case with default header values.
 
 Recorder deletion failed
 */

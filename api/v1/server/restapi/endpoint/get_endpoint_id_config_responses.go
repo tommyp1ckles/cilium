@@ -19,8 +19,7 @@ import (
 // GetEndpointIDConfigOKCode is the HTTP code returned for type GetEndpointIDConfigOK
 const GetEndpointIDConfigOKCode int = 200
 
-/*
-GetEndpointIDConfigOK Success
+/*GetEndpointIDConfigOK Success
 
 swagger:response getEndpointIdConfigOK
 */
@@ -64,8 +63,7 @@ func (o *GetEndpointIDConfigOK) WriteResponse(rw http.ResponseWriter, producer r
 // GetEndpointIDConfigNotFoundCode is the HTTP code returned for type GetEndpointIDConfigNotFound
 const GetEndpointIDConfigNotFoundCode int = 404
 
-/*
-GetEndpointIDConfigNotFound Endpoint not found
+/*GetEndpointIDConfigNotFound Endpoint not found
 
 swagger:response getEndpointIdConfigNotFound
 */
@@ -89,8 +87,7 @@ func (o *GetEndpointIDConfigNotFound) WriteResponse(rw http.ResponseWriter, prod
 // GetEndpointIDConfigTooManyRequestsCode is the HTTP code returned for type GetEndpointIDConfigTooManyRequests
 const GetEndpointIDConfigTooManyRequestsCode int = 429
 
-/*
-GetEndpointIDConfigTooManyRequests Rate-limiting too many requests in the given time frame
+/*GetEndpointIDConfigTooManyRequests Rate-limiting too many requests in the given time frame
 
 swagger:response getEndpointIdConfigTooManyRequests
 */

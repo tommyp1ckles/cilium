@@ -58,8 +58,7 @@ func NewGetFqdnNamesParamsWithHTTPClient(client *http.Client) *GetFqdnNamesParam
 	}
 }
 
-/*
-GetFqdnNamesParams contains all the parameters to send to the API endpoint
+/*GetFqdnNamesParams contains all the parameters to send to the API endpoint
 for the get fqdn names operation typically these are written to a http.Request
 */
 type GetFqdnNamesParams struct {

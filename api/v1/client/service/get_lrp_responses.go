@@ -43,8 +43,7 @@ func NewGetLrpOK() *GetLrpOK {
 	return &GetLrpOK{}
 }
 
-/*
-GetLrpOK handles this case with default header values.
+/*GetLrpOK handles this case with default header values.
 
 Success
 */

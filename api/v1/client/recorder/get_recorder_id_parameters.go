@@ -59,8 +59,7 @@ func NewGetRecorderIDParamsWithHTTPClient(client *http.Client) *GetRecorderIDPar
 	}
 }
 
-/*
-GetRecorderIDParams contains all the parameters to send to the API endpoint
+/*GetRecorderIDParams contains all the parameters to send to the API endpoint
 for the get recorder ID operation typically these are written to a http.Request
 */
 type GetRecorderIDParams struct {

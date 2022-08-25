@@ -19,8 +19,7 @@ import (
 // GetConfigOKCode is the HTTP code returned for type GetConfigOK
 const GetConfigOKCode int = 200
 
-/*
-GetConfigOK Success
+/*GetConfigOK Success
 
 swagger:response getConfigOK
 */

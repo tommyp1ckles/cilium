@@ -19,8 +19,7 @@ import (
 // GetIPOKCode is the HTTP code returned for type GetIPOK
 const GetIPOKCode int = 200
 
-/*
-GetIPOK Success
+/*GetIPOK Success
 
 swagger:response getIpOK
 */
@@ -67,8 +66,7 @@ func (o *GetIPOK) WriteResponse(rw http.ResponseWriter, producer runtime.Produce
 // GetIPBadRequestCode is the HTTP code returned for type GetIPBadRequest
 const GetIPBadRequestCode int = 400
 
-/*
-GetIPBadRequest Invalid request (error parsing parameters)
+/*GetIPBadRequest Invalid request (error parsing parameters)
 
 swagger:response getIpBadRequest
 */
@@ -110,8 +108,7 @@ func (o *GetIPBadRequest) WriteResponse(rw http.ResponseWriter, producer runtime
 // GetIPNotFoundCode is the HTTP code returned for type GetIPNotFound
 const GetIPNotFoundCode int = 404
 
-/*
-GetIPNotFound No IP cache entries with provided parameters found
+/*GetIPNotFound No IP cache entries with provided parameters found
 
 swagger:response getIpNotFound
 */

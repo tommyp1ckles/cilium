@@ -16,6 +16,7 @@ import (
 
 // DaemonConfiguration Response to a daemon configuration request.
 //
+//
 // swagger:model DaemonConfiguration
 type DaemonConfiguration struct {
 

@@ -976,6 +976,30 @@ func init() {
         }
       }
     },
+    "/map/{name}/events": {
+      "get": {
+        "tags": [
+          "daemon"
+        ],
+        "summary": "Retrieves the recent event logs associated with this endpoint.",
+        "parameters": [
+          {
+            "$ref": "#/parameters/map-name"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "schema": {
+              "$ref": "#/definitions/MapEventList"
+            }
+          },
+          "404": {
+            "description": "Map not found"
+          }
+        }
+      }
+    },
     "/metrics/": {
       "get": {
         "tags": [
@@ -3219,6 +3243,74 @@ func init() {
         "type": "string"
       }
     },
+    "MapEvent": {
+      "description": "Event on Map",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action type for event",
+          "type": "string",
+          "enum": [
+            "update",
+            "delete"
+          ]
+        },
+        "desired-action": {
+          "description": "Desired action to be performed after this event",
+          "type": "string",
+          "enum": [
+            "ok",
+            "insert",
+            "delete"
+          ]
+        },
+        "key": {
+          "description": "Map key on which the event occured",
+          "type": "string"
+        },
+        "last-error": {
+          "description": "Last error seen while performing desired action",
+          "type": "string"
+        },
+        "timestamp": {
+          "description": "Timestamp when the event occurred",
+          "type": "string",
+          "format": "date-time"
+        },
+        "value": {
+          "description": "Map value on which the event occured",
+          "type": "string"
+        }
+      }
+    },
+    "MapEventList": {
+      "description": "Ordered list of MapEvents",
+      "type": "object",
+      "properties": {
+        "events": {
+          "description": "Ordered MapEvents",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/MapEvent"
+          }
+        },
+        "metadata": {
+          "$ref": "#/definitions/MapEventListMetadata"
+        }
+      }
+    },
+    "MapEventListMetadata": {
+      "description": "Metadata about a MapEventList",
+      "type": "object",
+      "properties": {
+        "bufferSize": {
+          "type": "integer"
+        },
+        "map": {
+          "type": "string"
+        }
+      }
+    },
     "Masquerading": {
       "description": "Status of masquerading\n\n+k8s:deepcopy-gen=true",
       "type": "object",
@@ -5395,6 +5487,34 @@ func init() {
             "description": "Success",
             "schema": {
               "$ref": "#/definitions/BPFMap"
+            }
+          },
+          "404": {
+            "description": "Map not found"
+          }
+        }
+      }
+    },
+    "/map/{name}/events": {
+      "get": {
+        "tags": [
+          "daemon"
+        ],
+        "summary": "Retrieves the recent event logs associated with this endpoint.",
+        "parameters": [
+          {
+            "type": "string",
+            "description": "Name of map",
+            "name": "name",
+            "in": "path",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "schema": {
+              "$ref": "#/definitions/MapEventList"
             }
           },
           "404": {
@@ -8046,6 +8166,74 @@ func init() {
       "type": "array",
       "items": {
         "type": "string"
+      }
+    },
+    "MapEvent": {
+      "description": "Event on Map",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action type for event",
+          "type": "string",
+          "enum": [
+            "update",
+            "delete"
+          ]
+        },
+        "desired-action": {
+          "description": "Desired action to be performed after this event",
+          "type": "string",
+          "enum": [
+            "ok",
+            "insert",
+            "delete"
+          ]
+        },
+        "key": {
+          "description": "Map key on which the event occured",
+          "type": "string"
+        },
+        "last-error": {
+          "description": "Last error seen while performing desired action",
+          "type": "string"
+        },
+        "timestamp": {
+          "description": "Timestamp when the event occurred",
+          "type": "string",
+          "format": "date-time"
+        },
+        "value": {
+          "description": "Map value on which the event occured",
+          "type": "string"
+        }
+      }
+    },
+    "MapEventList": {
+      "description": "Ordered list of MapEvents",
+      "type": "object",
+      "properties": {
+        "events": {
+          "description": "Ordered MapEvents",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/MapEvent"
+          }
+        },
+        "metadata": {
+          "$ref": "#/definitions/MapEventListMetadata"
+        }
+      }
+    },
+    "MapEventListMetadata": {
+      "description": "Metadata about a MapEventList",
+      "type": "object",
+      "properties": {
+        "bufferSize": {
+          "type": "integer"
+        },
+        "map": {
+          "type": "string"
+        }
       }
     },
     "Masquerading": {

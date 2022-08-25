@@ -19,8 +19,7 @@ import (
 // GetDebuginfoOKCode is the HTTP code returned for type GetDebuginfoOK
 const GetDebuginfoOKCode int = 200
 
-/*
-GetDebuginfoOK Success
+/*GetDebuginfoOK Success
 
 swagger:response getDebuginfoOK
 */
@@ -64,8 +63,7 @@ func (o *GetDebuginfoOK) WriteResponse(rw http.ResponseWriter, producer runtime.
 // GetDebuginfoFailureCode is the HTTP code returned for type GetDebuginfoFailure
 const GetDebuginfoFailureCode int = 500
 
-/*
-GetDebuginfoFailure DebugInfo get failed
+/*GetDebuginfoFailure DebugInfo get failed
 
 swagger:response getDebuginfoFailure
 */

@@ -19,8 +19,7 @@ import (
 // GetRecorderMasksOKCode is the HTTP code returned for type GetRecorderMasksOK
 const GetRecorderMasksOKCode int = 200
 
-/*
-GetRecorderMasksOK Success
+/*GetRecorderMasksOK Success
 
 swagger:response getRecorderMasksOK
 */

@@ -19,8 +19,7 @@ import (
 // PutEndpointIDCreatedCode is the HTTP code returned for type PutEndpointIDCreated
 const PutEndpointIDCreatedCode int = 201
 
-/*
-PutEndpointIDCreated Created
+/*PutEndpointIDCreated Created
 
 swagger:response putEndpointIdCreated
 */
@@ -44,8 +43,7 @@ func (o *PutEndpointIDCreated) WriteResponse(rw http.ResponseWriter, producer ru
 // PutEndpointIDInvalidCode is the HTTP code returned for type PutEndpointIDInvalid
 const PutEndpointIDInvalidCode int = 400
 
-/*
-PutEndpointIDInvalid Invalid endpoint in request
+/*PutEndpointIDInvalid Invalid endpoint in request
 
 swagger:response putEndpointIdInvalid
 */
@@ -87,8 +85,7 @@ func (o *PutEndpointIDInvalid) WriteResponse(rw http.ResponseWriter, producer ru
 // PutEndpointIDExistsCode is the HTTP code returned for type PutEndpointIDExists
 const PutEndpointIDExistsCode int = 409
 
-/*
-PutEndpointIDExists Endpoint already exists
+/*PutEndpointIDExists Endpoint already exists
 
 swagger:response putEndpointIdExists
 */
@@ -112,8 +109,7 @@ func (o *PutEndpointIDExists) WriteResponse(rw http.ResponseWriter, producer run
 // PutEndpointIDTooManyRequestsCode is the HTTP code returned for type PutEndpointIDTooManyRequests
 const PutEndpointIDTooManyRequestsCode int = 429
 
-/*
-PutEndpointIDTooManyRequests Rate-limiting too many requests in the given time frame
+/*PutEndpointIDTooManyRequests Rate-limiting too many requests in the given time frame
 
 swagger:response putEndpointIdTooManyRequests
 */
@@ -137,8 +133,7 @@ func (o *PutEndpointIDTooManyRequests) WriteResponse(rw http.ResponseWriter, pro
 // PutEndpointIDFailedCode is the HTTP code returned for type PutEndpointIDFailed
 const PutEndpointIDFailedCode int = 500
 
-/*
-PutEndpointIDFailed Endpoint creation failed
+/*PutEndpointIDFailed Endpoint creation failed
 
 swagger:response putEndpointIdFailed
 */

@@ -43,8 +43,7 @@ func NewGetPolicySelectorsOK() *GetPolicySelectorsOK {
 	return &GetPolicySelectorsOK{}
 }
 
-/*
-GetPolicySelectorsOK handles this case with default header values.
+/*GetPolicySelectorsOK handles this case with default header values.
 
 Success
 */

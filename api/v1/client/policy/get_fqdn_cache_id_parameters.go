@@ -58,8 +58,7 @@ func NewGetFqdnCacheIDParamsWithHTTPClient(client *http.Client) *GetFqdnCacheIDP
 	}
 }
 
-/*
-GetFqdnCacheIDParams contains all the parameters to send to the API endpoint
+/*GetFqdnCacheIDParams contains all the parameters to send to the API endpoint
 for the get fqdn cache ID operation typically these are written to a http.Request
 */
 type GetFqdnCacheIDParams struct {

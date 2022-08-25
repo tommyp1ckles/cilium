@@ -19,8 +19,7 @@ import (
 // PutPolicyOKCode is the HTTP code returned for type PutPolicyOK
 const PutPolicyOKCode int = 200
 
-/*
-PutPolicyOK Success
+/*PutPolicyOK Success
 
 swagger:response putPolicyOK
 */
@@ -64,8 +63,7 @@ func (o *PutPolicyOK) WriteResponse(rw http.ResponseWriter, producer runtime.Pro
 // PutPolicyInvalidPolicyCode is the HTTP code returned for type PutPolicyInvalidPolicy
 const PutPolicyInvalidPolicyCode int = 400
 
-/*
-PutPolicyInvalidPolicy Invalid policy
+/*PutPolicyInvalidPolicy Invalid policy
 
 swagger:response putPolicyInvalidPolicy
 */
@@ -107,8 +105,7 @@ func (o *PutPolicyInvalidPolicy) WriteResponse(rw http.ResponseWriter, producer 
 // PutPolicyInvalidPathCode is the HTTP code returned for type PutPolicyInvalidPath
 const PutPolicyInvalidPathCode int = 460
 
-/*
-PutPolicyInvalidPath Invalid path
+/*PutPolicyInvalidPath Invalid path
 
 swagger:response putPolicyInvalidPath
 */
@@ -150,8 +147,7 @@ func (o *PutPolicyInvalidPath) WriteResponse(rw http.ResponseWriter, producer ru
 // PutPolicyFailureCode is the HTTP code returned for type PutPolicyFailure
 const PutPolicyFailureCode int = 500
 
-/*
-PutPolicyFailure Policy import failed
+/*PutPolicyFailure Policy import failed
 
 swagger:response putPolicyFailure
 */

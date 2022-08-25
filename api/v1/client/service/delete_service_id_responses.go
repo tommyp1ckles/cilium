@@ -55,8 +55,7 @@ func NewDeleteServiceIDOK() *DeleteServiceIDOK {
 	return &DeleteServiceIDOK{}
 }
 
-/*
-DeleteServiceIDOK handles this case with default header values.
+/*DeleteServiceIDOK handles this case with default header values.
 
 Success
 */
@@ -77,8 +76,7 @@ func NewDeleteServiceIDNotFound() *DeleteServiceIDNotFound {
 	return &DeleteServiceIDNotFound{}
 }
 
-/*
-DeleteServiceIDNotFound handles this case with default header values.
+/*DeleteServiceIDNotFound handles this case with default header values.
 
 Service not found
 */
@@ -99,8 +97,7 @@ func NewDeleteServiceIDFailure() *DeleteServiceIDFailure {
 	return &DeleteServiceIDFailure{}
 }
 
-/*
-DeleteServiceIDFailure handles this case with default header values.
+/*DeleteServiceIDFailure handles this case with default header values.
 
 Service deletion failed
 */
