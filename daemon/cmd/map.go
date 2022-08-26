@@ -62,6 +62,22 @@ func (h *getMapNameEvents) Handle(params restapi.GetMapNameEventsParams) middlew
 					LastError:     "nil",
 					Timestamp:     strfmt.DateTime(time.Now()),
 				},
+				{
+					CallerContext: "0x0000000",
+					DesiredAction: "ok",
+					Key:           strfmt.Base64("foo"),
+					Value:         strfmt.Base64("bar"),
+					LastError:     "nil",
+					Timestamp:     strfmt.DateTime(time.Now()),
+				},
+				{
+					CallerContext: "0x0000000",
+					DesiredAction: "ok",
+					Key:           strfmt.Base64("xxx"),
+					Value:         strfmt.Base64("yyy"),
+					LastError:     "nil",
+					Timestamp:     strfmt.DateTime(time.Now()),
+				},
 			},
 		})
 }
