@@ -4,6 +4,8 @@
 package cmd
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 
 	daemonAPI "github.com/cilium/cilium/api/v1/client/daemon"
@@ -14,17 +16,19 @@ import (
 
 // mapGetCmd represents the map_get command
 var mapEventListCmd = &cobra.Command{
-	Use:     "get <name>",
-	Short:   "Display cached content of given BPF map",
-	Example: "cilium map get cilium_ipcache",
+	Use: "events <name>", // TODO(@tom)
+	//Short:   "Display cached content of given BPF map",
+	//Example: "cilium map get cilium_ipcache",
 	Run: func(cmd *cobra.Command, args []string) {
 		if len(args) == 0 {
 			Fatalf("map name must be specified")
 		}
 
-		params := daemonAPI.NewGetMapNameParams().WithName(args[0]).WithTimeout(api.ClientTimeout)
+		params := daemonAPI.NewGetMapNameEventsParams().
+			WithName(args[0]).
+			WithTimeout(api.ClientTimeout)
 
-		resp, err := client.Daemon.GetMapName(params)
+		resp, err := client.Daemon.GetMapNameEvents(params)
 		if err != nil {
 			Fatalf("%s", err)
 		}
@@ -41,6 +45,17 @@ var mapEventListCmd = &cobra.Command{
 			return
 		}
 
-		printMapEntries(m)
+		//printMapEntries(m)
+		//todo
+		data, err := json.MarshalIndent(m, "", "	")
+		if err != nil {
+			panic(err)
+		}
+		fmt.Println(string(data))
 	},
+}
+
+func init() {
+	mapCmd.AddCommand(mapEventListCmd)
+	command.AddOutputOption(mapEventListCmd)
 }
