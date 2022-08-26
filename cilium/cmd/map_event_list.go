@@ -4,9 +4,11 @@
 package cmd
 
 import (
-	"encoding/json"
+	"encoding/base64"
 	"fmt"
 	"os"
+	"text/tabwriter"
+	"time"
 
 	daemonAPI "github.com/cilium/cilium/api/v1/client/daemon"
 	"github.com/cilium/cilium/pkg/api"
@@ -16,11 +18,11 @@ import (
 
 // mapGetCmd represents the map_get command
 var mapEventListCmd = &cobra.Command{
-	Use: "events <name>", // TODO(@tom)
-	//Short:   "Display cached content of given BPF map",
-	//Example: "cilium map get cilium_ipcache",
+	Use:     "events <name>",
+	Short:   "Display cached list of events for a BPF map",
+	Example: "cilium map events cilium_ipcache",
 	Run: func(cmd *cobra.Command, args []string) {
-		if len(args) == 0 {
+		if len(args) == 0 || args[0] == "" {
 			Fatalf("map name must be specified")
 		}
 
@@ -45,13 +47,27 @@ var mapEventListCmd = &cobra.Command{
 			return
 		}
 
-		//printMapEntries(m)
-		//todo
-		data, err := json.MarshalIndent(m, "", "	")
-		if err != nil {
-			panic(err)
+		w := tabwriter.NewWriter(os.Stdout, 5, 0, 3, ' ', 0)
+		fmt.Fprintf(w, "Timestamp\tKey\tValue\tState\tError\tCaller\n")
+		for _, event := range m.Events {
+			k, err := base64.StdEncoding.DecodeString(event.Key.String())
+			if err != nil {
+				Fatalf("could not decode event key: %s", err.Error())
+			}
+			v, err := base64.StdEncoding.DecodeString(event.Value.String())
+			if err != nil {
+				Fatalf("could not decode event value: %s", err.Error())
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+				time.Time(event.Timestamp).Format(time.RFC3339),
+				k,
+				v,
+				event.DesiredAction,
+				event.LastError,
+				event.CallerContext,
+			)
 		}
-		fmt.Println(string(data))
+		w.Flush()
 	},
 }
 
