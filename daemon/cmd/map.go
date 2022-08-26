@@ -48,8 +48,8 @@ func (h *getMapNameEvents) Handle(params restapi.GetMapNameEventsParams) middlew
 		return restapi.NewGetMapNameNotFound()
 	}
 	return restapi.NewGetMapNameEventsOK().
-		WithPayload(&models.MapEventLog{
-			Events: []*models.MapEventLogEntry{
+		WithPayload(&models.MapEventList{
+			Events: []*models.MapEvent{
 				// MOCKS FOR DEV: TODODODODODO
 				// MOCKS FOR DEV: TODODODODODO
 				// MOCKS FOR DEV: TODODODODODO
