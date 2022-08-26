@@ -47,6 +47,7 @@ var mapEventListCmd = &cobra.Command{
 			return
 		}
 
+		// TODO(Tom): Do we need a --from/--to flags, or some kind of paginator, or filter by key/event/etc.
 		w := tabwriter.NewWriter(os.Stdout, 5, 0, 3, ' ', 0)
 		fmt.Fprintf(w, "Timestamp\tKey\tValue\tState\tError\tCaller\n")
 		for _, event := range m.Events {
