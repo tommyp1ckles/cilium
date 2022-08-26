@@ -1964,6 +1964,7 @@ func (d *Daemon) instantiateAPI() *restapi.CiliumAPIAPI {
 	// /map
 	restAPI.DaemonGetMapHandler = NewGetMapHandler(d)
 	restAPI.DaemonGetMapNameHandler = NewGetMapNameHandler(d)
+	restAPI.DaemonGetMapNameEventsHandler = NewGetMapNameEventsHandler(d)
 
 	// metrics
 	restAPI.MetricsGetMetricsHandler = NewGetMetricsHandler(d)
