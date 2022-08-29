@@ -75,11 +75,11 @@ type MapInfo struct {
 }
 
 type cacheEntry struct {
-	Key   MapKey
+	//Key   MapKey // Idea: what if we cache these/
 	Value MapValue
 
-	DesiredAction DesiredAction
-	LastError     error
+	DesiredAction DesiredAction // Changed this one to a uint8
+	LastError     error         // syscall.Errno is already a uintptr type so no point storing that.
 }
 
 type Map struct {
@@ -127,7 +127,8 @@ type Map struct {
 	pressureGauge *metrics.GaugeWithThreshold
 
 	eventsBufferEnabled bool
-	events              *eventsBuffer
+	// TODO(@Tom)
+	events *eventsBuffer
 }
 
 // NewMap creates a new Map instance - object representing a BPF map

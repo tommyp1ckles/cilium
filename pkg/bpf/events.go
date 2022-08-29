@@ -10,6 +10,14 @@ type Event struct {
 	cacheEntry
 }
 
+type eventEntry struct {
+	Key   MapKey // Idea: what if we cache these/
+	Value MapValue
+
+	DesiredAction DesiredAction // Changed this one to a uint8
+	LastError     error         // syscall.Errno is already a uintptr type so no point storing that.
+}
+
 func (e Event) GetKey() string {
 	return e.cacheEntry.Key.String()
 }
@@ -36,8 +44,25 @@ func newEventsBuffer(capacity int) *eventsBuffer {
 type eventsBuffer struct {
 	//lock   sync.RWMutex
 	// Note: we must these are inserted in strictly the same order as the Map.
-	buffer []Event
-	index  int
+	// So, I think it makes sense to switch to a LL based ring, theres that pointer
+	// overhead and it won't be in contiguous memory, but if we want to do a time
+	// based thing we can easily remove elements from list (does container/ring support removal?)
+	//
+	// maxSize -> buffer wont grow bigger than this.
+	// eventTTL -> how far beack we store events (*optional)
+	buffer   []Event
+	maxSize  int           // TODO
+	eventTTL time.Duration // TODO: This could be how far back events are kept.
+	// 			We could either have a async GC controller
+	//			or something, or just perform a cleanup every time
+	//			we receive an event.
+	// i.e.
+	// event ------------->
+	// 	Add event to front of buffer
+	//	Go to first element of buffer, if element timestamp is outside of now() - retentionWindow then
+	// 		remove_element()
+	//	repeat until first element in buffer is in retention window.
+	index int
 }
 
 func (eb *eventsBuffer) isFull() bool {
