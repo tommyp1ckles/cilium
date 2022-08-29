@@ -75,7 +75,7 @@ type MapInfo struct {
 }
 
 type cacheEntry struct {
-	//Key   MapKey // Idea: what if we cache these/
+	Key   MapKey
 	Value MapValue
 
 	DesiredAction DesiredAction // Changed this one to a uint8
@@ -243,7 +243,7 @@ func (m *Map) WithCache() *Map {
 
 	// todo@tom
 	m.eventsBufferEnabled = true
-	m.events = newEventsBuffer(16)
+	m.events = newEventsBuffer(16, 0)
 	return m
 }
 

@@ -11,11 +11,12 @@ type Event struct {
 }
 
 type eventEntry struct {
-	Key   MapKey // Idea: what if we cache these/
+	Key MapKey // Idea: what if we cache these/
+	//keyHash uint64
 	Value MapValue
 
-	DesiredAction DesiredAction // Changed this one to a uint8
-	LastError     error         // syscall.Errno is already a uintptr type so no point storing that.
+	DesiredAction DesiredAction
+	LastError     error
 }
 
 func (e Event) GetKey() string {
@@ -34,11 +35,18 @@ func (e Event) GetDesiredAction() DesiredAction {
 	return e.cacheEntry.DesiredAction
 }
 
-func newEventsBuffer(capacity int) *eventsBuffer {
+func newEventsBuffer(capacity int, eventsTTL time.Duration) *eventsBuffer {
 	return &eventsBuffer{
-		buffer: make([]Event, 0, capacity),
-		index:  -1,
+		//buffer:   ring.New(maxSize),
+		buffer:   make([]Event, 0, capacity),
+		maxSize:  capacity,
+		eventTTL: eventsTTL,
 	}
+}
+
+type mapKeyTableEntry struct {
+	refs int
+	key  MapKey
 }
 
 type eventsBuffer struct {
@@ -50,9 +58,16 @@ type eventsBuffer struct {
 	//
 	// maxSize -> buffer wont grow bigger than this.
 	// eventTTL -> how far beack we store events (*optional)
-	buffer   []Event
+	buffer []Event
+	//keyTable map[uint64]Map
+	//buffer   *ring.Ring
 	maxSize  int           // TODO
 	eventTTL time.Duration // TODO: This could be how far back events are kept.
+
+	// Keys are going to be about 50-bytes, over 1000,000 entries that's about 50 MB.
+	// One optimization is we could store these in a Map, where each entry is refcounted.
+	//keyTable map[uint64]MapKey
+
 	// 			We could either have a async GC controller
 	//			or something, or just perform a cleanup every time
 	//			we receive an event.
@@ -78,7 +93,7 @@ func (eb *eventsBuffer) add(e Event) {
 	eb.buffer = append(eb.buffer, e)
 }
 
-func (eb *eventsBuffer) list(callback func(Event)) {
+func (eb *eventsBuffer) dumpWithCallback(callback EventCallbackFunc) {
 	if eb.isFull() {
 		for i := eb.index + 1; i < eb.index+1+len(eb.buffer); i++ {
 			callback(eb.buffer[i%len(eb.buffer)])
@@ -90,22 +105,20 @@ func (eb *eventsBuffer) list(callback func(Event)) {
 	}
 }
 
+type EventCallbackFunc func(Event)
+
 // todo: startime?
 // Ok key requirements for this will be:
 // * You can't spike memory when doing this, i.e. no naive copy.
 // * You don't want to lock this for too long because its locking the whole map.
 //		* Maybe we need rate limiting?
 // * Maybe, immutable collections?
-func (m *Map) ListEvents() ([]Event, error) {
+func (m *Map) DumpEventsWithCallback(callback EventCallbackFunc) error {
 	m.lock.RLock() // TODO: Do we really want to lock the entire thing for this?
 	defer m.lock.RUnlock()
 	if !m.eventsBufferEnabled {
-		return nil, fmt.Errorf("event buffer is not enabled for this map (%q)", m.name)
+		return fmt.Errorf("events buffer not enabled for map %q", m.name)
 	}
-	// im worried about this:
-	buf := make([]Event, len(m.events.buffer))
-	copy(buf, m.events.buffer)
-	return buf, nil
-	// Ideas:
-	// * "Swap" buffers?
+	m.events.dumpWithCallback(callback)
+	return nil
 }

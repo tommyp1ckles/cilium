@@ -15,17 +15,17 @@ import (
 	"github.com/cilium/cilium/pkg/ebpf"
 )
 
-type eventLister interface {
-	ListEvents() ([]bpf.Event, error)
+type eventsDumper interface {
+	DumpEventsWithCallback(bpf.EventCallbackFunc) error
 }
 
 type mapRefGetter interface {
-	GetMap(name string) eventLister
+	GetMap(name string) eventsDumper
 }
 
 type mapGetterImpl struct{}
 
-func (mg mapGetterImpl) GetMap(name string) eventLister {
+func (mg mapGetterImpl) GetMap(name string) eventsDumper {
 	return bpf.GetMap(name)
 }
 
@@ -49,12 +49,7 @@ func (h *getMapNameEvents) Handle(params restapi.GetMapNameEventsParams) middlew
 	}
 	fmt.Println("[tom-debug] Doing some stuff", m)
 	mapEvents := []*models.MapEvent{}
-	events, err := m.ListEvents()
-	if err != nil {
-		return restapi.NewGetMapNameEventsNotFound()
-	}
-	for _, e := range events {
-		fmt.Println("[tom-debug] Listing event:", e)
+	err := m.DumpEventsWithCallback(func(e bpf.Event) {
 		mapEvents = append(mapEvents, &models.MapEvent{
 			DesiredAction: e.GetDesiredAction().String(),
 			Key:           strfmt.Base64(e.GetKey()),
@@ -62,41 +57,16 @@ func (h *getMapNameEvents) Handle(params restapi.GetMapNameEventsParams) middlew
 			LastError:     e.GetLastError().Error(),
 			Timestamp:     strfmt.DateTime(e.Timestamp),
 		})
+	})
+	if err != nil {
+		return restapi.NewGetMapNameEventsNotFound()
 	}
+
 	fmt.Println("[tom-debug] Returning response")
 	return restapi.NewGetMapNameEventsOK().
 		WithPayload(&models.MapEventList{
-			Events: []*models.MapEvent{
-
-				// MOCKS FOR DEV: TODODODODODO
-				// MOCKS FOR DEV: TODODODODODO
-				// MOCKS FOR DEV: TODODODODODO
-				// MOCKS FOR DEV: TODODODODODO
-				// {
-				// 	CallerContext: "0x0000000",
-				// 	DesiredAction: "ok",
-				// 	Key:           strfmt.Base64("foo"),
-				// 	Value:         strfmt.Base64("bar"),
-				// 	LastError:     "nil",
-				// 	Timestamp:     strfmt.DateTime(time.Now()),
-				// },
-				// {
-				// 	CallerContext: "0x0000000",
-				// 	DesiredAction: "ok",
-				// 	Key:           strfmt.Base64("foo"),
-				// 	Value:         strfmt.Base64("bar"),
-				// 	LastError:     "nil",
-				// 	Timestamp:     strfmt.DateTime(time.Now()),
-				// },
-				// {
-				// 	CallerContext: "0x0000000",
-				// 	DesiredAction: "ok",
-				// 	Key:           strfmt.Base64("xxx"),
-				// 	Value:         strfmt.Base64("yyy"),
-				// 	LastError:     "nil",
-				// 	Timestamp:     strfmt.DateTime(time.Now()),
-				// },
-			},
+			Events:   mapEvents,
+			Metadata: &models.MapEventListMetadata{},
 		})
 }
 
