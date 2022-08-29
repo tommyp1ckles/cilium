@@ -32,10 +32,10 @@ type getMapNameEvents struct {
 	mapGetter mapRefGetter
 }
 
-func NewGetMapNameEventsHandler(d *Daemon) restapi.GetMapNameEventsHandler {
+func NewGetMapNameEventsHandler(d *Daemon, maps mapRefGetter) restapi.GetMapNameEventsHandler {
 	return &getMapNameEvents{
 		daemon:    d,
-		mapGetter: mapGetterImpl{},
+		mapGetter: maps,
 	}
 }
 
