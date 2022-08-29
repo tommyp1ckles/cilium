@@ -4,8 +4,6 @@
 package cmd
 
 import (
-	"fmt"
-
 	"github.com/go-openapi/runtime/middleware"
 	"github.com/go-openapi/strfmt"
 
@@ -42,19 +40,21 @@ func NewGetMapNameEventsHandler(d *Daemon) restapi.GetMapNameEventsHandler {
 }
 
 func (h *getMapNameEvents) Handle(params restapi.GetMapNameEventsParams) middleware.Responder {
-	//m := bpf.GetMap(params.Name)
 	m := h.mapGetter.GetMap(params.Name)
 	if m == nil {
 		return restapi.NewGetMapNameNotFound()
 	}
-	fmt.Println("[tom-debug] Doing some stuff", m)
 	mapEvents := []*models.MapEvent{}
 	err := m.DumpEventsWithCallback(func(e bpf.Event) {
+		errStr := "<nil>"
+		if e.GetLastError() != nil {
+			errStr = e.GetLastError().Error()
+		}
 		mapEvents = append(mapEvents, &models.MapEvent{
 			DesiredAction: e.GetDesiredAction().String(),
 			Key:           strfmt.Base64(e.GetKey()),
 			Value:         strfmt.Base64(e.GetValue()),
-			LastError:     e.GetLastError().Error(),
+			LastError:     errStr,
 			Timestamp:     strfmt.DateTime(e.Timestamp),
 		})
 	})
@@ -62,7 +62,6 @@ func (h *getMapNameEvents) Handle(params restapi.GetMapNameEventsParams) middlew
 		return restapi.NewGetMapNameEventsNotFound()
 	}
 
-	fmt.Println("[tom-debug] Returning response")
 	return restapi.NewGetMapNameEventsOK().
 		WithPayload(&models.MapEventList{
 			Events:   mapEvents,
