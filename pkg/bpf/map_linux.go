@@ -1113,7 +1113,6 @@ func (m *Map) addToEvents(entry cacheEntry) {
 	fmt.Println("[tom-debug] Adding to entries:", m.Name(), entry, fmt.Sprintf("%s:%d", file, line))
 	m.events.add(Event{
 		Timestamp:  time.Now(),
-		MapName:    m.Name(),
 		cacheEntry: entry,
 	})
 }

@@ -1,10 +1,12 @@
 package bpf
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 type Event struct {
 	Timestamp time.Time
-	MapName   string
 	cacheEntry
 }
 
@@ -69,13 +71,16 @@ func (eb *eventsBuffer) list(callback func(Event)) {
 // * You don't want to lock this for too long because its locking the whole map.
 //		* Maybe we need rate limiting?
 // * Maybe, immutable collections?
-func (m *Map) ListEvents() []Event {
+func (m *Map) ListEvents() ([]Event, error) {
 	m.lock.RLock() // TODO: Do we really want to lock the entire thing for this?
 	defer m.lock.RUnlock()
+	if !m.eventsBufferEnabled {
+		return nil, fmt.Errorf("event buffer is not enabled for this map (%q)", m.name)
+	}
 	// im worried about this:
 	buf := make([]Event, len(m.events.buffer))
 	copy(buf, m.events.buffer)
-	return buf
+	return buf, nil
 	// Ideas:
 	// * "Swap" buffers?
 }

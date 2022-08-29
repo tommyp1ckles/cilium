@@ -4,7 +4,7 @@
 package cmd
 
 import (
-	"time"
+	"fmt"
 
 	"github.com/go-openapi/runtime/middleware"
 	"github.com/go-openapi/strfmt"
@@ -15,17 +15,17 @@ import (
 	"github.com/cilium/cilium/pkg/ebpf"
 )
 
-type mapRef interface {
-	// TODO:
+type eventLister interface {
+	ListEvents() ([]bpf.Event, error)
 }
 
 type mapRefGetter interface {
-	GetMap(name string) mapRef
+	GetMap(name string) eventLister
 }
 
 type mapGetterImpl struct{}
 
-func (mg mapGetterImpl) GetMap(name string) mapRef {
+func (mg mapGetterImpl) GetMap(name string) eventLister {
 	return bpf.GetMap(name)
 }
 
@@ -47,37 +47,55 @@ func (h *getMapNameEvents) Handle(params restapi.GetMapNameEventsParams) middlew
 	if m == nil {
 		return restapi.NewGetMapNameNotFound()
 	}
+	fmt.Println("[tom-debug] Doing some stuff", m)
+	mapEvents := []*models.MapEvent{}
+	events, err := m.ListEvents()
+	if err != nil {
+		return restapi.NewGetMapNameEventsNotFound()
+	}
+	for _, e := range events {
+		fmt.Println("[tom-debug] Listing event:", e)
+		mapEvents = append(mapEvents, &models.MapEvent{
+			DesiredAction: e.GetDesiredAction().String(),
+			Key:           strfmt.Base64(e.GetKey()),
+			Value:         strfmt.Base64(e.GetValue()),
+			LastError:     e.GetLastError().Error(),
+			Timestamp:     strfmt.DateTime(e.Timestamp),
+		})
+	}
+	fmt.Println("[tom-debug] Returning response")
 	return restapi.NewGetMapNameEventsOK().
 		WithPayload(&models.MapEventList{
 			Events: []*models.MapEvent{
+
 				// MOCKS FOR DEV: TODODODODODO
 				// MOCKS FOR DEV: TODODODODODO
 				// MOCKS FOR DEV: TODODODODODO
 				// MOCKS FOR DEV: TODODODODODO
-				{
-					CallerContext: "0x0000000",
-					DesiredAction: "ok",
-					Key:           strfmt.Base64("foo"),
-					Value:         strfmt.Base64("bar"),
-					LastError:     "nil",
-					Timestamp:     strfmt.DateTime(time.Now()),
-				},
-				{
-					CallerContext: "0x0000000",
-					DesiredAction: "ok",
-					Key:           strfmt.Base64("foo"),
-					Value:         strfmt.Base64("bar"),
-					LastError:     "nil",
-					Timestamp:     strfmt.DateTime(time.Now()),
-				},
-				{
-					CallerContext: "0x0000000",
-					DesiredAction: "ok",
-					Key:           strfmt.Base64("xxx"),
-					Value:         strfmt.Base64("yyy"),
-					LastError:     "nil",
-					Timestamp:     strfmt.DateTime(time.Now()),
-				},
+				// {
+				// 	CallerContext: "0x0000000",
+				// 	DesiredAction: "ok",
+				// 	Key:           strfmt.Base64("foo"),
+				// 	Value:         strfmt.Base64("bar"),
+				// 	LastError:     "nil",
+				// 	Timestamp:     strfmt.DateTime(time.Now()),
+				// },
+				// {
+				// 	CallerContext: "0x0000000",
+				// 	DesiredAction: "ok",
+				// 	Key:           strfmt.Base64("foo"),
+				// 	Value:         strfmt.Base64("bar"),
+				// 	LastError:     "nil",
+				// 	Timestamp:     strfmt.DateTime(time.Now()),
+				// },
+				// {
+				// 	CallerContext: "0x0000000",
+				// 	DesiredAction: "ok",
+				// 	Key:           strfmt.Base64("xxx"),
+				// 	Value:         strfmt.Base64("yyy"),
+				// 	LastError:     "nil",
+				// 	Timestamp:     strfmt.DateTime(time.Now()),
+				// },
 			},
 		})
 }
