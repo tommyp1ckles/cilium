@@ -14,6 +14,7 @@ import (
 	"os"
 	"path"
 	"reflect"
+	"runtime"
 	"strings"
 	"time"
 	"unsafe"
@@ -124,6 +125,9 @@ type Map struct {
 
 	// pressureGauge is a metric that tracks the pressure on this map
 	pressureGauge *metrics.GaugeWithThreshold
+
+	eventsBufferEnabled bool
+	events              *eventsBuffer
 }
 
 // NewMap creates a new Map instance - object representing a BPF map
@@ -235,6 +239,10 @@ func (m *Map) WithCache() *Map {
 	}
 	m.withValueCache = true
 	m.enableSync = true
+
+	// todo@tom
+	m.eventsBufferEnabled = true
+	m.events = newEventsBuffer(16)
 	return m
 }
 
@@ -866,6 +874,14 @@ func (m *Map) Update(key MapKey, value MapValue) error {
 				m.scheduleErrorResolver()
 			}
 
+			entry := &cacheEntry{
+				Key:           key,
+				Value:         value,
+				DesiredAction: desiredAction,
+				LastError:     err,
+			}
+			m.addToEvents(*entry)
+
 			m.cache[key.String()] = &cacheEntry{
 				Key:           key,
 				Value:         value,
@@ -1090,6 +1106,18 @@ func (m *Map) GetModel() *models.BPFMap {
 	return mapModel
 }
 
+func (m *Map) addToEvents(entry cacheEntry) {
+	// TODO:
+	// * Increment metrics (?)
+	_, file, line, _ := runtime.Caller(1)
+	fmt.Println("[tom-debug] Adding to entries:", m.Name(), entry, fmt.Sprintf("%s:%d", file, line))
+	m.events.add(Event{
+		Timestamp:  time.Now(),
+		MapName:    m.Name(),
+		cacheEntry: entry,
+	})
+}
+
 // resolveErrors is schedule by scheduleErrorResolver() and runs periodically.
 // It resolves up to maxSyncErrors discrepancies between cache and BPF map in
 // the kernel.
@@ -1138,6 +1166,7 @@ func (m *Map) resolveErrors(ctx context.Context) error {
 				errors++
 			}
 			m.cache[k] = e
+			m.addToEvents(*e)
 
 		case Delete:
 			_, err := deleteElement(m.fd, e.Key.GetKeyPtr())
@@ -1153,6 +1182,8 @@ func (m *Map) resolveErrors(ctx context.Context) error {
 				errors++
 				m.cache[k] = e
 			}
+
+			m.addToEvents(*e)
 		}
 
 		// bail out if maximum errors are reached to relax the map lock
