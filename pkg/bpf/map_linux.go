@@ -1110,7 +1110,7 @@ func (m *Map) GetModel() *models.BPFMap {
 func (m *Map) addToEvents(entry cacheEntry) {
 	// TODO:
 	// * Increment metrics (?)
-	_, file, line, _ := runtime.Caller(1)
+	_, file, line, _ := runtime.Caller(3)
 	fmt.Println("[tom-debug] Adding to entries:", m.Name(), entry, fmt.Sprintf("%s:%d", file, line))
 	m.events.add(Event{
 		Timestamp:  time.Now(),
