@@ -98,9 +98,8 @@ func (eb *eventsBuffer) add(e Event) {
 }
 
 func (eb *eventsBuffer) dumpWithCallback(callback EventCallbackFunc) {
-	eb.buffer.(*dynamicRingBuffer).print()
+	//eb.buffer.(*dynamicRingBuffer).print()
 	eb.buffer.Iterate(func(i any) {
-		fmt.Println("[tom-debug1] iter->", i)
 		callback(i.(Event))
 	})
 }
@@ -129,6 +128,7 @@ type OrderedBuffer interface {
 	Add(any)
 	Iterate(func(any))
 	GC(func(any) bool)
+	Size() int
 }
 
 type dynamicRingBuffer struct {
@@ -149,6 +149,10 @@ func newDynamicRingBuffer(size int) *dynamicRingBuffer {
 	return &dynamicRingBuffer{
 		maxSize: size,
 	}
+}
+
+func (b *dynamicRingBuffer) Size() int {
+	return b.size
 }
 
 func (b *dynamicRingBuffer) Iterate(cb func(any)) {

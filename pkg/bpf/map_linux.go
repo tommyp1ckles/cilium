@@ -14,7 +14,6 @@ import (
 	"os"
 	"path"
 	"reflect"
-	"runtime"
 	"strings"
 	"time"
 	"unsafe"
@@ -240,10 +239,19 @@ func (m *Map) WithCache() *Map {
 	}
 	m.withValueCache = true
 	m.enableSync = true
+	return m
+}
 
-	// todo@tom
+// WithEvents enables use of the event buffer. This stores all map events
+// (i.e. add/update/delete) in a bounded event buffer.
+// If eventTTL is not zero, than events that are older than the TTL
+// will periodically be removed from the buffer.
+func (m *Map) WithEvents(maxSize int, eventTTL time.Duration) *Map {
+	if maxSize <= 0 {
+		panic("events buffer max size must be greater than 0")
+	}
 	m.eventsBufferEnabled = true
-	m.events = newEventsBuffer(16, 0)
+	m.events = newEventsBuffer(maxSize, eventTTL)
 	return m
 }
 
@@ -864,25 +872,26 @@ func (m *Map) Update(key MapKey, value MapValue) error {
 	defer m.lock.Unlock()
 
 	defer func() {
+		desiredAction := OK
+		if err != nil {
+			desiredAction = Insert
+		}
+		entry := &cacheEntry{
+			Key:           key,
+			Value:         value,
+			DesiredAction: desiredAction,
+			LastError:     err,
+		}
+		m.addToEvents(*entry)
+
 		if m.cache == nil {
 			return
 		}
 
 		if m.withValueCache {
-			desiredAction := OK
 			if err != nil {
-				desiredAction = Insert
 				m.scheduleErrorResolver()
 			}
-
-			entry := &cacheEntry{
-				Key:           key,
-				Value:         value,
-				DesiredAction: desiredAction,
-				LastError:     err,
-			}
-			m.addToEvents(*entry)
-
 			m.cache[key.String()] = &cacheEntry{
 				Key:           key,
 				Value:         value,
@@ -905,6 +914,18 @@ func (m *Map) Update(key MapKey, value MapValue) error {
 		metrics.BPFMapOps.WithLabelValues(m.commonName(), metricOpUpdate, metrics.Error2Outcome(err)).Inc()
 	}
 	return err
+}
+
+// deleteMapEvent is run at every delete map event.
+// If cache is enabled, it will update the cache to reflect the delte.
+// As well, if event buffer is enabled, it adds a new event to the buffer.
+func (m *Map) deleteMapEvent(key MapKey, err error) {
+	m.addToEvents(cacheEntry{
+		Key:           key,
+		DesiredAction: Delete,
+		LastError:     err,
+	})
+	m.deleteCacheEntry(key, err)
 }
 
 // deleteCacheEntry evaluates the specified error, if nil the map key is
@@ -946,7 +967,7 @@ func (m *Map) deleteMapEntry(key MapKey, ignoreMissing bool) (deleted bool, err 
 	defer m.lock.Unlock()
 
 	defer func() {
-		m.deleteCacheEntry(key, err)
+		m.deleteMapEvent(key, err)
 		if err != nil {
 			m.updatePressureMetric()
 		}
@@ -1028,11 +1049,12 @@ func (m *Map) DeleteAll() error {
 			return err
 		}
 
+		fmt.Println("--------------->", nextKey)
 		err := DeleteElement(m.fd, unsafe.Pointer(&nextKey[0]))
 
 		mk, _, err2 := m.DumpParser(nextKey, []byte{}, mk, mv)
 		if err2 == nil {
-			m.deleteCacheEntry(mk, err)
+			m.deleteMapEvent(mk, err)
 		} else {
 			log.WithError(err2).Warningf("Unable to correlate iteration key %v with cache entry. Inconsistent cache.", nextKey)
 		}
@@ -1110,8 +1132,11 @@ func (m *Map) GetModel() *models.BPFMap {
 func (m *Map) addToEvents(entry cacheEntry) {
 	// TODO:
 	// * Increment metrics (?)
-	_, file, line, _ := runtime.Caller(3)
-	fmt.Println("[tom-debug] Adding to entries:", m.Name(), entry, fmt.Sprintf("%s:%d", file, line))
+	if !m.eventsBufferEnabled {
+		return
+	}
+	//_, file, line, _ := runtime.Caller(3)
+	//fmt.Println("[tom-debug] Adding to entries:", m.Name(), entry, fmt.Sprintf("%s:%d", file, line))
 	m.events.add(Event{
 		Timestamp:  time.Now(),
 		cacheEntry: entry,
