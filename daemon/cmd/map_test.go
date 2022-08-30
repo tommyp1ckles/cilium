@@ -33,8 +33,8 @@ type fakeMapGetter struct {
 	m *fakeMap
 }
 
-func (g *fakeMapGetter) GetMap(name string) eventsDumper {
-	return g.m
+func (g *fakeMapGetter) GetMap(name string) (eventsDumper, bool) {
+	return g.m, g.m != nil
 }
 
 type fakeProducer struct {

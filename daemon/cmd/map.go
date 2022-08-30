@@ -4,6 +4,8 @@
 package cmd
 
 import (
+	"strings"
+
 	"github.com/go-openapi/runtime/middleware"
 	"github.com/go-openapi/strfmt"
 
@@ -18,13 +20,16 @@ type eventsDumper interface {
 }
 
 type mapRefGetter interface {
-	GetMap(name string) eventsDumper
+	GetMap(name string) (eventsDumper, bool)
 }
 
 type mapGetterImpl struct{}
 
-func (mg mapGetterImpl) GetMap(name string) eventsDumper {
-	return bpf.GetMap(name)
+func (mg mapGetterImpl) GetMap(name string) (eventsDumper, bool) {
+	if !strings.HasPrefix(name, "cilium_") {
+		name = "cilium_" + name
+	}
+	return bpf.GetMap(name), bpf.GetMap(name) != nil
 }
 
 type getMapNameEvents struct {
@@ -40,8 +45,8 @@ func NewGetMapNameEventsHandler(d *Daemon, maps mapRefGetter) restapi.GetMapName
 }
 
 func (h *getMapNameEvents) Handle(params restapi.GetMapNameEventsParams) middleware.Responder {
-	m := h.mapGetter.GetMap(params.Name)
-	if m == nil {
+	m, exists := h.mapGetter.GetMap(params.Name)
+	if !exists {
 		return restapi.NewGetMapNameNotFound()
 	}
 	mapEvents := []*models.MapEvent{}
