@@ -4,7 +4,6 @@
 package cmd
 
 import (
-	"encoding/base64"
 	"fmt"
 	"os"
 	"text/tabwriter"
@@ -51,18 +50,10 @@ var mapEventListCmd = &cobra.Command{
 		w := tabwriter.NewWriter(os.Stdout, 5, 0, 3, ' ', 0)
 		fmt.Fprintf(w, "Timestamp\tKey\tValue\tState\tError\tCaller\n")
 		for _, event := range m.Events {
-			k, err := base64.StdEncoding.DecodeString(event.Key.String())
-			if err != nil {
-				Fatalf("could not decode event key: %s", err.Error())
-			}
-			v, err := base64.StdEncoding.DecodeString(event.Value.String())
-			if err != nil {
-				Fatalf("could not decode event value: %s", err.Error())
-			}
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
 				time.Time(event.Timestamp).Format(time.RFC3339),
-				k,
-				v,
+				event.Key,
+				event.Value,
 				event.DesiredAction,
 				event.LastError,
 				event.CallerContext,

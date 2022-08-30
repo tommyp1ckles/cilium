@@ -52,8 +52,8 @@ func (h *getMapNameEvents) Handle(params restapi.GetMapNameEventsParams) middlew
 		}
 		mapEvents = append(mapEvents, &models.MapEvent{
 			DesiredAction: e.GetDesiredAction().String(),
-			Key:           strfmt.Base64(e.GetKey()),
-			Value:         strfmt.Base64(e.GetValue()),
+			Key:           e.GetKey(),
+			Value:         e.GetValue(),
 			LastError:     errStr,
 			Timestamp:     strfmt.DateTime(e.Timestamp),
 		})

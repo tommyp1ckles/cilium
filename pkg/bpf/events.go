@@ -20,10 +20,16 @@ type eventEntry struct {
 }
 
 func (e Event) GetKey() string {
+	if e.cacheEntry.Key == nil {
+		return "<nil>"
+	}
 	return e.cacheEntry.Key.String()
 }
 
 func (e Event) GetValue() string {
+	if e.cacheEntry.Value == nil {
+		return "<nil>"
+	}
 	return e.cacheEntry.Value.String()
 }
 
