@@ -1,6 +1,7 @@
 package bpf
 
 import (
+	"container/ring"
 	"fmt"
 	"time"
 )
@@ -44,7 +45,8 @@ func (e Event) GetDesiredAction() DesiredAction {
 func newEventsBuffer(capacity int, eventsTTL time.Duration) *eventsBuffer {
 	return &eventsBuffer{
 		//buffer:   ring.New(maxSize),
-		buffer:   make([]Event, 0, capacity),
+		//buffer:   make([]Event, 0, capacity),
+		buffer:   newDynamicRingBuffer(capacity),
 		maxSize:  capacity,
 		eventTTL: eventsTTL,
 	}
@@ -64,7 +66,8 @@ type eventsBuffer struct {
 	//
 	// maxSize -> buffer wont grow bigger than this.
 	// eventTTL -> how far beack we store events (*optional)
-	buffer []Event
+	//buffer []Event
+	buffer OrderedBuffer
 	//keyTable map[uint64]Map
 	//buffer   *ring.Ring
 	maxSize  int           // TODO
@@ -86,29 +89,20 @@ type eventsBuffer struct {
 	index int
 }
 
-func (eb *eventsBuffer) isFull() bool {
-	return len(eb.buffer) == cap(eb.buffer)
-}
+// func (eb *eventsBuffer) isFull() bool {
+// 	return len(eb.buffer) == cap(eb.buffer)
+// }
 
 func (eb *eventsBuffer) add(e Event) {
-	eb.index++
-	if eb.isFull() {
-		eb.buffer[eb.index%len(eb.buffer)] = e
-		return
-	}
-	eb.buffer = append(eb.buffer, e)
+	eb.buffer.Add(e)
 }
 
 func (eb *eventsBuffer) dumpWithCallback(callback EventCallbackFunc) {
-	if eb.isFull() {
-		for i := eb.index + 1; i < eb.index+1+len(eb.buffer); i++ {
-			callback(eb.buffer[i%len(eb.buffer)])
-		}
-		return
-	}
-	for _, event := range eb.buffer {
-		callback(event)
-	}
+	eb.buffer.(*dynamicRingBuffer).print()
+	eb.buffer.Iterate(func(i any) {
+		fmt.Println("[tom-debug1] iter->", i)
+		callback(i.(Event))
+	})
 }
 
 type EventCallbackFunc func(Event)
@@ -128,3 +122,144 @@ func (m *Map) DumpEventsWithCallback(callback EventCallbackFunc) error {
 	m.events.dumpWithCallback(callback)
 	return nil
 }
+
+// wip: test -----
+
+type OrderedBuffer interface {
+	Add(any)
+	Iterate(func(any))
+	GC(func(any) bool)
+}
+
+type dynamicRingBuffer struct {
+	r       *ring.Ring
+	maxSize int
+
+	head *node
+	size int
+}
+
+type node struct {
+	value any
+	next  *node
+	prev  *node
+}
+
+func newDynamicRingBuffer(size int) *dynamicRingBuffer {
+	return &dynamicRingBuffer{
+		maxSize: size,
+	}
+}
+
+func (b *dynamicRingBuffer) Iterate(cb func(any)) {
+	if b.head == nil {
+		return
+	}
+	curr := b.tailPtr()
+	for i := 0; i < b.size; i++ {
+		cb(curr.value)
+		curr = curr.next
+	}
+}
+
+func (b *dynamicRingBuffer) Add(n any) {
+	if b.head == nil {
+		b.head = &node{
+			value: n,
+		}
+		b.head.next = b.head
+		b.head.prev = b.head
+		b.size++
+		return
+	}
+
+	// If at capcity, begin overwriting.
+	if b.size >= b.maxSize {
+		b.head = b.head.next
+		b.head.value = n
+		return
+	}
+
+	// otherwise, add another node.
+	oldNext := b.head.next
+	b.head.next = &node{
+		value: n,
+		next:  oldNext,
+		prev:  b.head,
+	}
+	b.head = b.head.next
+	b.size++
+}
+
+// starts at the beginnging (i.e. first-in) and
+func (b *dynamicRingBuffer) GC(shouldRemove func(any) bool) {
+	if b.head == nil {
+		return
+	}
+	curr := b.head.next
+	i := 0
+	for ; i < b.size; i++ {
+		if !shouldRemove(curr.value) {
+			break
+		}
+		curr = curr.next
+	}
+
+	if i == b.size-1 {
+		b.head = nil
+		b.size = 0
+		return
+	}
+
+	b.head.next = curr
+	curr.prev = b.head
+	b.size -= i
+}
+
+func (b *dynamicRingBuffer) tailPtr() *node {
+	return b.head.next
+}
+
+func (b *dynamicRingBuffer) print() {
+	if b.head == nil {
+		fmt.Println("<nil>")
+	}
+	curr := b.tailPtr()
+	for i := 0; i < b.size; i++ {
+		fmt.Println(curr.value, "->")
+		curr = curr.next
+	}
+}
+
+// func (b *dynamicRingBuffer) Add(n int) {
+// 	if b.r == nil {
+// 		b.r = &ring.Ring{Value: n}
+// 		return
+// 	}
+// 	if b.r.Len() >= b.maxSize {
+// 		b.r.Value = n
+// 		b.r = b.r.Next() // move ptr up to next start position.
+// 		return
+// 	}
+// 	// otherwise, link more nodes into buffer.
+// 	// note: Link links links in the new ring nodes
+// 	// at prev->next, so we need to seek back by one.
+// 	b.r = b.r.Prev().Link(&ring.Ring{Value: n})
+// }
+
+// func (b *dynamicRingBuffer) gc(cutoff int) {
+// 	if b.r == nil {
+// 		return
+// 	}
+// 	curr := b.r
+// 	i := 0
+// 	for ; i <= curr.Len(); i++ {
+// 		// anything below, gets cutoff.
+// 		if curr.Value.(int) > cutoff {
+// 			break
+// 		}
+// 		curr = curr.Move(1)
+// 	}
+// 	//b.r = curr.Prev().Unlink(i)
+// 	b.r = b.r.Prev().Unlink(i)
+// }

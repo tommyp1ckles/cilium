@@ -1,6 +1,7 @@
 package bpf
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -60,4 +61,18 @@ func Test_eventBuffer(t *testing.T) {
 		acc = append(acc, int(e.Key.(*BenchKey).Key))
 	})
 	assert.Empty(acc)
+}
+
+func Test_dynamicEventBuffer(t *testing.T) {
+	//assert := assert.New(t)
+	buf := newDynamicRingBuffer(5)
+	for i := 0; i < 10; i++ {
+		buf.Add(i)
+	}
+	buf.print()
+	buf.GC(func(i any) bool {
+		return i.(int) <= 6
+	})
+	fmt.Println("---")
+	buf.print()
 }
