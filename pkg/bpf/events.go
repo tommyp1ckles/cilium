@@ -12,8 +12,7 @@ type Event struct {
 }
 
 type eventEntry struct {
-	Key MapKey // Idea: what if we cache these/
-	//keyHash uint64
+	Key   MapKey
 	Value MapValue
 
 	DesiredAction DesiredAction
@@ -44,8 +43,6 @@ func (e Event) GetDesiredAction() DesiredAction {
 
 func newEventsBuffer(capacity int, eventsTTL time.Duration) *eventsBuffer {
 	return &eventsBuffer{
-		//buffer:   ring.New(maxSize),
-		//buffer:   make([]Event, 0, capacity),
 		buffer:   newDynamicRingBuffer(capacity),
 		maxSize:  capacity,
 		eventTTL: eventsTTL,
@@ -67,7 +64,7 @@ type eventsBuffer struct {
 	// maxSize -> buffer wont grow bigger than this.
 	// eventTTL -> how far beack we store events (*optional)
 	//buffer []Event
-	buffer OrderedBuffer
+	buffer orderedRingBuffer
 	//keyTable map[uint64]Map
 	//buffer   *ring.Ring
 	maxSize  int           // TODO
@@ -94,6 +91,12 @@ type eventsBuffer struct {
 // }
 
 func (eb *eventsBuffer) add(e Event) {
+	if eb.eventTTL != 0 {
+		eb.buffer.GC(func(a any) bool {
+			event := a.(Event)
+			return time.Since(event.Timestamp) > eb.eventTTL
+		})
+	}
 	eb.buffer.Add(e)
 }
 
@@ -124,7 +127,7 @@ func (m *Map) DumpEventsWithCallback(callback EventCallbackFunc) error {
 
 // wip: test -----
 
-type OrderedBuffer interface {
+type orderedRingBuffer interface {
 	Add(any)
 	Iterate(func(any))
 	GC(func(any) bool)
@@ -234,36 +237,3 @@ func (b *dynamicRingBuffer) print() {
 		curr = curr.next
 	}
 }
-
-// func (b *dynamicRingBuffer) Add(n int) {
-// 	if b.r == nil {
-// 		b.r = &ring.Ring{Value: n}
-// 		return
-// 	}
-// 	if b.r.Len() >= b.maxSize {
-// 		b.r.Value = n
-// 		b.r = b.r.Next() // move ptr up to next start position.
-// 		return
-// 	}
-// 	// otherwise, link more nodes into buffer.
-// 	// note: Link links links in the new ring nodes
-// 	// at prev->next, so we need to seek back by one.
-// 	b.r = b.r.Prev().Link(&ring.Ring{Value: n})
-// }
-
-// func (b *dynamicRingBuffer) gc(cutoff int) {
-// 	if b.r == nil {
-// 		return
-// 	}
-// 	curr := b.r
-// 	i := 0
-// 	for ; i <= curr.Len(); i++ {
-// 		// anything below, gets cutoff.
-// 		if curr.Value.(int) > cutoff {
-// 			break
-// 		}
-// 		curr = curr.Move(1)
-// 	}
-// 	//b.r = curr.Prev().Unlink(i)
-// 	b.r = b.r.Prev().Unlink(i)
-// }

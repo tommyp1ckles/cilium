@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 	"unsafe"
 
 	. "gopkg.in/check.v1"
@@ -243,6 +244,38 @@ func (s *BPFPrivilegedTestSuite) TestOpenParallel(c *C) {
 	c.Assert(value, checker.DeepEquals, value2)
 
 	parallelMap.EndParallelMode()
+}
+func (s *BPFPrivilegedTestSuite) TestEventBufferGC(c *C) {
+	// existingMap is the same as testMap. Opening should succeed.
+	existingMap := NewMap("cilium_test",
+		MapTypeHash,
+		&TestKey{},
+		int(unsafe.Sizeof(TestKey{})),
+		&TestValue{},
+		int(unsafe.Sizeof(TestValue{})),
+		maxEntries,
+		BPF_F_NO_PREALLOC,
+		0,
+		ConvertKeyValue).
+		WithCache().
+		WithEvents(1, 5*time.Millisecond)
+
+	defer existingMap.DeleteAll()
+	dumpEvents := func() []Event {
+		es := []Event{}
+		existingMap.DumpEventsWithCallback(func(e Event) {
+			es = append(es, e)
+		})
+		return es
+	}
+
+	key1 := &TestKey{Key: 111}
+	value1 := &TestValue{Value: 1234}
+	existingMap.Update(key1, value1)
+	c.Assert(len(dumpEvents()), Equals, 1)
+	time.Sleep(10 * time.Millisecond)
+	existingMap.Update(key1, value1)
+	c.Assert(len(dumpEvents()), Equals, 1)
 }
 
 func (s *BPFPrivilegedTestSuite) TestBasicManipulation(c *C) {
