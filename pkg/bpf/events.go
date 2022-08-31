@@ -1,7 +1,6 @@
 package bpf
 
 import (
-	"container/ring"
 	"fmt"
 	"time"
 )
@@ -83,12 +82,7 @@ type eventsBuffer struct {
 	//	Go to first element of buffer, if element timestamp is outside of now() - retentionWindow then
 	// 		remove_element()
 	//	repeat until first element in buffer is in retention window.
-	index int
 }
-
-// func (eb *eventsBuffer) isFull() bool {
-// 	return len(eb.buffer) == cap(eb.buffer)
-// }
 
 func (eb *eventsBuffer) add(e Event) {
 	if eb.eventTTL != 0 {
@@ -135,7 +129,6 @@ type orderedRingBuffer interface {
 }
 
 type dynamicRingBuffer struct {
-	r       *ring.Ring
 	maxSize int
 
 	head *node
