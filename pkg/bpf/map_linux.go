@@ -242,17 +242,21 @@ func (m *Map) WithCache() *Map {
 	return m
 }
 
-// WithEvents enables use of the event buffer. This stores all map events
-// (i.e. add/update/delete) in a bounded event buffer.
+// WithEvents enables use of the event buffer, if the buffer is enabled.
+// This stores all map events (i.e. add/update/delete) in a bounded event buffer.
 // If eventTTL is not zero, than events that are older than the TTL
 // will periodically be removed from the buffer.
-func (m *Map) WithEvents(maxSize int, eventTTL time.Duration) *Map {
-	if maxSize <= 0 {
-		panic("events buffer max size must be greater than 0")
+func (m *Map) WithEvents() *Map {
+	if c := option.Config.GetEventBufferConfig(m.name); c.Enabled {
+		if c.MaxSize <= 0 {
+			panic("events buffer max size must be greater than 0")
+		}
+		m.eventsBufferEnabled = true
+		m.events = newEventsBuffer(c.MaxSize, c.TTL)
+		return m
+	} else {
+		return m
 	}
-	m.eventsBufferEnabled = true
-	m.events = newEventsBuffer(maxSize, eventTTL)
-	return m
 }
 
 // WithPressureMetricThreshold enables the tracking of a metric that measures

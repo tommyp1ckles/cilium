@@ -162,7 +162,7 @@ type Map struct {
 }
 
 func newIPCacheMap(name string) *bpf.Map {
-	return bpf.NewMap(
+	m := bpf.NewMap(
 		name,
 		bpf.MapTypeLPMTrie,
 		&Key{},
@@ -171,8 +171,8 @@ func newIPCacheMap(name string) *bpf.Map {
 		int(unsafe.Sizeof(RemoteEndpointInfo{})),
 		MaxEntries,
 		bpf.BPF_F_NO_PREALLOC, 0,
-		bpf.ConvertKeyValue)
-
+		bpf.ConvertKeyValue).WithEvents()
+	return m
 }
 
 // NewMap instantiates a Map.
