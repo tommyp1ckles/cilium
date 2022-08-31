@@ -12,10 +12,12 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	flag "github.com/spf13/pflag"
 	"github.com/spf13/viper"
+	"github.com/stretchr/testify/assert"
 	. "gopkg.in/check.v1"
 
 	"github.com/cilium/cilium/pkg/cidr"
@@ -1137,4 +1139,28 @@ func (s *OptionSuite) Test_backupFiles(c *C) {
 	c.Assert(len(files), Equals, 2)
 	c.Assert(files[0].Name(), Equals, "test-1.json")
 	c.Assert(files[1].Name(), Equals, "test-2.json")
+}
+
+func Test_parseEventBufferTupleString(t *testing.T) {
+	assert := assert.New(t)
+	c, err := parseEventBufferTupleString("true,123,1h")
+	assert.NoError(err)
+	assert.True(c.Enabled)
+	assert.Equal(123, c.MaxSize)
+	assert.Equal(time.Hour, c.TTL)
+
+	c, err = parseEventBufferTupleString("false,123,1h")
+	assert.NoError(err)
+	assert.False(c.Enabled)
+	assert.Equal(123, c.MaxSize)
+	assert.Equal(time.Hour, c.TTL)
+
+	c, err = parseEventBufferTupleString("cat,123,1h")
+	assert.Error(err)
+
+	c, err = parseEventBufferTupleString("true,xxx,1h")
+	assert.Error(err)
+
+	c, err = parseEventBufferTupleString("true,123,x")
+	assert.Error(err)
 }

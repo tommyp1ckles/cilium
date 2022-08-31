@@ -2237,7 +2237,7 @@ type DaemonConfig struct {
 
 	// BPFMapEventBuffers has configuration on what BPF map event buffers to enabled
 	// and configuration options for those.
-	BPFMapEventBuffers map[string]string
+	BPFMapEventBuffers map[string]BPFEventBufferConfig
 }
 
 var (
@@ -2267,7 +2267,7 @@ var (
 		FixedIdentityMapping:         make(map[string]string),
 		KVStoreOpt:                   make(map[string]string),
 		LogOpt:                       make(map[string]string),
-		BPFMapEventBuffers:           make(map[string]string),
+		BPFMapEventBuffers:           make(map[string]BPFEventBufferConfig),
 		SelectiveRegeneration:        defaults.SelectiveRegeneration,
 		LoopbackIPv4:                 defaults.LoopbackIPv4,
 		ForceLocalPolicyEvalAtSource: defaults.ForceLocalPolicyEvalAtSource,
@@ -3129,7 +3129,13 @@ func (c *DaemonConfig) Populate(vp *viper.Viper) {
 	if m, err := command.GetStringMapStringE(vp, BPFMapEventBuffers); err != nil {
 		log.Fatalf("unable to parse %s: %s", BPFMapEventBuffers, err)
 	} else {
-		c.BPFMapEventBuffers = m
+		for name, confStr := range m {
+			conf, err := parseEventBufferTupleString(confStr)
+			if err != nil {
+				log.Fatalf("unable to parse %s: %s", BPFMapEventBuffers, err)
+			}
+			c.BPFMapEventBuffers[name] = conf
+		}
 	}
 
 	for _, option := range vp.GetStringSlice(EndpointStatus) {
@@ -3284,6 +3290,12 @@ func (c *DaemonConfig) populateDevices(vp *viper.Viper) {
 	for dev := range devSet {
 		c.devices = append(c.devices, dev)
 	}
+}
+
+type BPFEventBufferConfig struct {
+	Enabled bool
+	MaxSize int
+	TTL     time.Duration
 }
 
 func (c *DaemonConfig) populateLoadBalancerSettings(vp *viper.Viper) {
@@ -3952,4 +3964,32 @@ func MightAutoDetectDevices() bool {
 	return (Config.EnableHostFirewall && len(devices) == 0) ||
 		(Config.KubeProxyReplacement != KubeProxyReplacementDisabled &&
 			(len(devices) == 0 || Config.DirectRoutingDevice == ""))
+}
+
+func parseEventBufferTupleString(optsStr string) (BPFEventBufferConfig, error) {
+	optsStr = strings.Trim(optsStr, " 	")
+	opts := strings.Split(optsStr, ",")
+	enabled := false
+	conf := BPFEventBufferConfig{}
+	if len(opts) != 3 {
+		return conf, fmt.Errorf("unexpected event buffer config value format, should be in format 'mapname=true,100,24h'")
+	}
+	if opts[0] != "true" && opts[0] != "false" {
+		return conf, fmt.Errorf("could not parse event buffer enabled: must be either 'true' or 'false'")
+	}
+	if opts[0] == "true" {
+		enabled = true
+	}
+	size, err := strconv.Atoi(opts[1])
+	if err != nil {
+		return conf, fmt.Errorf("could not parse event buffer maxSize int: %w", err)
+	}
+	ttl, err := time.ParseDuration(opts[2])
+	if err != nil {
+		return conf, fmt.Errorf("could not parse event buffer ttl duration: %w", err)
+	}
+	conf.TTL = ttl
+	conf.Enabled = enabled
+	conf.MaxSize = size
+	return conf, nil
 }
