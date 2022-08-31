@@ -991,6 +991,9 @@ func initializeFlags() {
 	flags.Var(option.NewNamedMapOptions(option.APIRateLimitName, &option.Config.APIRateLimit, nil), option.APIRateLimitName, "API rate limiting configuration (example: --rate-limit endpoint-create=rate-limit:10/m,rate-burst:2)")
 	option.BindEnv(Vp, option.APIRateLimitName)
 
+	flags.Var(option.NewNamedMapOptions(option.BPFMapEventBuffers, &option.Config.BPFMapEventBuffers, nil), option.BPFMapEventBuffers, "configuration for BPF map event buffers: --bpf-map-event-buffers cilium_ipcache=enabled:true,size:1024,ttl:1h")
+	option.BindEnv(Vp, option.BPFMapEventBuffers)
+
 	flags.Duration(option.CRDWaitTimeout, 5*time.Minute, "Cilium will exit if CRDs are not available within this duration upon startup")
 	option.BindEnv(Vp, option.CRDWaitTimeout)
 
