@@ -4,8 +4,6 @@
 package cmd
 
 import (
-	"strings"
-
 	"github.com/go-openapi/runtime/middleware"
 	"github.com/go-openapi/strfmt"
 
@@ -26,9 +24,9 @@ type mapRefGetter interface {
 type mapGetterImpl struct{}
 
 func (mg mapGetterImpl) GetMap(name string) (eventsDumper, bool) {
-	if !strings.HasPrefix(name, "cilium_") {
-		name = "cilium_" + name
-	}
+	// if !strings.HasPrefix(name, "cilium_") {
+	// 	name = "cilium_" + name
+	// }
 	return bpf.GetMap(name), bpf.GetMap(name) != nil
 }
 

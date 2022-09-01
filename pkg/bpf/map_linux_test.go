@@ -245,6 +245,7 @@ func (s *BPFPrivilegedTestSuite) TestOpenParallel(c *C) {
 
 	parallelMap.EndParallelMode()
 }
+
 func (s *BPFPrivilegedTestSuite) TestEventBufferGC(c *C) {
 	// existingMap is the same as testMap. Opening should succeed.
 	existingMap := NewMap("cilium_test",
@@ -261,9 +262,9 @@ func (s *BPFPrivilegedTestSuite) TestEventBufferGC(c *C) {
 		WithEvents(1, 5*time.Millisecond)
 
 	defer existingMap.DeleteAll()
-	dumpEvents := func() []Event {
-		es := []Event{}
-		existingMap.DumpEventsWithCallback(func(e Event) {
+	dumpEvents := func() []*Event {
+		es := []*Event{}
+		existingMap.DumpEventsWithCallback(func(e *Event) {
 			es = append(es, e)
 		})
 		return es
@@ -303,9 +304,9 @@ func (s *BPFPrivilegedTestSuite) TestBasicManipulation(c *C) {
 	key2 := &TestKey{Key: 104}
 	value2 := &TestValue{Value: 204}
 
-	dumpEvents := func() []Event {
-		es := []Event{}
-		existingMap.DumpEventsWithCallback(func(e Event) {
+	dumpEvents := func() []*Event {
+		es := []*Event{}
+		existingMap.DumpEventsWithCallback(func(e *Event) {
 			es = append(es, e)
 		})
 		return es
@@ -315,7 +316,7 @@ func (s *BPFPrivilegedTestSuite) TestBasicManipulation(c *C) {
 		if i >= len(es) {
 			return nil
 		}
-		return &dumpEvents()[i]
+		return dumpEvents()[i]
 	}
 	assertEvent := func(i int, key, value, action string) {
 		c.Assert(event(i).cacheEntry.Key.String(), Equals, key)
@@ -443,27 +444,19 @@ func (s *BPFPrivilegedTestSuite) TestBasicManipulation(c *C) {
 
 	c.Assert(event(0).cacheEntry.Key.String(), Equals, "key=103") // we used key1 again
 
-	for i, e := range dumpEvents() {
-		fmt.Println(i, "=>", e)
-	}
-	fmt.Println("---")
-
 	err = existingMap.Update(key2, value2)
 	c.Assert(err, IsNil)
 	c.Assert(len(dumpEvents()), Equals, 10) // full buffer
 	assertEvent(9, "key=104", "value=204", OK.String())
 
 	c.Assert(event(0).cacheEntry.Key.String(), Equals, "key=103") // THIS IS WRONG?
-	for i, e := range dumpEvents() {
-		fmt.Println(i, "=>", e)
-	}
-	fmt.Println("---")
 
 	key3 := &TestKey{Key: 999}
 	err = existingMap.Update(key3, value2)
 	c.Assert(err, IsNil)
 	c.Assert(len(dumpEvents()), Equals, 10) // full buffer
 	assertEvent(0, "key=103", "value=204", OK.String())
+	assertEvent(9, "key=999", "value=204", OK.String())
 
 	for i, e := range dumpEvents() {
 		fmt.Println(i, "=>", e)

@@ -246,17 +246,21 @@ func (m *Map) WithCache() *Map {
 // This stores all map events (i.e. add/update/delete) in a bounded event buffer.
 // If eventTTL is not zero, than events that are older than the TTL
 // will periodically be removed from the buffer.
-func (m *Map) WithEvents() *Map {
-	if c := option.Config.GetEventBufferConfig(m.name); c.Enabled {
-		if c.MaxSize <= 0 {
-			panic("events buffer max size must be greater than 0")
-		}
-		m.eventsBufferEnabled = true
-		m.events = newEventsBuffer(c.MaxSize, c.TTL)
-		return m
-	} else {
-		return m
-	}
+func (m *Map) WithEvents(size int, ttl time.Duration) *Map {
+	m.eventsBufferEnabled = true
+	m.events = newEventsBuffer(size, ttl)
+
+	// if c := option.Config.GetEventBufferConfig(m.name); c.Enabled {
+	// 	if c.MaxSize <= 0 {
+	// 		panic("events buffer max size must be greater than 0")
+	// 	}
+	// 	m.eventsBufferEnabled = true
+	// 	m.events = newEventsBuffer(c.MaxSize, c.TTL)
+	// 	return m
+	// } else {
+	// 	return m
+	// }
+	return m
 }
 
 // WithPressureMetricThreshold enables the tracking of a metric that measures
@@ -1053,7 +1057,6 @@ func (m *Map) DeleteAll() error {
 			return err
 		}
 
-		fmt.Println("--------------->", nextKey)
 		err := DeleteElement(m.fd, unsafe.Pointer(&nextKey[0]))
 
 		mk, _, err2 := m.DumpParser(nextKey, []byte{}, mk, mv)
@@ -1134,14 +1137,12 @@ func (m *Map) GetModel() *models.BPFMap {
 }
 
 func (m *Map) addToEvents(entry cacheEntry) {
-	// TODO:
-	// * Increment metrics (?)
+	m.lock.Lock()
+	defer m.lock.Unlock()
 	if !m.eventsBufferEnabled {
 		return
 	}
-	//_, file, line, _ := runtime.Caller(3)
-	//fmt.Println("[tom-debug] Adding to entries:", m.Name(), entry, fmt.Sprintf("%s:%d", file, line))
-	m.events.add(Event{
+	m.events.addLocked(&Event{
 		Timestamp:  time.Now(),
 		cacheEntry: entry,
 	})
