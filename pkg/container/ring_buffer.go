@@ -1,7 +1,6 @@
 package container
 
 import (
-	"math"
 	"sort"
 )
 
@@ -25,11 +24,7 @@ func (eb *OrderedRingBuffer[T]) isFull() bool {
 }
 
 func (eb *OrderedRingBuffer[T]) incr() {
-	if eb.index == math.MaxInt32 {
-		eb.index = eb.index % len(eb.buffer)
-		return
-	}
-	eb.index++
+	eb.index = (eb.index + 1) % len(eb.buffer)
 }
 
 func (eb *OrderedRingBuffer[T]) Add(e T) {
@@ -37,8 +32,8 @@ func (eb *OrderedRingBuffer[T]) Add(e T) {
 		return
 	}
 	if eb.isFull() {
-		eb.buffer[eb.index%len(eb.buffer)] = e
 		eb.incr()
+		eb.buffer[eb.index%len(eb.buffer)] = e
 		return
 	}
 	eb.buffer = append(eb.buffer, e)
@@ -53,7 +48,8 @@ func (eb *OrderedRingBuffer[T]) DumpWithCallback(callback func(v T)) {
 }
 
 func (eb *OrderedRingBuffer[T]) at(i int) T {
-	return eb.buffer[(eb.index+i)%len(eb.buffer)]
+	v := eb.buffer[(eb.index+1+i)%len(eb.buffer)]
+	return v
 }
 
 // Cull removes up to the last element in the buffer upon which "shouldRemove"
@@ -73,8 +69,10 @@ func (eb *OrderedRingBuffer[T]) validStartIndex(isValid func(T) bool) int {
 
 func (eb *OrderedRingBuffer[T]) IterateValid(isValid func(T) bool, callback func(T)) {
 	startIndex := eb.validStartIndex(isValid)
-	for i := startIndex; i < len(eb.buffer); i++ {
-		callback(eb.buffer[i%len(eb.buffer)])
+	l := len(eb.buffer) - startIndex
+	for i := 0; i < l; i++ {
+		index := (eb.index + 1 + startIndex + i) % len(eb.buffer)
+		callback(eb.buffer[index])
 	}
 }
 

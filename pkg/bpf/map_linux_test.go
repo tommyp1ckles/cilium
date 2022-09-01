@@ -323,7 +323,6 @@ func (s *BPFPrivilegedTestSuite) TestBasicManipulation(c *C) {
 		c.Assert(event(i).GetValue(), Equals, value)
 		c.Assert(event(i).cacheEntry.DesiredAction.String(), Equals, action)
 	}
-	//eventsBufferSize := func() int { return existingMap.events.buffer.Size() }
 
 	// event buffer should be empty
 	c.Assert(existingMap.events.buffer.Size(), Equals, 0)
@@ -451,16 +450,19 @@ func (s *BPFPrivilegedTestSuite) TestBasicManipulation(c *C) {
 
 	c.Assert(event(0).cacheEntry.Key.String(), Equals, "key=103") // THIS IS WRONG?
 
+	for i, e := range dumpEvents() {
+		fmt.Println(i, "=>", e)
+	}
+	fmt.Println("----")
 	key3 := &TestKey{Key: 999}
 	err = existingMap.Update(key3, value2)
 	c.Assert(err, IsNil)
 	c.Assert(len(dumpEvents()), Equals, 10) // full buffer
-	assertEvent(0, "key=103", "value=204", OK.String())
-	assertEvent(9, "key=999", "value=204", OK.String())
-
 	for i, e := range dumpEvents() {
 		fmt.Println(i, "=>", e)
 	}
+	assertEvent(0, "key=103", "value=204", OK.String())
+	assertEvent(9, "key=999", "value=204", OK.String())
 
 	key4 := &TestKey{Key: 1000}
 	err = existingMap.Update(key4, value2)

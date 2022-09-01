@@ -890,7 +890,7 @@ func (m *Map) Update(key MapKey, value MapValue) error {
 			DesiredAction: desiredAction,
 			LastError:     err,
 		}
-		m.addToEvents(*entry)
+		m.addToEventsLocked(*entry)
 
 		if m.cache == nil {
 			return
@@ -928,7 +928,7 @@ func (m *Map) Update(key MapKey, value MapValue) error {
 // If cache is enabled, it will update the cache to reflect the delte.
 // As well, if event buffer is enabled, it adds a new event to the buffer.
 func (m *Map) deleteMapEvent(key MapKey, err error) {
-	m.addToEvents(cacheEntry{
+	m.addToEventsLocked(cacheEntry{
 		Key:           key,
 		DesiredAction: Delete,
 		LastError:     err,
@@ -1136,13 +1136,11 @@ func (m *Map) GetModel() *models.BPFMap {
 	return mapModel
 }
 
-func (m *Map) addToEvents(entry cacheEntry) {
-	m.lock.Lock()
-	defer m.lock.Unlock()
+func (m *Map) addToEventsLocked(entry cacheEntry) {
 	if !m.eventsBufferEnabled {
 		return
 	}
-	m.events.addLocked(&Event{
+	m.events.add(&Event{
 		Timestamp:  time.Now(),
 		cacheEntry: entry,
 	})
@@ -1196,7 +1194,7 @@ func (m *Map) resolveErrors(ctx context.Context) error {
 				errors++
 			}
 			m.cache[k] = e
-			m.addToEvents(*e)
+			m.addToEventsLocked(*e)
 
 		case Delete:
 			_, err := deleteElement(m.fd, e.Key.GetKeyPtr())
@@ -1213,7 +1211,7 @@ func (m *Map) resolveErrors(ctx context.Context) error {
 				m.cache[k] = e
 			}
 
-			m.addToEvents(*e)
+			m.addToEventsLocked(*e)
 		}
 
 		// bail out if maximum errors are reached to relax the map lock

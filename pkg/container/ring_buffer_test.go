@@ -11,32 +11,33 @@ func Test_eventBuffer(t *testing.T) {
 	bufferSize := 5
 	events := NewOrderedListRingBuffer[int](bufferSize)
 
+	dumpAll := func() []int {
+		acc := []int{}
+		events.IterateValid(func(i int) bool { return true }, func(i int) {
+			acc = append(acc, i)
+		})
+		return acc
+	}
+
 	for i := 1; i <= 10; i++ {
 		events.Add(i)
 	}
 	assert.Len(events.buffer, bufferSize)
-	acc := []int{}
-	events.DumpWithCallback(func(e int) {
-		acc = append(acc, e)
-	})
+	acc := dumpAll()
 	assert.IsIncreasing(acc)
 	assert.Equal([]int{6, 7, 8, 9, 10}, acc)
-	for i := 1; i <= 5; i++ {
-		events.Add(i)
-	}
-	acc = []int{}
-	events.DumpWithCallback(func(e int) {
-		acc = append(acc, e)
-	})
-	assert.Equal([]int{1, 2, 3, 4, 5}, acc)
+
+	events.Add(11)
+	acc = dumpAll()
+	assert.Equal([]int{7, 8, 9, 10, 11}, acc)
 
 	acc = []int{}
 	events.IterateValid(func(n int) bool {
-		return n >= 2
+		return n >= 9
 	}, func(n int) {
 		acc = append(acc, n)
 	})
-	assert.Equal(acc, []int{2, 3, 4, 5})
+	assert.Equal([]int{9, 10, 11}, acc)
 
 	acc = []int{}
 	events.IterateValid(func(n int) bool {
@@ -44,19 +45,19 @@ func Test_eventBuffer(t *testing.T) {
 	}, func(n int) {
 		acc = append(acc, n)
 	})
-	assert.Equal(acc, []int{1, 2, 3, 4, 5})
+	assert.Equal([]int{7, 8, 9, 10, 11}, acc)
 
 	acc = []int{}
 	events.IterateValid(func(n int) bool {
-		return n >= 5
+		return n >= 11
 	}, func(n int) {
 		acc = append(acc, n)
 	})
-	assert.Equal(acc, []int{5})
+	assert.Equal(acc, []int{11})
 
 	acc = []int{}
 	events.IterateValid(func(n int) bool {
-		return n > 5
+		return n > 11
 	}, func(n int) {
 		acc = append(acc, n)
 	})

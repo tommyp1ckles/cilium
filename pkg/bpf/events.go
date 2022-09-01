@@ -50,12 +50,12 @@ type eventsBuffer struct {
 	eventTTL time.Duration
 }
 
-func (eb *eventsBuffer) addLocked(e *Event) {
+func (eb *eventsBuffer) add(e *Event) {
 	eb.buffer.Add(e)
 }
 
 func (eb *eventsBuffer) eventIsValid(e *Event) bool {
-	return time.Since(e.Timestamp) <= eb.eventTTL
+	return eb.eventTTL == 0 || time.Since(e.Timestamp) <= eb.eventTTL
 }
 
 func (eb *eventsBuffer) dumpWithCallback(callback EventCallbackFunc) {
