@@ -159,7 +159,7 @@ func (e *EndpointMapManager) RemoveMapPath(path string) {
 }
 
 func endParallelMapMode() {
-	ipcachemap.IPCache.EndParallelMode()
+	ipcachemap.GetIPCache().EndParallelMode()
 }
 
 // syncEndpointsAndHostIPs adds local host enties to bpf lxcmap, as well as
@@ -321,7 +321,7 @@ func (d *Daemon) initMaps() error {
 	// updated with new identities. This is fine as any new identity
 	// appearing would require a regeneration of the endpoint anyway in
 	// order for the endpoint to gain the privilege of communication.
-	if _, err := ipcachemap.IPCache.OpenParallel(); err != nil {
+	if _, err := ipcachemap.GetIPCache().OpenParallel(); err != nil {
 		return err
 	}
 

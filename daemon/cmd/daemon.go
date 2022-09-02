@@ -271,7 +271,7 @@ func (d *Daemon) init() error {
 // createPrefixLengthCounter wraps around the counter library, providing
 // references to prefix lengths that will always be present.
 func createPrefixLengthCounter() *counter.PrefixLengthCounter {
-	max6, max4 := ipcachemap.IPCache.GetMaxPrefixLengths()
+	max6, max4 := ipcachemap.GetIPCache().GetMaxPrefixLengths()
 	return counter.DefaultPrefixLengthCounter(max6, max4)
 }
 
@@ -533,7 +533,7 @@ func NewDaemon(ctx context.Context, cleaner *daemonCleanup, epMgr *endpointmanag
 	var oldNIDs []identity.NumericIdentity
 	var oldIngressIPs []*net.IPNet
 	if option.Config.RestoreState && !option.Config.DryMode {
-		if err := ipcachemap.IPCache.DumpWithCallback(func(key bpf.MapKey, value bpf.MapValue) {
+		if err := ipcachemap.GetIPCache().DumpWithCallback(func(key bpf.MapKey, value bpf.MapValue) {
 			k := key.(*ipcachemap.Key)
 			v := value.(*ipcachemap.RemoteEndpointInfo)
 			nid := identity.NumericIdentity(v.SecurityIdentity)
@@ -554,7 +554,7 @@ func NewDaemon(ctx context.Context, cleaner *daemonCleanup, epMgr *endpointmanag
 		}
 		// DumpWithCallback() leaves the ipcache map open, must close before opened for
 		// parallel mode in Daemon.initMaps()
-		ipcachemap.IPCache.Close()
+		ipcachemap.GetIPCache().Close()
 	}
 
 	// Propagate identity allocator down to packages which themselves do not
@@ -705,6 +705,10 @@ func NewDaemon(ctx context.Context, cleaner *daemonCleanup, epMgr *endpointmanag
 		wg.Wait()
 		log.Info("All endpoints' goroutines stopped.")
 	})
+
+	for k, v := range option.Config.BPFMapEventBuffers {
+		fmt.Println("[tom-debug7] buff-config:", k, v)
+	}
 
 	// Open or create BPF maps.
 	bootstrapStats.mapsInit.Start()
