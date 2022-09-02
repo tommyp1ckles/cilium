@@ -3978,8 +3978,7 @@ func (d *DaemonConfig) GetEventBufferConfig(name string) BPFEventBufferConfig {
 }
 
 func (cs BPFEventBufferConfigs) get(name string) BPFEventBufferConfig {
-	fmt.Println("[tom-debug] bpfConfMap:", cs)
-	if c, ok := cs["name"]; ok {
+	if c, ok := cs[name]; ok {
 		return c
 	}
 	return BPFEventBufferConfig{
@@ -3998,6 +3997,7 @@ func parseEventBufferTupleString(optsStr string) (BPFEventBufferConfig, error) {
 	if opts[0] != "true" && opts[0] != "false" {
 		return conf, fmt.Errorf("could not parse event buffer enabled: must be either 'true' or 'false'")
 	}
+	fmt.Println("[tom-debug] opts", opts)
 	if opts[0] == "true" {
 		enabled = true
 	}
@@ -4013,7 +4013,7 @@ func parseEventBufferTupleString(optsStr string) (BPFEventBufferConfig, error) {
 		return conf, fmt.Errorf("event buffer max size cannot be less than zero (%d)", conf.MaxSize)
 	}
 	conf.TTL = ttl
-	conf.Enabled = enabled && conf.MaxSize != 0
+	conf.Enabled = enabled && size != 0
 	conf.MaxSize = size
 	return conf, nil
 }
