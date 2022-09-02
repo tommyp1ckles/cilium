@@ -7,8 +7,27 @@ import (
 	"github.com/cilium/cilium/pkg/container"
 )
 
+type EventType uint8
+
+const (
+	MapUpdate EventType = iota
+	MapDelete
+)
+
+func (e EventType) String() string {
+	switch e {
+	case MapUpdate:
+		return "update"
+	case MapDelete:
+		return "delete"
+	default:
+		return "unknown"
+	}
+}
+
 type Event struct {
 	Timestamp  time.Time
+	eventType  EventType
 	cacheEntry // TODO: Look at using *model.MapEvent type and avoiding copies of ptr arrays.
 }
 
