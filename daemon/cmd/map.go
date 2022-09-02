@@ -52,11 +52,12 @@ func (h *getMapNameEvents) Handle(params restapi.GetMapNameEventsParams) middlew
 			errStr = e.GetLastError().Error()
 		}
 		mapEvents = append(mapEvents, &models.MapEvent{
-			DesiredAction: e.GetDesiredAction().String(),
 			Key:           e.GetKey(),
+			Action:        e.GetAction(),
 			Value:         e.GetValue(),
 			LastError:     errStr,
 			Timestamp:     strfmt.DateTime(e.Timestamp),
+			DesiredAction: e.GetDesiredAction().String(),
 		})
 	})
 	if err != nil {
