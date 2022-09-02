@@ -15,6 +15,7 @@ import (
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/types"
 )
 
@@ -171,7 +172,11 @@ func newIPCacheMap(name string) *bpf.Map {
 		int(unsafe.Sizeof(RemoteEndpointInfo{})),
 		MaxEntries,
 		bpf.BPF_F_NO_PREALLOC, 0,
-		bpf.ConvertKeyValue).WithEvents()
+		bpf.ConvertKeyValue)
+
+	if c := option.Config.GetEventBufferConfig("ipcache"); c.Enabled {
+		m = m.WithEvents(c.MaxSize, c.TTL)
+	}
 	return m
 }
 
@@ -276,7 +281,7 @@ var (
 	// IPCache is a mapping of all endpoint IPs in the cluster which this
 	// Cilium agent is a part of to their corresponding security identities.
 	// It is a singleton; there is only one such map per agent.
-	IPCache = NewMap(Name)
+	IPCache *bpf.Map
 )
 
 // Reopen attempts to close and re-open the IPCache map at the standard path

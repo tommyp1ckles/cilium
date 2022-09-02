@@ -6,6 +6,7 @@
 package bpf
 
 import (
+	"fmt"
 	"path"
 
 	"github.com/cilium/cilium/api/v1/models"
@@ -38,6 +39,7 @@ func GetMap(name string) *Map {
 	mutex.RLock()
 	defer mutex.RUnlock()
 
+	fmt.Println("[tom-debug9] mapReg:", mapRegister)
 	if !path.IsAbs(name) {
 		name = MapPath(name)
 	}

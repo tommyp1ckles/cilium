@@ -4,6 +4,8 @@
 package cmd
 
 import (
+	"fmt"
+
 	"github.com/go-openapi/runtime/middleware"
 	"github.com/go-openapi/strfmt"
 
@@ -24,9 +26,7 @@ type mapRefGetter interface {
 type mapGetterImpl struct{}
 
 func (mg mapGetterImpl) GetMap(name string) (eventsDumper, bool) {
-	// if !strings.HasPrefix(name, "cilium_") {
-	// 	name = "cilium_" + name
-	// }
+	fmt.Println("[tom-debug] Getting map ref:", name)
 	return bpf.GetMap(name), bpf.GetMap(name) != nil
 }
 
@@ -48,7 +48,7 @@ func (h *getMapNameEvents) Handle(params restapi.GetMapNameEventsParams) middlew
 		return restapi.NewGetMapNameNotFound()
 	}
 	mapEvents := []*models.MapEvent{}
-	err := m.DumpEventsWithCallback(func(e bpf.Event) {
+	err := m.DumpEventsWithCallback(func(e *bpf.Event) {
 		errStr := "<nil>"
 		if e.GetLastError() != nil {
 			errStr = e.GetLastError().Error()

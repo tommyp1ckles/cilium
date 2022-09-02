@@ -3131,12 +3131,15 @@ func (c *DaemonConfig) Populate(vp *viper.Viper) {
 	if m, err := command.GetStringMapStringE(vp, BPFMapEventBuffers); err != nil {
 		log.Fatalf("unable to parse %s: %s", BPFMapEventBuffers, err)
 	} else {
+		fmt.Println("[tom-debug] getting conf from m:", m)
 		for name, confStr := range m {
+			fmt.Println("[tom-debug] got confStr from buff conf:", name, confStr)
 			conf, err := parseEventBufferTupleString(confStr)
 			if err != nil {
 				log.Fatalf("unable to parse %s: %s", BPFMapEventBuffers, err)
 			}
 			c.bpfMapEventConfigs[name] = conf
+			fmt.Println("[tom-debug] confs:", c.bpfMapEventConfigs)
 		}
 	}
 
@@ -3975,6 +3978,7 @@ func (d *DaemonConfig) GetEventBufferConfig(name string) BPFEventBufferConfig {
 }
 
 func (cs BPFEventBufferConfigs) get(name string) BPFEventBufferConfig {
+	fmt.Println("[tom-debug] bpfConfMap:", cs)
 	if c, ok := cs["name"]; ok {
 		return c
 	}

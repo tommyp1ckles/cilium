@@ -249,17 +249,6 @@ func (m *Map) WithCache() *Map {
 func (m *Map) WithEvents(size int, ttl time.Duration) *Map {
 	m.eventsBufferEnabled = true
 	m.events = newEventsBuffer(size, ttl)
-
-	// if c := option.Config.GetEventBufferConfig(m.name); c.Enabled {
-	// 	if c.MaxSize <= 0 {
-	// 		panic("events buffer max size must be greater than 0")
-	// 	}
-	// 	m.eventsBufferEnabled = true
-	// 	m.events = newEventsBuffer(c.MaxSize, c.TTL)
-	// 	return m
-	// } else {
-	// 	return m
-	// }
 	return m
 }
 

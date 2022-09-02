@@ -706,10 +706,6 @@ func NewDaemon(ctx context.Context, cleaner *daemonCleanup, epMgr *endpointmanag
 		log.Info("All endpoints' goroutines stopped.")
 	})
 
-	for k, v := range option.Config.BPFMapEventBuffers {
-		fmt.Println("[tom-debug7] buff-config:", k, v)
-	}
-
 	// Open or create BPF maps.
 	bootstrapStats.mapsInit.Start()
 	err = d.initMaps()
