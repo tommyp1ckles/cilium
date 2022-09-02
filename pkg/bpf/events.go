@@ -7,14 +7,14 @@ import (
 	"github.com/cilium/cilium/pkg/container"
 )
 
-type EventType uint8
+type Action uint8
 
 const (
-	MapUpdate EventType = iota
+	MapUpdate Action = iota
 	MapDelete
 )
 
-func (e EventType) String() string {
+func (e Action) String() string {
 	switch e {
 	case MapUpdate:
 		return "update"
@@ -27,8 +27,12 @@ func (e EventType) String() string {
 
 type Event struct {
 	Timestamp  time.Time
-	eventType  EventType
+	action     Action
 	cacheEntry // TODO: Look at using *model.MapEvent type and avoiding copies of ptr arrays.
+}
+
+func (e *Event) GetAction() string {
+	return e.action.String()
 }
 
 type EventCallbackFunc func(*Event)
