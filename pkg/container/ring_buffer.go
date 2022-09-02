@@ -63,6 +63,7 @@ func (eb *OrderedRingBuffer[T]) IterateValid(isValid func(T) bool, callback func
 		for _, e := range eb.buffer {
 			callback(e)
 		}
+		return
 	}
 	startIndex := eb.validStartIndex(isValid)
 	l := len(eb.buffer) - startIndex
