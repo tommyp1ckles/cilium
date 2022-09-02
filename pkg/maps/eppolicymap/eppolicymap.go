@@ -62,6 +62,7 @@ func CreateWithName(mapName string) error {
 			return
 		}
 
+		c := option.Config.GetEventBufferConfig(MapName)
 		EpPolicyMap = bpf.NewMap(mapName,
 			bpf.MapTypeHashOfMaps,
 			&EndpointKey{},
@@ -72,7 +73,9 @@ func CreateWithName(mapName string) error {
 			0,
 			0,
 			bpf.ConvertKeyValue,
-		).WithCache()
+		).WithCache().
+			WithEvents(c.Enabled, c.MaxSize, c.TTL)
+
 		EpPolicyMap.InnerID = uint32(fd)
 	})
 

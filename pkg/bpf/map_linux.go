@@ -242,11 +242,25 @@ func (m *Map) WithCache() *Map {
 	return m
 }
 
+type EventsConfig struct {
+	Enabled bool
+	Size    int
+	TTL     time.Duration
+}
+
 // WithEvents enables use of the event buffer, if the buffer is enabled.
 // This stores all map events (i.e. add/update/delete) in a bounded event buffer.
 // If eventTTL is not zero, than events that are older than the TTL
 // will periodically be removed from the buffer.
-func (m *Map) WithEvents(size int, ttl time.Duration) *Map {
+func (m *Map) WithEvents(enabled bool, size int, ttl time.Duration) *Map {
+	fmt.Println("[tom-debug] Enabling events for:", m.name, m.Name())
+	if !enabled {
+		return m
+	}
+	m.scopedLogger().WithFields(logrus.Fields{
+		"size": size,
+		"ttl":  ttl,
+	}).Debug("enabling events buffer")
 	m.eventsBufferEnabled = true
 	m.events = newEventsBuffer(size, ttl)
 	return m

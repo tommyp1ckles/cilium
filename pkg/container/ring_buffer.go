@@ -52,15 +52,6 @@ func (eb *OrderedRingBuffer[T]) at(i int) T {
 	return v
 }
 
-// Cull removes up to the last element in the buffer upon which "shouldRemove"
-// returns true.
-// func (eb *OrderedRingBuffer[T]) Cull(shouldRemove func(T) bool) {
-// 	newIndex := sort.Search(len(eb.buffer), func(i int) bool {
-// 		return !shouldRemove(eb.at(i))
-// 	})
-// 	eb.buffer = eb.buffer[newIndex:]
-// }
-
 func (eb *OrderedRingBuffer[T]) validStartIndex(isValid func(T) bool) int {
 	return sort.Search(len(eb.buffer), func(i int) bool {
 		return isValid(eb.at(i))
@@ -68,6 +59,11 @@ func (eb *OrderedRingBuffer[T]) validStartIndex(isValid func(T) bool) int {
 }
 
 func (eb *OrderedRingBuffer[T]) IterateValid(isValid func(T) bool, callback func(T)) {
+	if !eb.isFull() {
+		for _, e := range eb.buffer {
+			callback(e)
+		}
+	}
 	startIndex := eb.validStartIndex(isValid)
 	l := len(eb.buffer) - startIndex
 	for i := 0; i < l; i++ {

@@ -8,6 +8,7 @@ import (
 	"unsafe"
 
 	"github.com/cilium/cilium/pkg/bpf"
+	"github.com/cilium/cilium/pkg/option"
 )
 
 var (
@@ -51,6 +52,7 @@ func (k Key) NewValue() bpf.MapValue { return &Value{} }
 
 // InitMap creates the events map in the kernel.
 func InitMap(maxEntries int) error {
+	c := option.Config.GetEventBufferConfig(MapName)
 	MaxEntries = maxEntries
 	eventsMap := bpf.NewMap(MapName,
 		bpf.MapTypePerfEventArray,
@@ -62,7 +64,7 @@ func InitMap(maxEntries int) error {
 		0,
 		0,
 		bpf.ConvertKeyValue,
-	)
+	).WithEvents(c.Enabled, c.MaxSize, c.TTL)
 	_, err := eventsMap.Create()
 	return err
 }

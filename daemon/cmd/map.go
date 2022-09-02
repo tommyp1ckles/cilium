@@ -4,8 +4,6 @@
 package cmd
 
 import (
-	"fmt"
-
 	"github.com/go-openapi/runtime/middleware"
 	"github.com/go-openapi/strfmt"
 
@@ -26,8 +24,8 @@ type mapRefGetter interface {
 type mapGetterImpl struct{}
 
 func (mg mapGetterImpl) GetMap(name string) (eventsDumper, bool) {
-	fmt.Println("[tom-debug] Getting map ref:", name)
-	return bpf.GetMap(name), bpf.GetMap(name) != nil
+	m := bpf.GetMap(name)
+	return m, m != nil
 }
 
 type getMapNameEvents struct {

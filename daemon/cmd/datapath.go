@@ -431,7 +431,7 @@ func (d *Daemon) initMaps() error {
 	})
 
 	if option.Config.EnableIPv4 && option.Config.EnableIPMasqAgent {
-		if _, err := ipmasq.IPMasq4Map.OpenOrCreate(); err != nil {
+		if _, err := ipmasq.IPMasq4Map().OpenOrCreate(); err != nil {
 			return err
 		}
 	}

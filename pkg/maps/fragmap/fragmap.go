@@ -8,6 +8,7 @@ import (
 	"unsafe"
 
 	"github.com/cilium/cilium/pkg/bpf"
+	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/types"
 )
 
@@ -58,6 +59,7 @@ func (k FragmentKey) NewValue() bpf.MapValue { return &FragmentValue{} }
 
 // InitMap creates the signal map in the kernel.
 func InitMap(mapEntries int) error {
+	c := option.Config.GetEventBufferConfig(MapName)
 	fragMap := bpf.NewMap(MapName,
 		bpf.MapTypeLRUHash,
 		&FragmentKey{},
@@ -68,7 +70,7 @@ func InitMap(mapEntries int) error {
 		0,
 		0,
 		bpf.ConvertKeyValue,
-	)
+	).WithEvents(c.Enabled, c.MaxSize, c.TTL)
 	_, err := fragMap.Create()
 	return err
 }

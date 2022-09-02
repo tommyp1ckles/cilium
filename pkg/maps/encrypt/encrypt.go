@@ -9,6 +9,7 @@ import (
 	"unsafe"
 
 	"github.com/cilium/cilium/pkg/bpf"
+	"github.com/cilium/cilium/pkg/option"
 )
 
 // EncryptKey is the context ID for the encryption session
@@ -66,6 +67,7 @@ var (
 
 // MapCreate will create an encrypt map
 func MapCreate() error {
+	c := option.Config.GetEventBufferConfig(MapName)
 	once.Do(func() {
 		encryptMap = bpf.NewMap(MapName,
 			bpf.MapTypeArray,
@@ -76,7 +78,8 @@ func MapCreate() error {
 			MaxEntries,
 			0, 0,
 			bpf.ConvertKeyValue,
-		).WithCache()
+		).WithCache().
+			WithEvents(c.Enabled, c.MaxSize, c.TTL)
 	})
 
 	_, err := encryptMap.OpenOrCreate()

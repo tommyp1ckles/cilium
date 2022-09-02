@@ -163,6 +163,7 @@ type Map struct {
 }
 
 func newIPCacheMap(name string) *bpf.Map {
+	c := option.Config.GetEventBufferConfig(name)
 	m := bpf.NewMap(
 		name,
 		bpf.MapTypeLPMTrie,
@@ -172,13 +173,7 @@ func newIPCacheMap(name string) *bpf.Map {
 		int(unsafe.Sizeof(RemoteEndpointInfo{})),
 		MaxEntries,
 		bpf.BPF_F_NO_PREALLOC, 0,
-		bpf.ConvertKeyValue)
-
-	fmt.Println("[tom-debug] ipcache >>", option.Config.GetEventBufferConfig("ipcache"))
-	if c := option.Config.GetEventBufferConfig("ipcache"); c.Enabled {
-		fmt.Println("[tom-debug] ipcache yes")
-		m = m.WithEvents(c.MaxSize, c.TTL)
-	}
+		bpf.ConvertKeyValue).WithCache().WithEvents(c.Enabled, c.MaxSize, c.TTL)
 	return m
 }
 
