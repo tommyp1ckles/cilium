@@ -1091,6 +1091,10 @@ const (
 	// EnableRuntimeDeviceDetection is the name of the option to enable detection
 	// of new and removed datapath devices during the agent runtime.
 	EnableRuntimeDeviceDetection = "enable-runtime-device-detection"
+
+	// BPFMapEventBuffers specifies what maps should have event buffers enabled,
+	// and the max size and TTL of events in the buffers should be.
+	BPFMapEventBuffers = "bpf-map-event-buffers"
 )
 
 // Default string arguments
@@ -2219,6 +2223,11 @@ type DaemonConfig struct {
 
 	// EnvoySecretNamespace for TLS secrets. Used by CiliumEnvoyConfig via SDS.
 	EnvoySecretNamespace string
+
+	// BPFMapEventBuffers has configuration on what BPF map event buffers to enabled
+	// and configuration options for those.
+	BPFMapEventBuffers map[string]string
+	bpfMapEventConfigs BPFEventBufferConfigs
 }
 
 var (
@@ -3088,6 +3097,14 @@ func (c *DaemonConfig) Populate(vp *viper.Viper) {
 		c.APIRateLimit = m
 	}
 
+	c.bpfMapEventConfigs = make(BPFEventBufferConfigs)
+	parseBPFMapEventConfigs(c.bpfMapEventConfigs, defaults.BPFEventBufferConfigs)
+	if m, err := command.GetStringMapStringE(vp, BPFMapEventBuffers); err != nil {
+		log.Fatalf("unable to parse %s: %s", BPFMapEventBuffers, err)
+	} else {
+		parseBPFMapEventConfigs(c.bpfMapEventConfigs, m)
+	}
+
 	for _, option := range vp.GetStringSlice(EndpointStatus) {
 		c.EndpointStatus[option] = struct{}{}
 	}
@@ -3907,4 +3924,71 @@ func MightAutoDetectDevices() bool {
 	return (Config.EnableHostFirewall && len(devices) == 0) ||
 		(Config.KubeProxyReplacement != KubeProxyReplacementDisabled &&
 			(len(devices) == 0 || Config.DirectRoutingDevice == ""))
+}
+
+// BPFEventBufferConfig contains parsed configuration for a bpf map event buffer.
+type BPFEventBufferConfig struct {
+	Enabled bool
+	MaxSize int
+	TTL     time.Duration
+}
+
+// BPFEventBufferConfigs contains parsed bpf event buffer configs, indexed but map name.
+type BPFEventBufferConfigs map[string]BPFEventBufferConfig
+
+// GetEventBufferConfig returns either the relevant config for a map name, or a default
+// one with enabled=false otherwise.
+func (d *DaemonConfig) GetEventBufferConfig(name string) BPFEventBufferConfig {
+	return d.bpfMapEventConfigs.get(name)
+}
+
+func (cs BPFEventBufferConfigs) get(name string) BPFEventBufferConfig {
+	if c, ok := cs[name]; ok {
+		return c
+	}
+	return BPFEventBufferConfig{
+		Enabled: false,
+	}
+}
+
+func parseEventBufferTupleString(optsStr string) (BPFEventBufferConfig, error) {
+	optsStr = strings.Trim(optsStr, " 	")
+	opts := strings.Split(optsStr, ",")
+	enabled := false
+	conf := BPFEventBufferConfig{}
+	if len(opts) != 3 {
+		return conf, fmt.Errorf("unexpected event buffer config value format, should be in format 'mapname=true,100,24h'")
+	}
+	if opts[0] != "true" && opts[0] != "false" {
+		return conf, fmt.Errorf("could not parse event buffer enabled: must be either 'true' or 'false'")
+	}
+	if opts[0] == "true" {
+		enabled = true
+	}
+	size, err := strconv.Atoi(opts[1])
+	if err != nil {
+		return conf, fmt.Errorf("could not parse event buffer maxSize int: %w", err)
+	}
+	ttl, err := time.ParseDuration(opts[2])
+	if err != nil {
+		return conf, fmt.Errorf("could not parse event buffer ttl duration: %w", err)
+	}
+	if conf.MaxSize < 0 {
+		return conf, fmt.Errorf("event buffer max size cannot be less than zero (%d)", conf.MaxSize)
+	}
+	conf.TTL = ttl
+	conf.Enabled = enabled && size != 0
+	conf.MaxSize = size
+	return conf, nil
+}
+
+func parseBPFMapEventConfigs(confs BPFEventBufferConfigs, confMap map[string]string) error {
+	for name, confStr := range confMap {
+		conf, err := parseEventBufferTupleString(confStr)
+		if err != nil {
+			return fmt.Errorf("unable to parse %s: %s", BPFMapEventBuffers, err)
+		}
+		confs[name] = conf
+	}
+	return nil
 }
