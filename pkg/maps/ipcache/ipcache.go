@@ -15,6 +15,7 @@ import (
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/types"
 )
 
@@ -162,7 +163,7 @@ type Map struct {
 }
 
 func newIPCacheMap(name string) *bpf.Map {
-	return bpf.NewMap(
+	m := bpf.NewMap(
 		name,
 		bpf.MapTypeLPMTrie,
 		&Key{},
@@ -171,7 +172,9 @@ func newIPCacheMap(name string) *bpf.Map {
 		int(unsafe.Sizeof(RemoteEndpointInfo{})),
 		MaxEntries,
 		bpf.BPF_F_NO_PREALLOC, 0,
-		bpf.ConvertKeyValue)
+		bpf.ConvertKeyValue).WithCache().
+		WithEvents(option.Config.GetEventBufferConfig(name))
+	return m
 }
 
 // NewMap instantiates a Map.
@@ -262,24 +265,34 @@ func (m *Map) supportsDelete() bool {
 // SupportsDelete determines whether the underlying kernel map type supports
 // the delete operation.
 func SupportsDelete() bool {
-	return IPCache.supportsDelete()
+	return GetIPCache().supportsDelete()
 }
 
 // BackedByLPM returns true if the IPCache is backed by a proper LPM
 // implementation (provided by Linux kernels 4.11 or later), false otherwise.
 func BackedByLPM() bool {
-	return IPCache.MapType == bpf.MapTypeLPMTrie
+	return GetIPCache().MapType == bpf.MapTypeLPMTrie
 }
 
 var (
 	// IPCache is a mapping of all endpoint IPs in the cluster which this
 	// Cilium agent is a part of to their corresponding security identities.
 	// It is a singleton; there is only one such map per agent.
-	IPCache = NewMap(Name)
+	ipcache *Map
+	once    = &sync.Once{}
 )
+
+// GetIPCache gets the ipcache Map singleton. If it has not already been done,
+// this also initializes the Map.
+func GetIPCache() *Map {
+	once.Do(func() {
+		ipcache = NewMap(Name)
+	})
+	return ipcache
+}
 
 // Reopen attempts to close and re-open the IPCache map at the standard path
 // on the filesystem.
 func Reopen() error {
-	return IPCache.Map.Reopen()
+	return GetIPCache().Reopen()
 }

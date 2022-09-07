@@ -10,6 +10,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/cilium/cilium/pkg/bpf"
+	"github.com/cilium/cilium/pkg/option"
 )
 
 const (
@@ -21,7 +22,7 @@ const (
 
 var (
 	// TunnelMap represents the BPF map for tunnels
-	TunnelMap = NewTunnelMap(MapName)
+	TunnelMap = NewTunnelMap()
 )
 
 // Map implements tunnel connectivity configuration in the BPF datapath.
@@ -29,8 +30,8 @@ type Map struct {
 	*bpf.Map
 }
 
-// NewTunnelMap returns a new tunnel map with the specified name.
-func NewTunnelMap(name string) *Map {
+// NewTunnelMap returns a new tunnel map.
+func NewTunnelMap() *Map {
 	return &Map{Map: bpf.NewMap(MapName,
 		bpf.MapTypeHash,
 		&TunnelEndpoint{},
@@ -40,7 +41,8 @@ func NewTunnelMap(name string) *Map {
 		MaxEntries,
 		0, 0,
 		bpf.ConvertKeyValue,
-	).WithCache().WithPressureMetric().WithNonPersistent(),
+	).WithCache().WithPressureMetric().WithNonPersistent().
+		WithEvents(option.Config.GetEventBufferConfig(MapName)),
 	}
 }
 
