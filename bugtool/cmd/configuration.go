@@ -77,58 +77,17 @@ func cgroup2fsMounts() []string {
 	return mounts
 }
 
-func defaultCommands(confDir string, cmdDir string, k8sPods []string) []string {
-	var commands []string
-	// Not expecting all of the commands to be available
-	commands = []string{
-		// Host and misc
-		"ps auxfw",
-		"hostname",
-		"ip a",
-		"ip -4 r",
-		"ip -6 r",
-		"ip -d -s l",
-		"ip -4 n",
-		"ip -6 n",
-		"ss -t -p -a -i -s",
-		"ss -u -p -a -i -s",
-		"tc qdisc show",
-		"tc -d -s qdisc show",
-		"uname -a",
-		"top -b -n 1",
-		"uptime",
-		"dmesg --time-format=iso",
-		"sysctl -a",
+// returns bugtool bpftool commands, in both human readable
+// and json output.
+func bpftoolCommands() []string {
+	// bpftool commands that support --json format.
+	bpftoolCommands := []string{
 		"bpftool map show",
 		"bpftool prog show",
 		"bpftool net show",
-		"taskset -pc 1",
-		// iptables
-		"iptables-save -c",
-		"ip6tables-save -c",
-		"iptables-nft-save -c",
-		"ip6tables-nft-save -c",
-		"iptables-legacy-save -c",
-		"ip6tables-legacy-save -c",
-		"ip rule",
-		"ipset list",
-		// xfrm
-		"ip -s xfrm policy",
-		"ip -s xfrm state",
-		// gops
-		fmt.Sprintf("gops memstats $(pidof %s)", components.CiliumAgentName),
-		fmt.Sprintf("gops stack $(pidof %s)", components.CiliumAgentName),
-		fmt.Sprintf("gops stats $(pidof %s)", components.CiliumAgentName),
-		// Get list of open file descriptors managed by the agent
-		fmt.Sprintf("ls -la /proc/$(pidof %s)/fd", components.CiliumAgentName),
-		"lsmod",
-		// tc
-		"tc -s qdisc", // Show statistics on queuing disciplines
-		"tc qdisc show",
 	}
-
 	if bpffsMountpoint := bpffsMountpoint(); bpffsMountpoint != "" {
-		commands = append(commands, []string{
+		bpftoolCommands = append(bpftoolCommands, []string{
 			// LB and CT map for debugging services; using bpftool for a reliable dump
 			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_call_policy", bpffsMountpoint),
 			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_calls_overlay_2", bpffsMountpoint),
@@ -192,10 +151,73 @@ func defaultCommands(confDir string, cmdDir string, k8sPods []string) []string {
 
 	cgroup2fsMounts := cgroup2fsMounts()
 	for i := range cgroup2fsMounts {
-		commands = append(commands, []string{
+		bpftoolCommands = append(bpftoolCommands, []string{
 			fmt.Sprintf("bpftool cgroup tree %s", cgroup2fsMounts[i]),
 		}...)
 	}
+
+	all := []string{}
+	for _, cmd := range bpftoolCommands {
+		all = append(all, cmd)
+		if jsonOutput {
+			all = append(all, cmd+" --json")
+		}
+	}
+
+	return all
+}
+
+func defaultCommands(confDir string, cmdDir string, k8sPods []string) []string {
+	var commands []string
+
+	// Not expecting all of the commands to be available
+	commands = []string{
+		// Host and misc
+		"ps auxfw",
+		"hostname",
+		"ip a",
+		"ip -4 r",
+		"ip -6 r",
+		"ip -d -s l",
+		"ip -4 n",
+		"ip -6 n",
+		"ss -t -p -a -i -s",
+		"ss -u -p -a -i -s",
+		"tc qdisc show",
+		"tc -d -s qdisc show",
+		"uname -a",
+		"top -b -n 1",
+		"uptime",
+		"dmesg --time-format=iso",
+		"sysctl -a",
+		"taskset -pc 1",
+		// iptables
+		"iptables-save -c",
+		"ip6tables-save -c",
+		"iptables-nft-save -c",
+		"ip6tables-nft-save -c",
+		"iptables-legacy-save -c",
+		"ip6tables-legacy-save -c",
+		"ip rule",
+		"ipset list",
+		// xfrm
+		"ip -s xfrm policy",
+		"ip -s xfrm state",
+		// gops
+		fmt.Sprintf("gops memstats $(pidof %s)", components.CiliumAgentName),
+		fmt.Sprintf("gops stack $(pidof %s)", components.CiliumAgentName),
+		fmt.Sprintf("gops stats $(pidof %s)", components.CiliumAgentName),
+		// Get list of open file descriptors managed by the agent
+		fmt.Sprintf("ls -la /proc/$(pidof %s)/fd", components.CiliumAgentName),
+		"lsmod",
+		// tc
+		"tc -s qdisc", // Show statistics on queuing disciplines
+		"tc qdisc show",
+	}
+
+	// adds all bpftool commands, including map dumps.
+	// Each command is run twice, once with --json and once in human readable format.
+	commands = append(commands, bpftoolCommands()...)
 
 	// Commands that require variables and / or more configuration are added
 	// separately below
