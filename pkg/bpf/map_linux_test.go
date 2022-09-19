@@ -263,7 +263,7 @@ func (s *BPFPrivilegedTestSuite) TestBasicManipulation(c *C) {
 		0,
 		ConvertKeyValue).
 		WithCache().
-		WithEvents(true, 10, 0)
+		WithEvents(option.BPFEventBufferConfig{Enabled: true, MaxSize: 10})
 
 	err := existingMap.Open()
 	defer existingMap.Close()
@@ -276,9 +276,9 @@ func (s *BPFPrivilegedTestSuite) TestBasicManipulation(c *C) {
 
 	dumpEvents := func() []*Event {
 		es := []*Event{}
-		existingMap.DumpEventsWithCallback(func(e *Event) {
+		existingMap.DumpAndSubscribe(func(e *Event) {
 			es = append(es, e)
-		})
+		}, false)
 		return es
 	}
 	event := func(i int) *Event {
@@ -434,6 +434,50 @@ func (s *BPFPrivilegedTestSuite) TestBasicManipulation(c *C) {
 
 	// cleanup
 	err = existingMap.DeleteAll()
+	c.Assert(err, IsNil)
+}
+
+func (s *BPFPrivilegedTestSuite) TestSubscribe(c *C) {
+	existingMap := NewMap("cilium_test",
+		MapTypeHash,
+		&TestKey{},
+		int(unsafe.Sizeof(TestKey{})),
+		&TestValue{},
+		int(unsafe.Sizeof(TestValue{})),
+		maxEntries,
+		BPF_F_NO_PREALLOC,
+		0,
+		ConvertKeyValue).
+		WithCache().
+		WithEvents(option.BPFEventBufferConfig{Enabled: true, MaxSize: 10})
+
+	subHandle := existingMap.DumpAndSubscribe(nil, true)
+	collect := 0
+	done := make(chan struct{})
+	go func(collect *int) {
+		defer subHandle.Close()
+		for range subHandle.C() {
+			*collect += 1
+		}
+		close(done)
+	}(&collect)
+
+	key1 := &TestKey{Key: 103}
+	value1 := &TestValue{Value: 203}
+	err := existingMap.Update(key1, value1)
+	c.Assert(err, IsNil)
+	err = existingMap.Update(key1, value1)
+	c.Assert(err, IsNil)
+	err = existingMap.Delete(key1)
+	c.Assert(err, IsNil)
+
+	subHandle.Close()
+	<-done
+	c.Assert(collect, Equals, 3)
+
+	// cleanup
+	err = existingMap.DeleteAll()
+	existingMap.events = nil
 	c.Assert(err, IsNil)
 }
 

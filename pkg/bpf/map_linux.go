@@ -125,6 +125,7 @@ type Map struct {
 	// pressureGauge is a metric that tracks the pressure on this map
 	pressureGauge *metrics.GaugeWithThreshold
 
+	// is true when events buffer is enabled.
 	eventsBufferEnabled bool
 
 	// contains optional event buffer which stores last n bpf map events.
@@ -251,16 +252,16 @@ func (m *Map) WithCache() *Map {
 // TODO: The IPCache map have many periodic update events added by a controller for entries such as the 0.0.0.0/0 range.
 // These fill the event buffer with possibly unnecessary events.
 // We should either provide an option to aggregate these events, ignore hem from the ipcache event buffer or store them in a separate buffer.
-func (m *Map) WithEvents(enabled bool, size int, ttl time.Duration) *Map {
-	if !enabled {
+func (m *Map) WithEvents(c option.BPFEventBufferConfig) *Map {
+	if !c.Enabled {
 		return m
 	}
 	m.scopedLogger().WithFields(logrus.Fields{
-		"size": size,
-		"ttl":  ttl,
+		"size": c.MaxSize,
+		"ttl":  c.TTL,
 	}).Debug("enabling events buffer")
 	m.eventsBufferEnabled = true
-	m.initEventsBuffer(size, ttl)
+	m.initEventsBuffer(c.MaxSize, c.TTL)
 	return m
 }
 

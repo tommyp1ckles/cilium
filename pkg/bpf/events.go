@@ -6,10 +6,13 @@ package bpf
 import (
 	"context"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cilium/cilium/pkg/container"
 	"github.com/cilium/cilium/pkg/controller"
+	"github.com/cilium/cilium/pkg/lock"
 )
 
 // Action describes an action for map buffer events.
@@ -105,12 +108,131 @@ func (m *Map) initEventsBuffer(maxSize int, eventsTTL time.Duration) {
 // eventsBuffer stores a buffer of events for auditing and debugging
 // purposes.
 type eventsBuffer struct {
-	buffer   *container.RingBuffer
-	eventTTL time.Duration
+	buffer        *container.RingBuffer
+	eventTTL      time.Duration
+	subsLock      lock.RWMutex
+	subscriptions []*Handle
+}
+
+// This configures how big buffers are for channels used for streaming events from
+// eventsBuffer.
+//
+// To prevent blocking bpf.Map operations, subscribed events are buffered per client handle.
+// This constant should provide enough buffer that any client can read and process the events
+// in time. This default should provide more than enough buffer room for even high throughput clusters.
+//
+// i.e. lets say we have a high churn map, say ipcache with a lot of events: ~100 ops/sec.
+//
+// 100 ops/sec = 600ms between each event.
+//
+// Lets say we have a 1MB connection, and our Event size is ~1k.
+// Thus we can send 1000 Events per second. Sending one event takes 1ms.
+// In practice, this varies. This buffer size should provide enough room for even order of magnitude
+// differences in consumer processing time.
+//
+// NOTE: The events dump is not buffered, that one holds a read lock on the bpf.Map and reads all the
+// events one by one.
+const eventSubChanBufferSize = 32
+
+// Handle allows for handling event streams safely outside of this package.
+// The key design consideration for event streaming is that it is non-blocking.
+// The eventsBuffer takes care of closing handles when their consumer is not reading
+// off the buffer (or is not reading off it fast enough).
+type Handle struct {
+	c      chan *Event
+	closed *atomic.Value
+	closer *sync.Once
+	err    error
+}
+
+// Returns read only channel for Handle subscription events. Channel should be closed with
+// handle.Close() function.
+func (h *Handle) C() <-chan *Event {
+	return h.c // return read only channel to prevent closing outside of Close(...).
+}
+
+// Close allows for safaley closing of a handle.
+func (h *Handle) Close() {
+	h.close(nil)
+}
+
+func (h *Handle) close(err error) {
+	h.closer.Do(func() {
+		close(h.c)
+		h.err = err
+		h.closed.Store(true)
+	})
+}
+
+func (h *Handle) isFull() bool {
+	return len(h.c) >= cap(h.c)
+}
+
+func (h *Handle) isClosed() bool {
+	v := h.closed.Load()
+	return v.(bool)
+}
+
+func (eb *eventsBuffer) dumpAndSubscribe(callback EventCallbackFunc, follow bool) *Handle {
+	if callback != nil {
+		eb.dumpWithCallback(callback)
+	}
+
+	if !follow {
+		return nil
+	}
+
+	closed := &atomic.Value{}
+	closed.Store(false)
+	h := &Handle{
+		c:      make(chan *Event, eventSubChanBufferSize),
+		closer: &sync.Once{},
+		closed: closed,
+	}
+
+	eb.subsLock.Lock()
+	defer eb.subsLock.Unlock()
+	eb.subscriptions = append(eb.subscriptions, h)
+	return h
+}
+
+// DumpAndSubscribe dumps existing buffer, if callback is not nil. Followed by creating a
+// subscription to the maps events buffer and returning the handle.
+// These actions are done together so as to prevent possible missed events between the handoff
+// of the callback and sub handle creation.
+func (m *Map) DumpAndSubscribe(callback EventCallbackFunc, follow bool) *Handle {
+	// note: we have to hold rlock for the duration of this to prevent missed events between dump and sub.
+	// dumpAndSubscribe maintains its own write-lock for updating subscribers.
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+	if !m.eventsBufferEnabled {
+		return nil
+	}
+	return m.events.dumpAndSubscribe(callback, follow)
+}
+
+func (m *Map) IsEventsEnabled() bool {
+	return m.eventsBufferEnabled
 }
 
 func (eb *eventsBuffer) add(e *Event) {
 	eb.buffer.Add(e)
+	var activeSubs []*Handle
+	for i, sub := range eb.subscriptions {
+		if sub.isFull() {
+			log.Warnf("subscription channel buffer %d was full, closing subscription", i)
+			sub.close(fmt.Errorf("map event channel buffer was full, closing subscription"))
+			continue
+		}
+		if sub.isClosed() { // sub will be removed.
+			continue
+		}
+		activeSubs = append(activeSubs, sub)
+		sub.c <- e
+	}
+	eb.subsLock.Lock()
+	defer eb.subsLock.Unlock()
+	eb.subscriptions = activeSubs
 }
 
 func (eb *eventsBuffer) eventIsValid(e interface{}) bool {
@@ -132,16 +254,4 @@ func (eb *eventsBuffer) dumpWithCallback(callback EventCallbackFunc) {
 		}
 		callback(event)
 	})
-}
-
-// DumpEventWithCallback applies the callback function to all events in the buffer,
-// in order, from oldest to newest.
-func (m *Map) DumpEventsWithCallback(callback EventCallbackFunc) error {
-	m.lock.RLock()
-	defer m.lock.RUnlock()
-	if !m.eventsBufferEnabled || m.events == nil {
-		return fmt.Errorf("events buffer not enabled for map %q", m.name)
-	}
-	m.events.dumpWithCallback(callback)
-	return nil
 }
