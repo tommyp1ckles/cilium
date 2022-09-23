@@ -23,6 +23,9 @@ const (
 	MapUpdate Action = iota
 	// MapDelete describes a map.Delete event.
 	MapDelete
+	// MapDeleteAll describes a map.DeleteAll event which is aggregated into a single event
+	// to minimize memory and subscription buffer usage.
+	MapDeleteAll
 )
 
 // String returns a string representation of an Action.
@@ -32,6 +35,8 @@ func (e Action) String() string {
 		return "update"
 	case MapDelete:
 		return "delete"
+	case MapDeleteAll:
+		return "delete-all"
 	default:
 		return "unknown"
 	}
@@ -114,26 +119,6 @@ type eventsBuffer struct {
 	subscriptions []*Handle
 }
 
-// This configures how big buffers are for channels used for streaming events from
-// eventsBuffer.
-//
-// To prevent blocking bpf.Map operations, subscribed events are buffered per client handle.
-// This constant should provide enough buffer that any client can read and process the events
-// in time. This default should provide more than enough buffer room for even high throughput clusters.
-//
-// i.e. lets say we have a high churn map, say ipcache with a lot of events: ~100 ops/sec.
-//
-// 100 ops/sec = 600ms between each event.
-//
-// Lets say we have a 1MB connection, and our Event size is ~1k.
-// Thus we can send 1000 Events per second. Sending one event takes 1ms.
-// In practice, this varies. This buffer size should provide enough room for even order of magnitude
-// differences in consumer processing time.
-//
-// NOTE: The events dump is not buffered, that one holds a read lock on the bpf.Map and reads all the
-// events one by one.
-const eventSubChanBufferSize = 32
-
 // Handle allows for handling event streams safely outside of this package.
 // The key design consideration for event streaming is that it is non-blocking.
 // The eventsBuffer takes care of closing handles when their consumer is not reading
@@ -164,14 +149,31 @@ func (h *Handle) close(err error) {
 	})
 }
 
-func (h *Handle) isFull() bool {
-	return len(h.c) >= cap(h.c)
-}
-
 func (h *Handle) isClosed() bool {
 	v := h.closed.Load()
 	return v.(bool)
 }
+
+func (h *Handle) isFull() bool {
+	return len(h.c) >= cap(h.c)
+}
+
+// This configures how big buffers are for channels used for streaming events from
+// eventsBuffer.
+//
+// To prevent blocking bpf.Map operations, subscribed events are buffered per client handle.
+// How fast subscribers will need to proceess events will depend on the event throughput.
+// In this case, our throughput will be expected to be not above 100 events a second.
+// Therefore the consumer will have 10ms to process each event. The channel is also
+// given a constant buffer size in the case where events arrive at once (i.e. all 100 events
+// arriving at the top of the second).
+//
+// NOTE: Although using timers/timed-contexts seems like an obvious choice for this use case,
+// the timer.After implementation actually uses a large amount of memory. To reduce memory spikes
+// in high throughput cases, we instead just use a sufficiently buffered channel.
+const (
+	eventSubChanBufferSize = 256
+)
 
 func (eb *eventsBuffer) dumpAndSubscribe(callback EventCallbackFunc, follow bool) *Handle {
 	if callback != nil {
@@ -218,18 +220,28 @@ func (m *Map) IsEventsEnabled() bool {
 func (eb *eventsBuffer) add(e *Event) {
 	eb.buffer.Add(e)
 	var activeSubs []*Handle
+	activeSubsLock := &sync.Mutex{}
+	wg := &sync.WaitGroup{}
 	for i, sub := range eb.subscriptions {
-		if sub.isFull() {
-			log.Warnf("subscription channel buffer %d was full, closing subscription", i)
-			sub.close(fmt.Errorf("map event channel buffer was full, closing subscription"))
-			continue
-		}
 		if sub.isClosed() { // sub will be removed.
 			continue
 		}
-		activeSubs = append(activeSubs, sub)
-		sub.c <- e
+		wg.Add(1)
+		go func(sub *Handle, i int) {
+			defer wg.Done()
+			if sub.isFull() {
+				err := fmt.Errorf("timed out waiting to send sub map event")
+				log.WithError(err).Warnf("subscription channel buffer %d was full, closing subscription", i)
+				sub.close(err)
+			} else {
+				sub.c <- e
+				activeSubsLock.Lock()
+				activeSubs = append(activeSubs, sub)
+				activeSubsLock.Unlock()
+			}
+		}(sub, i)
 	}
+	wg.Wait()
 	eb.subsLock.Lock()
 	defer eb.subsLock.Unlock()
 	eb.subscriptions = activeSubs

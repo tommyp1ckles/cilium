@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Authors of Cilium
 
-//go:build !privileged_tests
-
 package bpf
 
 import (
@@ -37,6 +35,7 @@ func TestEventsSubscribe(t *testing.T) {
 		assert.Len(eb.subscriptions[0].c, i+1)
 		eb.add(&Event{cacheEntry: cacheEntry{Key: IntTestKey(i)}})
 	}
+	time.Sleep(time.Millisecond * 20)
 	assert.True(handle.isClosed(), "after filling buffer, should be closed")
 	assert.Len(eb.subscriptions, 0)
 

@@ -248,6 +248,8 @@ func (m *Map) WithCache() *Map {
 // This stores all map events (i.e. add/update/delete) in a bounded event buffer.
 // If eventTTL is not zero, than events that are older than the TTL
 // will periodically be removed from the buffer.
+// Enabling events will use aprox proportional to 100MB for every million capacity
+// in maxSize.
 //
 // TODO: The IPCache map have many periodic update events added by a controller for entries such as the 0.0.0.0/0 range.
 // These fill the event buffer with possibly unnecessary events.
@@ -938,6 +940,10 @@ func (m *Map) deleteMapEvent(key MapKey, err error) {
 	m.deleteCacheEntry(key, err)
 }
 
+func (m *Map) deleteAllMapEvent(err error) {
+	m.addToEventsLocked(MapDeleteAll, cacheEntry{})
+}
+
 // deleteCacheEntry evaluates the specified error, if nil the map key is
 // removed from the cache to indicate successful deletion. If non-nil, the map
 // key entry in the cache is updated to indicate deletion failure with the
@@ -1051,6 +1057,8 @@ func (m *Map) DeleteAll() error {
 	mk := m.MapKey.DeepCopyMapKey()
 	mv := m.MapValue.DeepCopyMapValue()
 
+	var err error
+	defer m.deleteAllMapEvent(err)
 	for {
 		if err := GetFirstKey(m.fd, unsafe.Pointer(&nextKey[0])); err != nil {
 			if err == io.EOF {
@@ -1063,7 +1071,7 @@ func (m *Map) DeleteAll() error {
 
 		mk, _, err2 := m.DumpParser(nextKey, []byte{}, mk, mv)
 		if err2 == nil {
-			m.deleteMapEvent(mk, err)
+			m.deleteCacheEntry(mk, err)
 		} else {
 			log.WithError(err2).Warningf("Unable to correlate iteration key %v with cache entry. Inconsistent cache.", nextKey)
 		}
