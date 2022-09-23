@@ -28,8 +28,8 @@ func TestEventsSubscribe(t *testing.T) {
 	eb.add(&Event{cacheEntry: cacheEntry{Key: IntTestKey(123)}})
 	eb.add(&Event{cacheEntry: cacheEntry{Key: IntTestKey(124)}})
 	eb.add(&Event{cacheEntry: cacheEntry{Key: IntTestKey(125)}})
-	assert.Equal("key=123", (<-handle.C()).Key.String())
-	assert.Equal("key=124", (<-handle.C()).Key.String())
+	assert.Equal("key=123", (<-handle.C())[0].Key.String())
+	assert.Equal("key=124", (<-handle.C())[0].Key.String())
 
 	for i := 0; i < eventSubChanBufferSize; i++ {
 		assert.False(handle.isClosed(), "should not close until buffer is full")
@@ -54,3 +54,5 @@ func (k IntTestKey) String() string            { return fmt.Sprintf("key=%d", k)
 func (k IntTestKey) GetKeyPtr() unsafe.Pointer { panic("not impl") }
 func (k IntTestKey) NewValue() MapValue        { panic("not impl") }
 func (k IntTestKey) DeepCopyMapKey() MapKey    { panic("not impl") }
+
+type IntTestValue uint32

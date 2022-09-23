@@ -6,6 +6,7 @@ package bpf
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -81,6 +82,7 @@ func (m *Map) initEventsBuffer(maxSize int, eventsTTL time.Duration) {
 	b := &eventsBuffer{
 		buffer:   container.NewRingBuffer(maxSize),
 		eventTTL: eventsTTL,
+		maxSize:  maxSize,
 	}
 	if b.eventTTL > 0 {
 		m.scopedLogger().Debug("starting bpf map event buffer GC controller")
@@ -112,6 +114,7 @@ type eventsBuffer struct {
 	eventTTL      time.Duration
 	subsLock      lock.RWMutex
 	subscriptions []*Handle
+	maxSize       int
 }
 
 // This configures how big buffers are for channels used for streaming events from
@@ -132,14 +135,40 @@ type eventsBuffer struct {
 //
 // NOTE: The events dump is not buffered, that one holds a read lock on the bpf.Map and reads all the
 // events one by one.
-const eventSubChanBufferSize = 32
+//
+// TODO:
+// TODO:
+// TODO:
+// TODO:
+// TODO:
+// TODO: Ok, so when I do perf tests,
+//
+// TODO: MAp delete all is deterministic, lets just make this one event
+// TODO: MAp delete all is deterministic, lets just make this one event
+// TODO: MAp delete all is deterministic, lets just make this one event
+// TODO: MAp delete all is deterministic, lets just make this one event
+// TODO: MAp delete all is deterministic, lets just make this one event
+// TODO: MAp delete all is deterministic, lets just make this one event
+// TODO: MAp delete all is deterministic, lets just make this one event
+// TODO: MAp delete all is deterministic, lets just make this one event
+// TODO: MAp delete all is deterministic, lets just make this one event
+// TODO: MAp delete all is deterministic, lets just make this one event
+// TODO: MAp delete all is deterministic, lets just make this one event
+// TODO: MAp delete all is deterministic, lets just make this one event
+// TODO: MAp delete all is deterministic, lets just make this one event
+const SIZE = 10000000
+const eventSubChanBufferSize = 1 << 14
+
+func calcSubFollowBufferSize(size int) int {
+	return int(math.Round(math.Log2(float64(size)))) - 3
+}
 
 // Handle allows for handling event streams safely outside of this package.
 // The key design consideration for event streaming is that it is non-blocking.
 // The eventsBuffer takes care of closing handles when their consumer is not reading
 // off the buffer (or is not reading off it fast enough).
 type Handle struct {
-	c      chan *Event
+	c      chan []*Event
 	closed *atomic.Value
 	closer *sync.Once
 	err    error
@@ -147,7 +176,7 @@ type Handle struct {
 
 // Returns read only channel for Handle subscription events. Channel should be closed with
 // handle.Close() function.
-func (h *Handle) C() <-chan *Event {
+func (h *Handle) C() <-chan []*Event {
 	return h.c // return read only channel to prevent closing outside of Close(...).
 }
 
@@ -185,7 +214,7 @@ func (eb *eventsBuffer) dumpAndSubscribe(callback EventCallbackFunc, follow bool
 	closed := &atomic.Value{}
 	closed.Store(false)
 	h := &Handle{
-		c:      make(chan *Event, eventSubChanBufferSize),
+		c:      make(chan []*Event, eventSubChanBufferSize),
 		closer: &sync.Once{},
 		closed: closed,
 	}
@@ -216,11 +245,17 @@ func (m *Map) IsEventsEnabled() bool {
 }
 
 func (eb *eventsBuffer) add(e *Event) {
+	eb.addBatched([]*Event{e})
+}
+
+func (eb *eventsBuffer) addBatched(e []*Event) {
 	eb.buffer.Add(e)
 	var activeSubs []*Handle
 	for i, sub := range eb.subscriptions {
 		if sub.isFull() {
 			log.Warnf("subscription channel buffer %d was full, closing subscription", i)
+			fmt.Println("->", len(sub.c))
+			fmt.Println("cap ->", cap(sub.c))
 			sub.close(fmt.Errorf("map event channel buffer was full, closing subscription"))
 			continue
 		}
