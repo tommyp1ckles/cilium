@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -174,6 +175,15 @@ func newIPCacheMap(name string) *bpf.Map {
 		bpf.BPF_F_NO_PREALLOC, 0,
 		bpf.ConvertKeyValue).WithCache().
 		WithEvents(option.Config.GetEventBufferConfig(name))
+	go func() {
+		fmt.Println("[tom-debug] running ipcache testing loop")
+		var i uint8
+		for {
+			time.Sleep(time.Millisecond * 1)
+			m.Update(&Key{IP: types.IPv6([16]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, i})}, &RemoteEndpointInfo{})
+			i++
+		}
+	}()
 	return m
 }
 
