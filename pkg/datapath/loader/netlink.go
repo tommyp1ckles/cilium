@@ -53,6 +53,26 @@ func replaceQdisc(link netlink.Link) error {
 	return netlink.QdiscReplace(qdisc)
 }
 
+// func ensureDatapath(ctx context.Context, ifName, objPath, progName, direction string, xdpMode string) error {
+// 	// Avoid unnecessarily checking a prog.
+// 	if err := ctx.Err(); err != nil {
+// 		return err
+// 	}
+// 	_, err := netlink.LinkByName(ifName)
+// 	if err != nil {
+// 		if errno, ok := err.(syscall.Errno); ok {
+// 			switch errno {
+// 			case unix.ENOENT:
+// 				fmt.Println("[tom-debug] interface does not exist", err)
+// 				return fmt.Errorf("interface %s does not exist: %w", ifName, err)
+// 			default:
+// 				fmt.Println("[tom-debug] failed to get iface:", err)
+// 				return fmt.Errorf("failed getting interface %s by name: %w", ifName, err)
+// 			}
+// 		}
+// 	}
+// }
+
 // replaceDatapath replaces the qdisc and BPF program for an endpoint or XDP program.
 //
 // When successful, returns a finalizer to allow the map cleanup operation to be

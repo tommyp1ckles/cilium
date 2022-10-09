@@ -24,8 +24,11 @@ func (v6 IPv6) String() string {
 	return v6.IP().String()
 }
 
+func (v6 IPv6) MarshalText() ([]byte, error) {
+	return []byte(v6.String()), nil
+}
+
 // DeepCopyInto is a deepcopy function, copying the receiver, writing into out. in must be non-nil.
 func (v6 *IPv6) DeepCopyInto(out *IPv6) {
 	copy(out[:], v6[:])
-	return
 }

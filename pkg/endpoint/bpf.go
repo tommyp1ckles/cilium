@@ -565,7 +565,7 @@ func (e *Endpoint) regenerateBPF(regenContext *regenerationContext) (revnum uint
 	stats := &regenContext.Stats
 	stats.waitingForLock.Start()
 
-	datapathRegenCtxt := regenContext.datapathRegenerationContext
+	datapathRegenCtxt := regenContext.datapathRegenerationContext //@TOM
 
 	// Make sure that owner is not compiling base programs while we are
 	// regenerating an endpoint.
@@ -686,7 +686,7 @@ func (e *Endpoint) realizeBPFState(regenContext *regenerationContext) (compilati
 
 		// Compile and install BPF programs for this endpoint
 		if datapathRegenCtxt.regenerationLevel == regeneration.RegenerateWithDatapathRebuild {
-			err = e.owner.Datapath().Loader().CompileAndLoad(datapathRegenCtxt.completionCtx, datapathRegenCtxt.epInfoCache, &stats.datapathRealization)
+			err = e.owner.Datapath().Loader().CompileAndLoad(datapathRegenCtxt.completionCtx, datapathRegenCtxt.epInfoCache, &stats.datapathRealization) // @TOM
 			e.getLogger().WithError(err).Info("Regenerated endpoint BPF program")
 			compilationExecuted = true
 		} else if datapathRegenCtxt.regenerationLevel == regeneration.RegenerateWithDatapathRewrite {

@@ -50,6 +50,7 @@ func (ev *EndpointRegenerationEvent) Handle(res chan interface{}) {
 
 		regenContext.DoneFunc = doneFunc
 
+		// @tom: Regenerate called here to regen endpoint
 		err = ev.ep.regenerate(ev.regenContext)
 
 		doneFunc()

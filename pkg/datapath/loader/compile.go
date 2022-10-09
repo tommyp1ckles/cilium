@@ -292,6 +292,7 @@ func progCFlags(prog *progInfo, dir *directoryInfo) []string {
 
 // compile and link a program.
 func compile(ctx context.Context, prog *progInfo, dir *directoryInfo) (err error) {
+	// @TOM: Stuff happens here.
 	args := make([]string, 0, 16)
 	if prog.OutputType == outputSource {
 		args = append(args, "-E") // Preprocessor
@@ -356,6 +357,7 @@ func compileDatapath(ctx context.Context, dirs *directoryInfo, isHost bool, logg
 		progs = debugHostProgs
 	}
 	for _, p := range progs {
+		fmt.Println("[tom-debug] prog->", p.Output, p.Source)
 		if err := compile(ctx, p, dirs); err != nil {
 			// Only log an error here if the context was not canceled. This log message
 			// should only represent failures with respect to compiling the program.

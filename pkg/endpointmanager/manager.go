@@ -595,7 +595,7 @@ func (mgr *EndpointManager) expose(ep *endpoint.Endpoint) error {
 // manager.
 func (mgr *EndpointManager) RestoreEndpoint(ep *endpoint.Endpoint) error {
 	ep.SetDefaultConfiguration(true)
-	return mgr.expose(ep)
+	return mgr.expose(ep) // expose exposes *up* from cilium state to k8s CRD state.
 }
 
 // AddEndpoint takes the prepared endpoint object and starts managing it.

@@ -8,6 +8,7 @@ package bpf
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -37,6 +38,7 @@ var ErrMaxLookup = errors.New("maximum number of lookups reached")
 
 type MapKey interface {
 	fmt.Stringer
+	//json.Marshaler
 
 	// Returns pointer to start of key
 	GetKeyPtr() unsafe.Pointer
@@ -594,6 +596,80 @@ func (m *Map) Reopen() error {
 type DumpParser func(key []byte, value []byte, mapKey MapKey, mapValue MapValue) (MapKey, MapValue, error)
 type DumpCallback func(key MapKey, value MapValue)
 type MapValidator func(path string) (bool, error)
+
+func (m *Map) DumpWithCallbackJSON(cb func(k, v string)) error {
+	if err := m.Open(); err != nil {
+		return err
+	}
+
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+
+	key := make([]byte, m.KeySize)
+	nextKey := make([]byte, m.KeySize)
+	value := make([]byte, m.ReadValueSize)
+
+	if err := GetFirstKey(m.fd, unsafe.Pointer(&nextKey[0])); err != nil {
+		if err == io.EOF {
+			return nil
+		}
+		return err
+	}
+
+	mk := m.MapKey.DeepCopyMapKey()
+	mv := m.MapValue.DeepCopyMapValue()
+
+	bpfCurrentKey := bpfAttrMapOpElem{
+		mapFd: uint32(m.fd),
+		key:   uint64(uintptr(unsafe.Pointer(&key[0]))),
+		value: uint64(uintptr(unsafe.Pointer(&nextKey[0]))),
+	}
+	bpfCurrentKeyPtr := unsafe.Pointer(&bpfCurrentKey)
+	bpfCurrentKeySize := unsafe.Sizeof(bpfCurrentKey)
+
+	bpfNextKey := bpfAttrMapOpElem{
+		mapFd: uint32(m.fd),
+		key:   uint64(uintptr(unsafe.Pointer(&nextKey[0]))),
+		value: uint64(uintptr(unsafe.Pointer(&value[0]))),
+	}
+
+	bpfNextKeyPtr := unsafe.Pointer(&bpfNextKey)
+	bpfNextKeySize := unsafe.Sizeof(bpfNextKey)
+
+	for {
+		err := LookupElementFromPointers(m.fd, bpfNextKeyPtr, bpfNextKeySize)
+		if err != nil {
+			return err
+		}
+
+		mk, mv, err = m.DumpParser(nextKey, value, mk, mv)
+		if err != nil {
+			return err
+		}
+
+		encodedKey, err := json.MarshalIndent(mk, "", "    ")
+		if err != nil {
+			return err
+		}
+
+		encodedVal, err := json.MarshalIndent(mv, "", "    ")
+		if err != nil {
+			return err
+		}
+		if cb != nil {
+			cb(string(encodedKey), string(encodedVal))
+		}
+
+		copy(key, nextKey)
+
+		if err := GetNextKeyFromPointers(m.fd, bpfCurrentKeyPtr, bpfCurrentKeySize); err != nil {
+			if err == io.EOF { // end of map, we're done iterating
+				return nil
+			}
+			return err
+		}
+	}
+}
 
 // DumpWithCallback iterates over the Map and calls the given callback
 // function on each iteration. That callback function is receiving the
