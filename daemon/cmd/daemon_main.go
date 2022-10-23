@@ -1053,6 +1053,10 @@ func initializeFlags() {
 	flags.Bool(option.EnableBGPControlPlane, false, "Enable the BGP control plane.")
 	option.BindEnv(Vp, option.EnableBGPControlPlane)
 
+	flags.Bool(option.EnableStaleCiliumEndpointSliceCleanup, true, "Enables running cleanup init procedure of local CiliumEndpoints which are not being managed.")
+	flags.MarkHidden(option.EnableStaleCiliumEndpointSliceCleanup)
+	option.BindEnv(Vp, option.EnableStaleCiliumEndpointSliceCleanup)
+
 	if err := Vp.BindPFlags(flags); err != nil {
 		log.Fatalf("BindPFlags failed: %s", err)
 	}

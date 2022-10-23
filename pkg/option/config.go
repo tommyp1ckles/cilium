@@ -1097,6 +1097,10 @@ const (
 	// EnableRuntimeDeviceDetection is the name of the option to enable detection
 	// of new and removed datapath devices during the agent runtime.
 	EnableRuntimeDeviceDetection = "enable-runtime-device-detection"
+
+	// EnableStaleCiliumEndpointSliceCleanup sets whether Cilium should perform cleanup of
+	// stale CiliumEndpoints during init.
+	EnableStaleCiliumEndpointSliceCleanup = "enable-stale-cilium-endpoint-slice-cleanup"
 )
 
 // Default string arguments
@@ -2231,6 +2235,11 @@ type DaemonConfig struct {
 
 	// EnvoySecretNamespace for TLS secrets. Used by CiliumEnvoyConfig via SDS.
 	EnvoySecretNamespace string
+
+	// EnableStaleCiliumEndpointSliceCleanup enables cleanup routine during Cilium init.
+	// This will attempt to remove local CiliumEndpoints that are not managed by Cilium
+	// following Endpoint restoration.
+	EnableStaleCiliumEndpointSliceCleanup bool
 }
 
 var (
@@ -3216,6 +3225,7 @@ func (c *DaemonConfig) Populate(vp *viper.Viper) {
 	c.EnableICMPRules = vp.GetBool(EnableICMPRules)
 	c.BypassIPAvailabilityUponRestore = vp.GetBool(BypassIPAvailabilityUponRestore)
 	c.EnableK8sTerminatingEndpoint = vp.GetBool(EnableK8sTerminatingEndpoint)
+	c.EnableStaleCiliumEndpointSliceCleanup = vp.GetBool(EnableStaleCiliumEndpointSliceCleanup)
 
 	// Disable Envoy version check if L7 proxy is disabled.
 	c.DisableEnvoyVersionCheck = vp.GetBool(DisableEnvoyVersionCheck)
