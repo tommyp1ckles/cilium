@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"unsafe"
 
+	signalmapTypes "github.com/cilium/cilium/pkg/maps/signalmap/types"
+
 	"github.com/cilium/cilium/pkg/bpf"
 )
 
@@ -22,16 +24,12 @@ const (
 // Key is the index into the prog array map.
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapKey
-type Key struct {
-	index uint32
-}
+type Key signalmapTypes.Key
 
 // Value is the program ID in the prog array map.
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapValue
-type Value struct {
-	progID uint32
-}
+type Value signalmapTypes.Value
 
 // GetKeyPtr returns the unsafe pointer to the BPF key.
 func (k *Key) GetKeyPtr() unsafe.Pointer { return unsafe.Pointer(k) }
