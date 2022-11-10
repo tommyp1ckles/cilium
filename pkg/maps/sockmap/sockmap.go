@@ -8,31 +8,22 @@ import (
 	"sync"
 	"unsafe"
 
+	sockmapTypes "github.com/cilium/cilium/pkg/maps/sockmap/types"
+
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
-	"github.com/cilium/cilium/pkg/types"
 )
 
 // SockmapKey is the 5-tuple used to lookup a socket
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapKey
-type SockmapKey struct {
-	DIP    types.IPv6 `align:"$union0"`
-	SIP    types.IPv6 `align:"$union1"`
-	Family uint8      `align:"family"`
-	Pad7   uint8      `align:"pad7"`
-	Pad8   uint16     `align:"pad8"`
-	SPort  uint32     `align:"sport"`
-	DPort  uint32     `align:"dport"`
-}
+type SockmapKey sockmapTypes.SockmapKey
 
 // SockmapValue is the fd of a socket
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapValue
-type SockmapValue struct {
-	fd uint32
-}
+type SockmapValue sockmapTypes.SockmapValue
 
 // String pretty print the 5-tuple as sip:sport->dip:dport
 func (v SockmapKey) String() string {
@@ -41,7 +32,7 @@ func (v SockmapKey) String() string {
 
 // String pretty print the file descriptor value, note this is local to agent.
 func (v SockmapValue) String() string {
-	return fmt.Sprintf("%d", v.fd)
+	return fmt.Sprintf("%d", v.Fd)
 }
 
 // GetValuePtr returns the unsafe pointer to the BPF value.
