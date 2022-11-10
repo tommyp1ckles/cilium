@@ -3,9 +3,9 @@
 package types
 
 type Key struct {
-	index uint32
+	Index uint32
 }
 
 type Value struct {
-	progID uint32
+	ProgID uint32
 }

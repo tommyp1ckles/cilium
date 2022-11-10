@@ -38,10 +38,10 @@ func (k *Key) GetKeyPtr() unsafe.Pointer { return unsafe.Pointer(k) }
 func (v *Value) GetValuePtr() unsafe.Pointer { return unsafe.Pointer(v) }
 
 // String converts the key into a human readable string format.
-func (k *Key) String() string { return fmt.Sprintf("%d", k.index) }
+func (k *Key) String() string { return fmt.Sprintf("%d", k.Index) }
 
 // String converts the value into a human readable string format.
-func (v *Value) String() string { return fmt.Sprintf("%d", v.progID) }
+func (v *Value) String() string { return fmt.Sprintf("%d", v.ProgID) }
 
 // NewValue returns a new empty instance of the structure representing the BPF
 // map value.
