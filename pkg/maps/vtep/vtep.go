@@ -8,6 +8,8 @@ import (
 	"net"
 	"unsafe"
 
+	vtepTypes "github.com/cilium/cilium/pkg/maps/vtep/types"
+
 	"github.com/sirupsen/logrus"
 
 	"github.com/cilium/cilium/pkg/bpf"
@@ -17,7 +19,6 @@ import (
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/mac"
 	"github.com/cilium/cilium/pkg/option"
-	"github.com/cilium/cilium/pkg/types"
 )
 
 var log = logging.DefaultLogger.WithField(logfields.LogSubsys, "map-vtep")
@@ -36,9 +37,7 @@ const (
 // Must be in sync with struct vtep_key in <bpf/lib/common.h>
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapKey
-type Key struct {
-	IP types.IPv4 `align:"vtep_ip"`
-}
+type Key vtepTypes.Key
 
 // GetKeyPtr returns the unsafe pointer to the BPF key
 func (k *Key) GetKeyPtr() unsafe.Pointer { return unsafe.Pointer(k) }
@@ -67,10 +66,7 @@ func NewKey(ip net.IP) Key {
 // VTEP endpoint MAC and IP.
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapValue
-type VtepEndpointInfo struct {
-	VtepMAC        mac.Uint64MAC `align:"vtep_mac"`
-	TunnelEndpoint types.IPv4    `align:"tunnel_endpoint"`
-}
+type VtepEndpointInfo vtepTypes.VtepEndpointInfo
 
 func (v *VtepEndpointInfo) String() string {
 	return fmt.Sprintf("vtepmac=%s tunnelendpoint=%s",
