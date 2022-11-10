@@ -7,6 +7,8 @@ import (
 	"net"
 	"unsafe"
 
+	tunnelTypes "github.com/cilium/cilium/pkg/maps/tunnel/types"
+
 	"github.com/sirupsen/logrus"
 
 	"github.com/cilium/cilium/pkg/bpf"
@@ -47,9 +49,7 @@ func NewTunnelMap(name string) *Map {
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapKey
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapValue
-type TunnelEndpoint struct {
-	bpf.EndpointKey
-}
+type TunnelEndpoint tunnelTypes.TunnelEndpoint
 
 func newTunnelEndpoint(ip net.IP) *TunnelEndpoint {
 	return &TunnelEndpoint{
