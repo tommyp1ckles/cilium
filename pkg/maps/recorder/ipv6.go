@@ -8,22 +8,15 @@ import (
 	"strings"
 	"unsafe"
 
+	recorderTypes "github.com/cilium/cilium/pkg/maps/recorder/types"
+
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/byteorder"
-	"github.com/cilium/cilium/pkg/types"
 	"github.com/cilium/cilium/pkg/u8proto"
 )
 
-type CaptureWcard6 struct {
-	SrcAddr  types.IPv6 `align:"saddr"`
-	DestAddr types.IPv6 `align:"daddr"`
-	SrcPort  uint16     `align:"sport"`
-	DestPort uint16     `align:"dport"`
-	NextHdr  uint8      `align:"nexthdr"`
-	SrcMask  uint8      `align:"smask"`
-	DestMask uint8      `align:"dmask"`
-	Flags    uint8      `align:"flags"`
-}
+// +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapKey
+type CaptureWcard6 recorderTypes.CaptureWcard6
 
 type CaptureRule6 CaptureRule
 

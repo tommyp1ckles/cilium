@@ -6,6 +6,8 @@ package recorder
 import (
 	"strings"
 
+	recorderTypes "github.com/cilium/cilium/pkg/maps/recorder/types"
+
 	"github.com/cilium/cilium/pkg/bpf"
 )
 
@@ -18,11 +20,8 @@ const (
 	MapSize = 16384
 )
 
-type CaptureRule struct {
-	RuleId   uint16 `align:"rule_id"`
-	Reserved uint16 `align:"reserved"`
-	CapLen   uint32 `align:"cap_len"`
-}
+// +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapKey
+type CaptureRule recorderTypes.CaptureRule
 
 type CaptureMap interface {
 	Open() error
