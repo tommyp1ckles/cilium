@@ -9,6 +9,8 @@ import (
 	"strings"
 	"unsafe"
 
+	policymapTypes "github.com/cilium/cilium/pkg/maps/policymap/types"
+
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/byteorder"
 	"github.com/cilium/cilium/pkg/policy/trafficdirection"
@@ -96,12 +98,7 @@ func (pe *PolicyEntry) String() string {
 // match the layout of policy_key in bpf/lib/common.h.
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapKey
-type PolicyKey struct {
-	Identity         uint32 `align:"sec_label"`
-	DestPort         uint16 `align:"dport"` // In network byte-order
-	Nexthdr          uint8  `align:"protocol"`
-	TrafficDirection uint8  `align:"egress"`
-}
+type PolicyKey policymapTypes.PolicyKey
 
 // SizeofPolicyKey is the size of type PolicyKey.
 const SizeofPolicyKey = int(unsafe.Sizeof(PolicyKey{}))
@@ -110,15 +107,7 @@ const SizeofPolicyKey = int(unsafe.Sizeof(PolicyKey{}))
 // match the layout of policy_entry in bpf/lib/common.h.
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapValue
-type PolicyEntry struct {
-	ProxyPort uint16 `align:"proxy_port"` // In network byte-order
-	Flags     uint8  `align:"deny"`
-	Pad0      uint8  `align:"pad0"`
-	Pad1      uint16 `align:"pad1"`
-	Pad2      uint16 `align:"pad2"`
-	Packets   uint64 `align:"packets"`
-	Bytes     uint64 `align:"bytes"`
-}
+type PolicyEntry policymapTypes.PolicyEntry
 
 // ToHost returns a copy of entry with fields converted from network byte-order
 // to host-byte-order if necessary.
@@ -161,16 +150,12 @@ const SizeofPolicyEntry = int(unsafe.Sizeof(PolicyEntry{}))
 // CallKey is the index into the prog array map.
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapKey
-type CallKey struct {
-	index uint32
-}
+type CallKey policymapTypes.CallKey
 
 // CallValue is the program ID in the prog array map.
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapValue
-type CallValue struct {
-	progID uint32
-}
+type CallValue policymapTypes.CallValue
 
 // GetKeyPtr returns the unsafe pointer to the BPF key
 func (k *CallKey) GetKeyPtr() unsafe.Pointer { return unsafe.Pointer(k) }

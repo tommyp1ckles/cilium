@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"unsafe"
 
+	policymapTypes "github.com/cilium/cilium/pkg/maps/policymap/types"
+
 	"github.com/cilium/cilium/pkg/bpf"
 )
 
@@ -18,15 +20,11 @@ type PolicyPlumbingMap struct {
 
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapKey
-type PlumbingKey struct {
-	key uint32
-}
+type PlumbingKey policymapTypes.PlumbingKey
 
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapValue
-type PlumbingValue struct {
-	fd uint32
-}
+type PlumbingValue policymapTypes.PlumbingValue
 
 func (k *PlumbingKey) GetKeyPtr() unsafe.Pointer { return unsafe.Pointer(k) }
 func (k *PlumbingKey) NewValue() bpf.MapValue    { return &PlumbingValue{} }
