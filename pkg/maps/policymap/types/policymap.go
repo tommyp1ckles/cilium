@@ -20,9 +20,9 @@ type PolicyEntry struct {
 }
 
 type CallKey struct {
-	index uint32
+	Index uint32
 }
 
 type CallValue struct {
-	progID uint32
+	ProgID uint32
 }

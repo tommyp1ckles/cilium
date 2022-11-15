@@ -164,10 +164,10 @@ func (k *CallKey) GetKeyPtr() unsafe.Pointer { return unsafe.Pointer(k) }
 func (v *CallValue) GetValuePtr() unsafe.Pointer { return unsafe.Pointer(v) }
 
 // String converts the key into a human readable string format.
-func (k *CallKey) String() string { return strconv.FormatUint(uint64(k.index), 10) }
+func (k *CallKey) String() string { return strconv.FormatUint(uint64(k.Index), 10) }
 
 // String converts the value into a human readable string format.
-func (v *CallValue) String() string { return strconv.FormatUint(uint64(v.progID), 10) }
+func (v *CallValue) String() string { return strconv.FormatUint(uint64(v.ProgID), 10) }
 
 // NewValue returns a new empty instance of the structure representing the BPF
 // map value.

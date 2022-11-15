@@ -3,9 +3,9 @@
 package types
 
 type PlumbingKey struct {
-	key uint32
+	Key uint32
 }
 
 type PlumbingValue struct {
-	fd uint32
+	Fd uint32
 }
