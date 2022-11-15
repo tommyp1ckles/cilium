@@ -155,7 +155,7 @@ func Lookup(epname string, remoteAddr, localAddr string, proto u8proto.U8proto, 
 		// Open the map and leave it open
 		m, err = bpf.OpenMap(mapname)
 		if err != nil {
-			return nil, fmt.Errorf("Can not open CT map %s: %s", mapname, err)
+			return nil, fmt.Errorf("can not open CT map %s: %s", mapname, err)
 		}
 		if isGlobal {
 			if ipv4 {
