@@ -9,6 +9,7 @@ import (
 	"unsafe"
 
 	"github.com/cilium/cilium/pkg/bpf"
+	bwmapsTypes "github.com/cilium/cilium/pkg/maps/bwmap/types"
 	"github.com/cilium/cilium/pkg/maps/lxcmap"
 )
 
@@ -24,21 +25,14 @@ const (
 	DefaultDropHorizon = 2 * time.Second
 )
 
-type EdtId struct {
-	Id uint64 `align:"id"`
-}
+type EdtId bwmapsTypes.EdtId
 
 func (k *EdtId) GetKeyPtr() unsafe.Pointer  { return unsafe.Pointer(k) }
 func (k *EdtId) NewValue() bpf.MapValue     { return &EdtInfo{} }
 func (k *EdtId) String() string             { return fmt.Sprintf("%d", int(k.Id)) }
 func (k *EdtId) DeepCopyMapKey() bpf.MapKey { return &EdtId{k.Id} }
 
-type EdtInfo struct {
-	Bps             uint64    `align:"bps"`
-	TimeLast        uint64    `align:"t_last"`
-	TimeHorizonDrop uint64    `align:"t_horizon_drop"`
-	Pad             [4]uint64 `align:"pad"`
-}
+type EdtInfo bwmapsTypes.EdtInfo
 
 func (v *EdtInfo) GetValuePtr() unsafe.Pointer { return unsafe.Pointer(v) }
 func (v *EdtInfo) String() string              { return fmt.Sprintf("%d", int(v.Bps)) }
