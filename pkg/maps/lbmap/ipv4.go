@@ -8,10 +8,11 @@ import (
 	"net"
 	"unsafe"
 
+	lbmapTypes "github.com/cilium/cilium/pkg/maps/lbmap/types"
+
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/byteorder"
 	"github.com/cilium/cilium/pkg/loadbalancer"
-	lbmapTypes "github.com/cilium/cilium/pkg/maps/lbmap/types"
 	"github.com/cilium/cilium/pkg/u8proto"
 )
 
@@ -210,6 +211,8 @@ func (v *RevNat4Value) String() string {
 	vHost := v.ToHost().(*RevNat4Value)
 	return net.JoinHostPort(vHost.Address.String(), fmt.Sprintf("%d", vHost.Port))
 }
+
+type pad2uint8 lbmapTypes.Pad2uint8
 
 // Service4Key must match 'struct lb4_key' in "bpf/lib/common.h".
 // +k8s:deepcopy-gen=true

@@ -8,17 +8,25 @@ import (
 	"github.com/cilium/cilium/pkg/u8proto"
 )
 
-type RevNat6Key struct {
+type Pad2uint8 [2]uint8
+
+// DeepCopyInto is a deepcopy function, copying the receiver, writing into out. in must be non-nil.
+func (in *Pad2uint8) DeepCopyInto(out *Pad2uint8) {
+	copy(out[:], in[:])
+	return
+}
+
+type RevNat4Key struct {
 	Key uint16
 }
 
-type RevNat6Value struct {
-	Address types.IPv6 `align:"address"`
+type RevNat4Value struct {
+	Address types.IPv4 `align:"address"`
 	Port    uint16     `align:"port"`
 }
 
-type Service6Key struct {
-	Address     types.IPv6 `align:"address"`
+type Service4Key struct {
+	Address     types.IPv4 `align:"address"`
 	Port        uint16     `align:"dport"`
 	BackendSlot uint16     `align:"backend_slot"`
 	Proto       uint8      `align:"proto"`
@@ -26,7 +34,7 @@ type Service6Key struct {
 	Pad         Pad2uint8  `align:"pad"`
 }
 
-type Service6Value struct {
+type Service4Value struct {
 	BackendID uint32    `align:"backend_id"`
 	Count     uint16    `align:"count"`
 	RevNat    uint16    `align:"rev_nat_index"`
@@ -35,30 +43,30 @@ type Service6Value struct {
 	Pad       Pad2uint8 `align:"pad"`
 }
 
-type Backend6KeyV2 struct {
+type Backend4KeyV2 struct {
 	ID loadbalancer.BackendID
 }
 
-type Backend6Key struct {
+type Backend4Key struct {
 	ID uint16
 }
 
-type Backend6Value struct {
-	Address types.IPv6      `align:"address"`
+type Backend4Value struct {
+	Address types.IPv4      `align:"address"`
 	Port    uint16          `align:"port"`
 	Proto   u8proto.U8proto `align:"proto"`
 	Flags   uint8           `align:"flags"`
 }
 
-type SockRevNat6Key struct {
+type SockRevNat4Key struct {
 	Cookie  uint64     `align:"cookie"`
-	Address types.IPv6 `align:"address"`
+	Address types.IPv4 `align:"address"`
 	Port    int16      `align:"port"`
 	Pad     int16      `align:"pad"`
 }
 
-type SockRevNat6Value struct {
-	Address     types.IPv6 `align:"address"`
+type SockRevNat4Value struct {
+	Address     types.IPv4 `align:"address"`
 	Port        int16      `align:"port"`
 	RevNatIndex uint16     `align:"rev_nat_index"`
 }

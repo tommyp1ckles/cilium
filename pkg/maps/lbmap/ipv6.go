@@ -8,10 +8,11 @@ import (
 	"net"
 	"unsafe"
 
+	lbmapTypes "github.com/cilium/cilium/pkg/maps/lbmap/types"
+
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/byteorder"
 	"github.com/cilium/cilium/pkg/loadbalancer"
-	lbmapTypes "github.com/cilium/cilium/pkg/maps/lbmap/types"
 	"github.com/cilium/cilium/pkg/u8proto"
 )
 
