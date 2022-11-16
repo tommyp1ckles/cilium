@@ -8,6 +8,8 @@ import (
 	"net"
 	"unsafe"
 
+	ipmasqTypes "github.com/cilium/cilium/pkg/maps/ipmasq/types"
+
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/types"
 )
@@ -19,10 +21,7 @@ const (
 
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapKey
-type Key4 struct {
-	PrefixLen uint32
-	Address   types.IPv4
-}
+type Key4 ipmasqTypes.Key4
 
 func (k *Key4) GetKeyPtr() unsafe.Pointer { return unsafe.Pointer(k) }
 func (k *Key4) NewValue() bpf.MapValue    { return &Value{} }
@@ -30,9 +29,7 @@ func (k *Key4) String() string            { return fmt.Sprintf("%s", k.Address) 
 
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapValue
-type Value struct {
-	Pad uint8 // not used
-}
+type Value ipmasqTypes.Value
 
 func (v *Value) GetValuePtr() unsafe.Pointer { return unsafe.Pointer(v) }
 func (v *Value) String() string              { return "" }
