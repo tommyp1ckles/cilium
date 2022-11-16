@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"unsafe"
 
+	eventsmapTypes "github.com/cilium/cilium/pkg/maps/eventsmap/types"
+
 	"github.com/cilium/cilium/pkg/bpf"
 )
 
@@ -22,16 +24,12 @@ const (
 // Key is the index into the prog array map.
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapKey
-type Key struct {
-	index uint32
-}
+type Key eventsmapTypes.Key
 
 // Value is the program ID in the prog array map.
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapValue
-type Value struct {
-	progID uint32
-}
+type Value eventsmapTypes.Value
 
 // GetKeyPtr returns the unsafe pointer to the BPF key
 func (k *Key) GetKeyPtr() unsafe.Pointer { return unsafe.Pointer(k) }
@@ -40,10 +38,10 @@ func (k *Key) GetKeyPtr() unsafe.Pointer { return unsafe.Pointer(k) }
 func (v *Value) GetValuePtr() unsafe.Pointer { return unsafe.Pointer(v) }
 
 // String converts the key into a human readable string format.
-func (k *Key) String() string { return fmt.Sprintf("%d", k.index) }
+func (k *Key) String() string { return fmt.Sprintf("%d", k.Index) }
 
 // String converts the value into a human readable string format.
-func (v *Value) String() string { return fmt.Sprintf("%d", v.progID) }
+func (v *Value) String() string { return fmt.Sprintf("%d", v.ProgID) }
 
 // NewValue returns a new empty instance of the structure representing the BPF
 // map value.
