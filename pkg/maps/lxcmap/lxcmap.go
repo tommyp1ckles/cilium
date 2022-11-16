@@ -9,6 +9,8 @@ import (
 	"net/netip"
 	"unsafe"
 
+	lxcmapTypes "github.com/cilium/cilium/pkg/maps/lxcmap/types"
+
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/mac"
 )
@@ -96,39 +98,19 @@ func GetBPFValue(e EndpointFrontend) (*EndpointInfo, error) {
 
 }
 
-type pad4uint32 [4]uint32
-
-// DeepCopyInto is a deepcopy function, copying the receiver, writing into out. in must be non-nil.
-func (in *pad4uint32) DeepCopyInto(out *pad4uint32) {
-	copy(out[:], in[:])
-	return
-}
-
 // EndpointInfo represents the value of the endpoints BPF map.
 //
 // Must be in sync with struct endpoint_info in <bpf/lib/common.h>
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapValue
-type EndpointInfo struct {
-	IfIndex uint32 `align:"ifindex"`
-	Unused  uint16 `align:"unused"`
-	LxcID   uint16 `align:"lxc_id"`
-	Flags   uint32 `align:"flags"`
-	// go alignment
-	_       uint32
-	MAC     mac.Uint64MAC `align:"mac"`
-	NodeMAC mac.Uint64MAC `align:"node_mac"`
-	Pad     pad4uint32    `align:"pad"`
-}
+type EndpointInfo lxcmapTypes.EndpointInfo
 
 // GetValuePtr returns the unsafe pointer to the BPF value
 func (v *EndpointInfo) GetValuePtr() unsafe.Pointer { return unsafe.Pointer(v) }
 
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapKey
-type EndpointKey struct {
-	bpf.EndpointKey
-}
+type EndpointKey lxcmapTypes.EndpointKey
 
 // NewValue returns a new empty instance of the structure representing the BPF
 // map value
