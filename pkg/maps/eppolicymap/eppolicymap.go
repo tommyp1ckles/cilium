@@ -8,6 +8,8 @@ import (
 	"sync"
 	"unsafe"
 
+	eppolicymapTypes "github.com/cilium/cilium/pkg/maps/eppolicymap/types"
+
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
@@ -29,11 +31,11 @@ const (
 
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapKey
-type EndpointKey struct{ bpf.EndpointKey }
+type EndpointKey eppolicymapTypes.EndpointKey
 
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapValue
-type EPPolicyValue struct{ Fd uint32 }
+type EPPolicyValue eppolicymapTypes.EPPolicyValue
 
 var (
 	buildMap sync.Once
