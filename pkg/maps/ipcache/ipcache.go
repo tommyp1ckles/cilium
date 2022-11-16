@@ -10,12 +10,13 @@ import (
 	"sync"
 	"unsafe"
 
+	ipcacheTypes "github.com/cilium/cilium/pkg/maps/ipcache/types"
+
 	"golang.org/x/sys/unix"
 
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
-	"github.com/cilium/cilium/pkg/types"
 )
 
 var log = logging.DefaultLogger.WithField(logfields.LogSubsys, "map-ipcache")
@@ -46,14 +47,7 @@ const (
 // Must be in sync with struct ipcache_key in <bpf/lib/maps.h>
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapKey
-type Key struct {
-	Prefixlen uint32 `align:"lpm_key"`
-	Pad1      uint16 `align:"pad1"`
-	Pad2      uint8  `align:"pad2"`
-	Family    uint8  `align:"family"`
-	// represents both IPv6 and IPv4 (in the lowest four bytes)
-	IP types.IPv6 `align:"$union0"`
-}
+type Key ipcacheTypes.Key
 
 // GetKeyPtr returns the unsafe pointer to the BPF key
 func (k *Key) GetKeyPtr() unsafe.Pointer { return unsafe.Pointer(k) }
@@ -133,11 +127,7 @@ func NewKey(ip net.IP, mask net.IPMask) Key {
 // security identity of a remote endpoint.
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapValue
-type RemoteEndpointInfo struct {
-	SecurityIdentity uint32     `align:"sec_label"`
-	TunnelEndpoint   types.IPv4 `align:"tunnel_endpoint"`
-	Key              uint8      `align:"key"`
-}
+type RemoteEndpointInfo ipcacheTypes.RemoteEndpointInfo
 
 func (v *RemoteEndpointInfo) String() string {
 	return fmt.Sprintf("identity=%d encryptkey=%d tunnelendpoint=%s",
