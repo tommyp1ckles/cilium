@@ -1,0 +1,551 @@
+kind: dir
+name: ""
+tasks:
+- kind: dir
+  name: bpftool
+  tasks:
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_call_policy -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_call_policy
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_calls_overlay_2 -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_calls_overlay_2
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_capture_cache -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_capture_cache
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lxc -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_lxc
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_metrics -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_metrics
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_tunnel_map -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_tunnel_map
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_signals -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_signals
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_ktime_cache -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_ktime_cache
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_ipcache -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_ipcache
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_events -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_events
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_sock_ops -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_sock_ops
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_signals -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_signals
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_capture4_rules -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_capture4_rules
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_capture6_rules -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_capture6_rules
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_call_policy -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_call_policy
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_nodeport_neigh4 -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_nodeport_neigh4
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_nodeport_neigh6 -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_nodeport_neigh6
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb4_source_range -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_lb4_source_range
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb6_source_range -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_lb6_source_range
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb4_maglev -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_lb4_maglev
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb6_maglev -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_lb6_maglev
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb6_health -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_lb6_health
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb6_reverse_sk -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_lb6_reverse_sk
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb4_health -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_lb4_health
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb4_reverse_sk -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_lb4_reverse_sk
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_ipmasq_v4 -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_ipmasq_v4
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_ipv4_frag_datagrams
+      -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_ipv4_frag_datagrams
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_ep_to_policy -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_ep_to_policy
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_throttle -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_throttle
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_encrypt_state -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_encrypt_state
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_egress_gw_policy_v4
+      -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_egress_gw_policy_v4
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_srv6_vrf_v4 -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_srv6_vrf_v4
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_srv6_vrf_v6 -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_srv6_vrf_v6
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_srv6_policy_v4 -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_srv6_policy_v4
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_srv6_policy_v6 -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_srv6_policy_v6
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_srv6_state_v4 -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_srv6_state_v4
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_srv6_state_v6 -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_srv6_state_v6
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_srv6_sid -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_srv6_sid
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb4_services_v2 -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_lb4_services_v2
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb4_services -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_lb4_services
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb4_backends_v2 -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_lb4_backends_v2
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb4_backends -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_lb4_backends
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb4_reverse_nat -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_lb4_reverse_nat
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_ct4_global -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_ct4_global
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_ct_any4_global -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_ct_any4_global
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb4_affinity -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_lb4_affinity
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb6_affinity -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_lb6_affinity
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb_affinity_match -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_lb_affinity_match
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb6_services_v2 -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_lb6_services_v2
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb6_services -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_lb6_services
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb6_backends_v2 -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_lb6_backends_v2
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb6_backends -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_lb6_backends
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb6_reverse_nat -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_lb6_reverse_nat
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_ct6_global -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_ct6_global
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_ct_any6_global -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_ct_any6_global
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_snat_v4_external -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_snat_v4_external
+  - cmd: bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_snat_v6_external -j
+    kind: exec
+    name: bpftool-map-dump-pinned-cilium_snat_v6_external
+  - cmd: bpftool map show -j
+    kind: exec
+    name: bpftool-map
+  - cmd: bpftool prog show -j
+    kind: exec
+    name: bpftool-map
+  - cmd: bpftool net show -j
+    kind: exec
+    name: bpftool-map
+- kind: dir
+  name: cmd
+  tasks:
+  - cmd: top -b -n 1
+    kind: exec
+    name: top-1
+  - cmd: uptime
+    kind: exec
+    name: uptime
+  - cmd: ss -H -t -p -a -i -s
+    kind: exec
+    name: ss
+  - cmd: ps auxfw
+    kind: exec
+    name: ps-auxfw
+  - cmd: iptables-save -c
+    kind: exec
+    name: iptables-save
+  - cmd: ip6tables-save -c
+    kind: exec
+    name: ip6tables-save
+  - cmd: iptables-nft-save -c
+    kind: exec
+    name: iptables-nft-save
+  - cmd: ip6tables-nft-save -c
+    kind: exec
+    name: ip6tables-nft-save
+  - cmd: iptables-legacy-save -c
+    kind: exec
+    name: iptables-legacy-save
+  - cmd: ip6tables-legacy-save -c
+    kind: exec
+    name: ip6tables-legacy-save
+  - cmd: ipset list
+    kind: exec
+    name: ipset-list
+  - cmd: hostname
+    kind: exec
+    name: hostname
+  - cmd: uname -a
+    kind: exec
+    name: uname
+  - cmd: dmesg --time-format=iso
+    kind: exec
+    name: dmesg
+  - cmd: uptime
+    kind: exec
+    name: uptime
+  - cmd: sysctl -a
+    kind: exec
+    name: sysctl
+  - cmd: taskset -pc 1
+    kind: exec
+    name: taskset-1
+  - cmd: lsmod | sed 1,1d
+    kind: exec
+    name: lsmod-|-sed-1,1d
+  - cmd: ss -H -u -p -a -s
+    kind: exec
+    name: ss
+  - cmd: ip -j a
+    kind: exec
+    name: ip-a
+  - cmd: ip -j -4 r
+    kind: exec
+    name: ip-r
+  - cmd: ip -j -6 r
+    kind: exec
+    name: ip-r
+  - cmd: ip -j -d -s l
+    kind: exec
+    name: ip-l
+  - cmd: ip -j -4 n
+    kind: exec
+    name: ip-n
+  - cmd: ip -j -6 n
+    kind: exec
+    name: ip-n
+  - cmd: tc -j -s qdisc show
+    kind: exec
+    name: tc-qdisc-show
+  - cmd: ip --json rule
+    kind: exec
+    name: ip-rule
+  - cmd: ip --json -s xfrm policy
+    kind: exec
+    name: ip-xfrm-policy
+  - cmd: ip --json -s xfrm state
+    kind: exec
+    name: ip-xfrm-state
+  - cmd: gops memstats 1
+    kind: exec
+    name: gops-memstats-1
+  - cmd: gops stack 1
+    kind: exec
+    name: gops-stack-1
+  - cmd: gops stats 1
+    kind: exec
+    name: gops-stats-1
+  - cmd: ethtool lo
+    kind: exec
+    name: ethtool-lo
+  - cmd: ethtool -i lo
+    kind: exec
+    name: ethtool-lo
+  - cmd: ethtool eth0
+    kind: exec
+    name: ethtool-eth0
+  - cmd: ethtool -i eth0
+    kind: exec
+    name: ethtool-eth0
+  - cmd: ethtool br-be855ce39277
+    kind: exec
+    name: ethtool-br-be855ce39277
+  - cmd: ethtool -i br-be855ce39277
+    kind: exec
+    name: ethtool-br-be855ce39277
+  - cmd: ethtool docker0
+    kind: exec
+    name: ethtool-docker0
+  - cmd: ethtool -i docker0
+    kind: exec
+    name: ethtool-docker0
+  - cmd: ethtool veth443a3ce
+    kind: exec
+    name: ethtool-veth443a3ce
+  - cmd: ethtool -i veth443a3ce
+    kind: exec
+    name: ethtool-veth443a3ce
+  - cmd: ethtool veth5a423b1
+    kind: exec
+    name: ethtool-veth5a423b1
+  - cmd: ethtool -i veth5a423b1
+    kind: exec
+    name: ethtool-veth5a423b1
+  - cmd: ethtool veth829d7bf
+    kind: exec
+    name: ethtool-veth829d7bf
+  - cmd: ethtool -i veth829d7bf
+    kind: exec
+    name: ethtool-veth829d7bf
+  - cmd: ethtool veth7736d02
+    kind: exec
+    name: ethtool-veth7736d02
+  - cmd: ethtool -i veth7736d02
+    kind: exec
+    name: ethtool-veth7736d02
+  - cmd: bpftool cgroup tree /sys/fs/cgroup
+    kind: exec
+    name: bpftool-cgroup-tree-sysfscgroup
+  - cmd: tc filter show dev lo
+    kind: exec
+    name: tc-filter-show-dev-lo
+  - cmd: tc chain show dev lo
+    kind: exec
+    name: tc-chain-show-dev-lo
+  - cmd: tc class show dev lo
+    kind: exec
+    name: tc-class-show-dev-lo
+  - cmd: tc filter show dev eth0
+    kind: exec
+    name: tc-filter-show-dev-eth0
+  - cmd: tc chain show dev eth0
+    kind: exec
+    name: tc-chain-show-dev-eth0
+  - cmd: tc class show dev eth0
+    kind: exec
+    name: tc-class-show-dev-eth0
+  - cmd: tc filter show dev br-be855ce39277
+    kind: exec
+    name: tc-filter-show-dev-br-be855ce39277
+  - cmd: tc chain show dev br-be855ce39277
+    kind: exec
+    name: tc-chain-show-dev-br-be855ce39277
+  - cmd: tc class show dev br-be855ce39277
+    kind: exec
+    name: tc-class-show-dev-br-be855ce39277
+  - cmd: tc filter show dev docker0
+    kind: exec
+    name: tc-filter-show-dev-docker0
+  - cmd: tc chain show dev docker0
+    kind: exec
+    name: tc-chain-show-dev-docker0
+  - cmd: tc class show dev docker0
+    kind: exec
+    name: tc-class-show-dev-docker0
+  - cmd: tc filter show dev veth443a3ce
+    kind: exec
+    name: tc-filter-show-dev-veth443a3ce
+  - cmd: tc chain show dev veth443a3ce
+    kind: exec
+    name: tc-chain-show-dev-veth443a3ce
+  - cmd: tc class show dev veth443a3ce
+    kind: exec
+    name: tc-class-show-dev-veth443a3ce
+  - cmd: tc filter show dev veth5a423b1
+    kind: exec
+    name: tc-filter-show-dev-veth5a423b1
+  - cmd: tc chain show dev veth5a423b1
+    kind: exec
+    name: tc-chain-show-dev-veth5a423b1
+  - cmd: tc class show dev veth5a423b1
+    kind: exec
+    name: tc-class-show-dev-veth5a423b1
+  - cmd: tc filter show dev veth829d7bf
+    kind: exec
+    name: tc-filter-show-dev-veth829d7bf
+  - cmd: tc chain show dev veth829d7bf
+    kind: exec
+    name: tc-chain-show-dev-veth829d7bf
+  - cmd: tc class show dev veth829d7bf
+    kind: exec
+    name: tc-class-show-dev-veth829d7bf
+  - cmd: tc filter show dev veth7736d02
+    kind: exec
+    name: tc-filter-show-dev-veth7736d02
+  - cmd: tc chain show dev veth7736d02
+    kind: exec
+    name: tc-chain-show-dev-veth7736d02
+  - cmd: tc class show dev veth7736d02
+    kind: exec
+    name: tc-class-show-dev-veth7736d02
+  - cmd: cp -r /var/run/cilium/state /tmp/cilium-bugtool-20221201-185905.54-0800-PST-3582223247/cmd/state
+    kind: exec
+    name: cp-varrunciliumstate-tmpcilium-bugtool-20221201-185905.54-0800-PST-3582223247cmdstate
+  - cmd: cilium debuginfo --output=markdown,json -f --output-directory=/tmp/cilium-bugtool-20221201-185905.54-0800-PST-3582223247/cmd
+    kind: exec
+    name: cilium-debuginfo
+  - cmd: cilium metrics list
+    kind: exec
+    name: cilium-metrics-list
+  - cmd: cilium fqdn cache list
+    kind: exec
+    name: cilium-fqdn-cache-list
+  - cmd: cilium config -a
+    kind: exec
+    name: cilium-config
+  - cmd: cilium encrypt status
+    kind: exec
+    name: cilium-encrypt-status
+  - cmd: cilium bpf bandwidth list
+    kind: exec
+    name: cilium-bpf-bandwidth-list
+  - cmd: cilium bpf tunnel list
+    kind: exec
+    name: cilium-bpf-tunnel-list
+  - cmd: cilium bpf lb list
+    kind: exec
+    name: cilium-bpf-lb-list
+  - cmd: cilium bpf lb list --revnat
+    kind: exec
+    name: cilium-bpf-lb-list
+  - cmd: cilium bpf lb list --frontends
+    kind: exec
+    name: cilium-bpf-lb-list
+  - cmd: cilium bpf lb list --backends
+    kind: exec
+    name: cilium-bpf-lb-list
+  - cmd: cilium bpf lb list --source-ranges
+    kind: exec
+    name: cilium-bpf-lb-list
+  - cmd: cilium bpf lb maglev list
+    kind: exec
+    name: cilium-bpf-lb-maglev-list
+  - cmd: cilium bpf egress list
+    kind: exec
+    name: cilium-bpf-egress-list
+  - cmd: cilium bpf vtep list
+    kind: exec
+    name: cilium-bpf-vtep-list
+  - cmd: cilium bpf endpoint list
+    kind: exec
+    name: cilium-bpf-endpoint-list
+  - cmd: cilium bpf ct list global
+    kind: exec
+    name: cilium-bpf-ct-list-global
+  - cmd: cilium bpf nat list
+    kind: exec
+    name: cilium-bpf-nat-list
+  - cmd: cilium bpf ipmasq list
+    kind: exec
+    name: cilium-bpf-ipmasq-list
+  - cmd: cilium bpf ipcache list
+    kind: exec
+    name: cilium-bpf-ipcache-list
+  - cmd: cilium bpf policy get --all --numeric
+    kind: exec
+    name: cilium-bpf-policy-get
+  - cmd: cilium bpf sha list
+    kind: exec
+    name: cilium-bpf-sha-list
+  - cmd: cilium bpf fs show
+    kind: exec
+    name: cilium-bpf-fs-show
+  - cmd: cilium bpf recorder list
+    kind: exec
+    name: cilium-bpf-recorder-list
+  - cmd: cilium ip list -n -o json
+    kind: exec
+    name: cilium-ip-list-json
+  - cmd: cilium map list --verbose
+    kind: exec
+    name: cilium-map-list
+  - cmd: cilium map events cilium_ipcache -o json
+    kind: exec
+    name: cilium-map-events-cilium_ipcache-json
+  - cmd: cilium map events cilium_tunnel_map -o json
+    kind: exec
+    name: cilium-map-events-cilium_tunnel_map-json
+  - cmd: cilium map events cilium_lb4_services_v2 -o json
+    kind: exec
+    name: cilium-map-events-cilium_lb4_services_v2-json
+  - cmd: cilium map events cilium_lb4_backends_v2 -o json
+    kind: exec
+    name: cilium-map-events-cilium_lb4_backends_v2-json
+  - cmd: cilium map events cilium_lxc -o json
+    kind: exec
+    name: cilium-map-events-cilium_lxc-json
+  - cmd: cilium service list
+    kind: exec
+    name: cilium-service-list
+  - cmd: cilium service list -o json
+    kind: exec
+    name: cilium-service-list-json
+  - cmd: cilium recorder list
+    kind: exec
+    name: cilium-recorder-list
+  - cmd: cilium status --verbose
+    kind: exec
+    name: cilium-status
+  - cmd: cilium identity list
+    kind: exec
+    name: cilium-identity-list
+  - cmd: cilium-health status --verbose
+    kind: exec
+    name: cilium-health-status
+  - cmd: cilium-health status -o json
+    kind: exec
+    name: cilium-health-status-json
+  - cmd: cilium policy selectors -o json
+    kind: exec
+    name: cilium-policy-selectors-json
+  - cmd: cilium node list
+    kind: exec
+    name: cilium-node-list
+  - cmd: cilium node list -o json
+    kind: exec
+    name: cilium-node-list-json
+  - cmd: cilium lrp list
+    kind: exec
+    name: cilium-lrp-list
+- Enabled: true
+  Name: envoy
+- kind: dir
+  name: files
+  tasks:
+  - Src: /proc/net/xfrm_stat
+  - Src: /proc/sys/net/core/bpf_jit_enable
+  - Src: /proc/kallsyms
+  - Src: /etc/resolv.conf
+  - Src: /var/log/docker.log
+  - Src: /var/log/daemon.log
+  - Src: /var/log/messages

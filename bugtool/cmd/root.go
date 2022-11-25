@@ -6,23 +6,24 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/cilium/workerpool"
 	"github.com/spf13/cobra"
+	yaml "sigs.k8s.io/yaml"
 
-	"github.com/cilium/cilium/pkg/components"
+	dump "github.com/cilium/cilium/bugtool/dump"
 	"github.com/cilium/cilium/pkg/defaults"
 )
 
@@ -162,6 +163,8 @@ func isValidArchiveType(archiveType string) bool {
 	return false
 }
 
+const timestampFormat = "20060102-150405.999-0700-MST"
+
 func runTool() {
 	// Validate archive type
 	if !isValidArchiveType(archiveType) {
@@ -170,7 +173,7 @@ func runTool() {
 	}
 
 	// Prevent collision with other directories
-	nowStr := time.Now().Format("20060102-150405.999-0700-MST")
+	nowStr := time.Now().Format(timestampFormat)
 	var prefix string
 	if archivePrefix != "" {
 		prefix = fmt.Sprintf("%s-cilium-bugtool-%s-", archivePrefix, nowStr)
@@ -188,14 +191,15 @@ func runTool() {
 		os.Exit(1)
 	}
 	defer cleanup(dbgDir)
-	cmdDir := createDir(dbgDir, "cmd")
+	cmdDir := createDir(dbgDir, "cmd") // TODO
 	confDir := createDir(dbgDir, "conf")
 
 	k8sPods := getVerifyCiliumPods()
 
 	var commands []string
+	// TODO: What is dryrun mode?
 	if dryRunMode {
-		dryRun(configPath, k8sPods, confDir, cmdDir)
+		dryRun(configPath, k8sPods, confDir, cmdDir) // TODO
 		fmt.Fprintf(os.Stderr, "Configuration file at %s\n", configPath)
 		return
 	}
@@ -206,26 +210,74 @@ func runTool() {
 			fmt.Fprintf(os.Stderr, "Failed to create debug directory %s\n", err)
 			os.Exit(1)
 		}
-	} else {
-		if envoyDump {
-			if err := dumpEnvoy(cmdDir); err != nil {
-				fmt.Fprintf(os.Stderr, "Unable to dump envoy config: %s\n", err)
-			}
-		}
-
-		// Check if there is a user supplied configuration
-		if config, _ := loadConfigFile(configPath); config != nil {
-			// All of of the commands run are from the configuration file
-			commands = config.Commands
-		}
-		if len(commands) == 0 {
-			// Found no configuration file or empty so fall back to default commands.
-			commands = defaultCommands(confDir, cmdDir, k8sPods)
-		}
-		defer printDisclaimer()
-
-		runAll(commands, cmdDir, k8sPods)
+		return
 	}
+
+	if parallelWorkers <= 0 {
+		parallelWorkers = runtime.NumCPU()
+	}
+	wp := workerpool.New(parallelWorkers)
+
+	var allCommands, bpftoolTasks dump.Tasks
+	// Check if there is a user supplied configuration
+	// if config, _ := loadConfigFile(configPath); config != nil {
+	// 	// All of of the commands run are from the configuration file
+	// 	commands = config.Commands
+	// }
+	if len(commands) == 0 {
+		// Found no configuration file or empty so fall back to default commands.
+		//commands = defaultCommands(confDir, cmdDir, k8sPods)
+		allCommands, err = defaultResources(wp)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to gather commands %s\n", err)
+			os.Exit(1)
+		}
+
+		ts, err := generateBPFToolResources(wp)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to gather bpftool commands %s\n", err)
+		} else {
+			bpftoolTasks = append(bpftoolTasks, ts...)
+		}
+	}
+
+	defer printDisclaimer()
+
+	root := &dump.Dir{
+		Name: "", // root
+		Tasks: dump.Tasks{
+			&dump.Dir{
+				Name:  "bpftool",
+				Tasks: bpftoolTasks,
+			},
+			&dump.Dir{
+				Name:  "cmd",
+				Tasks: allCommands,
+			},
+			&dump.Dir{
+				Name:  "files", // todo:improve this
+				Tasks: defaultCopies(),
+			},
+			// cilium commands...
+			&dump.Dir{
+				Name:  "envoy",
+				Tasks: []dump.Task{getEnvoyDump()},
+			},
+		},
+	}
+
+	d, err := yaml.Marshal(root)
+	if err != nil {
+		fmt.Println("[error] failed to marshal conf:", err)
+	} else {
+		confFile, err := os.Create("conf.yaml")
+		if err != nil {
+			panic(err)
+		}
+		confFile.Write(d)
+	}
+
+	runAll(wp, root, dbgDir)
 
 	removeIfEmpty(cmdDir)
 	removeIfEmpty(confDir)
@@ -255,11 +307,11 @@ func runTool() {
 // dryRun creates the configuration file to show the user what would have been run.
 // The same file can be used to modify what will be run by the bugtool.
 func dryRun(configPath string, k8sPods []string, confDir, cmdDir string) {
-	_, err := setupDefaultConfig(configPath, k8sPods, confDir, cmdDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %s", err)
-		os.Exit(1)
-	}
+	// _, err := setupDefaultConfig(configPath, k8sPods, confDir, cmdDir)
+	// if err != nil {
+	// 	fmt.Fprintf(os.Stderr, "Error: %s", err)
+	// 	os.Exit(1)
+	// }
 }
 
 func printDisclaimer() {
@@ -290,7 +342,7 @@ func createDir(dbgDir string, newDir string) string {
 	confDir := filepath.Join(dbgDir, newDir)
 	if err := os.Mkdir(confDir, defaults.RuntimePathRights); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create %s info directory %s\n", newDir, err)
-		return dbgDir
+		os.Exit(1)
 	}
 	return confDir
 }
@@ -299,62 +351,72 @@ func podPrefix(pod, cmd string) string {
 	return fmt.Sprintf("kubectl exec %s -c %s -n %s -- %s", pod, ciliumAgentContainerName, k8sNamespace, cmd)
 }
 
-func runAll(commands []string, cmdDir string, k8sPods []string) {
-	if len(commands) == 0 {
-		return
+type Result struct {
+	Name  string `json:"name"`
+	Error string `json:"error"`
+}
+
+type Report struct {
+	Items []Result `json:"items"`
+}
+
+func runAll(wp *workerpool.WorkerPool, root dump.Task, dbgDir string) {
+	err := root.Run(context.Background(), dbgDir, wp.Submit)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Could not start bugtool tasks: %s\n", err)
+		os.Exit(1)
 	}
-
-	if parallelWorkers <= 0 {
-		parallelWorkers = runtime.NumCPU()
-	}
-
-	wp := workerpool.New(parallelWorkers)
-	for _, cmd := range commands {
-		if strings.Contains(cmd, "tables") {
-			// iptables commands hold locks so we can't have multiple runs. They
-			// have to be run one at a time to avoid 'Another app is currently
-			// holding the xtables lock...'
-			writeCmdToFile(cmdDir, cmd, k8sPods, enableMarkdown, nil)
-			continue
-		}
-
-		cmd := cmd // https://golang.org/doc/faq#closures_and_goroutines
-		err := wp.Submit(cmd, func(_ context.Context) error {
-			if strings.Contains(cmd, "xfrm state") {
-				//  Output of 'ip -s xfrm state' needs additional processing to replace
-				// raw keys by their hash.
-				writeCmdToFile(cmdDir, cmd, k8sPods, enableMarkdown, hashEncryptionKeys)
-			} else {
-				writeCmdToFile(cmdDir, cmd, k8sPods, enableMarkdown, nil)
-			}
-			return nil
-		})
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to submit task for command %q: %v\n", cmd, err)
-			return
-		}
-	}
-
 	// wait for all submitted tasks to complete
-	_, err := wp.Drain()
+	results, err := wp.Drain()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error waiting for commands to complete: %v\n", err)
+		os.Exit(1)
 	}
 
 	err = wp.Close()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to close worker pool: %v\n", err)
+		os.Exit(1)
+	}
+
+	report := &Report{}
+	for _, result := range results {
+		if result.Err() != nil {
+			fmt.Printf("⚠️  Task %s returned error: %s\n", result, result.Err())
+			report.Items = append(report.Items, Result{
+				Name:  result.String(),
+				Error: result.Err().Error(),
+			})
+		}
+	}
+
+	reportFd, err := os.Create(path.Join(dbgDir, "report.json"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to write report: %v\n", err)
+		os.Exit(1)
+	}
+	enc := json.NewEncoder(reportFd)
+	if enc.Encode(report); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create report: %v\n", err)
+		os.Exit(1)
 	}
 }
 
-func execCommand(prompt string) ([]byte, error) {
+func execCommand(prompt string) ([]byte, []byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, "bash", "-c", prompt).CombinedOutput()
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return nil, fmt.Errorf("exec timeout")
+	output := exec.CommandContext(ctx, "bash", "-c", prompt)
+	stderr := &bytes.Buffer{}
+	stdout := &bytes.Buffer{}
+	output.Stdout = stdout
+	output.Stderr = stderr
+	if err := output.Run(); err != nil {
+		return nil, nil, fmt.Errorf("could not run command: %w", err)
 	}
-	return output, err
+	if err := ctx.Err(); err != nil {
+		return nil, nil, fmt.Errorf("command failed: %w", err)
+	}
+	return stdout.Bytes(), stderr.Bytes(), nil
 }
 
 // writeCmdToFile will execute command and write markdown output to a file
@@ -400,7 +462,7 @@ func writeCmdToFile(cmdDir, prompt string, k8sPods []string, enableMarkdown bool
 		cmd.Stderr = f
 		err = cmd.Run()
 	} else {
-		output, err = execCommand(prompt)
+		output, _, _ = execCommand(prompt)
 		// Post-process the output if necessary
 		if postProcess != nil {
 			output = postProcess(output)
@@ -438,7 +500,7 @@ func split(prompt string) (string, []string) {
 }
 
 func getCiliumPods(namespace, label string) ([]string, error) {
-	output, err := execCommand(fmt.Sprintf("kubectl -n %s get pods -l %s", namespace, label))
+	output, _, err := execCommand(fmt.Sprintf("kubectl -n %s get pods -l %s", namespace, label))
 	if err != nil {
 		return nil, err
 	}
@@ -457,61 +519,6 @@ func getCiliumPods(namespace, label string) ([]string, error) {
 	}
 
 	return ciliumPods, nil
-}
-
-func dumpEnvoy(rootDir string) error {
-	// curl --unix-socket /var/run/cilium/envoy-admin.sock http:/admin/config_dump\?include_eds > dump.json
-	c := &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-				return net.Dial("unix", "/var/run/cilium/envoy-admin.sock")
-			},
-		},
-	}
-	return downloadToFile(c, "http://admin/config_dump?include_eds", filepath.Join(rootDir, "envoy-config.json"))
-}
-
-func pprofTraces(rootDir string) error {
-	var wg sync.WaitGroup
-	var profileErr error
-	pprofHost := fmt.Sprintf("localhost:%d", pprofPort)
-	wg.Add(1)
-	httpClient := http.DefaultClient
-	go func() {
-		url := fmt.Sprintf("http://%s/debug/pprof/profile?seconds=%d", pprofHost, traceSeconds)
-		dir := filepath.Join(rootDir, "pprof-cpu")
-		profileErr = downloadToFile(httpClient, url, dir)
-		wg.Done()
-	}()
-
-	url := fmt.Sprintf("http://%s/debug/pprof/trace?seconds=%d", pprofHost, traceSeconds)
-	dir := filepath.Join(rootDir, "pprof-trace")
-	err := downloadToFile(httpClient, url, dir)
-	if err != nil {
-		return err
-	}
-
-	url = fmt.Sprintf("http://%s/debug/pprof/heap?debug=1", pprofHost)
-	dir = filepath.Join(rootDir, "pprof-heap")
-	err = downloadToFile(httpClient, url, dir)
-	if err != nil {
-		return err
-	}
-
-	cmd := fmt.Sprintf("gops stack $(pidof %s)", components.CiliumAgentName)
-	writeCmdToFile(rootDir, cmd, nil, enableMarkdown, nil)
-
-	cmd = fmt.Sprintf("gops stats $(pidof %s)", components.CiliumAgentName)
-	writeCmdToFile(rootDir, cmd, nil, enableMarkdown, nil)
-
-	cmd = fmt.Sprintf("gops memstats $(pidof %s)", components.CiliumAgentName)
-	writeCmdToFile(rootDir, cmd, nil, enableMarkdown, nil)
-
-	wg.Wait()
-	if profileErr != nil {
-		return profileErr
-	}
-	return nil
 }
 
 func downloadToFile(client *http.Client, url, file string) error {
