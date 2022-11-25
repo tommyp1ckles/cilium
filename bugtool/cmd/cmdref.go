@@ -30,6 +30,7 @@ func genCmdRef() {
 		return
 	}
 }
+
 func linkHandler(s string) string {
 	return s
 }

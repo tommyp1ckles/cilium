@@ -5,10 +5,13 @@ package cmd
 
 import (
 	"archive/tar"
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	. "gopkg.in/check.v1"
 )
@@ -143,7 +146,10 @@ func (b *BugtoolSuite) TestHashEncryptionKeys(c *C) {
 	}
 
 	for _, v := range testdata {
-		modifiedString := hashEncryptionKeys([]byte(v.input))
+		out := &bytes.Buffer{}
+		hashEncryptionKeys(strings.NewReader(v.input), out)
+		modifiedString := out.Bytes()
+		time.Sleep(time.Second)
 		c.Assert(string(modifiedString), Equals, v.output)
 	}
 }

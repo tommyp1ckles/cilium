@@ -4,58 +4,15 @@
 package cmd
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 
-	"github.com/cilium/cilium/pkg/components"
-	"github.com/cilium/cilium/pkg/defaults"
+	dump "github.com/cilium/cilium/bugtool/dump"
 	"github.com/cilium/cilium/pkg/mountinfo"
+	"github.com/cilium/workerpool"
 )
-
-// BugtoolConfiguration creates and loads the configuration file used to run
-// the commands. The only commands not managed by the configuration is initial
-// setup, for ex. searching for Cilium daemonset pods or running uname.
-type BugtoolConfiguration struct {
-	// Commands is the exact commands that will be run by the bugtool
-	Commands []string `json:"commands"`
-}
-
-func setupDefaultConfig(path string, k8sPods []string, confDir, cmdDir string) (*BugtoolConfiguration, error) {
-	c := BugtoolConfiguration{defaultCommands(confDir, cmdDir, k8sPods)}
-	return &c, save(&c, path)
-}
-
-func bpffsMountpoint() string {
-	mountInfos, err := mountinfo.GetMountInfo()
-	if err != nil {
-		return ""
-	}
-
-	// To determine the mountpoint of the BPF fs we iterate through the list
-	// of mount info (i.e. /proc/self/mounts entries) and return the first
-	// one which has the "bpf" fs type and the "/" root.
-	//
-	// The root == "/" condition allows us to ignore all BPF fs which are
-	// sub mounts (such as for example /sys/fs/bpf/{xdp, ip, sk, sa}) of the
-	// one with the "/" root.
-	//
-	// Moreover, as Cilium will refuse to start if there are multiple BPF fs
-	// which have "/" as their root, we can assume there will be at most one
-	// mountpoint which matches the conditions and so we return it as soon
-	// as we find it.
-	for _, mountInfo := range mountInfos {
-		if mountInfo.FilesystemType == "bpf" && mountInfo.Root == "/" {
-			return mountInfo.MountPoint
-		}
-	}
-
-	return ""
-}
 
 func cgroup2fsMounts() []string {
 	var mounts []string
@@ -77,181 +34,83 @@ func cgroup2fsMounts() []string {
 	return mounts
 }
 
-func defaultCommands(confDir string, cmdDir string, k8sPods []string) []string {
-	var commands []string
-	// Not expecting all of the commands to be available
-	commands = []string{
-		// Host and misc
-		"ps auxfw",
-		"hostname",
-		"ip a",
-		"ip -4 r",
-		"ip -6 r",
-		"ip -d -s l",
-		"ip -4 n",
-		"ip -6 n",
-		"ss -t -p -a -i -s",
-		"ss -u -p -a -i -s",
-		"tc qdisc show",
-		"tc -d -s qdisc show",
-		"uname -a",
-		"top -b -n 1",
-		"uptime",
-		"dmesg --time-format=iso",
-		"sysctl -a",
-		"bpftool map show",
-		"bpftool prog show",
-		"bpftool net show",
-		"taskset -pc 1",
-		// iptables
-		"iptables-save -c",
-		"ip6tables-save -c",
-		"iptables-nft-save -c",
-		"ip6tables-nft-save -c",
-		"iptables-legacy-save -c",
-		"ip6tables-legacy-save -c",
-		"ip rule",
-		"ipset list",
-		// xfrm
-		"ip -s xfrm policy",
-		"ip -s xfrm state",
-		// gops
-		fmt.Sprintf("gops memstats $(pidof %s)", components.CiliumAgentName),
-		fmt.Sprintf("gops stack $(pidof %s)", components.CiliumAgentName),
-		fmt.Sprintf("gops stats $(pidof %s)", components.CiliumAgentName),
-		// Get list of open file descriptors managed by the agent
-		fmt.Sprintf("ls -la /proc/$(pidof %s)/fd", components.CiliumAgentName),
-		"lsmod",
-		// tc
-		"tc -s qdisc", // Show statistics on queuing disciplines
-		"tc qdisc show",
-	}
-
-	if bpffsMountpoint := bpffsMountpoint(); bpffsMountpoint != "" {
-		commands = append(commands, []string{
-			// LB and CT map for debugging services; using bpftool for a reliable dump
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_call_policy", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_calls_overlay_2", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_capture_cache", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lxc", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_metrics", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_tunnel_map", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_signals", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_ktime_cache", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_ipcache", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_events", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_sock_ops", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_signals", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_capture4_rules", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_capture6_rules", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_call_policy", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_nodeport_neigh4", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_nodeport_neigh6", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb4_source_range", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb6_source_range", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb4_maglev", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb6_maglev", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb6_health", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb6_reverse_sk", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb4_health", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb4_reverse_sk", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_ipmasq_v4", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_ipv4_frag_datagrams", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_ep_to_policy", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_throttle", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_encrypt_state", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_egress_gw_policy_v4", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_srv6_vrf_v4", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_srv6_vrf_v6", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_srv6_policy_v4", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_srv6_policy_v6", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_srv6_state_v4", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_srv6_state_v6", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_srv6_sid", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb4_services_v2", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb4_backends_v2", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb4_backends", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb4_reverse_nat", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_ct4_global", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_ct_any4_global", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb4_affinity", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb6_affinity", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb_affinity_match", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb6_services_v2", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb6_backends_v2", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb6_backends", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb6_reverse_nat", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_ct6_global", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_ct_any6_global", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_snat_v4_external", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_snat_v6_external", bpffsMountpoint),
-			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_vtep_map", bpffsMountpoint),
-		}...)
-	}
-
+func bpftoolCGroupTreeCommands() []string {
 	cgroup2fsMounts := cgroup2fsMounts()
+	commands := []string{}
 	for i := range cgroup2fsMounts {
-		commands = append(commands, []string{
-			fmt.Sprintf("bpftool cgroup tree %s", cgroup2fsMounts[i]),
-		}...)
+		commands = append(commands, fmt.Sprintf("bpftool cgroup tree %s", cgroup2fsMounts[i]))
 	}
-
-	// Commands that require variables and / or more configuration are added
-	// separately below
-	commands = append(commands, catCommands()...)
-	commands = append(commands, routeCommands()...)
-	commands = append(commands, ethtoolCommands()...)
-	commands = append(commands, copyConfigCommands(confDir, k8sPods)...)
-	commands = append(commands, copyCiliumInfoCommands(cmdDir, k8sPods)...)
-
-	tcCommands, err := tcInterfaceCommands()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to generate per interface tc commands: %s\n", err)
-	} else {
-		commands = append(commands, tcCommands...)
-	}
-
-	return k8sCommands(commands, k8sPods)
+	return commands
 }
 
-func save(c *BugtoolConfiguration, path string) error {
-	f, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("Failed to open file %s for writing: %s", path, err)
+func configureCommand(c *dump.Exec) *dump.Exec {
+	if k8s {
+		return c.WithK8s(k8sPods, ciliumAgentContainerName, k8sNamespace)
 	}
-	defer f.Close()
-
-	data, err := json.MarshalIndent(c, "", "\t")
-	if err != nil {
-		return fmt.Errorf("Cannot marshal config %s", err)
-	}
-	err = os.WriteFile(path, data, 0644)
-	if err != nil {
-		return fmt.Errorf("Cannot write config %s", err)
-	}
-	return nil
+	return c
 }
 
-func loadConfigFile(path string) (*BugtoolConfiguration, error) {
-	var content []byte
-	var err error
-	content, err = os.ReadFile(path)
+func creatExecFromString(wp *workerpool.WorkerPool, cmdStr string) (dump.Task, error) {
+	toks := strings.Fields(cmdStr)
+	if len(toks) == 0 {
+		return nil, fmt.Errorf("could not parse resource command from %q, no tokens found", cmdStr)
+	}
+	n := ""
+	for _, tok := range toks {
+		if strings.HasPrefix(tok, "-") {
+			continue
+		}
+		tok = strings.ReplaceAll(tok, "/", "") // todo this wont be pretty
+		if n == "" {
+			n = tok
+		} else {
+			n += "-" + tok
+		}
+	}
+	return configureCommand(dump.NewCommand(wp, n, "txt", toks[0], toks[1:]...)), nil
+}
 
-	if err != nil {
-		return nil, err
+func defaultResources(wp *workerpool.WorkerPool) (dump.Tasks, error) {
+	rs := dump.Tasks{}
+	cmds := defaultCommands()
+	// TODO: slashes break stuff
+	for _, cmd := range cmds {
+		r, err := creatExecFromString(wp, cmd)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse resource commands: %w", err)
+		}
+		rs = append(rs, r)
+	}
+	return rs, nil
+}
+
+func defaultCommands() []string {
+	var commands []string
+	generators := []func() []string{
+		humanReadableCommands,
+		tableStructuredCommands,
+		jsonStructuredCommands,
+		gopsCommands,
+		bpftoolCGroupTreeCommands,
+		tcInterfaceCommands,
+		copyCiliumInfoCommands,
+		copyCiliumInfoCommands,
 	}
 
-	var c BugtoolConfiguration
-	err = json.Unmarshal(content, &c)
-	return &c, err
+	for _, generator := range generators {
+		commands = append(commands, generator()...)
+	}
+
+	return commands
 }
 
 // Listing tc filter/chain/classes requires specific interface names.
 // Commands are generated per-interface.
-func tcInterfaceCommands() ([]string, error) {
+func tcInterfaceCommands() []string {
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		return nil, fmt.Errorf("could not list network interfaces: %v", err)
+		fmt.Fprintf(os.Stderr, "Failed to generate per interface tc commands: %s\n", err)
+		return nil
 	}
 	commands := []string{}
 	for _, iface := range ifaces {
@@ -260,10 +119,11 @@ func tcInterfaceCommands() ([]string, error) {
 			fmt.Sprintf("tc chain show dev %s", iface.Name),
 			fmt.Sprintf("tc class show dev %s", iface.Name))
 	}
-	return commands, nil
+	return commands
 }
 
-func catCommands() []string {
+func defaultFileDumps() []dump.Task {
+	ts := []dump.Task{}
 	files := []string{
 		"/proc/net/xfrm_stat",
 		"/proc/sys/net/core/bpf_jit_enable",
@@ -273,96 +133,30 @@ func catCommands() []string {
 		"/var/log/daemon.log",
 		"/var/log/messages",
 	}
-	// Only print the files that do exist to reduce number of errors in
-	// archive
-	commands := []string{}
 	for _, f := range files {
-		if _, err := os.Stat(f); os.IsNotExist(err) {
-			continue
-		}
-		commands = append(commands, fmt.Sprintf("cat %s", f))
+		ts = append(ts, dump.NewFile(f))
 	}
-	// TODO: handle K8s case as well.
-	return commands
+	return ts
 }
 
 // routeCommands gets the routes tables dynamically.
-func routeCommands() []string {
-	commands := []string{}
-	routes, _ := execCommand("ip route show table all | grep -E --only-matching 'table [0-9]+'")
-
-	for _, r := range bytes.Split(bytes.TrimSuffix(routes, []byte("\n")), []byte("\n")) {
-		routeTablev4 := fmt.Sprintf("ip -4 route show %s", r)
-		routeTablev6 := fmt.Sprintf("ip -6 route show %s", r)
-		commands = append(commands, routeTablev4, routeTablev6)
-	}
+func routeCommands(wp *workerpool.WorkerPool) []dump.Task {
+	// oneline script gets table names for all devices, then dumps either ip4/ip6 route tables.
+	routesScript := "for table in $(ip --json route show table all | jq -r '.[] | select(.table != null) | select(.table != \"local\") | .table'); do ip --json %s route show table $table ; done"
+	var commands []dump.Task
+	commands = append(commands,
+		configureCommand(dump.NewCommand(wp, "ip4-route-tables", "json", "bash", []string{"-c", fmt.Sprintf(routesScript, "-4")}...)),
+		configureCommand(dump.NewCommand(wp, "ip6-route-tables", "json", "bash", []string{"-c", fmt.Sprintf(routesScript, "-6")}...)),
+	)
 	return commands
 }
 
-func copyConfigCommands(confDir string, k8sPods []string) []string {
-	commands := []string{}
-	// Location is a convenience structure to avoid too many long lines
-	type Location struct {
-		Src string
-		Dst string
+func copyCiliumInfoCommands() []string {
+	commands := []string{
+		"cilium debuginfo --output=json", // debuginfo uses different output flag format.
 	}
-
-	// These locations don't depend on the kernel version for running so we
-	// can add them in this scope.
-	locations := []Location{
-		{"/proc/config", fmt.Sprintf("%s/kernel-config", confDir)},
-		{"/proc/config.gz", fmt.Sprintf("%s/kernel-config.gz", confDir)},
-	}
-
-	// The following lines copy the kernel configuration. This code is
-	// duplicated for the non Kubernetes case. The variables preventing
-	// them to be one block is the pod prefix and namespace used in the
-	// path. This should be refactored.
-	if len(k8sPods) == 0 {
-		kernel, _ := execCommand("uname -r")
-		kernel = bytes.TrimSpace(kernel)
-		// Append the boot config for the current kernel
-		l := Location{fmt.Sprintf("/boot/config-%s", kernel),
-			fmt.Sprintf("%s/kernel-config-%s", confDir, kernel)}
-		locations = append(locations, l)
-
-		// Use the locations to create command strings
-		for _, location := range locations {
-			if _, err := os.Stat(location.Src); os.IsNotExist(err) {
-				continue
-			}
-			commands = append(commands, fmt.Sprintf("cp %s %s", location.Src, location.Dst))
-		}
-	} else {
-		// If there are multiple pods, we want to get all of the kernel
-		// configs. Therefore we need copy commands for all the pods.
-		for _, pod := range k8sPods {
-			prompt := podPrefix(pod, "uname -r")
-			kernel, _ := execCommand(prompt)
-			kernel = bytes.TrimSpace(kernel)
-			l := Location{fmt.Sprintf("/boot/config-%s", kernel),
-				fmt.Sprintf("%s/kernel-config-%s", confDir, kernel)}
-			locations = append(locations, l)
-
-			// The location is mostly the same but the command is
-			// prepended with 'kubectl` and the path contains the
-			// namespace and pod. For ex:
-			// kubectl cp kube-system/cilium-kg8lv:/tmp/cilium-bugtool-243785589.tar /tmp/cilium-bugtool-243785589.tar
-			for _, location := range locations {
-				kubectlArg := fmt.Sprintf("%s/%s:%s", k8sNamespace, pod, location.Src)
-				cmd := fmt.Sprintf("%s %s %s %s", "kubectl", "cp", kubectlArg, location.Dst)
-				commands = append(commands, cmd)
-			}
-		}
-	}
-	return commands
-}
-
-func copyCiliumInfoCommands(cmdDir string, k8sPods []string) []string {
-	// Most of the output should come via debuginfo but also adding
-	// these ones for skimming purposes
-	ciliumCommands := []string{
-		fmt.Sprintf("cilium debuginfo --output=markdown,json -f --output-directory=%s", cmdDir),
+	// TODO: Mane of these are redundant with debuginfo.
+	for _, cmd := range []string{
 		"cilium metrics list",
 		"cilium fqdn cache list",
 		"cilium config -a",
@@ -387,99 +181,103 @@ func copyCiliumInfoCommands(cmdDir string, k8sPods []string) []string {
 		"cilium bpf sha list",
 		"cilium bpf fs show",
 		"cilium bpf recorder list",
-		"cilium ip list -n -o json",
-		"cilium map list --verbose",
-		"cilium map events cilium_ipcache -o json",
-		"cilium map events cilium_tunnel_map -o json",
-		"cilium map events cilium_lb4_services_v2 -o json",
-		"cilium map events cilium_lb4_backends_v2 -o json",
-		"cilium map events cilium_lxc -o json",
+		"cilium ip list -n",
+		"cilium map list",
+		"cilium map events cilium_ipcache",
+		"cilium map events cilium_tunnel_map",
+		"cilium map events cilium_lb4_services_v2",
+		"cilium map events cilium_lb4_backends_v2",
+		"cilium map events cilium_lxc",
 		"cilium service list",
-		"cilium service list -o json",
 		"cilium recorder list",
-		"cilium status --verbose",
+		"cilium status",
 		"cilium identity list",
-		"cilium-health status --verbose",
-		"cilium-health status -o json",
+		"cilium-health status",
 		"cilium policy get",
-		"cilium policy selectors -o json",
+		"cilium policy selectors",
 		"cilium node list",
-		"cilium node list -o json",
 		"cilium lrp list",
+	} {
+		commands = append(commands, cmd+" -o json")
 	}
-	var commands []string
-
-	stateDir := filepath.Join(defaults.RuntimePath, defaults.StateDir)
-	if len(k8sPods) == 0 { // Assuming this is a non k8s deployment
-		dst := filepath.Join(cmdDir, defaults.StateDir)
-		commands = append(commands, fmt.Sprintf("cp -r %s %s", stateDir, dst))
-		for _, cmd := range ciliumCommands {
-			// Add the host flag if set
-			if len(host) > 0 {
-				cmd = fmt.Sprintf("%s -H %s", cmd, host)
-			}
-			commands = append(commands, cmd)
-		}
-	} else { // Found k8s pods
-		for _, pod := range k8sPods {
-			dst := filepath.Join(cmdDir, fmt.Sprintf("%s-%s", pod, defaults.StateDir))
-			kubectlArg := fmt.Sprintf("-c %s %s/%s:%s", ciliumAgentContainerName, k8sNamespace, pod, stateDir)
-			// kubectl cp kube-system/cilium-xrzwr:/var/run/cilium/state cilium-xrzwr-state
-			commands = append(commands, fmt.Sprintf("kubectl cp %s %s", kubectlArg, dst))
-			for _, cmd := range ciliumCommands {
-				// Add the host flag if set
-				if len(host) > 0 {
-					cmd = fmt.Sprintf("%s -H %s", cmd, host)
-				}
-				commands = append(commands, podPrefix(pod, cmd))
-			}
-		}
-	}
-
 	return commands
 }
 
-func k8sCommands(allCommands []string, pods []string) []string {
-	// These commands do not require a pod argument
-	var commands = []string{
-		"kubectl get nodes -o wide",
-		"kubectl describe nodes",
-		"kubectl get pods,svc --all-namespaces",
-		"kubectl version",
-		fmt.Sprintf("kubectl get cm cilium-config -n %s", k8sNamespace),
+// Returns commands that have bespoke output formatting, designed
+// for human readability over machine parsing.
+// Note: These are deprecated and are here for legacy reasons.
+// Avoid adding commands that cannot be easily parsed by a machine
+// (preferably in json).
+// If necessary, it may be preferable to write functionality as a bugtool/dump.Task.
+func humanReadableCommands() []string {
+	return []string{
+		"top -b -n 1",
+		"uptime",
+
+		// ss
+		"ss -H -t -p -a -i -s",
+
+		// ps
+		"ps auxfw", // todo: rework this, use go, add ppid
+
+		// iptables
+		// todo: use https://github.com/coreos/go-iptables
+		"iptables-save -c",
+		"ip6tables-save -c",
+		"iptables-nft-save -c",
+		"ip6tables-nft-save -c",
+		"iptables-legacy-save -c",
+		"ip6tables-legacy-save -c",
+		"ipset list",
+	}
+}
+
+func tableStructuredCommands() []string {
+	return []string{
+		// Host and misc
+		"hostname",
+		"uname -a",
+		"dmesg --time-format=iso",
+		"uptime",
+		"sysctl -a",
+		"taskset -pc 1",
+		"lsmod",
+
+		"ss -H -u -p -a -s",
+	}
+}
+
+// Contains commands that output json.
+func jsonStructuredCommands() []string {
+	return []string{
+		// ip
+		"ip -j a",
+		"ip -j -4 r",
+		"ip -j -6 r",
+		"ip -j -d -s l",
+		"ip -j -4 n",
+		"ip -j -6 n",
+
+		// tc
+		"tc -j -s qdisc show", // Show statistics on queuing disciplines
+
+		// ip
+		"ip --json rule",
+		// xfrm
+		"ip --json -s xfrm policy",
+		"ip --json -s xfrm state",
 	}
 
-	// Prepare to run all the commands inside of the pod(s)
-	for _, pod := range pods {
-		for _, cmd := range allCommands {
-			// Add the host flag if set
-			if strings.HasPrefix(cmd, "cilium") &&
-				!strings.Contains(cmd, "-H") && len(host) > 0 {
-				cmd = fmt.Sprintf("%s -H %s", cmd, host)
-			}
+}
 
-			if !strings.Contains(cmd, "kubectl exec") && !strings.Contains(cmd, "kubectl cp") {
-				cmd = podPrefix(pod, cmd)
-			}
-			commands = append(commands, cmd)
-		}
-
-		// Retrieve current version of pod logs
-		cmd := fmt.Sprintf("kubectl -n %s logs --timestamps %s", k8sNamespace, pod)
-		commands = append(commands, cmd)
-
-		// Retrieve previous version of pod logs
-		cmd = fmt.Sprintf("kubectl -n %s logs --timestamps -p %s", k8sNamespace, pod)
-		commands = append(commands, cmd)
-
-		cmd = fmt.Sprintf("kubectl -n %s describe pod %s", k8sNamespace, pod)
-		commands = append(commands, cmd)
+// gops is a special case, you can't really format this data but we still need it.
+// this should go in its own dir.
+func gopsCommands() []string {
+	//agentPID := 1
+	addr := "localhost:9890" // TODO: Is it always this port?
+	return []string{
+		fmt.Sprintf("gops memstats %s", addr),
+		fmt.Sprintf("gops stack %s", addr),
+		fmt.Sprintf("gops stats %s", addr),
 	}
-
-	if len(pods) == 0 {
-		allCommands = append(allCommands, commands...)
-		return allCommands
-	}
-
-	return commands
 }
