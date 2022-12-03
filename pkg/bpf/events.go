@@ -174,7 +174,7 @@ func (h *Handle) isFull() bool {
 // in high throughput cases, we instead just use a sufficiently buffered channel.
 const (
 	eventSubChanBufferSize = 32
-	maxConcurrentEventSubs = 32
+	maxConcurrentEventSubs = 3
 )
 
 func (eb *eventsBuffer) hasSubCapacity() bool {

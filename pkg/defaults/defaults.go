@@ -530,5 +530,11 @@ var (
 		"cilium_lb4_services_v2": "enabled,128,0",
 		"cilium_lb4_backends_v2": "enabled,128,0",
 		"cilium_lb4_reverse_nat": "enabled,128,0",
+		"cilium_lb6_services_v2": "enabled,128,0",
+		"cilium_lb6_backends_v2": "enabled,128,0",
+		"cilium_lb6_reverse_nat": "enabled,128,0",
+		"cilium_policy":          "enabled,128,0",
+		"cilium_lb4":             "enabled,128,0",
+		"cilium_lb6":             "enabled,128,0",
 	}
 )

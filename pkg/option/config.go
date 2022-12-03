@@ -3974,6 +3974,15 @@ type BPFEventBufferConfigs map[string]BPFEventBufferConfig
 // GetEventBufferConfig returns either the relevant config for a map name, or a default
 // one with enabled=false otherwise.
 func (d *DaemonConfig) GetEventBufferConfig(name string) BPFEventBufferConfig {
+	if strings.HasPrefix(name, "cilium_policy") {
+		name = "cilium_policy"
+	}
+	if strings.HasPrefix(name, "cilium_lb4") {
+		name = "cilium_lb4"
+	}
+	if strings.HasPrefix(name, "cilium_lb6") {
+		name = "cilium_lb4"
+	}
 	return d.bpfMapEventConfigs.get(name)
 }
 
