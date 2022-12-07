@@ -29,6 +29,37 @@ type Exec struct {
 	wp *workerpool.WorkerPool
 }
 
+type ExecIfExists struct {
+	task             Task
+	expectedFilename string
+}
+
+func IfExists(t Task, f string) *ExecIfExists {
+	return &ExecIfExists{
+		task:             t,
+		expectedFilename: f,
+	}
+}
+
+func (e *ExecIfExists) exists() (bool, error) {
+	_, err := os.Stat(e.expectedFilename)
+	if err != nil && os.IsNotExist(err) {
+		return false, nil
+	}
+	return true, err
+}
+
+func (r *ExecIfExists) Run(ctx context.Context, cmdDir string, submit ScheduleFunc) error {
+	exists, err := r.exists()
+	if err != nil {
+		return fmt.Errorf("could not check if file exists %q: %w", r.expectedFilename, err)
+	}
+	if exists {
+		return r.task.Run(ctx, cmdDir, submit)
+	}
+	return nil
+}
+
 func NewCommand(wp *workerpool.WorkerPool, name string, ext string, cmd string, args ...string) *Exec {
 	return &Exec{
 		wp:   wp,

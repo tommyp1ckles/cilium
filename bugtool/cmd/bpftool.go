@@ -13,13 +13,16 @@ const bpftoolMapDumpPrefix = "bpftool-map-dump-pinned-"
 func mapDumpPinned(wp *workerpool.WorkerPool, mountPoint string, mapnames ...string) dump.Tasks {
 	rs := dump.Tasks{}
 	for _, mapname := range mapnames {
-		rs = append(rs, dump.NewCommand(
-			wp,
-			bpftoolMapDumpPrefix+mapname,
-			"json",
-			"bpftool",
-			"map", "dump", "pinned", fmt.Sprintf("%s/tc/globals/%s", mountPoint, mapname), "-j",
-		))
+		fname := fmt.Sprintf("%s/tc/globals/%s", mountPoint, mapname)
+		rs = append(rs,
+			dump.IfExists(dump.NewCommand(
+				wp,
+				bpftoolMapDumpPrefix+mapname,
+				"json",
+				"bpftool",
+				"map", "dump", "pinned", fname, "-j",
+			), fname),
+		)
 	}
 	return rs
 }

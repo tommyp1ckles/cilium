@@ -13,6 +13,10 @@ type Task interface {
 	Run(context.Context, string, ScheduleFunc) error
 }
 
+type Condition interface {
+	ShouldRun(context.Context, string) (bool, error)
+}
+
 type Tasks []Task
 
 // Name can be composed into a task, that is written to a specific directory.

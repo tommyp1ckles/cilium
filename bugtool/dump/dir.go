@@ -3,10 +3,17 @@ package dump
 import (
 	"context"
 	"encoding/json"
+
+	log "github.com/sirupsen/logrus"
 )
 
-type Dir struct {
+type base struct {
 	Name
+}
+
+type Dir struct {
+	//Name
+	base
 	Tasks []Task
 }
 
@@ -32,7 +39,7 @@ func (rc *Dir) Run(ctx context.Context, dir string, submit ScheduleFunc) error {
 	for _, task := range rc.Tasks {
 		// dir subtasks are submitted sync.
 		if err := task.Run(ctx, dir, submit); err != nil {
-			return err
+			log.WithError(err).WithField("dir", rc.Name).Error("failed to run dir subtask")
 		}
 	}
 	return nil

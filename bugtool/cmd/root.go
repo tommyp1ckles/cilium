@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/cilium/workerpool"
+	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	yaml "sigs.k8s.io/yaml"
 
@@ -42,7 +43,7 @@ var BugtoolRootCmd = &cobra.Command{
 	[...]
 	$ kubectl -n kube-system exec cilium-kg8lv -- cilium-bugtool
 	$ kubectl cp kube-system/cilium-kg8lv:/tmp/cilium-bugtool-243785589.tar /tmp/cilium-bugtool-243785589.tar`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		runTool()
 	},
 }
@@ -103,6 +104,8 @@ func init() {
 	BugtoolRootCmd.Flags().StringVarP(&archivePrefix, "archive-prefix", "", "", "String to prefix to name of archive if created (e.g., with cilium pod-name)")
 	BugtoolRootCmd.Flags().IntVar(&parallelWorkers, "parallel-workers", 0, "Maximum number of parallel worker tasks, use 0 for number of CPUs")
 	BugtoolRootCmd.Flags().StringVarP(&ciliumAgentContainerName, "cilium-agent-container-name", "", "cilium-agent", "Name of the Cilium Agent main container (when k8s-mode is true)")
+
+	log.SetFormatter(&log.TextFormatter{})
 }
 
 func getVerifyCiliumPods() (k8sPods []string) {
@@ -125,7 +128,7 @@ func getVerifyCiliumPods() (k8sPods []string) {
 	if os.Getuid() != 0 && !k8s && len(k8sPods) == 0 {
 		// When the k8s flag is not set and the user is not root,
 		// debuginfo and BPF related commands can fail.
-		fmt.Fprintf(os.Stderr, "Warning, some of the BPF commands might fail when run as not root\n")
+		log.Warn("Some BPF commands might fail when run as non-root user")
 	}
 
 	return k8sPods
@@ -151,6 +154,7 @@ func removeIfEmpty(dir string) {
 	}
 
 	fmt.Fprintf(os.Stderr, "Deleted empty directory %s\n", dir)
+
 }
 
 func isValidArchiveType(archiveType string) bool {
@@ -166,6 +170,11 @@ func isValidArchiveType(archiveType string) bool {
 const timestampFormat = "20060102-150405.999-0700-MST"
 
 func runTool() {
+	log.Info("running bugtool")
+	log.Info("running bugtool")
+	log.Info("running bugtool")
+	log.Info("running bugtool")
+	log.Info("running bugtool")
 	// Validate archive type
 	if !isValidArchiveType(archiveType) {
 		fmt.Fprintf(os.Stderr, "Error: unsupported output type: %s, must be one of tar|gz\n", archiveType)
@@ -197,7 +206,6 @@ func runTool() {
 	k8sPods := getVerifyCiliumPods()
 
 	var commands []string
-	// TODO: What is dryrun mode?
 	if dryRunMode {
 		dryRun(configPath, k8sPods, confDir, cmdDir) // TODO
 		fmt.Fprintf(os.Stderr, "Configuration file at %s\n", configPath)
@@ -268,7 +276,7 @@ func runTool() {
 
 	d, err := yaml.Marshal(root)
 	if err != nil {
-		fmt.Println("[error] failed to marshal conf:", err)
+		log.WithError(err).Error("failed to marshal configuration")
 	} else {
 		confFile, err := os.Create("conf.yaml")
 		if err != nil {
@@ -282,6 +290,10 @@ func runTool() {
 	removeIfEmpty(cmdDir)
 	removeIfEmpty(confDir)
 
+	archiveDump(dbgDir, sendArchiveToStdout)
+}
+
+func archiveDump(dbgDir string, sendArchiveToStdout bool) {
 	if archive {
 		switch archiveType {
 		case "gz":
@@ -297,10 +309,10 @@ func runTool() {
 				fmt.Fprintf(os.Stderr, "Failed to create archive %s\n", err)
 				os.Exit(1)
 			}
-			fmt.Fprintf(os.Stderr, "\nARCHIVE at %s\n", archivePath)
+			fmt.Fprintf(os.Stdout, "\nArchive at: %s\n", archivePath)
 		}
 	} else {
-		fmt.Fprintf(os.Stderr, "\nDIRECTORY at %s\n", dbgDir)
+		fmt.Fprintf(os.Stdout, "\nDirectory at: %s\n", dbgDir)
 	}
 }
 
@@ -382,7 +394,7 @@ func runAll(wp *workerpool.WorkerPool, root dump.Task, dbgDir string) {
 	report := &Report{}
 	for _, result := range results {
 		if result.Err() != nil {
-			fmt.Printf("⚠️  Task %s returned error: %s\n", result, result.Err())
+			log.WithError(result.Err()).WithField("task", result.String()).Error("task failed to run")
 			report.Items = append(report.Items, Result{
 				Name:  result.String(),
 				Error: result.Err().Error(),
