@@ -2,7 +2,6 @@ package dump
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,11 +16,9 @@ import (
 // Exec gathers data resource from the stdout/stderr of
 // execing a command.
 type Exec struct {
-	name string
-	ext  string
-
-	k8s  bool
-	pods []string
+	base
+	//Name string
+	Ext string
 
 	Cmd  string
 	Args []string
@@ -62,32 +59,35 @@ func (r *ExecIfExists) Run(ctx context.Context, cmdDir string, submit ScheduleFu
 
 func NewCommand(wp *workerpool.WorkerPool, name string, ext string, cmd string, args ...string) *Exec {
 	return &Exec{
+		base: base{
+			Name: name,
+			Kind: "Exec",
+		},
 		wp:   wp,
-		name: name,
 		Cmd:  cmd,
 		Args: args,
-		ext:  ext,
+		Ext:  ext,
 	}
 }
 
 func (d *Exec) TypedModel() map[string]any {
 	return map[string]any{
 		"kind": "exec",
-		"name": d.name,
+		"name": d.Name,
 		"cmd":  strings.Join(append([]string{d.Cmd}, d.Args...), " "),
 	}
 }
 
-func (d *Exec) MarshalJSON() ([]byte, error) {
-	return json.Marshal(d.TypedModel())
-}
+// func (d *Exec) MarshalJSON() ([]byte, error) {
+// 	return json.Marshal(d.TypedModel())
+// }
 
 func (f *Exec) Filename() string {
-	return fmt.Sprintf("%s.%s", f.name, f.ext)
+	return fmt.Sprintf("%s.%s", f.Name, f.Ext)
 }
 
 func (r *Exec) Run(ctx context.Context, cmdDir string, submit ScheduleFunc) error {
-	return submit(r.name, func(ctx context.Context) error {
+	return submit(r.Name, func(ctx context.Context) error {
 		outFd, err := os.Create(filepath.Join(cmdDir, r.Filename()))
 		if err != nil {
 			return fmt.Errorf("could no create file for dump %q: %w", r.Filename(), err)
