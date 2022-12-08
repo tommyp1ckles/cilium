@@ -288,7 +288,7 @@ func dryRun(configPath string, root *dump.Dir) {
 		fmt.Fprintln(os.Stderr, "[error] Could not write config file:", err)
 		os.Exit(1)
 	} else {
-		confFile, err := os.Create("conf.yaml")
+		confFile, err := os.Create(configPath)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "[error] Could not write config file", err)
 			os.Exit(1)
