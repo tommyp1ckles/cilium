@@ -203,11 +203,37 @@ func runTool() {
 	cmdDir := createDir(dbgDir, "cmd") // TODO
 	confDir := createDir(dbgDir, "conf")
 
-	k8sPods := getVerifyCiliumPods()
+	//k8sPods := getVerifyCiliumPods()
 
-	var commands []string
+	if parallelWorkers <= 0 {
+		parallelWorkers = runtime.NumCPU()
+	}
+	wp := workerpool.New(parallelWorkers)
+
+	var allCommands, bpftoolTasks dump.Tasks
+	allCommands, err = defaultResources(wp)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to gather commands %s\n", err)
+		os.Exit(1)
+	}
+
+	ts, err := generateBPFToolResources(wp)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to gather bpftool commands %s\n", err)
+	} else {
+		bpftoolTasks = append(bpftoolTasks, ts...)
+	}
+	root := dump.NewDir(
+		"", // root
+		dump.Tasks{
+			dump.NewDir("bpftool", bpftoolTasks),
+			dump.NewDir("cmd", allCommands),
+			dump.NewDir("files", defaultFileDumps()),
+			dump.NewDir("evnoy", []dump.Task{getEnvoyDump()}),
+		},
+	)
 	if dryRunMode {
-		dryRun(configPath, k8sPods, confDir, cmdDir) // TODO
+		dryRun(configPath, root)
 		fmt.Fprintf(os.Stderr, "Configuration file at %s\n", configPath)
 		return
 	}
@@ -221,69 +247,7 @@ func runTool() {
 		return
 	}
 
-	if parallelWorkers <= 0 {
-		parallelWorkers = runtime.NumCPU()
-	}
-	wp := workerpool.New(parallelWorkers)
-
-	var allCommands, bpftoolTasks dump.Tasks
-	// Check if there is a user supplied configuration
-	// if config, _ := loadConfigFile(configPath); config != nil {
-	// 	// All of of the commands run are from the configuration file
-	// 	commands = config.Commands
-	// }
-	if len(commands) == 0 {
-		// Found no configuration file or empty so fall back to default commands.
-		//commands = defaultCommands(confDir, cmdDir, k8sPods)
-		allCommands, err = defaultResources(wp)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to gather commands %s\n", err)
-			os.Exit(1)
-		}
-
-		ts, err := generateBPFToolResources(wp)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to gather bpftool commands %s\n", err)
-		} else {
-			bpftoolTasks = append(bpftoolTasks, ts...)
-		}
-	}
-
 	defer printDisclaimer()
-
-	root := &dump.Dir{
-		Name: "", // root
-		Tasks: dump.Tasks{
-			&dump.Dir{
-				Name:  "bpftool",
-				Tasks: bpftoolTasks,
-			},
-			&dump.Dir{
-				Name:  "cmd",
-				Tasks: allCommands,
-			},
-			&dump.Dir{
-				Name:  "files", // todo:improve this
-				Tasks: defaultCopies(),
-			},
-			// cilium commands...
-			&dump.Dir{
-				Name:  "envoy",
-				Tasks: []dump.Task{getEnvoyDump()},
-			},
-		},
-	}
-
-	d, err := yaml.Marshal(root)
-	if err != nil {
-		log.WithError(err).Error("failed to marshal configuration")
-	} else {
-		confFile, err := os.Create("conf.yaml")
-		if err != nil {
-			panic(err)
-		}
-		confFile.Write(d)
-	}
 
 	runAll(wp, root, dbgDir)
 
@@ -318,12 +282,19 @@ func archiveDump(dbgDir string, sendArchiveToStdout bool) {
 
 // dryRun creates the configuration file to show the user what would have been run.
 // The same file can be used to modify what will be run by the bugtool.
-func dryRun(configPath string, k8sPods []string, confDir, cmdDir string) {
-	// _, err := setupDefaultConfig(configPath, k8sPods, confDir, cmdDir)
-	// if err != nil {
-	// 	fmt.Fprintf(os.Stderr, "Error: %s", err)
-	// 	os.Exit(1)
-	// }
+func dryRun(configPath string, root *dump.Dir) {
+	d, err := yaml.Marshal(root)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "[error] Could not write config file:", err)
+		os.Exit(1)
+	} else {
+		confFile, err := os.Create("conf.yaml")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "[error] Could not write config file", err)
+			os.Exit(1)
+		}
+		confFile.Write(d)
+	}
 }
 
 func printDisclaimer() {

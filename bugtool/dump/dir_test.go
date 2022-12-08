@@ -21,7 +21,7 @@ func TestDecode(t *testing.T) {
 			},
 		},
 	}
-	tf := &TaskFactory{}
+	tf := &TaskDecoder{}
 	root, err := tf.decode(m)
 	assert.NoError(t, err)
 	fmt.Printf("%T\n", root)
@@ -60,7 +60,7 @@ func TestEncode(t *testing.T) {
 	m := map[string]any{}
 	assert.NoError(t, json.Unmarshal(d, &m))
 
-	tf := &TaskFactory{}
+	tf := &TaskDecoder{}
 	fmt.Println(m)
 	rootTask, err := tf.decode(m)
 	assert.NoError(t, err)

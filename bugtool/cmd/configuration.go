@@ -118,7 +118,7 @@ func tcInterfaceCommands() []string {
 	return commands
 }
 
-func defaultCopies() []dump.Task {
+func defaultFileDumps() []dump.Task {
 	ts := []dump.Task{}
 	files := []string{
 		"/proc/net/xfrm_stat",

@@ -2,6 +2,9 @@ package dump
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 
 	"github.com/cilium/workerpool"
 	"github.com/mitchellh/mapstructure"
@@ -9,14 +12,24 @@ import (
 )
 
 type base struct {
-	Name string
-	Kind string
+	Name string `json:"Name"`
+	Kind string `json:"Kind"`
 }
 
 type Dir struct {
 	//Name
 	base
 	Tasks []Task
+}
+
+func NewDir(name string, ts []Task) *Dir {
+	return &Dir{
+		base: base{
+			Kind: "Dir",
+			Name: name,
+		},
+		Tasks: ts,
+	}
 }
 
 func (d *Dir) typedModel() map[string]any {
@@ -31,16 +44,20 @@ func (d *Dir) typedModel() map[string]any {
 // 	return json.Marshal(d.typedModel())
 // }
 
-type TaskFactory struct {
+type TaskDecoder struct {
 	wp *workerpool.WorkerPool
 }
 
-func (tf *TaskFactory) decode(m map[string]any) (Task, error) {
-	// m := map[string]any{}
-	// dec := json.NewDecoder(r)
-	// if err := dec.Decode(&m); err != nil {
-	// 	return nil, err
-	// }
+func (tf *TaskDecoder) Decode(r io.Reader) (Task, error) {
+	dec := json.NewDecoder(r)
+	m := map[string]any{}
+	if err := dec.Decode(&m); err != nil {
+		return nil, fmt.Errorf("could not decode json from reader: %w", err)
+	}
+	return tf.decode(m)
+}
+
+func (tf *TaskDecoder) decode(m map[string]any) (Task, error) {
 	if m == nil {
 		return nil, nil
 	}
@@ -58,16 +75,18 @@ func (tf *TaskFactory) decode(m map[string]any) (Task, error) {
 	}
 	switch result.Kind {
 	case "Dir":
-		ts := []Task{}
-		if tobjs, ok := m["Tasks"].([]map[string]any); ok {
-			for _, tobj := range tobjs {
-				t, err := tf.decode(tobj)
+		var ts []Task
+		if tm, ok := m["Tasks"]; ok {
+			var objs []map[string]any
+			if err := mapstructure.Decode(tm, &objs); err != nil {
+				return nil, err
+			}
+			for _, obj := range objs {
+				t, err := tf.decode(obj)
 				if err != nil {
 					return nil, err
 				}
-				if t != nil {
-					ts = append(ts, t)
-				}
+				ts = append(ts, t)
 			}
 		}
 		return &Dir{
@@ -76,18 +95,16 @@ func (tf *TaskFactory) decode(m map[string]any) (Task, error) {
 		}, nil
 	case "Exec":
 		e := &Exec{}
-		dec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
-			Result: e,
-		})
-		if err != nil {
-			return nil, err
-		}
-		if err := dec.Decode(m); err != nil {
-			return nil, err
-		}
-		return e, nil
+		return e, mapstructure.Decode(m, e)
+	case "File":
+		f := &File{}
+		return f, mapstructure.Decode(m, f)
+	case "Request":
+		r := &Request{}
+		return r, mapstructure.Decode(m, r)
+	default:
+		return nil, fmt.Errorf("got unexpected object kind: %q, should be one of: [Dir, Exec, File]", result.Kind)
 	}
-	return nil, nil
 }
 
 // TODO: name this dir or something to make it not so weird?

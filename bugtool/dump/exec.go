@@ -20,8 +20,9 @@ type Exec struct {
 	//Name string
 	Ext string
 
-	Cmd  string
-	Args []string
+	Cmd            string
+	Args           []string
+	WhenFileExists string
 
 	wp *workerpool.WorkerPool
 }
@@ -86,7 +87,25 @@ func (f *Exec) Filename() string {
 	return fmt.Sprintf("%s.%s", f.Name, f.Ext)
 }
 
+func (e *Exec) shouldRun() (bool, error) {
+	if e.WhenFileExists == "" {
+		return true, nil
+	}
+	_, err := os.Stat(e.WhenFileExists)
+	if err != nil && os.IsNotExist(err) {
+		return false, nil
+	}
+	return true, err
+}
+
 func (r *Exec) Run(ctx context.Context, cmdDir string, submit ScheduleFunc) error {
+	run, err := r.shouldRun()
+	if err != nil {
+		return fmt.Errorf("failed evaluating if exec task should run: %w", err)
+	}
+	if !run {
+		return nil
+	}
 	return submit(r.Name, func(ctx context.Context) error {
 		outFd, err := os.Create(filepath.Join(cmdDir, r.Filename()))
 		if err != nil {

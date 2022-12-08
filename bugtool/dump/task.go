@@ -9,8 +9,11 @@ import (
 
 type ScheduleFunc func(string, func(context.Context) error) error
 
+// Task represents any task that can be run to produce bugtool dump data.
 type Task interface {
-	Run(context.Context, string, ScheduleFunc) error
+	// Run schedules a task run, with dir being the directory in which all final
+	// dump output should be written.
+	Run(ctx context.Context, dir string, schedule ScheduleFunc) error
 }
 
 type Condition interface {

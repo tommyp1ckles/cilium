@@ -4,22 +4,30 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 )
 
 type Request struct {
-	Name   string
-	URL    string
-	Client *http.Client
+	Name       string
+	URL        string
+	UnixSocket string
+	//Client *http.Client
 }
 
 func (r *Request) getClient() *http.Client {
-	if r.Client == nil {
-		return http.DefaultClient
+	if r.UnixSocket != "" {
+		return &http.Client{
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+					return net.Dial("unix", r.UnixSocket)
+				},
+			},
+		}
 	}
-	return r.Client
+	return http.DefaultClient
 }
 
 func (r *Request) Run(ctx context.Context, dir string, submit ScheduleFunc) error {
