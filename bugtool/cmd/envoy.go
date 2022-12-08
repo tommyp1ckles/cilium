@@ -5,9 +5,9 @@ import (
 )
 
 func getEnvoyDump() *dump.Request {
-	return &dump.Request{
-		Name:       "envoy-config",
-		URL:        "http://admin/config_dump?include_eds",
-		UnixSocket: "/var/run/cilium/envoy-admin.sock",
-	}
+	return dump.NewRequest(
+		"envoy-config",
+		"http://admin/config_dump?include_eds",
+		"/var/run/cilium/envoy-admin.sock",
+	)
 }

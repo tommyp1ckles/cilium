@@ -11,10 +11,21 @@ import (
 )
 
 type Request struct {
-	Name       string
+	base
 	URL        string
 	UnixSocket string
 	//Client *http.Client
+}
+
+func NewRequest(name, url, unixSocket string) *Request {
+	return &Request{
+		base: base{
+			Kind: "Request",
+			Name: name,
+		},
+		URL:        url,
+		UnixSocket: unixSocket,
+	}
 }
 
 func (r *Request) getClient() *http.Client {

@@ -130,9 +130,7 @@ func defaultFileDumps() []dump.Task {
 		"/var/log/messages",
 	}
 	for _, f := range files {
-		ts = append(ts, &dump.File{
-			Src: f,
-		})
+		ts = append(ts, dump.NewFile(f))
 	}
 	return ts
 }

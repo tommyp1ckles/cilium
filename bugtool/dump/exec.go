@@ -21,19 +21,21 @@ type Exec struct {
 	Ext string
 
 	Cmd            string
-	Args           []string
-	WhenFileExists string
+	Args           []string `json:"omitempty"`
+	WhenFileExists string   `json:"omitempty"`
 
 	wp *workerpool.WorkerPool
 }
 
 type ExecIfExists struct {
+	base
 	task             Task
 	expectedFilename string
 }
 
 func IfExists(t Task, f string) *ExecIfExists {
 	return &ExecIfExists{
+		base:             base{},
 		task:             t,
 		expectedFilename: f,
 	}
@@ -69,6 +71,11 @@ func NewCommand(wp *workerpool.WorkerPool, name string, ext string, cmd string, 
 		Args: args,
 		Ext:  ext,
 	}
+}
+
+func (d *Exec) WhenExists(filename string) *Exec {
+	d.WhenFileExists = filename
+	return d
 }
 
 func (d *Exec) TypedModel() map[string]any {

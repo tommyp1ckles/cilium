@@ -223,17 +223,22 @@ func runTool() {
 	} else {
 		bpftoolTasks = append(bpftoolTasks, ts...)
 	}
-	root := dump.NewDir(
-		"", // root
-		dump.Tasks{
-			dump.NewDir("bpftool", bpftoolTasks),
-			dump.NewDir("cmd", allCommands),
-			dump.NewDir("files", defaultFileDumps()),
-			dump.NewDir("evnoy", []dump.Task{getEnvoyDump()}),
-		},
-	)
+
+	var root dump.Task
+	if root = loadFromConfig(wp); root == nil {
+		root = dump.NewDir(
+			"", // root
+			dump.Tasks{
+				dump.NewDir("bpftool", bpftoolTasks),
+				dump.NewDir("cmd", allCommands),
+				dump.NewDir("files", defaultFileDumps()),
+				dump.NewDir("evnoy", []dump.Task{getEnvoyDump()}),
+			},
+		)
+	}
+
 	if dryRunMode {
-		dryRun(configPath, root)
+		writeConfig(configPath, root)
 		fmt.Fprintf(os.Stderr, "Configuration file at %s\n", configPath)
 		return
 	}
@@ -280,9 +285,29 @@ func archiveDump(dbgDir string, sendArchiveToStdout bool) {
 	}
 }
 
-// dryRun creates the configuration file to show the user what would have been run.
+func loadFromConfig(wp *workerpool.WorkerPool) dump.Task {
+	if configPath == "" {
+		return nil
+	}
+	fd, err := os.Open(configPath)
+	if err != nil && os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "[error] could not open config file for writing:", err)
+		os.Exit(1)
+	}
+	root, err := dump.TaskDecoder{WP: wp}.Decode(fd)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "[error] failed to decode tasks from config:", err)
+		os.Exit(1)
+	}
+	return root
+}
+
+// writeConfig creates the configuration file to show the user what would have been run.
 // The same file can be used to modify what will be run by the bugtool.
-func dryRun(configPath string, root *dump.Dir) {
+func writeConfig(configPath string, root dump.Task) {
 	d, err := yaml.Marshal(root)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "[error] Could not write config file:", err)

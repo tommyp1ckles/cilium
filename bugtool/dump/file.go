@@ -6,11 +6,22 @@ import (
 	"io"
 	"os"
 	"path"
+	"strings"
 )
 
 type File struct {
 	base
 	Src string
+}
+
+func NewFile(Src string) *File {
+	return &File{
+		base: base{
+			Name: "file:" + strings.ReplaceAll(Src, "/", "_"),
+			Kind: "File",
+		},
+		Src: Src,
+	}
 }
 
 func (c *File) typedModel() map[string]any {

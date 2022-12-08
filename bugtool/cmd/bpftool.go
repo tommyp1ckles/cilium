@@ -15,13 +15,13 @@ func mapDumpPinned(wp *workerpool.WorkerPool, mountPoint string, mapnames ...str
 	for _, mapname := range mapnames {
 		fname := fmt.Sprintf("%s/tc/globals/%s", mountPoint, mapname)
 		rs = append(rs,
-			dump.IfExists(dump.NewCommand(
+			dump.NewCommand(
 				wp,
 				bpftoolMapDumpPrefix+mapname,
 				"json",
 				"bpftool",
 				"map", "dump", "pinned", fname, "-j",
-			), fname),
+			).WhenExists(fname),
 		)
 	}
 	return rs

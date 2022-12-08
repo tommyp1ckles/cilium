@@ -2,13 +2,15 @@ package dump
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
 
 	"github.com/cilium/workerpool"
 	"github.com/mitchellh/mapstructure"
 	log "github.com/sirupsen/logrus"
+
+	yaml "sigs.k8s.io/yaml"
 )
 
 type base struct {
@@ -45,19 +47,22 @@ func (d *Dir) typedModel() map[string]any {
 // }
 
 type TaskDecoder struct {
-	wp *workerpool.WorkerPool
+	WP *workerpool.WorkerPool
 }
 
-func (tf *TaskDecoder) Decode(r io.Reader) (Task, error) {
-	dec := json.NewDecoder(r)
+func (tf TaskDecoder) Decode(r io.Reader) (Task, error) {
+	data, err := ioutil.ReadAll(r) // todo: don't use this
+	if err != nil {
+		return nil, err
+	}
 	m := map[string]any{}
-	if err := dec.Decode(&m); err != nil {
-		return nil, fmt.Errorf("could not decode json from reader: %w", err)
+	if err := yaml.Unmarshal(data, &m); err != nil {
+		return nil, err
 	}
 	return tf.decode(m)
 }
 
-func (tf *TaskDecoder) decode(m map[string]any) (Task, error) {
+func (tf TaskDecoder) decode(m map[string]any) (Task, error) {
 	if m == nil {
 		return nil, nil
 	}
@@ -103,7 +108,7 @@ func (tf *TaskDecoder) decode(m map[string]any) (Task, error) {
 		r := &Request{}
 		return r, mapstructure.Decode(m, r)
 	default:
-		return nil, fmt.Errorf("got unexpected object kind: %q, should be one of: [Dir, Exec, File]", result.Kind)
+		return nil, fmt.Errorf("got unexpected object kind: %q, should be one of: [Dir, Exec, File]: %q", result.Kind, m)
 	}
 }
 
