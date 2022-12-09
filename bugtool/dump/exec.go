@@ -16,53 +16,27 @@ import (
 // Exec gathers data resource from the stdout/stderr of
 // execing a command.
 type Exec struct {
-	base
+	Base `mapstructure:",squash"`
 	//Name string
 	Ext string
 
 	Cmd            string
-	Args           []string `json:"omitempty"`
-	WhenFileExists string   `json:"omitempty"`
+	Args           []string
+	WhenFileExists string
 
 	wp *workerpool.WorkerPool
 }
 
-type ExecIfExists struct {
-	base
-	task             Task
-	expectedFilename string
-}
-
-func IfExists(t Task, f string) *ExecIfExists {
-	return &ExecIfExists{
-		base:             base{},
-		task:             t,
-		expectedFilename: f,
-	}
-}
-
-func (e *ExecIfExists) exists() (bool, error) {
-	_, err := os.Stat(e.expectedFilename)
-	if err != nil && os.IsNotExist(err) {
-		return false, nil
-	}
-	return true, err
-}
-
-func (r *ExecIfExists) Run(ctx context.Context, cmdDir string, submit ScheduleFunc) error {
-	exists, err := r.exists()
-	if err != nil {
-		return fmt.Errorf("could not check if file exists %q: %w", r.expectedFilename, err)
-	}
-	if exists {
-		return r.task.Run(ctx, cmdDir, submit)
+func (e *Exec) Validate(ctx context.Context) error {
+	if err := e.Base.validate(); err != nil {
+		return fmt.Errorf("invalid exec %q: %w", e.Name, err)
 	}
 	return nil
 }
 
 func NewCommand(wp *workerpool.WorkerPool, name string, ext string, cmd string, args ...string) *Exec {
 	return &Exec{
-		base: base{
+		Base: Base{
 			Name: name,
 			Kind: "Exec",
 		},
@@ -85,10 +59,6 @@ func (d *Exec) TypedModel() map[string]any {
 		"cmd":  strings.Join(append([]string{d.Cmd}, d.Args...), " "),
 	}
 }
-
-// func (d *Exec) MarshalJSON() ([]byte, error) {
-// 	return json.Marshal(d.TypedModel())
-// }
 
 func (f *Exec) Filename() string {
 	return fmt.Sprintf("%s.%s", f.Name, f.Ext)

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"os"
+	"path"
 
 	"github.com/cilium/workerpool"
 	"github.com/mitchellh/mapstructure"
@@ -13,20 +15,15 @@ import (
 	yaml "sigs.k8s.io/yaml"
 )
 
-type base struct {
-	Name string `json:"Name"`
-	Kind string `json:"Kind"`
-}
-
 type Dir struct {
-	//Name
-	base
-	Tasks []Task
+	Base
+	Tasks  []Task
+	Topics []string
 }
 
 func NewDir(name string, ts []Task) *Dir {
 	return &Dir{
-		base: base{
+		Base: Base{
 			Kind: "Dir",
 			Name: name,
 		},
@@ -34,17 +31,48 @@ func NewDir(name string, ts []Task) *Dir {
 	}
 }
 
-func (d *Dir) typedModel() map[string]any {
-	return map[string]any{
-		"kind":  "dir",
-		"name":  d.Name,
-		"tasks": d.Tasks,
-	}
+func (d *Dir) WithTopics(strs ...string) *Dir {
+	d.Topics = append(d.Topics, strs...)
+	return d
 }
 
-// func (d *Dir) MarshalJSON() ([]byte, error) {
-// 	return json.Marshal(d.typedModel())
-// }
+func (d *Dir) init(dir string) (string, error) {
+	if dir == "" {
+		return dir, nil
+	}
+	dir = path.Join(dir, d.Name)
+	if err := os.MkdirAll(dir, 0644); err != nil {
+		return "", fmt.Errorf("could not init dump directory %q: %w", dir, err)
+	}
+	return dir, nil
+}
+
+func (d *Dir) Run(ctx context.Context, dir string, submit ScheduleFunc) error {
+	dir, err := d.init(dir)
+	if err != nil {
+		return err
+	}
+
+	for _, task := range d.Tasks {
+		// dir subtasks are submitted sync.
+		if err := task.Run(ctx, dir, submit); err != nil {
+			log.WithError(err).WithField("dir", d.Name).Error("failed to run dir subtask")
+		}
+	}
+	return nil
+}
+
+func (d *Dir) Validate(ctx context.Context) error {
+	if err := d.Base.validate(); err != nil {
+		return fmt.Errorf("invalid dir %q: %w", d, err)
+	}
+	for _, t := range d.Tasks {
+		if err := t.Validate(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 type TaskDecoder struct {
 	WP *workerpool.WorkerPool
@@ -67,7 +95,7 @@ func (tf TaskDecoder) decode(m map[string]any) (Task, error) {
 		return nil, nil
 	}
 	var md mapstructure.Metadata
-	result := &base{}
+	result := &Base{}
 	mdec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
 		Metadata: &md,
 		Result:   &result,
@@ -95,7 +123,7 @@ func (tf TaskDecoder) decode(m map[string]any) (Task, error) {
 			}
 		}
 		return &Dir{
-			base:  *result,
+			Base:  *result,
 			Tasks: ts,
 		}, nil
 	case "Exec":
@@ -110,20 +138,4 @@ func (tf TaskDecoder) decode(m map[string]any) (Task, error) {
 	default:
 		return nil, fmt.Errorf("got unexpected object kind: %q, should be one of: [Dir, Exec, File]: %q", result.Kind, m)
 	}
-}
-
-// TODO: name this dir or something to make it not so weird?
-func (rc *Dir) Run(ctx context.Context, dir string, submit ScheduleFunc) error {
-	//dir, err := rc.Init(dir)
-	// if err != nil {
-	// 	return err
-	// }
-
-	for _, task := range rc.Tasks {
-		// dir subtasks are submitted sync.
-		if err := task.Run(ctx, dir, submit); err != nil {
-			log.WithError(err).WithField("dir", rc.Name).Error("failed to run dir subtask")
-		}
-	}
-	return nil
 }

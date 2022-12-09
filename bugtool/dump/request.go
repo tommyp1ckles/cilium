@@ -8,32 +8,48 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+
+	log "github.com/sirupsen/logrus"
 )
 
 type Request struct {
-	base
-	URL        string
-	UnixSocket string
-	//Client *http.Client
+	Base           `mapstructure:",squash"`
+	URL            string
+	UnixSocketPath string
+	OnSocketExist  bool
+}
+
+func (r *Request) Validate(ctx context.Context) error {
+	if err := r.validate(); err != nil {
+		return fmt.Errorf("invalid request %q: %w", r.Name, err)
+	}
+	return nil
 }
 
 func NewRequest(name, url, unixSocket string) *Request {
 	return &Request{
-		base: base{
+		Base: Base{
 			Kind: "Request",
 			Name: name,
 		},
-		URL:        url,
-		UnixSocket: unixSocket,
+		URL:            url,
+		UnixSocketPath: unixSocket,
 	}
 }
 
+// WithSocketExist will switch request mode such that if the socket does
+// not exist, then dump task is skipped and no error is reported.
+func (r *Request) WithSocketExist() *Request {
+	r.OnSocketExist = true
+	return r
+}
+
 func (r *Request) getClient() *http.Client {
-	if r.UnixSocket != "" {
+	if r.UnixSocketPath != "" {
 		return &http.Client{
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-					return net.Dial("unix", r.UnixSocket)
+					return net.Dial("unix", r.UnixSocketPath)
 				},
 			},
 		}
@@ -43,6 +59,19 @@ func (r *Request) getClient() *http.Client {
 
 func (r *Request) Run(ctx context.Context, dir string, submit ScheduleFunc) error {
 	return submit(r.Name, func(ctx context.Context) error {
+		if r.UnixSocketPath != "" {
+			_, err := os.Stat(r.UnixSocketPath)
+			if err != nil && os.IsNotExist(err) && r.OnSocketExist {
+				log.WithFields(log.Fields{
+					"name":   r.Name,
+					"url":    r.URL,
+					"socket": r.UnixSocketPath,
+				}).Info("no unix socket file exists skipping due to OnSocketExist=true")
+				return nil
+			} else if err != nil {
+				return err
+			}
+		}
 		dir := filepath.Join(dir, r.Name)
 		return downloadToFile(ctx, r.getClient(), r.URL, dir)
 	})

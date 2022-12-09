@@ -4,11 +4,9 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
-	"strconv"
 	"strings"
 
 	dump "github.com/cilium/cilium/bugtool/dump"
@@ -86,7 +84,6 @@ func defaultCommands() []string {
 		tableStructuredCommands,
 		jsonStructuredCommands,
 		gopsCommands,
-		routeCommands,
 		bpftoolCGroupTreeCommands,
 		tcInterfaceCommands,
 		copyCiliumInfoCommands,
@@ -136,32 +133,14 @@ func defaultFileDumps() []dump.Task {
 }
 
 // routeCommands gets the routes tables dynamically.
-func routeCommands() []string {
-	commands := []string{}
-	routes, _, err := execCommand("ip --json route show table all")
-	if err != nil {
-		fmt.Println("[error] failed to get route tables for route commands:", err)
-		return nil
-	}
-
-	type entry struct {
-		Table string `json:"table"`
-	}
-	routeMap := []entry{}
-	if err := json.Unmarshal(routes, &routeMap); err != nil {
-		fmt.Println("[error] failed to unmarshal route map:", err)
-		return nil
-	}
-
-	for _, e := range routeMap {
-		if id, err := strconv.Atoi(e.Table); err == nil {
-			commands = append(
-				commands,
-				fmt.Sprintf("ip -4 route show table %d", id),
-				fmt.Sprintf("ip -6 route show table %d", id),
-			)
-		}
-	}
+func routeCommands(wp *workerpool.WorkerPool) []dump.Task {
+	// oneline script gets table names for all devices, then dumps either ip4/ip6 route tables.
+	routesScript := "for table in $(ip --json route show table all | jq -r '.[] | select(.table != null) | select(.table != \"local\") | .table'); do ip --json %s route show table $table ; done"
+	var commands []dump.Task
+	commands = append(commands,
+		dump.NewCommand(wp, "ip4-route-tables", "json", "bash", []string{"-c", fmt.Sprintf(routesScript, "-4")}...),
+		dump.NewCommand(wp, "ip6-route-tables", "json", "bash", []string{"-c", fmt.Sprintf(routesScript, "-6")}...),
+	)
 	return commands
 }
 

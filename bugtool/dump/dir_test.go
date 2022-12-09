@@ -30,13 +30,13 @@ func TestDecode(t *testing.T) {
 
 func TestEncode(t *testing.T) {
 	root := &Dir{
-		base: base{
+		Base: Base{
 			Kind: "Dir",
 			Name: "d0",
 		},
 		Tasks: []Task{
 			&Exec{
-				base: base{
+				Base: Base{
 					Kind: "Exec",
 					Name: "e0",
 				},
@@ -44,7 +44,7 @@ func TestEncode(t *testing.T) {
 				Args: []string{"-l", "/etc/"},
 			},
 			&Exec{
-				base: base{
+				Base: Base{
 					Kind: "Exec",
 					Name: "e1",
 				},

@@ -108,32 +108,6 @@ func init() {
 	log.SetFormatter(&log.TextFormatter{})
 }
 
-func getVerifyCiliumPods() (k8sPods []string) {
-	if k8s {
-		var err error
-		// By default try to pick either Kubernetes or non-k8s (host mode). If
-		// we find Cilium pod(s) then it's k8s-mode otherwise host mode.
-		// Passing extra flags can override the default.
-		k8sPods, err = getCiliumPods(k8sNamespace, k8sLabel)
-		// When the k8s flag is set, perform extra checks that we actually do have pods or fail.
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %s\nFailed to find pods, is kube-apiserver running?\n", err)
-			os.Exit(1)
-		}
-		if len(k8sPods) < 1 {
-			fmt.Fprint(os.Stderr, "Found no pods, is kube-apiserver running?\n")
-			os.Exit(1)
-		}
-	}
-	if os.Getuid() != 0 && !k8s && len(k8sPods) == 0 {
-		// When the k8s flag is not set and the user is not root,
-		// debuginfo and BPF related commands can fail.
-		log.Warn("Some BPF commands might fail when run as non-root user")
-	}
-
-	return k8sPods
-}
-
 func removeIfEmpty(dir string) {
 	d, err := os.Open(dir)
 	if err != nil {
@@ -171,10 +145,6 @@ const timestampFormat = "20060102-150405.999-0700-MST"
 
 func runTool() {
 	log.Info("running bugtool")
-	log.Info("running bugtool")
-	log.Info("running bugtool")
-	log.Info("running bugtool")
-	log.Info("running bugtool")
 	// Validate archive type
 	if !isValidArchiveType(archiveType) {
 		fmt.Fprintf(os.Stderr, "Error: unsupported output type: %s, must be one of tar|gz\n", archiveType)
@@ -203,8 +173,6 @@ func runTool() {
 	cmdDir := createDir(dbgDir, "cmd") // TODO
 	confDir := createDir(dbgDir, "conf")
 
-	//k8sPods := getVerifyCiliumPods()
-
 	if parallelWorkers <= 0 {
 		parallelWorkers = runtime.NumCPU()
 	}
@@ -229,12 +197,16 @@ func runTool() {
 		root = dump.NewDir(
 			"", // root
 			dump.Tasks{
-				dump.NewDir("bpftool", bpftoolTasks),
-				dump.NewDir("cmd", allCommands),
+				dump.NewDir("bpftool", bpftoolTasks).WithTopics("bpf"),
+				dump.NewDir("cmd", append(allCommands, routeCommands(wp)...)),
 				dump.NewDir("files", defaultFileDumps()),
-				dump.NewDir("evnoy", []dump.Task{getEnvoyDump()}),
+				dump.NewDir("envoy-config", []dump.Task{getEnvoyDump()}),
 			},
 		)
+	}
+	if err := root.Validate(context.Background()); err != nil {
+		fmt.Fprintf(os.Stderr, "[error] failed to validate config:", err)
+		os.Exit(1)
 	}
 
 	if dryRunMode {

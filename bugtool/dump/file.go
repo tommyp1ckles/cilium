@@ -10,30 +10,28 @@ import (
 )
 
 type File struct {
-	base
-	Src string
+	Base      `mapstructure:",squash"`
+	Src       string
+	MissingOk bool
+}
+
+func (f *File) Validate(ctx context.Context) error {
+	if err := f.validate(); err != nil {
+		return fmt.Errorf("invalid file %q: %w", f.Name, err)
+	}
+	return nil
 }
 
 func NewFile(Src string) *File {
 	return &File{
-		base: base{
+		Base: Base{
 			Name: "file:" + strings.ReplaceAll(Src, "/", "_"),
 			Kind: "File",
 		},
-		Src: Src,
+		Src:       Src,
+		MissingOk: true,
 	}
 }
-
-func (c *File) typedModel() map[string]any {
-	return map[string]any{
-		"kind": "file",
-		"src":  c.Src,
-	}
-}
-
-// func (c *File) MarshalJSON() ([]byte, error) {
-// 	return json.Marshal(c.typedModel())
-// }
 
 func (c *File) Run(ctx context.Context, dir string, submit ScheduleFunc) error {
 	if c.Src == "" {
@@ -42,6 +40,9 @@ func (c *File) Run(ctx context.Context, dir string, submit ScheduleFunc) error {
 	_, name := path.Split(c.Src)
 	return submit(name, func(_ context.Context) error {
 		src, err := os.Open(c.Src)
+		if err != nil && os.IsNotExist(err) && c.MissingOk {
+			return nil
+		}
 		if err != nil {
 			return fmt.Errorf("could not open file for copying: %w", err)
 		}

@@ -9,5 +9,5 @@ func getEnvoyDump() *dump.Request {
 		"envoy-config",
 		"http://admin/config_dump?include_eds",
 		"/var/run/cilium/envoy-admin.sock",
-	)
+	).WithSocketExist()
 }

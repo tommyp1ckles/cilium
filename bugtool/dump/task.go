@@ -14,6 +14,7 @@ type Task interface {
 	// Run schedules a task run, with dir being the directory in which all final
 	// dump output should be written.
 	Run(ctx context.Context, dir string, schedule ScheduleFunc) error
+	Validate(ctx context.Context) error
 }
 
 type Condition interface {
