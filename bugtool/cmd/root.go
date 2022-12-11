@@ -44,7 +44,7 @@ var BugtoolRootCmd = &cobra.Command{
 	$ kubectl -n kube-system exec cilium-kg8lv -- cilium-bugtool
 	$ kubectl cp kube-system/cilium-kg8lv:/tmp/cilium-bugtool-243785589.tar /tmp/cilium-bugtool-243785589.tar`,
 	Run: func(_ *cobra.Command, _ []string) {
-		runTool()
+		runTool(context.Background())
 	},
 }
 
@@ -59,24 +59,20 @@ for sensitive information.
 )
 
 var (
-	archive                  bool
-	archiveType              string
-	k8s                      bool
-	dumpPath                 string
-	host                     string
-	k8sNamespace             string
-	k8sLabel                 string
-	execTimeout              time.Duration
-	configPath               string
-	dryRunMode               bool
-	enableMarkdown           bool
-	archivePrefix            string
-	getPProf                 bool
-	envoyDump                bool
-	pprofPort                int
-	traceSeconds             int
-	parallelWorkers          int
-	ciliumAgentContainerName string
+	archive         bool
+	archiveType     string
+	dumpPath        string
+	execTimeout     time.Duration
+	configPath      string
+	dryRunMode      bool
+	enableMarkdown  bool
+	archivePrefix   string
+	getPProf        bool
+	envoyDump       bool
+	pprofPort       int
+	traceSeconds    int
+	parallelWorkers int
+	dumpTimeout     time.Duration
 )
 
 func init() {
@@ -92,20 +88,17 @@ func init() {
 	)
 	BugtoolRootCmd.Flags().IntVar(&traceSeconds, "pprof-trace-seconds", 180, "Amount of seconds used for pprof CPU traces")
 	BugtoolRootCmd.Flags().StringVarP(&archiveType, "archiveType", "o", "tar", "Archive type: tar | gz")
-	BugtoolRootCmd.Flags().BoolVar(&k8s, "k8s-mode", false, "Require Kubernetes pods to be found or fail")
 	BugtoolRootCmd.Flags().BoolVar(&dryRunMode, "dry-run", false, "Create configuration file of all commands that would have been executed")
 	BugtoolRootCmd.Flags().StringVarP(&dumpPath, "tmp", "t", defaultDumpPath, "Path to store extracted files. Use '-' to send to stdout.")
-	BugtoolRootCmd.Flags().StringVarP(&host, "host", "H", "", "URI to server-side API")
-	BugtoolRootCmd.Flags().StringVarP(&k8sNamespace, "k8s-namespace", "", "kube-system", "Kubernetes namespace for Cilium pod")
-	BugtoolRootCmd.Flags().StringVarP(&k8sLabel, "k8s-label", "", "k8s-app=cilium", "Kubernetes label for Cilium pod")
 	BugtoolRootCmd.Flags().DurationVarP(&execTimeout, "exec-timeout", "", 30*time.Second, "The default timeout for any cmd execution in seconds")
 	BugtoolRootCmd.Flags().StringVarP(&configPath, "config", "", "./.cilium-bugtool.config", "Configuration to decide what should be run")
 	BugtoolRootCmd.Flags().BoolVar(&enableMarkdown, "enable-markdown", false, "Dump output of commands in markdown format")
 	BugtoolRootCmd.Flags().StringVarP(&archivePrefix, "archive-prefix", "", "", "String to prefix to name of archive if created (e.g., with cilium pod-name)")
 	BugtoolRootCmd.Flags().IntVar(&parallelWorkers, "parallel-workers", 0, "Maximum number of parallel worker tasks, use 0 for number of CPUs")
-	BugtoolRootCmd.Flags().StringVarP(&ciliumAgentContainerName, "cilium-agent-container-name", "", "cilium-agent", "Name of the Cilium Agent main container (when k8s-mode is true)")
+	BugtoolRootCmd.Flags().DurationVar(&dumpTimeout, "timeout", 30*time.Second, "Dump timeout seconds")
 
 	log.SetFormatter(&log.TextFormatter{})
+	log.SetLevel(log.DebugLevel)
 }
 
 func removeIfEmpty(dir string) {
@@ -143,7 +136,7 @@ func isValidArchiveType(archiveType string) bool {
 
 const timestampFormat = "20060102-150405.999-0700-MST"
 
-func runTool() {
+func runTool(ctx context.Context) {
 	log.Info("running bugtool")
 	// Validate archive type
 	if !isValidArchiveType(archiveType) {
@@ -205,7 +198,7 @@ func runTool() {
 		)
 	}
 	if err := root.Validate(context.Background()); err != nil {
-		fmt.Fprintf(os.Stderr, "[error] failed to validate config:", err)
+		fmt.Fprintf(os.Stderr, "[error] failed to validate config: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -216,17 +209,22 @@ func runTool() {
 	}
 
 	if getPProf {
-		err := pprofTraces(cmdDir)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to create debug directory %s\n", err)
-			os.Exit(1)
-		}
+		fmt.Fprintf(os.Stdout, "Getting pprof traces (trace duration=%v)\n", time.Duration(traceSeconds))
+		root = dump.NewDir("pprof", pprofTrace())
+		ctx, cancel := context.WithTimeout(ctx, time.Duration(traceSeconds)+time.Minute)
+		defer cancel()
+		runAll(ctx, wp, root, dbgDir)
+		removeIfEmpty(cmdDir)
+		removeIfEmpty(confDir)
+		archiveDump(dbgDir, sendArchiveToStdout)
 		return
 	}
 
 	defer printDisclaimer()
 
-	runAll(wp, root, dbgDir)
+	ctx, cancel := context.WithTimeout(ctx, dumpTimeout)
+	defer cancel()
+	runAll(ctx, wp, root, dbgDir)
 
 	removeIfEmpty(cmdDir)
 	removeIfEmpty(confDir)
@@ -327,10 +325,6 @@ func createDir(dbgDir string, newDir string) string {
 	return confDir
 }
 
-func podPrefix(pod, cmd string) string {
-	return fmt.Sprintf("kubectl exec %s -c %s -n %s -- %s", pod, ciliumAgentContainerName, k8sNamespace, cmd)
-}
-
 type Result struct {
 	Name  string `json:"name"`
 	Error string `json:"error"`
@@ -340,8 +334,8 @@ type Report struct {
 	Items []Result `json:"items"`
 }
 
-func runAll(wp *workerpool.WorkerPool, root dump.Task, dbgDir string) {
-	err := root.Run(context.Background(), dbgDir, wp.Submit)
+func runAll(ctx context.Context, wp *workerpool.WorkerPool, root dump.Task, dbgDir string) {
+	err := root.Run(ctx, dbgDir, wp.Submit)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Could not start bugtool tasks: %s\n", err)
 		os.Exit(1)
@@ -455,7 +449,7 @@ func writeCmdToFile(cmdDir, prompt string, k8sPods []string, enableMarkdown bool
 			fmt.Fprint(f, string(output))
 		} else if enableMarkdown && len(output) > 0 {
 			// Write prompt as header and the output as body, and/or error but delete empty output.
-			fmt.Fprint(f, fmt.Sprintf("# %s\n\n```\n%s\n```\n", prompt, output))
+			fmt.Fprintf(f, "# %s\n\n```\n%s\n```\n", prompt, output)
 		}
 	}
 
@@ -477,28 +471,6 @@ func split(prompt string) (string, []string) {
 	}
 
 	return cmd, args
-}
-
-func getCiliumPods(namespace, label string) ([]string, error) {
-	output, _, err := execCommand(fmt.Sprintf("kubectl -n %s get pods -l %s", namespace, label))
-	if err != nil {
-		return nil, err
-	}
-
-	lines := bytes.Split(output, []byte("\n"))
-	ciliumPods := make([]string, 0, len(lines))
-	for _, l := range lines {
-		if !bytes.HasPrefix(l, []byte("cilium")) {
-			continue
-		}
-		// NAME           READY     STATUS    RESTARTS   AGE
-		// cilium-cfmww   0/1       Running   0          3m
-		// ^
-		pod := bytes.Split(l, []byte(" "))[0]
-		ciliumPods = append(ciliumPods, string(pod))
-	}
-
-	return ciliumPods, nil
 }
 
 func downloadToFile(client *http.Client, url, file string) error {

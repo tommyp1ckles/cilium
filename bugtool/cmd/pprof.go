@@ -6,8 +6,30 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/cilium/cilium/bugtool/dump"
 	"github.com/cilium/cilium/pkg/components"
 )
+
+func pprofTrace() dump.Tasks {
+	pprofHost := fmt.Sprintf("localhost:%d", pprofPort)
+	return dump.Tasks{
+		dump.NewRequest(
+			"pprof-cpu",
+			fmt.Sprintf("http://%s/debug/pprof/profile?seconds=%d", pprofHost, traceSeconds),
+			"",
+		),
+		dump.NewRequest(
+			"pprof-trace",
+			fmt.Sprintf("http://%s/debug/pprof/trace?seconds=%d", pprofHost, traceSeconds),
+			"",
+		),
+		dump.NewRequest(
+			"pprof-heap",
+			fmt.Sprintf("http://%s/debug/pprof/heap?debug=1", pprofHost),
+			"",
+		),
+	}
+}
 
 func pprofTraces(rootDir string) error {
 	var wg sync.WaitGroup

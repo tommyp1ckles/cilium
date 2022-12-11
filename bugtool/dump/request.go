@@ -78,6 +78,11 @@ func (r *Request) Run(ctx context.Context, dir string, submit ScheduleFunc) erro
 }
 
 func downloadToFile(ctx context.Context, client *http.Client, url, file string) error {
+	l := log.WithFields(log.Fields{
+		"url":  url,
+		"file": file,
+	})
+
 	out, err := os.Create(file)
 	if err != nil {
 		return err
@@ -88,10 +93,15 @@ func downloadToFile(ctx context.Context, client *http.Client, url, file string) 
 	if err != nil {
 		return nil
 	}
+
+	l.Debug("doing http request")
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
+
+	l.Debug("reading request body")
+
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("bad status: %s", resp.Status)
