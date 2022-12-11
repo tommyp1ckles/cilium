@@ -232,7 +232,7 @@ func tableStructuredCommands() []string {
 		"uptime",
 		"sysctl -a",
 		"taskset -pc 1",
-		"lsmod | sed 1,1d",
+		"lsmod",
 
 		"ss -H -u -p -a -s",
 	}

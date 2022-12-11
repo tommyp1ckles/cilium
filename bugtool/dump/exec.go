@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/cilium/workerpool"
+	log "github.com/sirupsen/logrus"
 )
 
 // Exec gathers data resource from the stdout/stderr of
@@ -23,6 +24,8 @@ type Exec struct {
 	Cmd            string
 	Args           []string
 	WhenFileExists string
+
+	filter func(io.Reader, io.Writer) error
 
 	wp *workerpool.WorkerPool
 }
@@ -75,34 +78,44 @@ func (e *Exec) shouldRun() (bool, error) {
 	return true, err
 }
 
-func (r *Exec) Run(ctx context.Context, cmdDir string, submit ScheduleFunc) error {
-	run, err := r.shouldRun()
+func (e *Exec) Run(ctx context.Context, cmdDir string, submit ScheduleFunc) error {
+	run, err := e.shouldRun()
 	if err != nil {
 		return fmt.Errorf("failed evaluating if exec task should run: %w", err)
 	}
 	if !run {
 		return nil
 	}
-	return submit(r.Name, func(ctx context.Context) error {
-		outFd, err := os.Create(filepath.Join(cmdDir, r.Filename()))
+	return submit(e.Name, func(ctx context.Context) error {
+		outFd, err := os.Create(filepath.Join(cmdDir, e.Filename()))
 		if err != nil {
-			return fmt.Errorf("could no create file for dump %q: %w", r.Filename(), err)
+			return fmt.Errorf("could no create file for dump %q: %w", e.Filename(), err)
 		}
 		defer outFd.Close()
-		errFd, err := createErrFile(filepath.Join(cmdDir, r.Filename()+".err"))
+		errFd, err := createErrFile(filepath.Join(cmdDir, e.Filename()+".err"))
 		if err != nil {
-			return fmt.Errorf("could no create file for dump %q: %w", r.Filename(), err)
+			return fmt.Errorf("could no create file for dump %q: %w", e.Filename(), err)
 		}
 		defer errFd.Close()
 
-		c := exec.CommandContext(ctx, r.Cmd, r.Args...)
-		c.Stdout = outFd
+		c := exec.CommandContext(ctx, e.Cmd, e.Args...)
+
+		var outWriter io.Writer
+		outWriter = outFd // by default, just write to the file.
+		if e.filter != nil {
+			// if filter exists, swap out outWriter with writer end.
+			var r io.Reader
+			r, outWriter = io.Pipe()
+			go func() {
+				log.WithField("name", e.Name).Debug("running filter on output")
+				e.filter(r, outFd)
+			}()
+		}
+
+		c.Stdout = outWriter
 		c.Stderr = os.Stdout
 		c.Stderr = errFd
 
-		// r.SysProcAttr = &syscall.SysProcAttr{
-		// 	Cloneflags: syscall.
-		// }
 		if err := c.Run(); err != nil {
 			return err
 		}

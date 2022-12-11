@@ -6,7 +6,6 @@ package cmd
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -120,7 +119,8 @@ func removeIfEmpty(dir string) {
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "Deleted empty directory %s\n", dir)
+	//fmt.Fprintf(os.Stderr, "Deleted empty directory %s\n", dir)
+	log.Info("Deleted empty directory %s\n", dir)
 
 }
 
@@ -137,7 +137,12 @@ func isValidArchiveType(archiveType string) bool {
 const timestampFormat = "20060102-150405.999-0700-MST"
 
 func runTool(ctx context.Context) {
-	log.Info("running bugtool")
+	log.Info("     _ _ _")
+	log.Info(" ___|_| |_|_ _ _____")
+	log.Info("|  _| | | | | |     |")
+	log.Info("|___|_|_|_|___|_|_|_|")
+	log.Info("Cilium Bugtool v1.0.0")
+
 	// Validate archive type
 	if !isValidArchiveType(archiveType) {
 		fmt.Fprintf(os.Stderr, "Error: unsupported output type: %s, must be one of tar|gz\n", archiveType)
@@ -325,13 +330,12 @@ func createDir(dbgDir string, newDir string) string {
 	return confDir
 }
 
-type Result struct {
-	Name  string `json:"name"`
-	Error string `json:"error"`
-}
-
 type Report struct {
-	Items []Result `json:"items"`
+	Date    time.Time         `json:"date"`
+	Results map[string]Result `json:"results"`
+}
+type Result struct {
+	Error string `json:"error"`
 }
 
 func runAll(ctx context.Context, wp *workerpool.WorkerPool, root dump.Task, dbgDir string) {
@@ -353,25 +357,31 @@ func runAll(ctx context.Context, wp *workerpool.WorkerPool, root dump.Task, dbgD
 		os.Exit(1)
 	}
 
-	report := &Report{}
+	report := map[string]Result{}
 	for _, result := range results {
 		if result.Err() != nil {
 			log.WithError(result.Err()).WithField("task", result.String()).Error("task failed to run")
-			report.Items = append(report.Items, Result{
-				Name:  result.String(),
+			report[result.String()] = Result{
 				Error: result.Err().Error(),
-			})
+			}
+			// report.Items = append(report.Items, Result{
+			// 	Name:  result.String(),
+			// 	Error: result.Err().Error(),
+			// })
 		}
 	}
 
-	reportFd, err := os.Create(path.Join(dbgDir, "report.json"))
+	reportFd, err := os.Create(path.Join(dbgDir, "report.yaml"))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to write report: %v\n", err)
+		log.WithError(err).Error("Failed to create report file")
 		os.Exit(1)
 	}
-	enc := json.NewEncoder(reportFd)
-	if enc.Encode(report); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create report: %v\n", err)
+	reportData, err := yaml.Marshal(report)
+	if err != nil {
+		log.WithError(err).Fatal("Could not marshal report data")
+	}
+	if _, err := reportFd.Write(reportData); err != nil {
+		log.WithError(err).Error("Failed to create report")
 		os.Exit(1)
 	}
 }
