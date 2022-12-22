@@ -8,10 +8,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path"
@@ -73,7 +71,6 @@ var (
 	archiveType              string
 	k8s                      bool
 	dumpPath                 string
-	host                     string
 	k8sNamespace             string
 	k8sLabel                 string
 	execTimeout              time.Duration
@@ -315,59 +312,7 @@ func runTool(ctx context.Context) {
 	}
 
 	if k8s {
-		log.Info("running commands across k8s pods")
-		conf, err := yaml.Marshal(root)
-		if err != nil {
-			log.WithError(err).Fatal("could not marshal root config")
-		}
-		encConf := base64.StdEncoding.EncodeToString([]byte(conf))
-		for _, pod := range k8sPods {
-			pod := pod
-			wp.Submit(pod, func(ctx context.Context) error {
-				log.Infof("running on Pod %s", pod)
-				cstr := fmt.Sprintf("kubectl exec %s --container %s --namespace %s -- cilium-bugtool --config-string=%s",
-					pod, ciliumAgentContainerName, k8sNamespace, encConf)
-				c := exec.CommandContext(ctx, "bash", "-c", cstr)
-				out := &bytes.Buffer{}
-				stderr := &bytes.Buffer{}
-				c.Stderr = stderr
-				c.Stdout = out
-				if err := c.Run(); err != nil {
-					err = fmt.Errorf("%s: %w", stderr.String(), err)
-					log.WithError(err).Error("failed to run command on pod")
-					return err
-				}
-				var archive string
-				for _, line := range strings.Split(out.String(), "\n") {
-					if strings.HasPrefix(line, "Archive at:") {
-						ts := strings.Fields(line)
-						if len(ts) != 3 {
-							log.Error("unexpected output for archive destination")
-							return fmt.Errorf("unexpected output from cilium-bugtool")
-						}
-						archive = ts[2]
-						break
-					}
-				}
-				filename := path.Base(archive)
-				cpStr := fmt.Sprintf("kubectl cp %s:%s ./%s", pod, archive, filename)
-				log.Infof("copying: %s", filename)
-				c = exec.CommandContext(ctx, "bash", "-c", cpStr)
-				stderr = &bytes.Buffer{}
-				c.Stderr = stderr
-				if err := c.Run(); err != nil {
-					err = fmt.Errorf("%s: %w", stderr.String(), err)
-					log.WithError(err).Error("failed to run command on pod")
-					return err
-				}
-				return nil
-			})
-		}
-		_, err = wp.Drain()
-		if err != nil {
-			log.WithError(err).Fatal("failed to run k8s commands")
-		}
-		return
+		runAllK8s(ctx, wp, root, k8sPods)
 	}
 
 	if dryRunMode {
@@ -591,71 +536,6 @@ func execCommand(prompt string) ([]byte, []byte, error) {
 	return stdout.Bytes(), stderr.Bytes(), nil
 }
 
-// writeCmdToFile will execute command and write markdown output to a file
-func writeCmdToFile(cmdDir, prompt string, k8sPods []string, enableMarkdown bool, postProcess func(output []byte) []byte) {
-	// Clean up the filename
-	name := strings.Replace(prompt, "/", " ", -1)
-	name = strings.Replace(name, " ", "-", -1)
-	f, err := os.Create(filepath.Join(cmdDir, name+".md"))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Could not create file %s\n", err)
-		return
-	}
-	defer f.Close()
-
-	cmd, args := split(prompt)
-
-	if len(k8sPods) == 0 {
-		// The command does not exist, abort.
-		if _, err := exec.LookPath(cmd); err != nil {
-			os.Remove(f.Name())
-			return
-		}
-	} else if len(args) > 5 {
-		// Boundary check is necessary to skip other non exec kubectl
-		// commands.
-		ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
-		defer cancel()
-		if _, err := exec.CommandContext(ctx, "kubectl", "exec",
-			args[1], "-n", args[3], "--", "which",
-			args[5]).CombinedOutput(); err != nil || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			os.Remove(f.Name())
-			return
-		}
-	}
-
-	var output []byte
-
-	// If we don't need to postprocess the command output, write the output to a file directly
-	// without buffering.
-	if !enableMarkdown && postProcess == nil {
-		cmd := exec.Command("bash", "-c", prompt)
-		cmd.Stdout = f
-		cmd.Stderr = f
-		err = cmd.Run()
-	} else {
-		output, _, _ = execCommand(prompt)
-		// Post-process the output if necessary
-		if postProcess != nil {
-			output = postProcess(output)
-		}
-
-		// We deliberately continue in case there was a error but the output
-		// produced might have useful information
-		if bytes.Contains(output, []byte("```")) || !enableMarkdown {
-			// Already contains Markdown, print as is.
-			fmt.Fprint(f, string(output))
-		} else if enableMarkdown && len(output) > 0 {
-			// Write prompt as header and the output as body, and/or error but delete empty output.
-			fmt.Fprintf(f, "# %s\n\n```\n%s\n```\n", prompt, output)
-		}
-	}
-
-	if err != nil {
-		fmt.Fprintf(f, "> Error while running '%s':  %s\n\n", prompt, err)
-	}
-}
-
 // split takes a command prompt and returns the command and arguments separately
 func split(prompt string) (string, []string) {
 	// Split the command and arguments
@@ -671,21 +551,57 @@ func split(prompt string) (string, []string) {
 	return cmd, args
 }
 
-func downloadToFile(client *http.Client, url, file string) error {
-	out, err := os.Create(file)
+func runAllK8s(ctx context.Context, wp *workerpool.WorkerPool, root dump.Task, k8sPods []string) {
+	log.Info("running commands across k8s pods")
+	conf, err := yaml.Marshal(root)
 	if err != nil {
-		return err
+		log.WithError(err).Fatal("could not marshal root config")
 	}
-	defer out.Close()
-
-	resp, err := client.Get(url)
+	encConf := base64.StdEncoding.EncodeToString([]byte(conf))
+	for _, pod := range k8sPods {
+		pod := pod
+		wp.Submit(pod, func(ctx context.Context) error {
+			log.Infof("running on Pod %s", pod)
+			cstr := fmt.Sprintf("kubectl exec %s --container %s --namespace %s -- cilium-bugtool --config-string=%s",
+				pod, ciliumAgentContainerName, k8sNamespace, encConf)
+			c := exec.CommandContext(ctx, "bash", "-c", cstr)
+			out := &bytes.Buffer{}
+			stderr := &bytes.Buffer{}
+			c.Stderr = stderr
+			c.Stdout = out
+			if err := c.Run(); err != nil {
+				err = fmt.Errorf("%s: %w", stderr.String(), err)
+				log.WithError(err).Error("failed to run command on pod")
+				return err
+			}
+			var archive string
+			for _, line := range strings.Split(out.String(), "\n") {
+				if strings.HasPrefix(line, "Archive at:") {
+					ts := strings.Fields(line)
+					if len(ts) != 3 {
+						log.Error("unexpected output for archive destination")
+						return fmt.Errorf("unexpected output from cilium-bugtool")
+					}
+					archive = ts[2]
+					break
+				}
+			}
+			filename := path.Base(archive)
+			cpStr := fmt.Sprintf("kubectl cp %s:%s ./%s", pod, archive, filename)
+			log.Infof("copying: %s", filename)
+			c = exec.CommandContext(ctx, "bash", "-c", cpStr)
+			stderr = &bytes.Buffer{}
+			c.Stderr = stderr
+			if err := c.Run(); err != nil {
+				err = fmt.Errorf("%s: %w", stderr.String(), err)
+				log.WithError(err).Error("failed to run command on pod")
+				return err
+			}
+			return nil
+		})
+	}
+	_, err = wp.Drain()
 	if err != nil {
-		return err
+		log.WithError(err).Fatal("failed to run k8s commands")
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("bad status: %s", resp.Status)
-	}
-	_, err = io.Copy(out, resp.Body)
-	return err
 }
