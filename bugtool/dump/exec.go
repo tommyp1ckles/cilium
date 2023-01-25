@@ -6,7 +6,6 @@ package dump
 import (
 	"context"
 	"fmt"
-	"io"
 	"os/exec"
 	"syscall"
 )
@@ -19,12 +18,10 @@ type Exec struct {
 
 	Cmd  string
 	Args []string
-
-	clauses []Clause
-	filter  func(io.Reader, io.Writer) error
 }
 
 func (e *Exec) Validate(ctx context.Context) error {
+	fmt.Println("[debugz] validating:", e.Identifier())
 	if err := e.Base.validate(); err != nil {
 		return fmt.Errorf("invalid exec %q: %w", e.GetName(), err)
 	}
@@ -77,6 +74,6 @@ func (e *Exec) Run(ctx context.Context, runtime Context) error {
 			}
 		}()
 
-		return ctx.Err()
+		return nil
 	})
 }

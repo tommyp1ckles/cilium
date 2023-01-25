@@ -88,7 +88,9 @@ func (c Context) WithSubdir(name string) Context {
 // CreateFile attempts to create a file in the current runtime contexts
 // directory.
 func (c Context) CreateFile(filename string) (*os.File, error) {
+	fmt.Println("[tom-debug777] dir:", c.dir)
 	filepath := path.Join(c.dir, filename)
+	fmt.Println("[tom-debug111] path:", c.dir)
 	return os.Create(filepath)
 }
 
@@ -101,7 +103,11 @@ func (c Context) CreateErrFile(filename string) (*ErrFile, error) {
 
 // Initialize initializes a runtime context, ensuring that dump directory is in place.
 func Initialize(c Context) error {
+	if c.Dir() == "" {
+		return nil
+	}
 	if err := os.MkdirAll(c.Dir(), dumpDirPerms); err != nil {
+		logrus.Errorf("could not init dir %q: %s", c.Dir(), err.Error())
 		return fmt.Errorf("could not init dump directory %q: %w", c.Dir(), err)
 	}
 	return nil

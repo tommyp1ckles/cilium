@@ -43,11 +43,7 @@ func (d *Dir) Run(ctx context.Context, runtime Context) error {
 	}
 
 	for _, task := range d.Tasks {
-		if err := runtime.Submit(task.Identifier(), func(ctx context.Context) error {
-			return task.Run(ctx, runtime)
-		}); err != nil {
-			return fmt.Errorf("failed to submit subtask: %w", err)
-		}
+		return task.Run(ctx, runtime)
 	}
 	return nil
 }
