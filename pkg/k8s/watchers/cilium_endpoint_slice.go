@@ -98,7 +98,6 @@ func (k *K8sWatcher) ciliumEndpointSliceInit(client client.Clientset, asyncContr
 			cesInformer.HasSynced,
 			k8sAPIGroupCiliumEndpointSliceV2Alpha1,
 		)
-
 		once.Do(func() {
 			// Signalize that we have put node controller in the wait group
 			// to sync resources.
@@ -111,6 +110,13 @@ func (k *K8sWatcher) ciliumEndpointSliceInit(client client.Clientset, asyncContr
 		close(isConnected)
 
 		log.Info("Connected to key-value store, stopping CiliumEndpointSlice watcher")
+
+		// If we connect to external kvstore, safely remove reference to ces indexer
+		// prior to disconnecting watcher.
+		k.ciliumEndpointSliceIndexerMU.Lock()
+		k.ciliumEndpointSliceIndexer = nil
+		k.ciliumEndpointSliceIndexerMU.Unlock()
+
 		k.k8sAPIGroups.RemoveAPI(k8sAPIGroupCiliumEndpointSliceV2Alpha1)
 		k.cancelWaitGroupToSyncResources(k8sAPIGroupCiliumEndpointSliceV2Alpha1)
 		<-kvstore.Client().Disconnected()

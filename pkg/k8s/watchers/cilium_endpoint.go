@@ -101,6 +101,12 @@ func (k *K8sWatcher) ciliumEndpointsInit(ciliumNPClient client.Clientset, asyncC
 
 		log.Info("Connected to key-value store, stopping CiliumEndpoint watcher")
 
+		// If we connect to external kvstore, safely remove reference to cep indexer
+		// prior to disconnecting k8s watcher.
+		k.ciliumEndpointIndexerMU.Lock()
+		k.ciliumEndpointIndexer = nil
+		k.ciliumEndpointIndexerMU.Unlock()
+
 		k.k8sAPIGroups.RemoveAPI(k8sAPIGroupCiliumEndpointV2)
 		k.cancelWaitGroupToSyncResources(k8sAPIGroupCiliumEndpointV2)
 		// Create a new node controller when we are disconnected with the

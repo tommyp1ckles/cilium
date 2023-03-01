@@ -30,11 +30,8 @@ func (d *Daemon) cleanStaleCEPs(ctx context.Context, eps localEndpointCache, cil
 	if enableCiliumEndpointSlice {
 		crdType = "ciliumendpointslice"
 	}
-	indexer := d.k8sWatcher.GetIndexer(crdType)
-	if indexer == nil {
-		return fmt.Errorf("%s indexer was nil", crdType)
-	}
-	objs, err := indexer.ByIndex("localNode", node.GetCiliumEndpointNodeIP())
+
+	objs, err := d.k8sWatcher.GetByIndex(crdType, "localNode", node.GetCiliumEndpointNodeIP())
 	if err != nil {
 		return fmt.Errorf("could not get %s objects from localNode indexer: %w", crdType, err)
 	}

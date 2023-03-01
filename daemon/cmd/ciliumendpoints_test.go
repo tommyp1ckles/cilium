@@ -58,6 +58,10 @@ func Test_cleanStaleCEP(t *testing.T) {
 		expectedDeletedSet []string
 		// apiserverCEPs is used to mock apiserver get requests when running with CES enabled.
 		apiserverCEPs map[string]*ciliumv2.CiliumEndpoint
+		// expected error to be retured from cleanup.
+		err string
+		// if not nil, returned indexers will be used for cep/ces, respectively.
+		createIndexers func() (cache.Indexer, cache.Indexer)
 	}{
 		"CEPs with local pods without endpoints should be GCd": {
 			ciliumEndpoints:    []types.CiliumEndpoint{cep("foo", "x", "<nil>"), cep("foo", "y", "<nil>")},
@@ -123,6 +127,15 @@ func Test_cleanStaleCEP(t *testing.T) {
 				},
 			},
 		},
+		"CEP: Test cases where there is no indexer": {
+			err:            "no ciliumendpoint indexer available",
+			createIndexers: func() (cache.Indexer, cache.Indexer) { return nil, nil },
+		},
+		"CES: Test cases where there is no indexer": {
+			err:            "no ciliumendpointslice indexer available",
+			enableCES:      true,
+			createIndexers: func() (cache.Indexer, cache.Indexer) { return nil, nil },
+		},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -154,6 +167,9 @@ func Test_cleanStaleCEP(t *testing.T) {
 			ciliumEndpointSlicesStore := cache.NewIndexer(cache.DeletionHandlingMetaNamespaceKeyFunc, cache.Indexers{
 				"localNode": watchers.CreateCiliumEndpointSliceLocalPodIndexFunc(), // empty nodeIP means this will index all nodes.
 			})
+			if test.createIndexers != nil {
+				cepStore, ciliumEndpointSlicesStore = test.createIndexers()
+			}
 
 			for _, ces := range test.ciliumEndpointSlices {
 				ciliumEndpointSlicesStore.Add(ces.DeepCopy())
@@ -184,7 +200,11 @@ func Test_cleanStaleCEP(t *testing.T) {
 
 			err := d.cleanStaleCEPs(context.Background(), epm, fakeClient.CiliumV2(), test.enableCES)
 
-			assert.NoError(err)
+			if test.err != "" {
+				assert.ErrorContains(err, test.err)
+			} else {
+				assert.NoError(err)
+			}
 			assert.ElementsMatch(test.expectedDeletedSet, deletedSet)
 		})
 	}

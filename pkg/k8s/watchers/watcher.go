@@ -988,25 +988,40 @@ func (k *K8sWatcher) K8sEventReceived(apiResourceName, scope, action string, val
 	k.k8sResourceSynced.SetEventTimestamp(apiResourceName)
 }
 
-// GetIndexer returns an index to a k8s cache store for the given resource name.
+// GetByIndex evaluates ByIndex for a particular resources indexers,
+// specified by resource name.
+// Getting by index is done safely to avoid issue of moving indexer
+// references out of K8sWatchers.
+//
 // Objects gotten using returned stores should *not* be mutated as they
 // are references to internal k8s watcher store state.
-func (k *K8sWatcher) GetIndexer(name string) cache.Indexer {
-	switch name {
+//
+// Note: Some underlying k8s watchers may be stopped at any time. In such a case
+// this will return nil. **Always** check returned indexers prior to use.
+func (k *K8sWatcher) GetByIndex(resourceName, indexName, indexedValue string) ([]interface{}, error) {
+	switch resourceName {
 	case "ciliumendpointslice":
 		k.ciliumEndpointSliceIndexerMU.RLock()
+		if k.ciliumEndpointSliceIndexer == nil {
+			return nil, fmt.Errorf("no ciliumendpointslice indexer available")
+		}
 		defer k.ciliumEndpointSliceIndexerMU.RUnlock()
-		return k.ciliumEndpointSliceIndexer
+		return k.ciliumEndpointSliceIndexer.ByIndex(indexName, indexedValue)
 	case "ciliumendpoint":
 		k.ciliumEndpointIndexerMU.RLock()
+		if k.ciliumEndpointIndexer == nil {
+			return nil, fmt.Errorf("no ciliumendpoint indexer available")
+		}
 		defer k.ciliumEndpointIndexerMU.RUnlock()
-		return k.ciliumEndpointIndexer
+		return k.ciliumEndpointIndexer.ByIndex(indexName, indexedValue)
 	default:
-		panic("no such indexer: " + name)
+		return nil, fmt.Errorf("no such resource indexer %q", resourceName)
 	}
 }
 
-// SetIndexer lets you set a named cache store, only used for testing.
+// SetIndexer lets you set a named cache store.
+//
+// Note: only to be used for testing!
 func (k *K8sWatcher) SetIndexer(name string, indexer cache.Indexer) {
 	switch name {
 	case "ciliumendpointslice":
