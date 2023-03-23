@@ -43,6 +43,15 @@ const (
 	failed  = "failed"
 )
 
+func (n *Node) AddOps(ops NodeOperations) {
+	n.ops = ops
+}
+
+type PoolMaintainer interface {
+	Trigger()
+	Shutdown()
+}
+
 // Node represents a Kubernetes node running Cilium with an associated
 // CiliumNode custom resource
 type Node struct {
@@ -92,7 +101,7 @@ type Node struct {
 	// private IP addresses of this node.
 	// It ensures that multiple requests to operate private IPs are
 	// batched together if pool maintenance is still ongoing.
-	poolMaintainer *trigger.Trigger
+	poolMaintainer PoolMaintainer
 
 	// k8sSync is the trigger used to synchronize node information with the
 	// K8s apiserver. The trigger is used to batch multiple updates
@@ -407,7 +416,7 @@ func (n *Node) recalculate() {
 	}
 	scopedLog := n.logger()
 
-	a, nodeCapacity, remainingAvailableInterfaceCount, err := n.ops.ResyncInterfacesAndIPs(context.TODO(), scopedLog)
+	a, stats, err := n.ops.ResyncInterfacesAndIPs(context.TODO(), scopedLog)
 
 	n.mutex.Lock()
 	defer n.mutex.Unlock()
@@ -432,8 +441,8 @@ func (n *Node) recalculate() {
 	n.stats.AvailableIPs = len(n.available)
 	n.stats.NeededIPs = calculateNeededIPs(n.stats.AvailableIPs, n.stats.UsedIPs, n.getPreAllocate(), n.getMinAllocate(), n.getMaxAllocate())
 	n.stats.ExcessIPs = calculateExcessIPs(n.stats.AvailableIPs, usedIPForExcessCalc, n.getPreAllocate(), n.getMinAllocate(), n.getMaxAboveWatermark())
-	n.stats.RemainingInterfaces = remainingAvailableInterfaceCount
-	n.stats.Capacity = nodeCapacity
+	n.stats.RemainingInterfaces = stats.RemainingAvailableInterfaceCount
+	n.stats.Capacity = stats.NodeCapacity
 
 	scopedLog.WithFields(logrus.Fields{
 		"available":                 n.stats.AvailableIPs,
@@ -443,7 +452,7 @@ func (n *Node) recalculate() {
 		"toRelease":                 n.stats.ExcessIPs,
 		"waitingForPoolMaintenance": n.waitingForPoolMaintenance,
 		"resyncNeeded":              n.resyncNeeded,
-		"remainingInterfaces":       remainingAvailableInterfaceCount,
+		"remainingInterfaces":       stats.RemainingAvailableInterfaceCount,
 	}).Debug("Recalculated needed addresses")
 }
 
