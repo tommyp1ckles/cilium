@@ -133,9 +133,13 @@ func (n *Node) CreateInterface(ctx context.Context, allocation *ipam.AllocationA
 
 // ResyncInterfacesAndIPs is called to retrieve and interfaces and IPs as known
 // to the Azure API and return them
-func (n *Node) ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Entry) (available ipamTypes.AllocationMap, remainingAvailableInterfaceCount int, err error) {
+func (n *Node) ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Entry) (
+	available ipamTypes.AllocationMap,
+	nodeCapacity int,
+	remainingAvailableInterfaceCount int,
+	err error) {
 	if n.node.InstanceID() == "" {
-		return nil, -1, nil
+		return nil, 0, -1, nil
 	}
 
 	available = ipamTypes.AllocationMap{}
@@ -159,7 +163,7 @@ func (n *Node) ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Ent
 		return nil
 	})
 	if err != nil {
-		return nil, -1, err
+		return nil, 0, -1, err
 	}
 
 	requiredIfaceName := n.k8sObj.Spec.Azure.InterfaceName
@@ -176,10 +180,10 @@ func (n *Node) ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Ent
 		return nil
 	})
 	if err != nil {
-		return nil, -1, err
+		return nil, 0, -1, err
 	}
 
-	return available, remainingAvailableInterfaceCount, nil
+	return available, nodeCapacity, remainingAvailableInterfaceCount, nil
 }
 
 // GetMaximumAllocatableIPv4 returns the maximum amount of IPv4 addresses

@@ -22,6 +22,7 @@ type prometheusMetrics struct {
 	AllocateIpOps        *prometheus.CounterVec
 	ReleaseIpOps         *prometheus.CounterVec
 	IPsAllocated         *prometheus.GaugeVec
+	NodeCapacity         *prometheus.GaugeVec
 	// Deprecated, will be removed in version 1.14:
 	// Use InterfaceCandidates and EmptyInterfaceSlots instead
 	AvailableInterfaces   prometheus.Gauge
@@ -41,6 +42,13 @@ func NewPrometheusMetrics(namespace string, registry metrics.RegisterGatherer) *
 	m := &prometheusMetrics{
 		registry: registry,
 	}
+
+	m.NodeCapacity = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Subsystem: ipamSubsystem,
+		Name:      "node_ip_capacity",
+		Help:      "Total capacity of nodes IPAM allocation",
+	}, []string{"node", "type"})
 
 	m.IPsAllocated = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace,
@@ -185,6 +193,10 @@ func (p *prometheusMetrics) AddIPRelease(subnetID string, released int64) {
 
 func (p *prometheusMetrics) SetAllocatedIPs(typ string, allocated int) {
 	p.IPsAllocated.WithLabelValues(typ).Set(float64(allocated))
+}
+
+func (p *prometheusMetrics) SetNodeIPCapacity(node, typ string, cap int) {
+	p.NodeCapacity.WithLabelValues(node, typ).Set(float64(cap))
 }
 
 func (p *prometheusMetrics) SetAvailableInterfaces(available int) {

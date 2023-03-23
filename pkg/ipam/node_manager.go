@@ -63,7 +63,7 @@ type NodeOperations interface {
 	// It returns all available ip in node and remaining available interfaces
 	// that can either be allocated or have not yet exhausted the instance specific quota of addresses
 	// and error occurred during execution.
-	ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Entry) (ipamTypes.AllocationMap, int, error)
+	ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Entry) (ipamTypes.AllocationMap, int, int, error)
 
 	// PrepareIPAllocation is called to calculate the number of IPs that
 	// can be allocated on the node and whether a new network interface
@@ -127,6 +127,7 @@ type AllocationImplementation interface {
 
 // MetricsAPI represents the metrics being maintained by a NodeManager
 type MetricsAPI interface {
+	SetNodeIPCapacity(node string, typ string, cap int)
 	AllocationAttempt(typ, status, subnetID string, observe float64)
 	ReleaseAttempt(typ, status, subnetID string, observe float64)
 	IncInterfaceAllocation(subnetID string)
@@ -444,6 +445,7 @@ type resyncStats struct {
 	nodes               int
 	nodesAtCapacity     int
 	nodesInDeficit      int
+	nodeCapacity        int
 }
 
 func (n *NodeManager) resyncNode(ctx context.Context, node *Node, stats *resyncStats, syncTime time.Time) {
@@ -467,6 +469,12 @@ func (n *NodeManager) resyncNode(ctx context.Context, node *Node, stats *resyncS
 	stats.interfaceCandidates += nodeStats.InterfaceCandidates
 	stats.emptyInterfaceSlots += nodeStats.EmptyInterfaceSlots
 	stats.nodes++
+
+	stats.nodeCapacity = nodeStats.Capacity
+
+	// Set per node capacity metric.
+	n.metricsAPI.SetNodeIPCapacity(node.name, "capacity", stats.nodeCapacity)
+	n.metricsAPI.SetNodeIPCapacity(node.name, "used", nodeStats.UsedIPs)
 
 	if allocationNeeded {
 		stats.nodesInDeficit++

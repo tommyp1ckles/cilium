@@ -85,14 +85,14 @@ func (n *nodeOperationsMock) CreateInterface(ctx context.Context, allocation *Al
 	return 0, "operation not supported", fmt.Errorf("operation not supported")
 }
 
-func (n *nodeOperationsMock) ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Entry) (ipamTypes.AllocationMap, int, error) {
+func (n *nodeOperationsMock) ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Entry) (ipamTypes.AllocationMap, int, int, error) {
 	available := ipamTypes.AllocationMap{}
 	n.mutex.RLock()
 	for _, ip := range n.allocatedIPs {
 		available[ip] = ipamTypes.AllocationIP{}
 	}
 	n.mutex.RUnlock()
-	return available, 0, nil
+	return available, 0, 0, nil
 }
 
 func (n *nodeOperationsMock) PrepareIPAllocation(scopedLog *logrus.Entry) (*AllocationAction, error) {

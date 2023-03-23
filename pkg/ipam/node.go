@@ -127,9 +127,13 @@ type Statistics struct {
 	// UsedIPs is the number of IPs currently in use
 	UsedIPs int
 
-	// AvailableIPs is the number of IPs currently available for allocation
-	// by the node
+	// AvailableIPs is the number of IPs currently allocated and available for assignment.
 	AvailableIPs int
+
+	// Capacity is the max inferred IPAM IP capacity for the node.
+	// In theory, this provides an upper limit on the number of Cilium IPs that
+	// this Node can support.
+	Capacity int
 
 	// NeededIPs is the number of IPs needed to reach the PreAllocate
 	// watermwark
@@ -403,7 +407,7 @@ func (n *Node) recalculate() {
 	}
 	scopedLog := n.logger()
 
-	a, remainingAvailableInterfaceCount, err := n.ops.ResyncInterfacesAndIPs(context.TODO(), scopedLog)
+	a, nodeCapacity, remainingAvailableInterfaceCount, err := n.ops.ResyncInterfacesAndIPs(context.TODO(), scopedLog)
 
 	n.mutex.Lock()
 	defer n.mutex.Unlock()
@@ -429,9 +433,11 @@ func (n *Node) recalculate() {
 	n.stats.NeededIPs = calculateNeededIPs(n.stats.AvailableIPs, n.stats.UsedIPs, n.getPreAllocate(), n.getMinAllocate(), n.getMaxAllocate())
 	n.stats.ExcessIPs = calculateExcessIPs(n.stats.AvailableIPs, usedIPForExcessCalc, n.getPreAllocate(), n.getMinAllocate(), n.getMaxAboveWatermark())
 	n.stats.RemainingInterfaces = remainingAvailableInterfaceCount
+	n.stats.Capacity = nodeCapacity
 
 	scopedLog.WithFields(logrus.Fields{
 		"available":                 n.stats.AvailableIPs,
+		"capacity":                  n.stats.Capacity,
 		"used":                      n.stats.UsedIPs,
 		"toAlloc":                   n.stats.NeededIPs,
 		"toRelease":                 n.stats.ExcessIPs,
