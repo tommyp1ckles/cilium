@@ -135,11 +135,11 @@ func (n *Node) CreateInterface(ctx context.Context, allocation *ipam.AllocationA
 // to the Azure API and return them
 func (n *Node) ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Entry) (
 	available ipamTypes.AllocationMap,
-	nodeCapacity int,
-	remainingAvailableInterfaceCount int,
+	stats ipam.InterfaceStats,
 	err error) {
+	stats.RemainingAvailableInterfaceCount = -1
 	if n.node.InstanceID() == "" {
-		return nil, 0, -1, nil
+		return nil, stats, nil
 	}
 
 	available = ipamTypes.AllocationMap{}

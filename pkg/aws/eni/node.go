@@ -533,12 +533,11 @@ func (n *Node) CreateInterface(ctx context.Context, allocation *ipam.AllocationA
 // the EC2 API and return them
 func (n *Node) ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Entry) (
 	available ipamTypes.AllocationMap,
-	nodeCapacity int,
-	remainAvailableENIsCount int,
+	stats ipam.InterfaceStats,
 	err error) {
 	limits, limitsAvailable := n.getLimits()
 	if !limitsAvailable {
-		return nil, 0, -1, fmt.Errorf(errUnableToDetermineLimits)
+		return nil, stats, fmt.Errorf(errUnableToDetermineLimits)
 	}
 
 	// n.node does not need to be protected by n.mutex as it is only written to
@@ -549,10 +548,17 @@ func (n *Node) ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Ent
 	n.mutex.Lock()
 	n.enis = map[string]eniTypes.ENI{}
 
-	_, nodeIpv4Capacity := n.getEffectiveIPLimits(nil, limits.IPv4)
-	// The base node limit is the number of adapters multiplied by the instances
-	// IP limit.
-	nodeIpv4Capacity *= limits.Adapters
+	// 1. This calculates the base interface effective limit on this Node, given:
+	// 		* IPAM Prefix Delegation.
+	// 		* Node Spec usePrimaryAddress being enabled.
+	//
+	_, stats.NodeCapacity = n.getEffectiveIPLimits(nil, limits.IPv4)
+
+	// 2. The base node limit is the number of adapters multiplied by the instances IP limit.
+	//
+	// Note: This may be modified in step(s) 3, where any leftover additional prefix delegated
+	// room will be added to this total.
+	stats.NodeCapacity *= limits.Adapters
 
 	n.manager.ForeachInstance(instanceID,
 		func(instanceID, interfaceID string, rev ipamTypes.InterfaceRevision) error {
@@ -567,17 +573,14 @@ func (n *Node) ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Ent
 			}
 
 			leftoverPrefixCapcity, effectiveLimits := n.getEffectiveIPLimits(e, limits.IPv4)
-			// In case a node has some leftover capacity, we add that onto the node total.
-			// Node may not have all possible interfaces attached, thus we need to compute this
-			// for each iface.
-			//
-			// TODO: Does leftover capacity really represent addresses that can be used?
-			// 	What is the implication of this?
-			nodeIpv4Capacity += leftoverPrefixCapcity
+
+			// 3. Finally, we iterate any already existing interfaces and add on any extra
+			//		capacity to account for leftover prefix delegated /28 ip slots.
+			stats.NodeCapacity += leftoverPrefixCapcity
 
 			availableOnENI := math.IntMax(effectiveLimits-len(e.Addresses), 0)
 			if availableOnENI > 0 {
-				remainAvailableENIsCount++
+				stats.RemainingAvailableInterfaceCount++
 			}
 
 			for _, ip := range e.Addresses {
@@ -591,11 +594,11 @@ func (n *Node) ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Ent
 	// An ec2 instance has at least one ENI attached, no ENI found implies instance not found.
 	if enis == 0 {
 		scopedLog.Warning("Instance not found! Please delete corresponding ciliumnode if instance has already been deleted.")
-		return nil, 0, -1, fmt.Errorf("unable to retrieve ENIs")
+		return nil, stats, fmt.Errorf("unable to retrieve ENIs")
 	}
 
-	remainAvailableENIsCount += limits.Adapters - len(n.enis)
-	return available, nodeCapacity, remainAvailableENIsCount, nil
+	stats.RemainingAvailableInterfaceCount += limits.Adapters - len(n.enis)
+	return available, stats, nil
 }
 
 // GetMaximumAllocatableIPv4 returns the maximum amount of IPv4 addresses
@@ -809,7 +812,8 @@ func (n *Node) getEffectiveIPLimits(eni *eniTypes.ENI, limits int) (leftoverPref
 	if n.k8sObj.Spec.ENI.UsePrimaryAddress != nil && *n.k8sObj.Spec.ENI.UsePrimaryAddress {
 		effectiveLimits++
 	}
-	if n.node.Ops().IsPrefixDelegated() {
+
+	if n.IsPrefixDelegated() {
 		effectiveLimits = effectiveLimits * option.ENIPDBlockSizeIPv4
 	} else if eni != nil && len(eni.Prefixes) > 0 {
 		// If prefix delegation was previously enabled on this node, account for IPs from prefixes

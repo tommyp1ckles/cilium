@@ -4,10 +4,17 @@
 package eni
 
 import (
+	"context"
+	"testing"
+
 	"gopkg.in/check.v1"
 
 	"github.com/cilium/cilium/pkg/aws/eni/types"
+	eniTypes "github.com/cilium/cilium/pkg/aws/eni/types"
+	"github.com/cilium/cilium/pkg/ipam"
 	ipamTypes "github.com/cilium/cilium/pkg/ipam/types"
+	v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
+	"github.com/stretchr/testify/assert"
 )
 
 func (e *ENISuite) TestGetMaximumAllocatableIPv4(c *check.C) {
@@ -48,4 +55,39 @@ func (e *ENISuite) TestGetUsedIPWithPrefixes(c *check.C) {
 	allocationMap["10.10.128.18"] = ipamTypes.AllocationIP{Resource: eniName}
 	n.k8sObj.Status.IPAM.Used = allocationMap
 	c.Assert(n.GetUsedIPWithPrefixes(), check.Equals, 32)
+}
+
+func TestENIIPAMCapcityAccounting(t *testing.T) {
+	assert := assert.New(t)
+	instanceID := "000"
+	cn := newCiliumNode("node1", withInstanceType("m5a.large"),
+		func(cn *v2.CiliumNode) {
+			cn.Spec.InstanceID = instanceID
+		},
+	)
+	im := ipamTypes.NewInstanceMap()
+	im.Update(instanceID, ipamTypes.InterfaceRevision{
+		Resource: &eniTypes.ENI{},
+	})
+	n := &Node{
+		node:   &ipam.Node{},
+		k8sObj: cn,
+		manager: &InstancesManager{
+			instances: im,
+		},
+	}
+	n.node.AddOps(n) //????
+	n.node.UpdatedResource(cn)
+	// n.node.UpdatedResource(&v2.CiliumNode{
+	// 	Spec: v2.NodeSpec{
+	// 		InstanceID: "000",
+	// 		ENI: types.ENISpec{
+	// 			InstanceType: ,
+	// 		},
+	// 	},
+	// })
+
+	_, stats, err := n.ResyncInterfacesAndIPs(context.Background(), log)
+	assert.NoError(err)
+	assert.Equal(0, stats.NodeCapacity)
 }
