@@ -1402,7 +1402,7 @@ func (s *Service) deleteOrphanBackends() error {
 	return nil
 }
 
-func (s *Service) restoreServicesLocked() error {
+func (s *Service) restoreServicesLocked() {
 	failed, restored := 0, 0
 
 	svcs, errors := s.lbmap.DumpServiceMaps()
@@ -1486,8 +1486,6 @@ func (s *Service) restoreServicesLocked() error {
 		logfields.RestoredSVCs: restored,
 		logfields.FailedSVCs:   failed,
 	}).Info("Restored services from maps")
-
-	return nil
 }
 
 func (s *Service) deleteServiceLocked(svc *svcInfo) error {

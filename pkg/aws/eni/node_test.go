@@ -69,25 +69,72 @@ func TestENIIPAMCapcityAccounting(t *testing.T) {
 	im.Update(instanceID, ipamTypes.InterfaceRevision{
 		Resource: &eniTypes.ENI{},
 	})
+
+	ipamNode := &mockIPAMNode{
+		instanceID: "i-000",
+	}
 	n := &Node{
-		node:   &ipam.Node{},
+		node:   ipamNode,
 		k8sObj: cn,
 		manager: &InstancesManager{
 			instances: im,
 		},
+		enis: map[string]eniTypes.ENI{"foo": {}},
 	}
-	n.node.AddOps(n) //????
-	n.node.UpdatedResource(cn)
-	// n.node.UpdatedResource(&v2.CiliumNode{
-	// 	Spec: v2.NodeSpec{
-	// 		InstanceID: "000",
-	// 		ENI: types.ENISpec{
-	// 			InstanceType: ,
-	// 		},
-	// 	},
-	// })
+
+	ipamNode.SetOpts(n)
+	ipamNode.SetPoolMaintainer(&mockMaintainer{})
+	//ipamNode.UpdatedResource(cn)
+	n.node = ipamNode
 
 	_, stats, err := n.ResyncInterfacesAndIPs(context.Background(), log)
 	assert.NoError(err)
-	assert.Equal(0, stats.NodeCapacity)
+	// m5a.large = 10 IPs per ENI, 3 ENIs.
+	// Accounting for primary ENI IPs, we should be able to allocate (10-1)*3=27 IPs.
+	assert.Equal(27, stats.NodeCapacity)
+
+	// n.node.UpdatedResource(newCiliumNode("node1", withInstanceType("m5a.large"),
+	// 	func(cn *v2.CiliumNode) {
+	// 		cn.Spec.InstanceID = instanceID
+	// 		cn.Spec.ENI.UsePrimaryAddress = new(bool)
+	// 		*cn.Spec.ENI.UsePrimaryAddress = true
+	// 	},
+	// ))
+	// _, stats, err = n.ResyncInterfacesAndIPs(context.Background(), log)
+	// ipamNode.Update(cn)
+	// assert.NoError(err)
+	// // In this case, USE_PRIMARY_IP is set to true, so we should be able to allocate 10*3=30 IPs.
+	// assert.Equal(30, stats.NodeCapacity)
+
 }
+
+// mocks ipamNodeActions interface
+type mockIPAMNode struct {
+	instanceID       string
+	prefixDelegation bool
+}
+
+func (m *mockIPAMNode) SetOpts(ipam.NodeOperations)           {}
+func (m *mockIPAMNode) SetPoolMaintainer(ipam.PoolMaintainer) {}
+func (m *mockIPAMNode) UpdatedResource(*v2.CiliumNode) bool   { panic("not impl") }
+func (m *mockIPAMNode) Update(*v2.CiliumNode)                 {}
+func (m *mockIPAMNode) InstanceID() string                    { return m.instanceID }
+func (m *mockIPAMNode) IsPrefixDelegationEnabled() bool       { return m.prefixDelegation }
+func (m *mockIPAMNode) Ops() ipam.NodeOperations              { panic("not impl") }
+func (m *mockIPAMNode) SetRunning(_ bool)                     { panic("not impl") }
+
+var _ ipamNodeActions = (*mockIPAMNode)(nil)
+
+func createNodeFixture() *Node {
+	return &Node{
+		node: &ipam.Node{},
+		manager: &InstancesManager{
+			instances: ipamTypes.NewInstanceMap(),
+		},
+	}
+}
+
+type mockMaintainer struct{}
+
+func (m *mockMaintainer) Trigger()  {}
+func (m *mockMaintainer) Shutdown() {}

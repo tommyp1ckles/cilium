@@ -43,8 +43,16 @@ const (
 	failed  = "failed"
 )
 
-func (n *Node) AddOps(ops NodeOperations) {
+func (n *Node) SetOpts(ops NodeOperations) {
 	n.ops = ops
+}
+
+func (n *Node) SetPoolMaintainer(maintainer PoolMaintainer) {
+	n.poolMaintainer = maintainer
+}
+
+func (n *Node) Update(resource *v2.CiliumNode) bool {
+	return n.manager.Update(resource)
 }
 
 type PoolMaintainer interface {
