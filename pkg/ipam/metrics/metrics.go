@@ -21,7 +21,12 @@ type prometheusMetrics struct {
 	AllocateInterfaceOps *prometheus.CounterVec
 	AllocateIpOps        *prometheus.CounterVec
 	ReleaseIpOps         *prometheus.CounterVec
-	IPsAllocated         *prometheus.GaugeVec
+	AvailableIPs         *prometheus.GaugeVec
+	UsedIPs              *prometheus.GaugeVec
+	NeededIPs            *prometheus.GaugeVec
+	// Deprecated, will be removed in version 1.15.
+	// Use AvailableIPs, UsedIPs and NeededIPs instead.
+	IPsAllocated *prometheus.GaugeVec
 	// Deprecated, will be removed in version 1.14:
 	// Use InterfaceCandidates and EmptyInterfaceSlots instead
 	AvailableInterfaces   prometheus.Gauge
@@ -35,12 +40,35 @@ type prometheusMetrics struct {
 	resync                *triggerMetrics
 }
 
+const LabelTargetNodeName = "target_node"
+
 // NewPrometheusMetrics returns a new interface metrics implementation backed by
 // Prometheus metrics.
 func NewPrometheusMetrics(namespace string, registry metrics.RegisterGatherer) *prometheusMetrics {
 	m := &prometheusMetrics{
 		registry: registry,
 	}
+
+	m.AvailableIPs = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Subsystem: ipamSubsystem,
+		Name:      "available_ips",
+		Help:      "Total available IPs on Node for IPAM allocation",
+	}, []string{LabelTargetNodeName})
+
+	m.UsedIPs = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Subsystem: ipamSubsystem,
+		Name:      "used_ips",
+		Help:      "Total used IPs on Node for IPAM allocation",
+	}, []string{LabelTargetNodeName})
+
+	m.NeededIPs = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Subsystem: ipamSubsystem,
+		Name:      "needed_ips",
+		Help:      "Number of IPs that are needed on the Node to satisfy IPAM allocation requests",
+	}, []string{LabelTargetNodeName})
 
 	m.IPsAllocated = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace,
@@ -140,6 +168,10 @@ func NewPrometheusMetrics(namespace string, registry metrics.RegisterGatherer) *
 	m.k8sSync = NewTriggerMetrics(namespace, "k8s_sync")
 	m.resync = NewTriggerMetrics(namespace, "resync")
 
+	registry.MustRegister(m.AvailableIPs)
+	registry.MustRegister(m.UsedIPs)
+	registry.MustRegister(m.NeededIPs)
+
 	registry.MustRegister(m.IPsAllocated)
 	registry.MustRegister(m.AllocateIpOps)
 	registry.MustRegister(m.ReleaseIpOps)
@@ -217,6 +249,19 @@ func (p *prometheusMetrics) AllocationAttempt(typ, status, subnetID string, obse
 
 func (p *prometheusMetrics) ReleaseAttempt(typ, status, subnetID string, observe float64) {
 	p.Release.WithLabelValues(typ, status, subnetID).Observe(observe)
+}
+
+// Per Node metrics.
+func (p *prometheusMetrics) SetIPAvailable(node string, cap int) {
+	p.AvailableIPs.WithLabelValues(node).Set(float64(cap))
+}
+
+func (p *prometheusMetrics) SetIPUsed(node string, usage int) {
+	p.UsedIPs.WithLabelValues(node).Set(float64(usage))
+}
+
+func (p *prometheusMetrics) SetIPNeeded(node string, usage int) {
+	p.NeededIPs.WithLabelValues(node).Set(float64(usage))
 }
 
 type triggerMetrics struct {

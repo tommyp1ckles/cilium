@@ -138,6 +138,8 @@ type AllocationImplementation interface {
 
 // MetricsAPI represents the metrics being maintained by a NodeManager
 type MetricsAPI interface {
+	MetricsNodeAPI
+
 	AllocationAttempt(typ, status, subnetID string, observe float64)
 	ReleaseAttempt(typ, status, subnetID string, observe float64)
 	IncInterfaceAllocation(subnetID string)
@@ -153,6 +155,12 @@ type MetricsAPI interface {
 	PoolMaintainerTrigger() trigger.MetricsObserver
 	K8sSyncTrigger() trigger.MetricsObserver
 	ResyncTrigger() trigger.MetricsObserver
+}
+
+type MetricsNodeAPI interface {
+	SetIPAvailable(node string, cap int)
+	SetIPUsed(node string, used int)
+	SetIPNeeded(node string, needed int)
 }
 
 // nodeMap is a mapping of node names to ENI nodes
@@ -470,6 +478,9 @@ func (n *NodeManager) resyncNode(ctx context.Context, node *Node, stats *resyncS
 
 	stats.mutex.Lock()
 	stats.totalUsed += nodeStats.UsedIPs
+	// availableOnNode is the number of available IPs on the node at this
+	// current moment. It does not take into account the number of IPs that
+	// can be allocated in the future.
 	availableOnNode := nodeStats.AvailableIPs - nodeStats.UsedIPs
 	stats.totalAvailable += availableOnNode
 	stats.totalNeeded += nodeStats.NeededIPs
@@ -479,6 +490,11 @@ func (n *NodeManager) resyncNode(ctx context.Context, node *Node, stats *resyncS
 	stats.nodes++
 
 	stats.nodeCapacity = nodeStats.Capacity
+
+	// Set per Node metrics.
+	n.metricsAPI.SetIPAvailable(node.name, stats.nodeCapacity)
+	n.metricsAPI.SetIPUsed(node.name, nodeStats.UsedIPs)
+	n.metricsAPI.SetIPNeeded(node.name, nodeStats.NeededIPs)
 
 	if allocationNeeded {
 		stats.nodesInDeficit++

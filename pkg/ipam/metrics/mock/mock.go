@@ -173,6 +173,10 @@ func (m *mockMetrics) IncResyncCount() {
 	m.mutex.Unlock()
 }
 
+func (m *mockMetrics) SetNodeIPCapacity(s string, t string, n int) {
+
+}
+
 func (m *mockMetrics) PoolMaintainerTrigger() trigger.MetricsObserver {
 	return nil
 }
