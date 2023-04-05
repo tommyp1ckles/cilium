@@ -32,6 +32,17 @@ type CiliumNodeGetterUpdater interface {
 	Get(name string) (*v2.CiliumNode, error)
 }
 
+type InterfaceStats struct {
+	// NodeCapacity is the current infered total capacity for a Node to schedule
+	// addresses.
+	//
+	// This does not account for currently used addresses.
+	NodeCapacity int
+
+	// RemainingAvailableInterfaceCount is the number of interfaces...todo
+	RemainingAvailableInterfaceCount int
+}
+
 // NodeOperations is the interface an IPAM implementation must provide in order
 // to provide IP allocation for a node. The structure implementing this API
 // *must* be aware of the node connected to this implementation. This is
@@ -63,7 +74,7 @@ type NodeOperations interface {
 	// It returns all available ip in node and remaining available interfaces
 	// that can either be allocated or have not yet exhausted the instance specific quota of addresses
 	// and error occurred during execution.
-	ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Entry) (ipamTypes.AllocationMap, int, error)
+	ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Entry) (ipamTypes.AllocationMap, InterfaceStats, error)
 
 	// PrepareIPAllocation is called to calculate the number of IPs that
 	// can be allocated on the node and whether a new network interface
@@ -272,12 +283,10 @@ func (n *NodeManager) GetNames() (allNodeNames []string) {
 	return
 }
 
-func (n *NodeManager) Create(resource *v2.CiliumNode) bool {
-	return n.Update(resource)
-}
-
 // Update is called whenever a CiliumNode resource has been updated in the
 // Kubernetes apiserver
+//
+// This is only used for testing.
 func (n *NodeManager) Update(resource *v2.CiliumNode) (nodeSynced bool) {
 	nodeSynced = true
 	n.mutex.Lock()
@@ -444,6 +453,7 @@ type resyncStats struct {
 	nodes               int
 	nodesAtCapacity     int
 	nodesInDeficit      int
+	nodeCapacity        int
 }
 
 func (n *NodeManager) resyncNode(ctx context.Context, node *Node, stats *resyncStats, syncTime time.Time) {
@@ -467,6 +477,8 @@ func (n *NodeManager) resyncNode(ctx context.Context, node *Node, stats *resyncS
 	stats.interfaceCandidates += nodeStats.InterfaceCandidates
 	stats.emptyInterfaceSlots += nodeStats.EmptyInterfaceSlots
 	stats.nodes++
+
+	stats.nodeCapacity = nodeStats.Capacity
 
 	if allocationNeeded {
 		stats.nodesInDeficit++

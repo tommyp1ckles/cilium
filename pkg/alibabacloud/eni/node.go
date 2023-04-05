@@ -187,11 +187,14 @@ func (n *Node) CreateInterface(ctx context.Context, allocation *ipam.AllocationA
 
 // ResyncInterfacesAndIPs is called to retrieve and ENIs and IPs as known to
 // the AlibabaCloud API and return them
-func (n *Node) ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Entry) (available ipamTypes.AllocationMap, remainAvailableENIsCount int, err error) {
+func (n *Node) ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Entry) (available ipamTypes.AllocationMap, stats ipam.InterfaceStats, err error) {
 	limits, limitsAvailable := n.getLimits()
 	if !limitsAvailable {
-		return nil, -1, fmt.Errorf(errUnableToDetermineLimits)
+		return nil, stats, fmt.Errorf(errUnableToDetermineLimits)
 	}
+
+	stats.NodeCapacity = limits.IPv4 * (limits.Adapters - 1)
+
 	instanceID := n.node.InstanceID()
 	available = ipamTypes.AllocationMap{}
 
@@ -211,9 +214,17 @@ func (n *Node) ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Ent
 				return nil
 			}
 
+			primaryAllocated := 0
+			for _, ip := range e.PrivateIPSets {
+				if ip.Primary {
+					primaryAllocated++
+				}
+			}
+			stats.NodeCapacity -= primaryAllocated
+
 			availableOnENI := math.IntMax(limits.IPv4-len(e.PrivateIPSets), 0)
 			if availableOnENI > 0 {
-				remainAvailableENIsCount++
+				stats.RemainingAvailableInterfaceCount++
 			}
 
 			for _, ip := range e.PrivateIPSets {
@@ -226,11 +237,11 @@ func (n *Node) ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Ent
 	// An ECS instance has at least one ENI attached, no ENI found implies instance not found.
 	if enis == 0 {
 		scopedLog.Warning("Instance not found! Please delete corresponding ciliumnode if instance has already been deleted.")
-		return nil, -1, fmt.Errorf("unable to retrieve ENIs")
+		return nil, stats, fmt.Errorf("unable to retrieve ENIs")
 	}
 
-	remainAvailableENIsCount += limits.Adapters - len(n.enis)
-	return available, remainAvailableENIsCount, nil
+	stats.RemainingAvailableInterfaceCount += limits.Adapters - len(n.enis)
+	return available, stats, nil
 }
 
 // PrepareIPAllocation returns the number of ENI IPs and interfaces that can be
