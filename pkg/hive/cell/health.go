@@ -80,6 +80,8 @@ func NewHealthStatus() *HealthStatus {
 			if s.Level == StatusOK {
 				ns.LastOK = t
 			}
+			log.WithField("status", ns.String()).Debug("Processed new health status")
+			fmt.Println("[tom-debug] processed new event:", ns.String())
 			p.moduleStatuses[s.ModuleID] = ns
 			p.processed.CompareAndSwap(p.processed.Load(), p.processed.Load()+1)
 			p.mu.Unlock()
