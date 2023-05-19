@@ -977,12 +977,20 @@ func (n *linuxNodeHandler) deleteNeighbor(oldNode *nodeTypes.Node) {
 	n.deleteNeighbor6(oldNode)
 }
 
-func (n *linuxNodeHandler) enableIPsec(newNode *nodeTypes.Node) (acc error) {
+// enableIPSec performs necessary host datapath configuration procedures to
+// enable IPsec for the given node.
+//
+// TODO: In subsequent commit, look at procedural calls that may be "asymptotic",
+//
+//	thus if their state is already settled?
+func (n *linuxNodeHandler) enableIPsec(newNode *nodeTypes.Node) (errs []error) {
 	var spi uint8
 	var err error
 
 	if newNode.IsLocal() {
-		n.replaceHostRules()
+		if err := n.replaceHostRules(); err != nil {
+			errs = append(errs, err)
+		}
 	}
 
 	// In endpoint routes mode we use the stack to route packets after
@@ -996,8 +1004,12 @@ func (n *linuxNodeHandler) enableIPsec(newNode *nodeTypes.Node) (acc error) {
 		wildcardIP := net.ParseIP(wildcardIPv4)
 		wildcardCIDR := &net.IPNet{IP: wildcardIP, Mask: net.IPv4Mask(0, 0, 0, 0)}
 
+		// Set default drop policy for IPv4, regardless if node is local.
 		err = ipsec.IPsecDefaultDropPolicy(false)
 		upsertIPsecLog(err, "default-drop IPv4", wildcardCIDR, wildcardCIDR, spi)
+		if err != nil {
+			errs = append(errs, err)
+		}
 
 		if newNode.IsLocal() {
 			n.replaceNodeIPSecInRoute(new4Net)
@@ -1143,8 +1155,15 @@ func (n *linuxNodeHandler) nodeUpdate(oldNode, newNode *nodeTypes.Node, firstAdd
 	}
 
 	// If the nodeConfig enables IPSec and the node is not encrypted, enable IPSec.
+	//
+	// This should be idempoent, so we can call it on every node update and errors
+	// generally should indicate possible degraded host state issues.
 	if n.nodeConfig.EnableIPSec && !n.nodeConfig.EncryptNode {
-		n.enableIPsec(newNode)
+		if errs := n.enableIPsec(newNode); len(errs) > 0 {
+			for _, err := range errs {
+				n.addErr("enableIPsec", err)
+			}
+		}
 		newKey = newNode.EncryptionKey
 	}
 
@@ -1319,7 +1338,7 @@ func (n *linuxNodeHandler) updateOrRemoveClusterRoute(addressing datapath.NodeAd
 	}
 }
 
-// this function should be idempotent?
+// replaceHostRules attempts to emplace ipsec encrypt/decrypt routes.
 func (n *linuxNodeHandler) replaceHostRules() error {
 	// Add a new IP route rule to ipsec table.
 	rule := route.Rule{
@@ -1333,13 +1352,13 @@ func (n *linuxNodeHandler) replaceHostRules() error {
 			rule.Mark = linux_defaults.RouteMarkDecrypt
 			if err := route.ReplaceRule(rule); err != nil {
 				log.WithError(err).Error("Replace IPv4 route decrypt rule failed")
-				return err
+				return fmt.Errorf("failed to replace ipv4 route decrypt rule: %w", err)
 			}
 		}
 		rule.Mark = linux_defaults.RouteMarkEncrypt
 		if err := route.ReplaceRule(rule); err != nil {
 			log.WithError(err).Error("Replace IPv4 route encrypt rule failed")
-			return err
+			return fmt.Errorf("failed to replace ipv4 route encrypt rule: %w", err)
 		}
 	}
 
@@ -1347,12 +1366,12 @@ func (n *linuxNodeHandler) replaceHostRules() error {
 		rule.Mark = linux_defaults.RouteMarkDecrypt
 		if err := route.ReplaceRuleIPv6(rule); err != nil {
 			log.WithError(err).Error("Replace IPv6 route decrypt rule failed")
-			return err
+			return fmt.Errorf("failed to replace ipv6 route decrypt rule: %w", err)
 		}
 		rule.Mark = linux_defaults.RouteMarkEncrypt
 		if err := route.ReplaceRuleIPv6(rule); err != nil {
-			log.WithError(err).Error("Replace IPv6 route ecrypt rule failed")
-			return err
+			log.WithError(err).Error("Replace IPv6 route encrypt rule failed")
+			return fmt.Errorf("failed to replace ipv6 route encrypt rule: %w", err)
 		}
 	}
 
