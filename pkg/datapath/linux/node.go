@@ -53,6 +53,28 @@ type NeighLink struct {
 	Name string `json:"link-name"`
 }
 
+type errNeighUpdateFailure struct {
+	ts   time.Time
+	node string
+	err  error
+}
+
+func (e errNeighUpdateFailure) Error() string {
+	return fmt.Sprintf("node %q failed neigh update: %s", e.node, e.err)
+}
+
+func (h *linuxNodeHandler) reportNeighFailure(node string, err error) {
+	h.neighFailures = append(h.neighFailures, errNeighUpdateFailure{
+		ts:   time.Now(),
+		node: node,
+		err:  err,
+	})
+	// Ensure we don't grow the slice indefinitely.
+	if h.neighFailures != nil && len(h.neighFailures) > 100 {
+		h.neighFailures = h.neighFailures[1:]
+	}
+}
+
 type linuxNodeHandler struct {
 	mutex                lock.Mutex
 	isInitialized        bool
@@ -62,6 +84,7 @@ type linuxNodeHandler struct {
 	nodes                map[nodeTypes.Identity]*nodeTypes.Node
 	enableNeighDiscovery bool
 	neighLock            lock.Mutex // protects neigh* fields below
+	neighFailures        []errNeighUpdateFailure
 	neighDiscoveryLinks  []netlink.Link
 	neighNextHopByNode4  map[nodeTypes.Identity]map[string]string // val = (key=link, value=string(net.IP))
 	neighNextHopByNode6  map[nodeTypes.Identity]map[string]string // val = (key=link, value=string(net.IP))
@@ -78,8 +101,6 @@ type linuxNodeHandler struct {
 
 	ipsecMetricCollector prometheus.Collector
 	ipsecMetricOnce      sync.Once
-
-	reconcileErrs []error
 }
 
 func (h *linuxNodeHandler) Name() string {
@@ -884,28 +905,30 @@ func (n *linuxNodeHandler) insertNeighbor6(ctx context.Context, newNode *nodeTyp
 // The given "refresh" param denotes whether the method is called by a controller
 // which tries to update neighbor entries previously inserted by insertNeighbor().
 // In this case the kernel refreshes the entry via NTF_USE.
-func (n *linuxNodeHandler) insertNeighbor(ctx context.Context, newNode *nodeTypes.Node, refresh bool) (err error) {
+func (n *linuxNodeHandler) insertNeighbor(ctx context.Context, newNode *nodeTypes.Node, refresh bool) error {
+	var acc error
 	var links []netlink.Link
 
 	n.neighLock.Lock()
 	if n.neighDiscoveryLinks == nil || len(n.neighDiscoveryLinks) == 0 {
 		n.neighLock.Unlock()
 		// Nothing to do - the discovery link was not set yet
-		return
+		return nil
 	}
 	links = n.neighDiscoveryLinks
 	n.neighLock.Unlock()
 
 	if newNode.GetNodeIP(false).To4() != nil {
 		for _, l := range links {
-			errs.Into(&err, n.insertNeighbor4(ctx, newNode, l, refresh))
+			errs.Into(&acc, n.insertNeighbor4(ctx, newNode, l, refresh))
 		}
 	}
 	if newNode.GetNodeIP(true).To16() != nil {
 		for _, l := range links {
-			errs.Into(&err, n.insertNeighbor6(ctx, newNode, l, refresh))
+			errs.Into(&acc, n.insertNeighbor6(ctx, newNode, l, refresh))
 		}
 	}
+	return acc
 }
 
 func (n *linuxNodeHandler) refreshNeighbor(ctx context.Context, nodeToRefresh *nodeTypes.Node, completed chan struct{}) {
@@ -1091,19 +1114,6 @@ func (n *linuxNodeHandler) subnetEncryption() bool {
 	return len(n.nodeConfig.IPv4PodSubnets) > 0 || len(n.nodeConfig.IPv6PodSubnets) > 0
 }
 
-func (n *linuxNodeHandler) addErr(ctx string, err error) {
-	n.reconcileErrs = append(n.reconcileErrs, fmt.Errorf("%s: %s", ctx, err))
-}
-
-func (n *linuxNodeHandler) aggregateErrs() error {
-	if len(n.reconcileErrs) == 0 {
-		return nil
-	}
-	err := multierr.Combine(n.reconcileErrs...)
-	n.reconcileErrs = nil
-	return err
-}
-
 // Must be called with linuxNodeHandler.mutex held.
 func (n *linuxNodeHandler) nodeUpdate(oldNode, newNode *nodeTypes.Node, firstAddition bool) error {
 	// Question: Is this the approach we want to take, its a bit ugly in cases like this where there
@@ -1122,7 +1132,7 @@ func (n *linuxNodeHandler) nodeUpdate(oldNode, newNode *nodeTypes.Node, firstAdd
 	// 	acc = n.aggregateErrs()
 	// }()
 
-	var err error
+	var acc error
 
 	var (
 		oldIP4Cidr, oldIP6Cidr                   *cidr.CIDR
@@ -1151,7 +1161,7 @@ func (n *linuxNodeHandler) nodeUpdate(oldNode, newNode *nodeTypes.Node, firstAdd
 	// This should be idempoent, so we can call it on every node update and errors
 	// generally should indicate possible degraded host state issues.
 	if n.nodeConfig.EnableIPSec && !n.nodeConfig.EncryptNode {
-		errs.Into(&err, n.enableIPsec(newNode))
+		errs.Into(&acc, n.enableIPsec(newNode))
 		newKey = newNode.EncryptionKey
 	}
 
@@ -1174,7 +1184,16 @@ func (n *linuxNodeHandler) nodeUpdate(oldNode, newNode *nodeTypes.Node, firstAdd
 		// The final param, "refresh" denotes whether this is a new neighbor or a refresh of an existing
 		// one.
 		// If it's a refresh, then it uses NTF_USE to refresh the neighbor entry.
-		go n.insertNeighbor(context.Background(), newNode, false)
+		go func() {
+			err := n.insertNeighbor(context.Background(), newNode, false)
+			if err != nil {
+				newName := newNode.Fullname()
+				n.neighLock.Lock()
+				// TODO: Collect on these, also need to ensure they don't grow too big.
+				n.reportNeighFailure(newName, err)
+				n.neighLock.Unlock()
+			}
+		}()
 	}
 
 	if n.nodeConfig.EnableIPSec && n.nodeConfig.EncryptNode && !n.subnetEncryption() {
@@ -1207,12 +1226,12 @@ func (n *linuxNodeHandler) nodeUpdate(oldNode, newNode *nodeTypes.Node, firstAdd
 
 	if n.nodeConfig.EnableAutoDirectRouting {
 		if err := n.updateDirectRoutes(oldAllIP4AllocCidrs, newAllIP4AllocCidrs, oldIP4, newIP4, firstAddition, n.nodeConfig.EnableIPv4); err != nil {
-			n.addErr("updating IPv4 direct routes", err)
+			errs.Into(&acc, fmt.Errorf("updating IPv4 direct routes: %w", err))
 		}
 		if err := n.updateDirectRoutes(oldAllIP6AllocCidrs, newAllIP6AllocCidrs, oldIP6, newIP6, firstAddition, n.nodeConfig.EnableIPv6); err != nil {
-			n.addErr("updating IPv6 direct routes", err)
+			errs.Into(&acc, fmt.Errorf("updating IPv6 direct routes: %w", err))
 		}
-		return
+		return acc
 	}
 
 	if n.nodeConfig.EnableEncapsulation {
