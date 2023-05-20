@@ -29,6 +29,7 @@ import (
 	"github.com/cilium/cilium/pkg/datapath/linux/linux_defaults"
 	"github.com/cilium/cilium/pkg/datapath/linux/route"
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
+	"github.com/cilium/cilium/pkg/errs"
 	"github.com/cilium/cilium/pkg/idpool"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	"github.com/cilium/cilium/pkg/lock"
@@ -78,32 +79,7 @@ type linuxNodeHandler struct {
 	ipsecMetricCollector prometheus.Collector
 	ipsecMetricOnce      sync.Once
 
-	//errReporter   *errorReporter
 	reconcileErrs []error
-}
-
-// imperativeReconcileError implements an error that is useful in situations where we may not be
-// bubbling errors up to the caller.
-//
-// This is a common pattern in existing state <> datapath reconciliation code, where we
-// often will continue execution of the entire procoe
-//
-// TODO: Think of another name.
-type errorReporter struct {
-	// High level context of what the reconciliation procedure was intending to do.
-	context string
-	errs    []error
-}
-
-func (i *errorReporter) GetError() error {
-	if i.errs == nil || len(i.errs) == 0 {
-		return nil
-	}
-	s := i.context + ":\n\n"
-	for i, err := range i.errs {
-		s += fmt.Sprintf("[%d]: %s\n", i, err.Error())
-	}
-	return errors.New(s)
 }
 
 func (h *linuxNodeHandler) Name() string {
@@ -522,7 +498,15 @@ func (n *linuxNodeHandler) NodeUpdate(oldNode, newNode nodeTypes.Node) error {
 	return nil
 }
 
-func upsertIPsecLog(err error, spec string, loc, rem *net.IPNet, spi uint8) {
+func upsertIPsecLog(err error, spec string, loc, rem *net.IPNet, spi uint8, accs ...*error) {
+	for _, acc := range accs {
+		errs.Into(acc,
+			fmt.Errorf("%s: IPSec enabled failed (local_ip=%s, rem=%s, spi=%d) %w",
+				spec,
+				loc.String(),
+				rem.String(),
+				spi, err))
+	}
 	scopedLog := log.WithFields(logrus.Fields{
 		logfields.Reason: spec,
 		"local-ip":       loc,
@@ -668,21 +652,21 @@ type NextHop struct {
 	IsNew bool
 }
 
-func (n *linuxNodeHandler) insertNeighborCommon(scopedLog *logrus.Entry, ctx context.Context, nextHop NextHop, link netlink.Link, refresh bool) {
+func (n *linuxNodeHandler) insertNeighborCommon(scopedLog *logrus.Entry, ctx context.Context, nextHop NextHop, link netlink.Link, refresh bool) error {
 	if refresh {
 		if lastPing, found := n.neighLastPingByNextHop[nextHop.Name]; found &&
-			time.Now().Sub(lastPing) < option.Config.ARPPingRefreshPeriod {
+			time.Since(lastPing) < option.Config.ARPPingRefreshPeriod {
 			// Last ping was issued less than option.Config.ARPPingRefreshPeriod
 			// ago, so skip it (e.g. to avoid ddos'ing the same GW if nodes are
 			// L3 connected)
-			return
+			return nil
 		}
 	}
 
 	// Don't proceed if the refresh controller cancelled the context
 	select {
 	case <-ctx.Done():
-		return
+		return nil
 	default:
 	}
 
@@ -741,12 +725,12 @@ func (n *linuxNodeHandler) insertNeighborCommon(scopedLog *logrus.Entry, ctx con
 		scopedLog.WithError(err).WithFields(logrus.Fields{
 			"neighbor": fmt.Sprintf("%+v", neigh),
 		}).Info("Unable to refresh next hop")
-		return
+		return fmt.Errorf("unable to refresh next hop: %w", err)
 	}
 	n.neighByNextHop[nextHop.Name] = &neigh
 }
 
-func (n *linuxNodeHandler) insertNeighbor4(ctx context.Context, newNode *nodeTypes.Node, link netlink.Link, refresh bool) {
+func (n *linuxNodeHandler) insertNeighbor4(ctx context.Context, newNode *nodeTypes.Node, link netlink.Link, refresh bool) (err error) {
 	newNodeIP := newNode.GetNodeIP(false)
 	nextHopIPv4 := make(net.IP, len(newNodeIP))
 	copy(nextHopIPv4, newNodeIP)
@@ -757,10 +741,10 @@ func (n *linuxNodeHandler) insertNeighbor4(ctx context.Context, newNode *nodeTyp
 		logfields.IPAddr:    newNodeIP,
 	})
 
-	nextHopIPv4, err := getNextHopIP(nextHopIPv4, link)
+	nextHopIPv4, err = getNextHopIP(nextHopIPv4, link)
 	if err != nil {
 		scopedLog.WithError(err).Info("Unable to determine next hop address")
-		return
+		return fmt.Errorf("unable to determine next hop address: %w", err)
 	}
 	nextHopStr := nextHopIPv4.String()
 	scopedLog = scopedLog.WithField(logfields.NextHop, nextHopIPv4)
@@ -786,7 +770,7 @@ func (n *linuxNodeHandler) insertNeighbor4(ctx context.Context, newNode *nodeTyp
 					//
 					// The neighbor's HW address is ignored on delete. Only the IP
 					// address and device is checked.
-					if err := netlink.NeighDel(neigh); err != nil {
+					if errs.Into(&err, netlink.NeighDel(neigh)) {
 						scopedLog.WithFields(logrus.Fields{
 							logfields.NextHop:   neigh.IP,
 							logfields.LinkIndex: neigh.LinkIndex,
@@ -814,10 +798,12 @@ func (n *linuxNodeHandler) insertNeighbor4(ctx context.Context, newNode *nodeTyp
 		IP:    nextHopIPv4,
 		IsNew: nextHopIsNew,
 	}
-	n.insertNeighborCommon(scopedLog, ctx, nh, link, refresh)
+
+	errs.Into(&err, n.insertNeighborCommon(scopedLog, ctx, nh, link, refresh))
+	return
 }
 
-func (n *linuxNodeHandler) insertNeighbor6(ctx context.Context, newNode *nodeTypes.Node, link netlink.Link, refresh bool) {
+func (n *linuxNodeHandler) insertNeighbor6(ctx context.Context, newNode *nodeTypes.Node, link netlink.Link, refresh bool) (err error) {
 	newNodeIP := newNode.GetNodeIP(true)
 	nextHopIPv6 := make(net.IP, len(newNodeIP))
 	copy(nextHopIPv6, newNodeIP)
@@ -828,10 +814,10 @@ func (n *linuxNodeHandler) insertNeighbor6(ctx context.Context, newNode *nodeTyp
 		logfields.IPAddr:    newNodeIP,
 	})
 
-	nextHopIPv6, err := getNextHopIP(nextHopIPv6, link)
+	nextHopIPv6, err = getNextHopIP(nextHopIPv6, link)
 	if err != nil {
 		scopedLog.WithError(err).Info("Unable to determine next hop address")
-		return
+		return fmt.Errorf("unable to determine next hop address: %w", err)
 	}
 	nextHopStr := nextHopIPv6.String()
 	scopedLog = scopedLog.WithField(logfields.NextHop, nextHopIPv6)
@@ -858,7 +844,7 @@ func (n *linuxNodeHandler) insertNeighbor6(ctx context.Context, newNode *nodeTyp
 					//
 					// The neighbor's HW address is ignored on delete. Only the IP
 					// address and device is checked.
-					if err := netlink.NeighDel(neigh); err != nil {
+					if errs.Into(&err, netlink.NeighDel(neigh)) {
 						scopedLog.WithFields(logrus.Fields{
 							logfields.NextHop:   neigh.IP,
 							logfields.LinkIndex: neigh.LinkIndex,
@@ -886,7 +872,8 @@ func (n *linuxNodeHandler) insertNeighbor6(ctx context.Context, newNode *nodeTyp
 		IP:    nextHopIPv6,
 		IsNew: nextHopIsNew,
 	}
-	n.insertNeighborCommon(scopedLog, ctx, nh, link, refresh)
+	errs.Into(&err, n.insertNeighborCommon(scopedLog, ctx, nh, link, refresh))
+	return
 }
 
 // insertNeighbor inserts a non-GC'able neighbor entry for a nexthop to the given
@@ -897,7 +884,7 @@ func (n *linuxNodeHandler) insertNeighbor6(ctx context.Context, newNode *nodeTyp
 // The given "refresh" param denotes whether the method is called by a controller
 // which tries to update neighbor entries previously inserted by insertNeighbor().
 // In this case the kernel refreshes the entry via NTF_USE.
-func (n *linuxNodeHandler) insertNeighbor(ctx context.Context, newNode *nodeTypes.Node, refresh bool) {
+func (n *linuxNodeHandler) insertNeighbor(ctx context.Context, newNode *nodeTypes.Node, refresh bool) (err error) {
 	var links []netlink.Link
 
 	n.neighLock.Lock()
@@ -911,12 +898,12 @@ func (n *linuxNodeHandler) insertNeighbor(ctx context.Context, newNode *nodeType
 
 	if newNode.GetNodeIP(false).To4() != nil {
 		for _, l := range links {
-			n.insertNeighbor4(ctx, newNode, l, refresh)
+			errs.Into(&err, n.insertNeighbor4(ctx, newNode, l, refresh))
 		}
 	}
 	if newNode.GetNodeIP(true).To16() != nil {
 		for _, l := range links {
-			n.insertNeighbor6(ctx, newNode, l, refresh)
+			errs.Into(&err, n.insertNeighbor6(ctx, newNode, l, refresh))
 		}
 	}
 }
@@ -983,14 +970,12 @@ func (n *linuxNodeHandler) deleteNeighbor(oldNode *nodeTypes.Node) {
 // TODO: In subsequent commit, look at procedural calls that may be "asymptotic",
 //
 //	thus if their state is already settled?
-func (n *linuxNodeHandler) enableIPsec(newNode *nodeTypes.Node) (errs []error) {
+func (n *linuxNodeHandler) enableIPsec(newNode *nodeTypes.Node) error {
 	var spi uint8
-	var err error
+	var acc error
 
 	if newNode.IsLocal() {
-		if err := n.replaceHostRules(); err != nil {
-			errs = append(errs, err)
-		}
+		errs.Into(&acc, n.replaceHostRules())
 	}
 
 	// In endpoint routes mode we use the stack to route packets after
@@ -1005,14 +990,11 @@ func (n *linuxNodeHandler) enableIPsec(newNode *nodeTypes.Node) (errs []error) {
 		wildcardCIDR := &net.IPNet{IP: wildcardIP, Mask: net.IPv4Mask(0, 0, 0, 0)}
 
 		// Set default drop policy for IPv4, regardless if node is local.
-		err = ipsec.IPsecDefaultDropPolicy(false)
-		upsertIPsecLog(err, "default-drop IPv4", wildcardCIDR, wildcardCIDR, spi)
-		if err != nil {
-			errs = append(errs, err)
-		}
+		err := ipsec.IPsecDefaultDropPolicy(false)
+		upsertIPsecLog(err, "default-drop IPv4", wildcardCIDR, wildcardCIDR, spi, &acc)
 
 		if newNode.IsLocal() {
-			n.replaceNodeIPSecInRoute(new4Net)
+			errs.Into(&acc, n.replaceNodeIPSecInRoute(new4Net))
 
 			if localIP := newNode.GetCiliumInternalIP(false); localIP != nil {
 				if n.subnetEncryption() {
@@ -1020,15 +1002,16 @@ func (n *linuxNodeHandler) enableIPsec(newNode *nodeTypes.Node) (errs []error) {
 						/* Insert wildcard policy rules for traffic skipping back through host */
 						if err = ipsec.IpSecReplacePolicyFwd(cidr, localIP); err != nil {
 							log.WithError(err).Warning("egress unable to replace policy fwd:")
+							errs.Into(&acc, fmt.Errorf("unable to replace policy fwd: %w", err))
 						}
 
 						spi, err := ipsec.UpsertIPsecEndpoint(wildcardCIDR, cidr, localIP, wildcardIP, 0, ipsec.IPSecDirIn, zeroMark)
-						upsertIPsecLog(err, "in IPv4", wildcardCIDR, cidr, spi)
+						upsertIPsecLog(err, "in IPv4", wildcardCIDR, cidr, spi, &acc)
 					}
 				} else {
 					localCIDR := n.nodeAddressing.IPv4().AllocationCIDR().IPNet
 					spi, err = ipsec.UpsertIPsecEndpoint(localCIDR, wildcardCIDR, localIP, wildcardIP, 0, ipsec.IPSecDirIn, false)
-					upsertIPsecLog(err, "in IPv4", localCIDR, wildcardCIDR, spi)
+					upsertIPsecLog(err, "in IPv4", localCIDR, wildcardCIDR, spi, &acc)
 				}
 			}
 		} else {
@@ -1039,18 +1022,19 @@ func (n *linuxNodeHandler) enableIPsec(newNode *nodeTypes.Node) (errs []error) {
 				if n.subnetEncryption() {
 					for _, cidr := range n.nodeConfig.IPv4PodSubnets {
 						spi, err = ipsec.UpsertIPsecEndpoint(wildcardCIDR, cidr, localIP, remoteIP, remoteNodeID, ipsec.IPSecDirOut, zeroMark)
-						upsertIPsecLog(err, "out IPv4", wildcardCIDR, cidr, spi)
+						upsertIPsecLog(err, "out IPv4", wildcardCIDR, cidr, spi, &acc)
 					}
 				} else {
 					localCIDR := n.nodeAddressing.IPv4().AllocationCIDR().IPNet
 					remoteCIDR := newNode.IPv4AllocCIDR.IPNet
-					n.replaceNodeIPSecOutRoute(new4Net)
+					errs.Into(&acc, n.replaceNodeIPSecOutRoute(new4Net))
 					spi, err = ipsec.UpsertIPsecEndpoint(localCIDR, remoteCIDR, localIP, remoteIP, remoteNodeID, ipsec.IPSecDirOut, false)
-					upsertIPsecLog(err, "out IPv4", localCIDR, remoteCIDR, spi)
+					upsertIPsecLog(err, "out IPv4", localCIDR, remoteCIDR, spi, &acc)
 
 					/* Insert wildcard policy rules for traffic skipping back through host */
 					if err = ipsec.IpSecReplacePolicyFwd(remoteCIDR, remoteIP); err != nil {
-						log.WithError(err).Warning("egress unable to replace policy fwd:")
+						log.WithError(err).Warning("egress unable to replace policy fwd")
+						errs.Into(&acc, fmt.Errorf("unable to replace policy fwd: %w", err))
 					}
 				}
 			}
@@ -1062,22 +1046,22 @@ func (n *linuxNodeHandler) enableIPsec(newNode *nodeTypes.Node) (errs []error) {
 		wildcardIP := net.ParseIP(wildcardIPv6)
 		wildcardCIDR := &net.IPNet{IP: wildcardIP, Mask: net.CIDRMask(0, 128)}
 
-		err = ipsec.IPsecDefaultDropPolicy(true)
-		upsertIPsecLog(err, "default-drop IPv6", wildcardCIDR, wildcardCIDR, spi)
+		err := ipsec.IPsecDefaultDropPolicy(true)
+		upsertIPsecLog(err, "default-drop IPv6", wildcardCIDR, wildcardCIDR, spi, &acc)
 
 		if newNode.IsLocal() {
-			n.replaceNodeIPSecInRoute(new6Net)
+			errs.Into(&err, n.replaceNodeIPSecInRoute(new6Net))
 
 			if localIP := newNode.GetCiliumInternalIP(true); localIP != nil {
 				if n.subnetEncryption() {
 					for _, cidr := range n.nodeConfig.IPv6PodSubnets {
 						spi, err := ipsec.UpsertIPsecEndpoint(wildcardCIDR, cidr, localIP, wildcardIP, 0, ipsec.IPSecDirIn, zeroMark)
-						upsertIPsecLog(err, "in IPv6", wildcardCIDR, cidr, spi)
+						upsertIPsecLog(err, "in IPv6", wildcardCIDR, cidr, spi, &acc)
 					}
 				} else {
 					localCIDR := n.nodeAddressing.IPv6().AllocationCIDR().IPNet
 					spi, err = ipsec.UpsertIPsecEndpoint(localCIDR, wildcardCIDR, localIP, wildcardIP, 0, ipsec.IPSecDirIn, false)
-					upsertIPsecLog(err, "in IPv6", localCIDR, wildcardCIDR, spi)
+					upsertIPsecLog(err, "in IPv6", localCIDR, wildcardCIDR, spi, &acc)
 				}
 			}
 		} else {
@@ -1088,19 +1072,19 @@ func (n *linuxNodeHandler) enableIPsec(newNode *nodeTypes.Node) (errs []error) {
 				if n.subnetEncryption() {
 					for _, cidr := range n.nodeConfig.IPv6PodSubnets {
 						spi, err = ipsec.UpsertIPsecEndpoint(wildcardCIDR, cidr, localIP, remoteIP, remoteNodeID, ipsec.IPSecDirOut, zeroMark)
-						upsertIPsecLog(err, "out IPv6", wildcardCIDR, cidr, spi)
+						upsertIPsecLog(err, "out IPv6", wildcardCIDR, cidr, spi, &acc)
 					}
 				} else {
 					localCIDR := n.nodeAddressing.IPv6().AllocationCIDR().IPNet
 					remoteCIDR := newNode.IPv6AllocCIDR.IPNet
-					n.replaceNodeIPSecOutRoute(new6Net)
+					errs.Into(n.replaceNodeIPSecOutRoute(new6Net))
 					spi, err := ipsec.UpsertIPsecEndpoint(localCIDR, remoteCIDR, localIP, remoteIP, remoteNodeID, ipsec.IPSecDirOut, false)
-					upsertIPsecLog(err, "out IPv6", localCIDR, remoteCIDR, spi)
+					upsertIPsecLog(err, "out IPv6", localCIDR, remoteCIDR, spi, &acc)
 				}
 			}
 		}
 	}
-	return
+	return acc
 }
 
 func (n *linuxNodeHandler) subnetEncryption() bool {
@@ -1121,16 +1105,24 @@ func (n *linuxNodeHandler) aggregateErrs() error {
 }
 
 // Must be called with linuxNodeHandler.mutex held.
-func (n *linuxNodeHandler) nodeUpdate(oldNode, newNode *nodeTypes.Node, firstAddition bool) (acc error) {
+func (n *linuxNodeHandler) nodeUpdate(oldNode, newNode *nodeTypes.Node, firstAddition bool) error {
 	// Question: Is this the approach we want to take, its a bit ugly in cases like this where there
 	// is a lot of places for errors to be tacked on.
 	//
 	// Perhaps we want another multierr?
 	// This is the high level reconciliation function for this node handler implementation,
 	// upon return, aggregate all errors and return them to the caller.
-	defer func() {
-		acc = n.aggregateErrs()
-	}()
+	//
+	// Outline of procedure:
+	// 1. Do ipsec reconciliation.
+	// 2. Spawn off async neighbor reconciliation.
+	//
+	// TODO: Look into that palantir thingy.
+	// defer func() {
+	// 	acc = n.aggregateErrs()
+	// }()
+
+	var err error
 
 	var (
 		oldIP4Cidr, oldIP6Cidr                   *cidr.CIDR
@@ -1159,19 +1151,29 @@ func (n *linuxNodeHandler) nodeUpdate(oldNode, newNode *nodeTypes.Node, firstAdd
 	// This should be idempoent, so we can call it on every node update and errors
 	// generally should indicate possible degraded host state issues.
 	if n.nodeConfig.EnableIPSec && !n.nodeConfig.EncryptNode {
-		if errs := n.enableIPsec(newNode); len(errs) > 0 {
-			for _, err := range errs {
-				n.addErr("enableIPsec", err)
-			}
-		}
+		errs.Into(&err, n.enableIPsec(newNode))
 		newKey = newNode.EncryptionKey
 	}
 
+	// So this inserts l2 neighbors from non-local node events.
+	// That is, if a node is added, we insert it as a neighbor locally.
+	//
+	// TODO: Ask about what happens if this fails?
+	//
+	// So this seems pretty critical, how do we handle this?
 	if n.enableNeighDiscovery && !newNode.IsLocal() {
 		// Running insertNeighbor in a separate goroutine relies on the following
 		// assumptions:
 		// 1. newNode is accessed only by reads.
 		// 2. It is safe to invoke insertNeighbor for the same node.
+
+		// insertCh := make(chan []error)
+		// TODO: There is a goroutine that runs a background process that invokes this periodically,
+		// 	do we need to do this here?
+		//
+		// The final param, "refresh" denotes whether this is a new neighbor or a refresh of an existing
+		// one.
+		// If it's a refresh, then it uses NTF_USE to refresh the neighbor entry.
 		go n.insertNeighbor(context.Background(), newNode, false)
 	}
 
@@ -1471,19 +1473,20 @@ func (n *linuxNodeHandler) createNodeExternalIPSecOutRoute(ip *net.IPNet, dflt b
 // replaceNodeIPSecOutRoute replace the out IPSec route in the host routing
 // table with the new route. If no route exists the route is installed on the
 // host. The caller must ensure that the CIDR passed in must be non-nil.
-func (n *linuxNodeHandler) replaceNodeIPSecOutRoute(ip *net.IPNet) {
+func (n *linuxNodeHandler) replaceNodeIPSecOutRoute(ip *net.IPNet) error {
 	if ip.IP.To4() != nil {
 		if !n.nodeConfig.EnableIPv4 {
-			return
+			return nil
 		}
 	} else {
 		if !n.nodeConfig.EnableIPv6 {
-			return
+			return nil
 		}
 	}
 
 	if err := route.Upsert(n.createNodeIPSecOutRoute(ip)); err != nil {
 		log.WithError(err).WithField(logfields.CIDR, ip).Error("Unable to replace the IPSec route OUT the host routing table")
+		return fmt.Errorf("unable to replace the IPSec route OUT the host routing table: %w", err)
 	}
 }
 
@@ -1550,19 +1553,20 @@ func (n *linuxNodeHandler) deleteNodeExternalIPSecOutRoute(ip *net.IPNet) {
 // replaceNodeIPSecoInRoute replace the in IPSec routes in the host routing
 // table with the new route. If no route exists the route is installed on the
 // host. The caller must ensure that the CIDR passed in must be non-nil.
-func (n *linuxNodeHandler) replaceNodeIPSecInRoute(ip *net.IPNet) {
+func (n *linuxNodeHandler) replaceNodeIPSecInRoute(ip *net.IPNet) error {
 	if ip.IP.To4() != nil {
 		if !n.nodeConfig.EnableIPv4 {
-			return
+			return nil
 		}
 	} else {
 		if !n.nodeConfig.EnableIPv6 {
-			return
+			return nil
 		}
 	}
 
 	if err := route.Upsert(n.createNodeIPSecInRoute(ip)); err != nil {
 		log.WithError(err).WithField(logfields.CIDR, ip).Error("Unable to replace the IPSec route IN the host routing table")
+		return fmt.Errorf("unable to replace the IPSec route IN the host routing table: %w", err)
 	}
 }
 
