@@ -679,7 +679,8 @@ func (m *manager) GetNodes() map[nodeTypes.Identity]nodeTypes.Node {
 // by sending arping periodically.
 func (m *manager) StartNeighborRefresh(nh datapath.NodeHandler) {
 	ctx, cancel := context.WithCancel(context.Background())
-	controller.NewManager().UpdateController("neighbor-table-refresh",
+	cmgr := controller.NewManager()
+	cmgr.UpdateController("neighbor-table-refresh",
 		controller.ControllerParams{
 			DoFunc: func(controllerCtx context.Context) error {
 				// Cancel previous goroutines from previous controller run

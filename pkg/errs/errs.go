@@ -10,6 +10,7 @@ import (
 func Into(into *error, err error) bool {
 	if into == nil {
 		logrus.Error("[BUG] errs.Into called with nil error pointer")
+		return err != nil
 	}
 	return multierr.AppendInto(into, err)
 }
