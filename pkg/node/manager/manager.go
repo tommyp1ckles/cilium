@@ -5,11 +5,14 @@ package manager
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"time"
 
 	"github.com/cilium/workerpool"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/exp/slices"
 
 	"github.com/cilium/cilium/pkg/backoff"
@@ -17,6 +20,7 @@ import (
 	"github.com/cilium/cilium/pkg/datapath/iptables"
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/hive"
+	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/ip"
@@ -122,6 +126,9 @@ type manager struct {
 	// controllerManager manages the controllers that are launched within the
 	// Manager.
 	controllerManager *controller.Manager
+
+	// healthReporter provides a scoped reporter for reporting node manager health state.
+	healthReporter cell.HealthReporter
 }
 
 // Subscribe subscribes the given node handler to node events.
@@ -133,7 +140,12 @@ func (m *manager) Subscribe(nh datapath.NodeHandler) {
 	m.mutex.RLock()
 	for _, v := range m.nodes {
 		v.mutex.Lock()
-		nh.NodeAdd(v.node)
+		if err := nh.NodeAdd(v.node); err != nil {
+			log.WithFields(logrus.Fields{
+				"handler": nh.Name(),
+				"node":    v.node.Name,
+			}).WithError(err).Error("Failed applying node handler following initial subscribe. Cilium may have degraded functionality. See error message for more details.")
+		}
 		v.mutex.Unlock()
 	}
 	m.mutex.RUnlock()
@@ -199,7 +211,7 @@ func NewNodeMetrics() *nodeMetrics {
 }
 
 // New returns a new node manager
-func New(c Configuration, ipCache IPCache, nodeMetrics *nodeMetrics) (*manager, error) {
+func New(c Configuration, ipCache IPCache, nodeMetrics *nodeMetrics, hr cell.HealthReporter) (*manager, error) {
 	m := &manager{
 		nodes:             map[nodeTypes.Identity]*nodeEntry{},
 		conf:              c,
@@ -207,6 +219,7 @@ func New(c Configuration, ipCache IPCache, nodeMetrics *nodeMetrics) (*manager, 
 		nodeHandlers:      map[datapath.NodeHandler]struct{}{},
 		ipcache:           ipCache,
 		metrics:           nodeMetrics,
+		healthReporter:    hr,
 	}
 
 	return m, nil
@@ -276,6 +289,7 @@ func (m *manager) backgroundSync(ctx context.Context) error {
 		syncInterval := m.backgroundSyncInterval()
 		log.WithField("syncInterval", syncInterval.String()).Debug("Performing regular background work")
 
+		var errs error
 		// get a copy of the node identities to avoid locking the entire manager
 		// throughout the process of running the datapath validation.
 		nodes := m.GetNodeIdentities()
@@ -292,11 +306,24 @@ func (m *manager) backgroundSync(ctx context.Context) error {
 			entry.mutex.Lock()
 			m.mutex.RUnlock()
 			m.Iter(func(nh datapath.NodeHandler) {
-				nh.NodeValidateImplementation(entry.node)
+				if err := nh.NodeValidateImplementation(entry.node); err != nil {
+					log.WithFields(logrus.Fields{
+						"handler": nh.Name(),
+						"node":    entry.node.Name,
+					}).WithError(err).
+						Error("Failed to apply node handler during background sync. Cilium may have degraded functionality. See error message for details.")
+					errs = errors.Join(errs, fmt.Errorf("failed while handling %s on node %s: %w", nh.Name(), entry.node.Name, err))
+				}
 			})
 			entry.mutex.Unlock()
 
 			m.metrics.DatapathValidations.Inc()
+		}
+
+		if errs != nil {
+			m.healthReporter.Degraded("Failed to apply node validation", errs)
+		} else {
+			m.healthReporter.OK("Node validation successful")
 		}
 
 		select {
@@ -496,7 +523,13 @@ func (m *manager) NodeUpdated(n nodeTypes.Node) {
 		entry.node = n
 		if dpUpdate {
 			m.Iter(func(nh datapath.NodeHandler) {
-				nh.NodeUpdate(oldNode, entry.node)
+				if err := nh.NodeUpdate(oldNode, entry.node); err != nil {
+					log.WithFields(logrus.Fields{
+						"handler": nh.Name(),
+						"node":    entry.node.Name,
+					}).WithError(err).
+						Error("Failed to handle node update event while applying handler. Cilium may be have degraded functionality. See error message for details.")
+				}
 			})
 		}
 
@@ -513,7 +546,13 @@ func (m *manager) NodeUpdated(n nodeTypes.Node) {
 		m.mutex.Unlock()
 		if dpUpdate {
 			m.Iter(func(nh datapath.NodeHandler) {
-				nh.NodeAdd(entry.node)
+				if err := nh.NodeAdd(entry.node); err != nil {
+					log.WithFields(logrus.Fields{
+						"node":    entry.node.Name,
+						"handler": nh.Name(),
+					}).WithError(err).
+						Error("Failed to handle node update event while applying handler. Cilium may be have degraded functionality. See error message for details.")
+				}
 			})
 		}
 		entry.mutex.Unlock()
@@ -638,7 +677,16 @@ func (m *manager) NodeDeleted(n nodeTypes.Node) {
 	delete(m.nodes, nodeIdentifier)
 	m.mutex.Unlock()
 	m.Iter(func(nh datapath.NodeHandler) {
-		nh.NodeDelete(n)
+		if err := nh.NodeDelete(n); err != nil {
+			// For now we log the error and continue. Eventually we will want to encorporate
+			// this into the node managers health status.
+			// However this is a bit tricky - as leftover node deletes are not retries so this will
+			// need to be accompanied by some kind of retry mechanism.
+			log.WithFields(logrus.Fields{
+				"handler": nh.Name(),
+				"node":    n.Name,
+			}).WithError(err).Error("Failed to handle node delete event while applying handler. Cilium may be have degraded functionality.")
+		}
 	})
 	entry.mutex.Unlock()
 }
@@ -705,5 +753,4 @@ func (m *manager) StartNeighborRefresh(nh datapath.NodeNeighbors) {
 			RunInterval: option.Config.ARPPingRefreshPeriod,
 		},
 	)
-	return
 }
