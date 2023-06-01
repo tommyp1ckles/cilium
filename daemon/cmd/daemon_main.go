@@ -5,8 +5,10 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -27,11 +29,11 @@ import (
 	"github.com/cilium/cilium/api/v1/server/restapi"
 	"github.com/cilium/cilium/daemon/cmd/cni"
 	"github.com/cilium/cilium/pkg/api"
-	"github.com/cilium/cilium/pkg/auth"
 	"github.com/cilium/cilium/pkg/aws/eni"
 	bgpv1 "github.com/cilium/cilium/pkg/bgpv1/agent"
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/cgroups"
+	"github.com/cilium/cilium/pkg/clustermesh"
 	"github.com/cilium/cilium/pkg/common"
 	"github.com/cilium/cilium/pkg/components"
 	"github.com/cilium/cilium/pkg/controller"
@@ -53,6 +55,7 @@ import (
 	"github.com/cilium/cilium/pkg/hubble/exporter/exporteroption"
 	"github.com/cilium/cilium/pkg/hubble/observer/observeroption"
 	"github.com/cilium/cilium/pkg/identity"
+	ipamMetadata "github.com/cilium/cilium/pkg/ipam/metadata"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	"github.com/cilium/cilium/pkg/ipcache"
 	"github.com/cilium/cilium/pkg/ipmasq"
@@ -68,12 +71,12 @@ import (
 	"github.com/cilium/cilium/pkg/maglev"
 	"github.com/cilium/cilium/pkg/maps/ctmap"
 	"github.com/cilium/cilium/pkg/maps/ctmap/gc"
-	"github.com/cilium/cilium/pkg/maps/egressmap"
 	"github.com/cilium/cilium/pkg/maps/lbmap"
 	"github.com/cilium/cilium/pkg/maps/nat"
 	"github.com/cilium/cilium/pkg/maps/neighborsmap"
 	"github.com/cilium/cilium/pkg/maps/policymap"
 	"github.com/cilium/cilium/pkg/metrics"
+	monitorAgent "github.com/cilium/cilium/pkg/monitor/agent"
 	monitorAPI "github.com/cilium/cilium/pkg/monitor/api"
 	"github.com/cilium/cilium/pkg/node"
 	nodeManager "github.com/cilium/cilium/pkg/node/manager"
@@ -192,9 +195,6 @@ func initializeFlags() {
 	flags.String(option.ClusterName, defaults.ClusterName, "Name of the cluster")
 	option.BindEnv(Vp, option.ClusterName)
 
-	flags.String(option.ClusterMeshConfigName, "", "Path to the ClusterMesh configuration directory")
-	option.BindEnv(Vp, option.ClusterMeshConfigName)
-
 	flags.StringSlice(option.CompilerFlags, []string{}, "Extra CFLAGS for BPF compilation")
 	flags.MarkHidden(option.CompilerFlags)
 	option.BindEnv(Vp, option.CompilerFlags)
@@ -280,7 +280,7 @@ func initializeFlags() {
 	flags.String(option.EncryptInterface, "", "Transparent encryption interface")
 	option.BindEnv(Vp, option.EncryptInterface)
 
-	flags.Bool(option.EncryptNode, defaults.EncryptNode, "Enables encrypting traffic from non-Cilium pods and host networking (only supported with WireGuard)")
+	flags.Bool(option.EncryptNode, defaults.EncryptNode, "Enables encrypting traffic from non-Cilium pods and host networking (only supported with WireGuard, beta)")
 	option.BindEnv(Vp, option.EncryptNode)
 
 	flags.StringSlice(option.IPv4PodSubnets, []string{}, "List of IPv4 pod subnets to preconfigure for encryption")
@@ -288,6 +288,11 @@ func initializeFlags() {
 
 	flags.StringSlice(option.IPv6PodSubnets, []string{}, "List of IPv6 pod subnets to preconfigure for encryption")
 	option.BindEnv(Vp, option.IPv6PodSubnets)
+
+	flags.Var(option.NewNamedMapOptions(option.IPAMMultiPoolNodePreAlloc, &option.Config.IPAMMultiPoolNodePreAlloc, nil),
+		option.IPAMMultiPoolNodePreAlloc, "List of IP pools which should be pre-allocated on this node")
+	flags.MarkHidden(option.IPAMMultiPoolNodePreAlloc)
+	option.BindEnv(Vp, option.IPAMMultiPoolNodePreAlloc)
 
 	flags.StringSlice(option.ExcludeLocalAddress, []string{}, "Exclude CIDR from being recognized as local address")
 	option.BindEnv(Vp, option.ExcludeLocalAddress)
@@ -397,6 +402,9 @@ func initializeFlags() {
 
 	flags.Int64(option.ProxyMaxConnectionDuration, 0, "Set Envoy HTTP option max_connection_duration seconds. Default 0 (disable)")
 	option.BindEnv(Vp, option.ProxyMaxConnectionDuration)
+
+	flags.Int64(option.ProxyIdleTimeout, 60, "Set Envoy upstream HTTP idle connection timeout seconds. Does not apply to connections with pending requests. Default 60s")
+	option.BindEnv(Vp, option.ProxyIdleTimeout)
 
 	flags.Bool(option.DisableEnvoyVersionCheck, false, "Do not perform Envoy binary version check on startup")
 	flags.MarkHidden(option.DisableEnvoyVersionCheck)
@@ -605,6 +613,9 @@ func initializeFlags() {
 	flags.Bool(option.EnableIdentityMark, true, "Enable setting identity mark for local traffic")
 	option.BindEnv(Vp, option.EnableIdentityMark)
 
+	flags.Bool(option.EnableHighScaleIPcache, defaults.EnableHighScaleIPcache, "Enable the high scale mode for ipcache")
+	option.BindEnv(Vp, option.EnableHighScaleIPcache)
+
 	flags.Bool(option.EnableHostFirewall, false, "Enable host network policies")
 	option.BindEnv(Vp, option.EnableHostFirewall)
 
@@ -659,9 +670,6 @@ func initializeFlags() {
 	flags.Bool(option.EnableIPv4EgressGateway, false, "Enable egress gateway for IPv4")
 	option.BindEnv(Vp, option.EnableIPv4EgressGateway)
 
-	flags.Int(option.EgressGatewayPolicyMapEntriesName, egressmap.MaxPolicyEntries, "Maximum number of entries in egress gateway policy map")
-	option.BindEnv(Vp, option.EgressGatewayPolicyMapEntriesName)
-
 	flags.Bool(option.EnableEnvoyConfig, false, "Enable Envoy Config CRDs")
 	option.BindEnv(Vp, option.EnableEnvoyConfig)
 
@@ -688,15 +696,9 @@ func initializeFlags() {
 	flags.StringSlice(option.Metrics, []string{}, "Metrics that should be enabled or disabled from the default metric list. The list is expected to be separated by a space. (+metric_foo to enable metric_foo , -metric_bar to disable metric_bar)")
 	option.BindEnv(Vp, option.Metrics)
 
-	flags.Bool(option.EnableMonitorName, true, "Enable the monitor unix domain socket server")
-	option.BindEnv(Vp, option.EnableMonitorName)
-
 	flags.String(option.MonitorAggregationName, "None",
 		"Level of monitor aggregation for traces from the datapath")
 	option.BindEnvWithLegacyEnvFallback(Vp, option.MonitorAggregationName, "CILIUM_MONITOR_AGGREGATION_LEVEL")
-
-	flags.Int(option.MonitorQueueSizeName, 0, "Size of the event queue when reading monitor events")
-	option.BindEnv(Vp, option.MonitorQueueSizeName)
 
 	flags.Int(option.MTUName, 0, "Overwrite auto-detected MTU of underlying network")
 	option.BindEnv(Vp, option.MTUName)
@@ -732,6 +734,9 @@ func initializeFlags() {
 
 	flags.String(option.StateDir, defaults.RuntimePath, "Directory path to store runtime state")
 	option.BindEnv(Vp, option.StateDir)
+
+	flags.Bool(option.ExternalEnvoyProxy, false, "whether the Envoy is deployed externally in form of a DaemonSet or not")
+	option.BindEnv(Vp, option.ExternalEnvoyProxy)
 
 	flags.StringP(option.TunnelName, "t", "", fmt.Sprintf("Tunnel mode {%s} (default \"vxlan\" for the \"veth\" datapath mode)", option.GetTunnelModes()))
 	option.BindEnv(Vp, option.TunnelName)
@@ -1042,6 +1047,10 @@ func initializeFlags() {
 	flags.MarkHidden(option.EnableICMPRules)
 	option.BindEnv(Vp, option.EnableICMPRules)
 
+	flags.Bool(option.UseCiliumInternalIPForIPsec, defaults.UseCiliumInternalIPForIPsec, "Use the CiliumInternalIPs (vs. NodeInternalIPs) for IPsec encapsulation")
+	flags.MarkHidden(option.UseCiliumInternalIPForIPsec)
+	option.BindEnv(Vp, option.UseCiliumInternalIPForIPsec)
+
 	flags.Bool(option.BypassIPAvailabilityUponRestore, false, "Bypasses the IP availability error within IPAM upon endpoint restore")
 	flags.MarkHidden(option.BypassIPAvailabilityUponRestore)
 	option.BindEnv(Vp, option.BypassIPAvailabilityUponRestore)
@@ -1145,9 +1154,6 @@ func initEnv() {
 
 	var debugDatapath bool
 
-	// Not running tests -> enable the monitor agent.
-	option.Config.RunMonitorAgent = true
-
 	option.LogRegisteredOptions(Vp, log)
 
 	sysctl.SetProcfs(option.Config.ProcFs)
@@ -1188,23 +1194,6 @@ func initEnv() {
 		loadinfo.StartBackgroundLogger()
 	}
 
-	if option.Config.DisableEnvoyVersionCheck {
-		log.Info("Envoy version check disabled")
-	} else {
-		envoyVersion := envoy.GetEnvoyVersion()
-		log.Infof("%s", envoyVersion)
-
-		envoyVersionArray := strings.Fields(envoyVersion)
-		if len(envoyVersionArray) < 3 {
-			log.Fatal("Truncated Envoy version string, cannot verify version match.")
-		}
-		// Make sure Envoy version matches ours
-		if !strings.HasPrefix(envoyVersionArray[2], envoy.RequiredEnvoyVersionSHA) {
-			log.Fatalf("Envoy version %s does not match with required version %s ,aborting.",
-				envoyVersionArray[2], envoy.RequiredEnvoyVersionSHA)
-		}
-	}
-
 	if option.Config.PreAllocateMaps {
 		bpf.EnableMapPreAllocation()
 	}
@@ -1238,6 +1227,12 @@ func initEnv() {
 	// Restore permissions of executable files
 	if err := restoreExecPermissions(option.Config.LibDir, `.*\.sh`); err != nil {
 		scopedLog.WithError(err).Fatal("Unable to restore agent asset permissions")
+	}
+
+	// Creating Envoy sockets directory for cases which doesn't provide a volume mount
+	// (e.g. embedded Envoy, external workload in ClusterMesh scenario)
+	if err := os.MkdirAll(envoy.GetSocketDir(option.Config.RunDir), defaults.RuntimePathRights); err != nil {
+		scopedLog.WithError(err).Fatal("Could not create envoy sockets directory")
 	}
 
 	if option.Config.MaxControllerInterval < 0 {
@@ -1395,6 +1390,27 @@ func initEnv() {
 		log.Fatal("BPF masquerade is not supported for IPv6.")
 	}
 
+	if option.Config.EnableHighScaleIPcache {
+		if option.Config.TunnelingEnabled() {
+			log.Fatal("The high-scale IPcache mode requires native routing.")
+		}
+		if option.Config.EnableIPv4EgressGateway {
+			log.Fatal("The egress gateway is not supported in high scale IPcache mode.")
+		}
+		if option.Config.EnableIPSec {
+			log.Fatal("IPsec is not supported in high scale IPcache mode.")
+		}
+		if option.Config.EnableIPv6 {
+			log.Fatal("The high-scale IPcache mode is not supported with IPv6.")
+		}
+		if !option.Config.EnableWellKnownIdentities {
+			log.Fatal("The high-scale IPcache mode requires well-known identities to be enabled.")
+		}
+		if err := probes.HaveOuterSourceIPSupport(); err != nil {
+			log.WithError(err).Fatal("The high scale IPcache mode needs support in the kernel to set the outer source IP address.")
+		}
+	}
+
 	// If there is one device specified, use it to derive better default
 	// allocation prefixes
 	node.InitDefaultPrefix(option.Config.DirectRoutingDevice)
@@ -1462,12 +1478,12 @@ func initEnv() {
 		)
 	}
 
-	if option.Config.IPAM == ipamOption.IPAMClusterPoolV2 {
+	if option.Config.IPAM == ipamOption.IPAMClusterPoolV2 || option.Config.IPAM == ipamOption.IPAMMultiPool {
 		if option.Config.TunnelingEnabled() {
-			log.Fatalf("Cannot specify IPAM mode %s in tunnel mode.", ipamOption.IPAMClusterPoolV2)
+			log.Fatalf("Cannot specify IPAM mode %s in tunnel mode.", option.Config.IPAM)
 		}
 		if option.Config.EnableIPSec {
-			log.Fatalf("Cannot specify IPAM mode %s with %s.", ipamOption.IPAMClusterPoolV2, option.EnableIPSecName)
+			log.Fatalf("Cannot specify IPAM mode %s with %s.", option.Config.IPAM, option.EnableIPSecName)
 		}
 	}
 
@@ -1551,7 +1567,7 @@ func (d *Daemon) initKVStore() {
 		)
 		log := log.WithField(logfields.LogSubsys, "etcd")
 		goopts.DialOption = []grpc.DialOption{
-			grpc.WithContextDialer(k8s.CreateCustomDialer(&d.k8sWatcher.K8sSvcCache, log)),
+			grpc.WithContextDialer(k8s.CreateCustomDialer(d.k8sWatcher.K8sSvcCache, log)),
 		}
 	}
 
@@ -1594,15 +1610,18 @@ type daemonParams struct {
 	EndpointManager      endpointmanager.EndpointManager
 	CertManager          certificatemanager.CertificateManager
 	SecretManager        certificatemanager.SecretManager
-	AuthManager          auth.Manager
 	IdentityAllocator    CachingIdentityAllocator
 	Policy               *policy.Repository
 	PolicyUpdater        *policy.Updater
 	IPCache              *ipcache.IPCache
 	EgressGatewayManager *egressgateway.Manager
+	IPAMMetadataManager  *ipamMetadata.Manager
 	CNIConfigManager     cni.CNIConfigManager
 	SwaggerSpec          *server.Spec
 	HealthAPISpec        *healthApi.Spec
+	ServiceCache         *k8s.ServiceCache
+	ClusterMesh          *clustermesh.ClusterMesh
+	MonitorAgent         monitorAgent.Agent
 }
 
 func newDaemonPromise(params daemonParams) promise.Promise[*Daemon] {
@@ -1792,7 +1811,7 @@ func runDaemon(d *Daemon, restoredEndpoints *endpointRestoreState, cleaner *daem
 
 	go func(errs <-chan error) {
 		err := <-errs
-		if err != nil {
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.WithError(err).Error("Cannot start metrics server")
 			params.Shutdowner.Shutdown(hive.ShutdownWithError(err))
 		}
@@ -1833,16 +1852,16 @@ func runDaemon(d *Daemon, restoredEndpoints *endpointRestoreState, cleaner *daem
 	}
 
 	if option.Config.DatapathMode != datapathOption.DatapathModeLBOnly {
-		if !d.datapath.Node().NodeNeighDiscoveryEnabled() {
+		if !d.datapath.NodeNeighbors().NodeNeighDiscoveryEnabled() {
 			// Remove all non-GC'ed neighbor entries that might have previously set
 			// by a Cilium instance.
-			d.datapath.Node().NodeCleanNeighbors(false)
+			d.datapath.NodeNeighbors().NodeCleanNeighbors(false)
 		} else {
 			// If we came from an agent upgrade, migrate entries.
-			d.datapath.Node().NodeCleanNeighbors(true)
+			d.datapath.NodeNeighbors().NodeCleanNeighbors(true)
 			// Start periodical refresh of the neighbor table from the agent if needed.
 			if option.Config.ARPPingRefreshPeriod != 0 && !option.Config.ARPPingKernelManaged {
-				d.nodeDiscovery.Manager.StartNeighborRefresh(d.datapath.Node())
+				d.nodeDiscovery.Manager.StartNeighborRefresh(d.datapath.NodeNeighbors())
 			}
 		}
 	}
@@ -1985,7 +2004,7 @@ func (d *Daemon) instantiateAPI(swaggerSpec *server.Spec) *restapi.CiliumAPIAPI 
 	restAPI.PolicyGetIPHandler = NewGetIPHandler(d)
 
 	// /node/ids
-	restAPI.DaemonGetNodeIdsHandler = NewGetNodeIDsHandler(d.datapath.Node())
+	restAPI.DaemonGetNodeIdsHandler = NewGetNodeIDsHandler(d.datapath.NodeIDs())
 
 	// /bgp/peers
 	restAPI.BgpGetBgpPeersHandler = NewGetBGPHandler(d.bgpControlPlaneController)
@@ -2025,10 +2044,16 @@ func initClockSourceOption() {
 
 	if option.Config.EnableBPFClockProbe {
 		if probes.HaveProgramHelper(ebpf.XDP, asm.FnJiffies64) == nil {
-			t, err := bpf.GetJtime()
+			t, err := probes.Jiffies()
 			if err == nil && t > 0 {
 				option.Config.ClockSource = option.ClockSourceJiffies
+			} else {
+				log.WithError(err).Warningf("Auto-disabling %q feature since kernel doesn't expose jiffies", option.EnableBPFClockProbe)
+				option.Config.EnableBPFClockProbe = false
 			}
+		} else {
+			log.WithError(err).Warningf("Auto-disabling %q feature since kernel support is missing (Linux 5.5 or later required).", option.EnableBPFClockProbe)
+			option.Config.EnableBPFClockProbe = false
 		}
 	}
 }

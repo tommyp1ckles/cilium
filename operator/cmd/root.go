@@ -43,7 +43,7 @@ import (
 	"github.com/cilium/cilium/pkg/ipam/allocator"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	"github.com/cilium/cilium/pkg/k8s"
-	"github.com/cilium/cilium/pkg/k8s/apis/cilium.io/client"
+	"github.com/cilium/cilium/pkg/k8s/apis"
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
 	k8sversion "github.com/cilium/cilium/pkg/k8s/version"
 	"github.com/cilium/cilium/pkg/kvstore"
@@ -124,7 +124,7 @@ var (
 		// These cells are started only after the operator is elected leader.
 		WithLeaderLifecycle(
 			// The CRDs registration should be the first operation to be invoked after the operator is elected leader.
-			client.RegisterCRDsCell,
+			apis.RegisterCRDsCell,
 			k8s.SharedResourcesCell,
 
 			lbipam.Cell,
@@ -443,7 +443,12 @@ func (legacy *legacyOnLeader) onStart(_ hive.HookContext) error {
 	log.WithField(logfields.Mode, option.Config.IPAM).Info("Initializing IPAM")
 
 	switch ipamMode := option.Config.IPAM; ipamMode {
-	case ipamOption.IPAMAzure, ipamOption.IPAMENI, ipamOption.IPAMClusterPool, ipamOption.IPAMClusterPoolV2, ipamOption.IPAMAlibabaCloud:
+	case ipamOption.IPAMAzure,
+		ipamOption.IPAMENI,
+		ipamOption.IPAMClusterPool,
+		ipamOption.IPAMClusterPoolV2,
+		ipamOption.IPAMMultiPool,
+		ipamOption.IPAMAlibabaCloud:
 		alloc, providerBuiltin := allocatorProviders[ipamMode]
 		if !providerBuiltin {
 			log.Fatalf("%s allocator is not supported by this version of %s", ipamMode, binaryName)
@@ -483,7 +488,7 @@ func (legacy *legacyOnLeader) onStart(_ hive.HookContext) error {
 				if isETCDOperator {
 					scopedLog.Infof("%s running with service synchronization: automatic etcd service translation enabled", binaryName)
 
-					svcGetter := k8s.ServiceIPGetter(&operatorWatchers.K8sSvcCache)
+					svcGetter := k8s.ServiceIPGetter(operatorWatchers.K8sSvcCache)
 
 					name, namespace, err := kvstore.SplitK8sServiceURL(svcURL)
 					if err != nil {
@@ -514,7 +519,7 @@ func (legacy *legacyOnLeader) onStart(_ hive.HookContext) error {
 								scopedLog.Warnf("BUG: invalid k8s service: %s", slimSvcObj)
 							}
 							sc.UpdateService(slimSvc, nil)
-							svcGetter = operatorWatchers.NewServiceGetter(&sc)
+							svcGetter = operatorWatchers.NewServiceGetter(sc)
 						case k8sErrors.IsNotFound(err):
 							scopedLog.Error("Service not found in k8s")
 						default:
@@ -591,7 +596,7 @@ func (legacy *legacyOnLeader) onStart(_ hive.HookContext) error {
 		}
 	}
 
-	if option.Config.IPAM == ipamOption.IPAMClusterPool || option.Config.IPAM == ipamOption.IPAMClusterPoolV2 {
+	if option.Config.IPAM == ipamOption.IPAMClusterPool || option.Config.IPAM == ipamOption.IPAMClusterPoolV2 || option.Config.IPAM == ipamOption.IPAMMultiPool {
 		// We will use CiliumNodes as the source of truth for the podCIDRs.
 		// Once the CiliumNodes are synchronized with the operator we will
 		// be able to watch for K8s Node events which they will be used
@@ -650,6 +655,7 @@ func (legacy *legacyOnLeader) onStart(_ hive.HookContext) error {
 			ingress.WithCiliumNamespace(operatorOption.Config.CiliumK8sNamespace),
 			ingress.WithSharedLBServiceName(operatorOption.Config.IngressSharedLBServiceName),
 			ingress.WithDefaultLoadbalancerMode(operatorOption.Config.IngressDefaultLoadbalancerMode),
+			ingress.WithIdleTimeoutSeconds(operatorOption.Config.ProxyIdleTimeoutSeconds),
 		)
 		if err != nil {
 			log.WithError(err).WithField(logfields.LogSubsys, ingress.Subsys).Fatal(
@@ -662,6 +668,7 @@ func (legacy *legacyOnLeader) onStart(_ hive.HookContext) error {
 		gatewayController, err := gatewayapi.NewController(
 			operatorOption.Config.EnableGatewayAPISecretsSync,
 			operatorOption.Config.GatewayAPISecretsNamespace,
+			operatorOption.Config.ProxyIdleTimeoutSeconds,
 		)
 		if err != nil {
 			log.WithError(err).WithField(logfields.LogSubsys, gatewayapi.Subsys).Fatal(
@@ -674,7 +681,9 @@ func (legacy *legacyOnLeader) onStart(_ hive.HookContext) error {
 		log.Info("Starting Envoy load balancer controller")
 		operatorWatchers.StartCECController(legacy.ctx, legacy.clientset, legacy.resources.Services,
 			operatorOption.Config.LoadBalancerL7Ports,
-			operatorOption.Config.LoadBalancerL7Algorithm)
+			operatorOption.Config.LoadBalancerL7Algorithm,
+			operatorOption.Config.ProxyIdleTimeoutSeconds,
+		)
 	}
 
 	log.Info("Initialization complete")

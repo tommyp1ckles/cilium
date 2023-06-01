@@ -5,6 +5,7 @@ package clustermesh
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"time"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/allocator"
+	"github.com/cilium/cilium/pkg/clustermesh/types"
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/defaults"
@@ -23,6 +25,7 @@ import (
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/metrics"
 	nodeStore "github.com/cilium/cilium/pkg/node/store"
+	"github.com/cilium/cilium/pkg/option"
 	serviceStore "github.com/cilium/cilium/pkg/service/store"
 )
 
@@ -131,8 +134,8 @@ func (rc *remoteCluster) releaseOldConnection() {
 
 	rc.config = nil
 
-	rc.mesh.metricTotalNodes.WithLabelValues(rc.mesh.conf.Name, rc.mesh.conf.NodeName, rc.name).Set(0.0)
-	rc.mesh.metricReadinessStatus.WithLabelValues(rc.mesh.conf.Name, rc.mesh.conf.NodeName, rc.name).Set(metrics.BoolToFloat64(rc.isReadyLocked()))
+	rc.mesh.metricTotalNodes.WithLabelValues(rc.mesh.conf.ClusterName, rc.mesh.nodeName, rc.name).Set(0.0)
+	rc.mesh.metricReadinessStatus.WithLabelValues(rc.mesh.conf.ClusterName, rc.mesh.nodeName, rc.name).Set(metrics.BoolToFloat64(rc.isReadyLocked()))
 
 	rc.mutex.Unlock()
 
@@ -167,9 +170,7 @@ func (rc *remoteCluster) restartRemoteConnection(allocator RemoteIdentityWatcher
 				extraOpts := rc.makeExtraOpts()
 
 				backend, errChan := kvstore.NewClient(ctx, kvstore.EtcdBackendName,
-					map[string]string{
-						kvstore.EtcdOptionConfig: rc.configPath,
-					}, &extraOpts)
+					rc.makeEtcdOpts(), &extraOpts)
 
 				// Block until either an error is returned or
 				// the channel is closed due to success of the
@@ -186,7 +187,7 @@ func (rc *remoteCluster) restartRemoteConnection(allocator RemoteIdentityWatcher
 
 				rc.getLogger().Info("Connection to remote cluster established")
 
-				config, err := GetClusterConfig(rc.name, backend)
+				config, err := rc.getClusterConfig(ctx, backend, false)
 				if err == nil && config == nil {
 					rc.getLogger().Warning("Remote cluster doesn't have cluster configuration, falling back to the old behavior. This is expected when connecting to the old cluster running Cilium without cluster configuration feature.")
 				} else if err == nil {
@@ -209,7 +210,7 @@ func (rc *remoteCluster) restartRemoteConnection(allocator RemoteIdentityWatcher
 					SynchronizationInterval: time.Minute,
 					SharedKeyDeleteDelay:    defaults.NodeDeleteDelay,
 					Backend:                 backend,
-					Observer:                rc.mesh.conf.NodeObserver(),
+					Observer:                rc.mesh.conf.NodeObserver,
 				})
 				if err != nil {
 					backend.Close(ctx)
@@ -244,7 +245,7 @@ func (rc *remoteCluster) restartRemoteConnection(allocator RemoteIdentityWatcher
 					return err
 				}
 
-				ipCacheWatcher := ipcache.NewIPIdentityWatcher(rc.mesh.ipcache, backend)
+				ipCacheWatcher := ipcache.NewIPIdentityWatcher(rc.mesh.conf.IPCache, backend)
 				go ipCacheWatcher.Watch(ctx)
 
 				rc.mutex.Lock()
@@ -254,8 +255,8 @@ func (rc *remoteCluster) restartRemoteConnection(allocator RemoteIdentityWatcher
 				rc.config = config
 				rc.ipCacheWatcher = ipCacheWatcher
 				rc.remoteIdentityCache = remoteIdentityCache
-				rc.mesh.metricTotalNodes.WithLabelValues(rc.mesh.conf.Name, rc.mesh.conf.NodeName, rc.name).Set(float64(rc.remoteNodes.NumEntries()))
-				rc.mesh.metricReadinessStatus.WithLabelValues(rc.mesh.conf.Name, rc.mesh.conf.NodeName, rc.name).Set(metrics.BoolToFloat64(rc.isReadyLocked()))
+				rc.mesh.metricTotalNodes.WithLabelValues(rc.mesh.conf.ClusterName, rc.mesh.nodeName, rc.name).Set(float64(rc.remoteNodes.NumEntries()))
+				rc.mesh.metricReadinessStatus.WithLabelValues(rc.mesh.conf.ClusterName, rc.mesh.nodeName, rc.name).Set(metrics.BoolToFloat64(rc.isReadyLocked()))
 				rc.mutex.Unlock()
 
 				rc.getLogger().Info("Established connection to remote etcd")
@@ -264,8 +265,8 @@ func (rc *remoteCluster) restartRemoteConnection(allocator RemoteIdentityWatcher
 			},
 			StopFunc: func(ctx context.Context) error {
 				rc.releaseOldConnection()
-				rc.mesh.metricTotalNodes.WithLabelValues(rc.mesh.conf.Name, rc.mesh.conf.NodeName, rc.name).Set(float64(rc.remoteNodes.NumEntries()))
-				rc.mesh.metricReadinessStatus.WithLabelValues(rc.mesh.conf.Name, rc.mesh.conf.NodeName, rc.name).Set(metrics.BoolToFloat64(rc.isReadyLocked()))
+				rc.mesh.metricTotalNodes.WithLabelValues(rc.mesh.conf.ClusterName, rc.mesh.nodeName, rc.name).Set(float64(rc.remoteNodes.NumEntries()))
+				rc.mesh.metricReadinessStatus.WithLabelValues(rc.mesh.conf.ClusterName, rc.mesh.nodeName, rc.name).Set(metrics.BoolToFloat64(rc.isReadyLocked()))
 				allocator.RemoveRemoteIdentities(rc.name)
 				rc.getLogger().Info("All resources of remote cluster cleaned up")
 				return nil
@@ -275,15 +276,85 @@ func (rc *remoteCluster) restartRemoteConnection(allocator RemoteIdentityWatcher
 	)
 }
 
+func (rc *remoteCluster) getClusterConfig(ctx context.Context, backend kvstore.BackendOperations, forceRequired bool) (*cmtypes.CiliumClusterConfig, error) {
+	var (
+		err                           error
+		requireConfig                 = forceRequired
+		clusterConfigRetrievalTimeout = 3 * time.Minute
+	)
+
+	ctx, cancel := context.WithTimeout(ctx, clusterConfigRetrievalTimeout)
+	defer cancel()
+
+	if !requireConfig {
+		// Let's check whether the kvstore states that the cluster configuration should be always present.
+		requireConfig, err = IsClusterConfigRequired(ctx, backend)
+		if err != nil {
+			return nil, fmt.Errorf("failed to detect whether the cluster configuration is required: %w", err)
+		}
+	}
+
+	cfgch := make(chan *types.CiliumClusterConfig)
+	defer close(cfgch)
+
+	// We retry here rather than simply returning an error and relying on the external
+	// controller backoff period to avoid recreating every time a new connection to the remote
+	// kvstore, which would introduce an unnecessary overhead. Still, we do return in case of
+	// consecutive failures, to ensure that we do not retry forever if something strange happened.
+	ctrlname := rc.remoteConnectionControllerName + "-cluster-config"
+	defer rc.controllers.RemoveControllerAndWait(ctrlname)
+	rc.controllers.UpdateController(ctrlname, controller.ControllerParams{
+		DoFunc: func(ctx context.Context) error {
+			rc.getLogger().Debug("Retrieving cluster configuration from remote kvstore")
+			config, err := GetClusterConfig(ctx, rc.name, backend)
+			if err != nil {
+				return err
+			}
+
+			if config == nil && requireConfig {
+				return errors.New("cluster configuration expected to be present but not found")
+			}
+
+			// We should stop retrying in case we either successfully retrieved the cluster
+			// configuration, or we are not required to wait for it.
+			cfgch <- config
+			return nil
+		},
+		Context:          ctx,
+		MaxRetryInterval: 30 * time.Second,
+	})
+
+	// Wait until either the configuration is retrieved, or the context expires
+	select {
+	case config := <-cfgch:
+		return config, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("failed to retrieve cluster configuration")
+	}
+}
+
+func (rc *remoteCluster) makeEtcdOpts() map[string]string {
+	opts := map[string]string{
+		kvstore.EtcdOptionConfig: rc.configPath,
+	}
+
+	for key, value := range option.Config.KVStoreOpt {
+		switch key {
+		case kvstore.EtcdRateLimitOption, kvstore.EtcdListLimitOption,
+			kvstore.EtcdOptionKeepAliveHeartbeat, kvstore.EtcdOptionKeepAliveTimeout:
+			opts[key] = value
+		}
+	}
+
+	return opts
+}
+
 func (rc *remoteCluster) makeExtraOpts() kvstore.ExtraOptions {
-	extraOpts := kvstore.ExtraOptions{
-		NoLockQuorumCheck: true,
-		ClusterName:       rc.name,
+	return kvstore.ExtraOptions{
+		NoLockQuorumCheck:            true,
+		ClusterName:                  rc.name,
+		ClusterSizeDependantInterval: rc.mesh.conf.ClusterSizeDependantInterval,
 	}
-	if rc.mesh.conf.NodeManager != nil {
-		extraOpts.ClusterSizeDependantInterval = rc.mesh.conf.NodeManager.ClusterSizeDependantInterval
-	}
-	return extraOpts
 }
 
 func (rc *remoteCluster) onInsert(allocator RemoteIdentityWatcher) {
@@ -336,10 +407,10 @@ func (rc *remoteCluster) onInsert(allocator RemoteIdentityWatcher) {
 				rc.mutex.Lock()
 				rc.failures++
 				rc.lastFailure = time.Now()
-				rc.mesh.metricLastFailureTimestamp.WithLabelValues(rc.mesh.conf.Name, rc.mesh.conf.NodeName, rc.name).SetToCurrentTime()
-				rc.mesh.metricTotalFailures.WithLabelValues(rc.mesh.conf.Name, rc.mesh.conf.NodeName, rc.name).Set(float64(rc.failures))
-				rc.mesh.metricTotalNodes.WithLabelValues(rc.mesh.conf.Name, rc.mesh.conf.NodeName, rc.name).Set(float64(rc.remoteNodes.NumEntries()))
-				rc.mesh.metricReadinessStatus.WithLabelValues(rc.mesh.conf.Name, rc.mesh.conf.NodeName, rc.name).Set(metrics.BoolToFloat64(rc.isReadyLocked()))
+				rc.mesh.metricLastFailureTimestamp.WithLabelValues(rc.mesh.conf.ClusterName, rc.mesh.nodeName, rc.name).SetToCurrentTime()
+				rc.mesh.metricTotalFailures.WithLabelValues(rc.mesh.conf.ClusterName, rc.mesh.nodeName, rc.name).Set(float64(rc.failures))
+				rc.mesh.metricTotalNodes.WithLabelValues(rc.mesh.conf.ClusterName, rc.mesh.nodeName, rc.name).Set(float64(rc.remoteNodes.NumEntries()))
+				rc.mesh.metricReadinessStatus.WithLabelValues(rc.mesh.conf.ClusterName, rc.mesh.nodeName, rc.name).Set(metrics.BoolToFloat64(rc.isReadyLocked()))
 				rc.mutex.Unlock()
 				rc.restartRemoteConnection(allocator)
 			}

@@ -49,6 +49,7 @@ func (n *linuxNodeHandler) AllocateNodeID(nodeIP net.IP) uint16 {
 	nodeID := uint16(n.nodeIDs.AllocateID())
 	if nodeID == uint16(idpool.NoID) {
 		log.Error("No more IDs available for nodes")
+		return nodeID
 	} else {
 		log.WithFields(logrus.Fields{
 			logfields.NodeID: nodeID,
@@ -62,6 +63,18 @@ func (n *linuxNodeHandler) AllocateNodeID(nodeIP net.IP) uint16 {
 		}).Error("Failed to map node IP address to allocated ID")
 	}
 	return nodeID
+}
+
+func (n *linuxNodeHandler) GetNodeIP(nodeID uint16) string {
+	n.mutex.Lock()
+	defer n.mutex.Unlock()
+
+	// Check for local node ID explicitly as local node IPs are not in our maps!
+	if nodeID == 0 {
+		// Returns local node's IPv4 address if available, IPv6 address otherwise.
+		return node.GetCiliumEndpointNodeIP()
+	}
+	return n.nodeIPsByIDs[nodeID]
 }
 
 // allocateIDForNode allocates a new ID for the given node if one hasn't already
@@ -159,13 +172,15 @@ func (n *linuxNodeHandler) mapNodeID(ip string, id uint16) error {
 		return fmt.Errorf("invalid node IP %s", ip)
 	}
 
-	if err := nodemap.NodeMap().Update(nodeIP, id); err != nil {
+	if err := n.nodeMap.Update(nodeIP, id); err != nil {
 		return err
 	}
 
 	// We only add the IP <> ID mapping in memory once we are sure it was
 	// successfully added to the BPF map.
 	n.nodeIDsByIPs[ip] = id
+	n.nodeIPsByIDs[id] = ip
+
 	return nil
 }
 
@@ -182,11 +197,13 @@ func (n *linuxNodeHandler) unmapNodeID(ip string) error {
 		return fmt.Errorf("invalid node IP %s", ip)
 	}
 
-	if err := nodemap.NodeMap().Delete(nodeIP); err != nil {
+	if err := n.nodeMap.Delete(nodeIP); err != nil {
 		return err
 	}
-
-	delete(n.nodeIDsByIPs, ip)
+	if id, exists := n.nodeIDsByIPs[ip]; exists {
+		delete(n.nodeIDsByIPs, ip)
+		delete(n.nodeIPsByIDs, id)
+	}
 
 	return nil
 }
@@ -229,7 +246,7 @@ func (n *linuxNodeHandler) RestoreNodeIDs() {
 		}
 		nodeIDs[address] = val.NodeID
 	}
-	if err := nodemap.NodeMap().IterateWithCallback(parse); err != nil {
+	if err := n.nodeMap.IterateWithCallback(parse); err != nil {
 		log.WithError(err).Error("Failed to dump content of node map")
 		return
 	}
@@ -251,11 +268,12 @@ func (n *linuxNodeHandler) registerNodeIDAllocations(allocatedNodeIDs map[string
 	// The node manager holds both a map of nodeIP=>nodeID and a pool of ID for
 	// the allocation of node IDs. Not only do we need to update the map,
 	n.nodeIDsByIPs = allocatedNodeIDs
-
+	n.nodeIPsByIDs = map[uint16]string{}
 	// ...but we also need to remove any restored nodeID from the pool of IDs
 	// available for allocation.
 	nodeIDs := make(map[uint16]struct{})
-	for _, id := range allocatedNodeIDs {
+	for ip, id := range allocatedNodeIDs {
+		n.nodeIPsByIDs[id] = ip // reverse mapping for all ip, id pairs
 		if _, exists := nodeIDs[id]; !exists {
 			nodeIDs[id] = struct{}{}
 			if !n.nodeIDs.Remove(idpool.ID(id)) {

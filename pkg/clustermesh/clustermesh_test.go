@@ -12,9 +12,11 @@ import (
 	"testing"
 	"time"
 
-	. "gopkg.in/check.v1"
+	. "github.com/cilium/checkmate"
 
+	"github.com/cilium/cilium/pkg/clustermesh/types"
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
+	"github.com/cilium/cilium/pkg/hive/hivetest"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/identity/cache"
 	"github.com/cilium/cilium/pkg/ipcache"
@@ -92,13 +94,16 @@ func (o *testObserver) OnDelete(k store.NamedKey) {
 }
 
 func (s *ClusterMeshTestSuite) TestClusterMesh(c *C) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	kvstore.SetupDummy("etcd")
-	defer kvstore.Client().Close(context.TODO())
+	defer kvstore.Client().Close(ctx)
 
 	identity.InitWellKnownIdentities(&fakeConfig.Config{})
 	// The nils are only used by k8s CRD identities. We default to kvstore.
 	mgr := cache.NewCachingIdentityAllocator(&testidentity.IdentityAllocatorOwnerMock{})
-	<-mgr.InitIdentityAllocator(nil, nil)
+	<-mgr.InitIdentityAllocator(nil)
 	defer mgr.Close()
 
 	dir, err := os.MkdirTemp("", "multicluster")
@@ -116,7 +121,7 @@ func (s *ClusterMeshTestSuite) TestClusterMesh(c *C) {
 			ID: uint32(i),
 		}
 
-		err = SetClusterConfig(name, &config, kvstore.Client())
+		err = SetClusterConfig(ctx, name, &config, kvstore.Client())
 		c.Assert(err, IsNil)
 	}
 
@@ -132,21 +137,20 @@ func (s *ClusterMeshTestSuite) TestClusterMesh(c *C) {
 	err = os.WriteFile(config3, etcdConfig, 0644)
 	c.Assert(err, IsNil)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	ipc := ipcache.NewIPCache(&ipcache.Configuration{
 		Context: ctx,
 	})
 	defer ipc.Shutdown()
-	cm, err := NewClusterMesh(Configuration{
-		Name:                  "test2",
-		ConfigDirectory:       dir,
+
+	cm := NewClusterMesh(hivetest.Lifecycle(c), Configuration{
+		Config: Config{ClusterMeshConfig: dir},
+
+		ClusterIDName:         types.ClusterIDName{ClusterID: 255, ClusterName: "test2"},
 		NodeKeyCreator:        testNodeCreator,
-		nodeObserver:          &testObserver{},
+		NodeObserver:          &testObserver{},
 		RemoteIdentityWatcher: mgr,
 		IPCache:               ipc,
 	})
-	c.Assert(err, IsNil)
 	c.Assert(cm, Not(IsNil))
 
 	nodeNames := []string{"foo", "bar", "baz"}
@@ -160,7 +164,7 @@ func (s *ClusterMeshTestSuite) TestClusterMesh(c *C) {
 	for _, rc := range cm.clusters {
 		rc.mutex.RLock()
 		for _, name := range nodeNames {
-			err = rc.remoteNodes.UpdateLocalKeySync(context.TODO(), &testNode{Name: name, Cluster: rc.name})
+			err = rc.remoteNodes.UpdateLocalKeySync(ctx, &testNode{Name: name, Cluster: rc.name})
 			c.Assert(err, IsNil)
 		}
 		rc.mutex.RUnlock()
@@ -202,6 +206,4 @@ func (s *ClusterMeshTestSuite) TestClusterMesh(c *C) {
 		defer nodesMutex.RUnlock()
 		return len(nodes) == 0
 	}, 10*time.Second), IsNil)
-
-	cm.Close()
 }

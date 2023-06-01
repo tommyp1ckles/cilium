@@ -4,7 +4,6 @@
 package k8s
 
 import (
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/fields"
 
 	"github.com/cilium/cilium/pkg/hive"
@@ -30,6 +29,7 @@ var (
 		"Shared Kubernetes resources",
 
 		cell.Provide(
+			localPodResource,
 			serviceResource,
 			localNodeResource,
 			localCiliumNodeResource,
@@ -45,8 +45,9 @@ var (
 
 type SharedResources struct {
 	cell.In
-	LocalNode                        *LocalNodeResource
-	LocalCiliumNode                  *LocalCiliumNodeResource
+	LocalNode                        LocalNodeResource
+	LocalCiliumNode                  LocalCiliumNodeResource
+	LocalPods                        LocalPodResource
 	Services                         resource.Resource[*slim_corev1.Service]
 	Namespaces                       resource.Resource[*slim_corev1.Namespace]
 	LBIPPools                        resource.Resource[*cilium_api_v2alpha1.CiliumLoadBalancerIPPool]
@@ -54,6 +55,19 @@ type SharedResources struct {
 	CiliumNetworkPolicies            resource.Resource[*cilium_api_v2.CiliumNetworkPolicy]
 	CiliumClusterwideNetworkPolicies resource.Resource[*cilium_api_v2.CiliumClusterwideNetworkPolicy]
 	CIDRGroups                       resource.Resource[*cilium_api_v2alpha1.CiliumCIDRGroup]
+}
+
+// LocalPodResource is a resource.Resource[*slim_corev1.Pod] but one which will only stream updates for pod
+// objects scheduled on the node we are currently running on.
+type LocalPodResource resource.Resource[*slim_corev1.Pod]
+
+func localPodResource(lc hive.Lifecycle, cs client.Clientset) (LocalPodResource, error) {
+	if !cs.IsEnabled() {
+		return nil, nil
+	}
+	lw := utils.ListerWatcherFromTyped[*slim_corev1.PodList](cs.Slim().CoreV1().Pods(""))
+	lw = utils.ListerWatcherWithFields(lw, fields.ParseSelectorOrDie("spec.nodeName="+nodeTypes.GetName()))
+	return LocalPodResource(resource.New[*slim_corev1.Pod](lc, lw)), nil
 }
 
 func serviceResource(lc hive.Lifecycle, cs client.Clientset) (resource.Resource[*slim_corev1.Service], error) {
@@ -71,32 +85,28 @@ func serviceResource(lc hive.Lifecycle, cs client.Clientset) (resource.Resource[
 
 // LocalNodeResource is a resource.Resource[*corev1.Node] but one which will only stream updates for the node object
 // associated with the node we are currently running on.
-type LocalNodeResource struct {
-	resource.Resource[*corev1.Node]
-}
+type LocalNodeResource resource.Resource[*slim_corev1.Node]
 
-func localNodeResource(lc hive.Lifecycle, cs client.Clientset) (*LocalNodeResource, error) {
+func localNodeResource(lc hive.Lifecycle, cs client.Clientset) (LocalNodeResource, error) {
 	if !cs.IsEnabled() {
 		return nil, nil
 	}
-	lw := utils.ListerWatcherFromTyped[*corev1.NodeList](cs.CoreV1().Nodes())
+	lw := utils.ListerWatcherFromTyped[*slim_corev1.NodeList](cs.Slim().CoreV1().Nodes())
 	lw = utils.ListerWatcherWithFields(lw, fields.ParseSelectorOrDie("metadata.name="+nodeTypes.GetName()))
-	return &LocalNodeResource{Resource: resource.New[*corev1.Node](lc, lw)}, nil
+	return LocalNodeResource(resource.New[*slim_corev1.Node](lc, lw)), nil
 }
 
 // LocalCiliumNodeResource is a resource.Resource[*cilium_api_v2.Node] but one which will only stream updates for the
 // CiliumNode object associated with the node we are currently running on.
-type LocalCiliumNodeResource struct {
-	resource.Resource[*cilium_api_v2.CiliumNode]
-}
+type LocalCiliumNodeResource resource.Resource[*cilium_api_v2.CiliumNode]
 
-func localCiliumNodeResource(lc hive.Lifecycle, cs client.Clientset) (*LocalCiliumNodeResource, error) {
+func localCiliumNodeResource(lc hive.Lifecycle, cs client.Clientset) (LocalCiliumNodeResource, error) {
 	if !cs.IsEnabled() {
 		return nil, nil
 	}
 	lw := utils.ListerWatcherFromTyped[*cilium_api_v2.CiliumNodeList](cs.CiliumV2().CiliumNodes())
 	lw = utils.ListerWatcherWithFields(lw, fields.ParseSelectorOrDie("metadata.name="+nodeTypes.GetName()))
-	return &LocalCiliumNodeResource{Resource: resource.New[*cilium_api_v2.CiliumNode](lc, lw)}, nil
+	return LocalCiliumNodeResource(resource.New[*cilium_api_v2.CiliumNode](lc, lw)), nil
 }
 
 func namespaceResource(lc hive.Lifecycle, cs client.Clientset) (resource.Resource[*slim_corev1.Namespace], error) {

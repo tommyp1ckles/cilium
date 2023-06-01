@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/asaskevich/govalidator"
 	. "github.com/onsi/gomega"
 	v1 "k8s.io/api/core/v1"
 
@@ -73,7 +72,7 @@ func testCommand(cmd string, count, fails int) string {
 	// Note: All newlines and the following whitespace is removed from the script below.
 	//       This requires explicit semicolons also at the ends of lines!
 	return trimNewlines(fmt.Sprintf(
-		`/bin/bash -c
+		`/usr/bin/env bash -c
 			'fails="";
 			id=$RANDOM;
 			for i in $(seq 1 %d); do
@@ -146,7 +145,7 @@ func testCurlFromPodsFail(kubectl *helpers.Kubectl, clientPodLabel, url string) 
 func curlClusterIPFromExternalHost(kubectl *helpers.Kubectl, ni *helpers.NodesInfo) *helpers.CmdRes {
 	clusterIP, _, err := kubectl.GetServiceHostPort(helpers.DefaultNamespace, appServiceName)
 	ExpectWithOffset(1, err).Should(BeNil(), "Cannot get service %s", appServiceName)
-	ExpectWithOffset(1, govalidator.IsIP(clusterIP)).Should(BeTrue(), "ClusterIP is not an IP")
+	ExpectWithOffset(1, net.ParseIP(clusterIP) != nil).Should(BeTrue(), "ClusterIP is not an IP")
 	httpSVCURL := fmt.Sprintf("http://%s/", net.JoinHostPort(clusterIP, "80"))
 
 	By("testing external connectivity via cluster IP %s", clusterIP)
@@ -654,45 +653,6 @@ func testNodePortExternal(kubectl *helpers.Kubectl, ni *helpers.NodesInfo, testS
 		if helpers.DualStackSupported() {
 			services = append(services, svc{name: nodePortServiceIPv6, nodeIP: ni.SecondaryK8s1IPv6})
 		}
-	}
-
-	for _, svc := range services {
-		err := kubectl.Get(helpers.DefaultNamespace, fmt.Sprintf("service %s", svc.name)).Unmarshal(&data)
-		ExpectWithOffset(1, err).Should(BeNil(), "Cannot retrieve service")
-
-		httpURL := getHTTPLink(svc.nodeIP, data.Spec.Ports[0].NodePort)
-		tftpURL := getTFTPLink(svc.nodeIP, data.Spec.Ports[1].NodePort)
-
-		// Test from external connectivity
-		// Note:
-		//   In case of SNAT checkSourceIP is false here since the HTTP request
-		//   won't have the client IP but the service IP (given the request comes
-		//   from the Cilium node to the backend, not from the client directly).
-		//   Same in case of Hybrid mode for UDP.
-		testCurlFromOutside(kubectl, ni, httpURL, 10, checkTCP)
-		testCurlFromOutside(kubectl, ni, tftpURL, 10, checkUDP)
-
-		// Clear CT tables on all Cilium nodes
-		kubectl.CiliumExecMustSucceedOnAll(context.TODO(),
-			"cilium bpf ct flush global", "Unable to flush CT maps")
-	}
-}
-
-func testNodePortExternalIPv4Only(kubectl *helpers.Kubectl, ni *helpers.NodesInfo, testSecondaryNodePortIP, checkTCP, checkUDP bool) {
-	type svc struct {
-		name   string
-		nodeIP string
-	}
-
-	var (
-		data            v1.Service
-		nodePortService = "test-nodeport"
-	)
-
-	services := []svc{{nodePortService, ni.K8s1IP}}
-
-	if testSecondaryNodePortIP {
-		services = append(services, svc{name: nodePortService, nodeIP: ni.SecondaryK8s1IPv4})
 	}
 
 	for _, svc := range services {
