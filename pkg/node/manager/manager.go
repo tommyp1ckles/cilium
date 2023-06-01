@@ -5,6 +5,8 @@ package manager
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"github.com/cilium/cilium/pkg/datapath/iptables"
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/hive"
+	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/ip"
@@ -32,6 +35,7 @@ import (
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/rand"
 	"github.com/cilium/cilium/pkg/source"
+	"github.com/cilium/cilium/pkg/stream"
 )
 
 var (
@@ -122,6 +126,10 @@ type manager struct {
 	// controllerManager manages the controllers that are launched within the
 	// Manager.
 	controllerManager *controller.Manager
+
+	healthReporter cell.HealthReporter
+
+	syncObs stream.Observable[any]
 }
 
 // Subscribe subscribes the given node handler to node events.
@@ -133,7 +141,9 @@ func (m *manager) Subscribe(nh datapath.NodeHandler) {
 	m.mutex.RLock()
 	for _, v := range m.nodes {
 		v.mutex.Lock()
-		nh.NodeAdd(v.node)
+		if err := nh.NodeAdd(v.node); err != nil {
+			log.WithError(err).Errorf("initial subscribe initial node handler %s failed on node %s", nh.Name(), v.node.Name)
+		}
 		v.mutex.Unlock()
 	}
 	m.mutex.RUnlock()
@@ -199,7 +209,7 @@ func NewNodeMetrics() *nodeMetrics {
 }
 
 // New returns a new node manager
-func New(c Configuration, ipCache IPCache, nodeMetrics *nodeMetrics) (*manager, error) {
+func New(c Configuration, ipCache IPCache, nodeMetrics *nodeMetrics, hr cell.HealthReporter) (*manager, error) {
 	m := &manager{
 		nodes:             map[nodeTypes.Identity]*nodeEntry{},
 		conf:              c,
@@ -207,6 +217,7 @@ func New(c Configuration, ipCache IPCache, nodeMetrics *nodeMetrics) (*manager, 
 		nodeHandlers:      map[datapath.NodeHandler]struct{}{},
 		ipcache:           ipCache,
 		metrics:           nodeMetrics,
+		healthReporter:    hr,
 	}
 
 	return m, nil
@@ -272,10 +283,15 @@ func (m *manager) backgroundSyncInterval() time.Duration {
 func (m *manager) backgroundSync(ctx context.Context) error {
 	syncTimer, syncTimerDone := inctimer.New()
 	defer syncTimerDone()
+	// Allows observers to be notified of sync update.
+	obs, tick, complete := stream.Multicast[any]()
+	m.syncObs = obs
+	defer complete(nil)
 	for {
 		syncInterval := m.backgroundSyncInterval()
 		log.WithField("syncInterval", syncInterval.String()).Debug("Performing regular background work")
 
+		var errs error
 		// get a copy of the node identities to avoid locking the entire manager
 		// throughout the process of running the datapath validation.
 		nodes := m.GetNodeIdentities()
@@ -292,12 +308,24 @@ func (m *manager) backgroundSync(ctx context.Context) error {
 			entry.mutex.Lock()
 			m.mutex.RUnlock()
 			m.Iter(func(nh datapath.NodeHandler) {
-				nh.NodeValidateImplementation(entry.node)
+				if err := nh.NodeValidateImplementation(entry.node); err != nil {
+					log.WithError(err).Errorf("Failed to validate handler %s on node %s", nh.Name(), entry.node.Name)
+					errs = errors.Join(errs, fmt.Errorf("handling %s on node %s: %w", nh.Name(), entry.node.Name, err))
+				}
 			})
 			entry.mutex.Unlock()
 
 			m.metrics.DatapathValidations.Inc()
 		}
+
+		if errs != nil {
+			log.WithError(errs).Debug("Failed to do node validation")
+			m.healthReporter.Degraded("Failed to do node validation", errs)
+		} else {
+			log.Debug("Node validation successful")
+			m.healthReporter.OK("Node validation successful")
+		}
+		tick(true)
 
 		select {
 		case <-ctx.Done():
@@ -496,7 +524,9 @@ func (m *manager) NodeUpdated(n nodeTypes.Node) {
 		entry.node = n
 		if dpUpdate {
 			m.Iter(func(nh datapath.NodeHandler) {
-				nh.NodeUpdate(oldNode, entry.node)
+				if err := nh.NodeUpdate(oldNode, entry.node); err != nil {
+					log.WithError(err).Errorf("failed to handle node add for handler %s on node %s", nh.Name(), entry.node.Name)
+				}
 			})
 		}
 
@@ -513,7 +543,9 @@ func (m *manager) NodeUpdated(n nodeTypes.Node) {
 		m.mutex.Unlock()
 		if dpUpdate {
 			m.Iter(func(nh datapath.NodeHandler) {
-				nh.NodeAdd(entry.node)
+				if err := nh.NodeAdd(entry.node); err != nil {
+					log.WithError(err).Errorf("failed to handle node add for handler %s on node %s", nh.Name(), entry.node.Name)
+				}
 			})
 		}
 		entry.mutex.Unlock()
@@ -638,7 +670,13 @@ func (m *manager) NodeDeleted(n nodeTypes.Node) {
 	delete(m.nodes, nodeIdentifier)
 	m.mutex.Unlock()
 	m.Iter(func(nh datapath.NodeHandler) {
-		nh.NodeDelete(n)
+		if err := nh.NodeDelete(n); err != nil {
+			// For now we log the error and continue. Eventually we will want to encorporate
+			// this into the node managers health status.
+			// However this is a bit tricky - as leftover node deletes are not retries so this will
+			// need to be accompanied by some kind of retry mechanism.
+			log.WithError(err).Errorf("Error deleting node, handling %s on node %s", nh.Name(), n.Name)
+		}
 	})
 	entry.mutex.Unlock()
 }
@@ -705,5 +743,4 @@ func (m *manager) StartNeighborRefresh(nh datapath.NodeNeighbors) {
 			RunInterval: option.Config.ARPPingRefreshPeriod,
 		},
 	)
-	return
 }
