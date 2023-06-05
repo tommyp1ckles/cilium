@@ -28,6 +28,7 @@ import (
 	"github.com/cilium/cilium/api/v1/server"
 	"github.com/cilium/cilium/api/v1/server/restapi"
 	"github.com/cilium/cilium/daemon/cmd/cni"
+	agentK8s "github.com/cilium/cilium/daemon/k8s"
 	"github.com/cilium/cilium/pkg/api"
 	"github.com/cilium/cilium/pkg/aws/eni"
 	bgpv1 "github.com/cilium/cilium/pkg/bgpv1/agent"
@@ -289,10 +290,11 @@ func initializeFlags() {
 	flags.StringSlice(option.IPv6PodSubnets, []string{}, "List of IPv6 pod subnets to preconfigure for encryption")
 	option.BindEnv(Vp, option.IPv6PodSubnets)
 
-	flags.Var(option.NewNamedMapOptions(option.IPAMMultiPoolNodePreAlloc, &option.Config.IPAMMultiPoolNodePreAlloc, nil),
-		option.IPAMMultiPoolNodePreAlloc, "List of IP pools which should be pre-allocated on this node")
-	flags.MarkHidden(option.IPAMMultiPoolNodePreAlloc)
-	option.BindEnv(Vp, option.IPAMMultiPoolNodePreAlloc)
+	flags.Var(option.NewNamedMapOptions(option.IPAMMultiPoolPreAllocation, &option.Config.IPAMMultiPoolPreAllocation, nil),
+		option.IPAMMultiPoolPreAllocation,
+		fmt.Sprintf("Defines how the minimum number of IPs a node should pre-allocate from each pool (default %s)", defaults.IPAMMultiPoolPreAllocation))
+	Vp.SetDefault(option.IPAMMultiPoolPreAllocation, defaults.IPAMMultiPoolPreAllocation)
+	option.BindEnv(Vp, option.IPAMMultiPoolPreAllocation)
 
 	flags.StringSlice(option.ExcludeLocalAddress, []string{}, "Exclude CIDR from being recognized as local address")
 	option.BindEnv(Vp, option.ExcludeLocalAddress)
@@ -1604,7 +1606,7 @@ type daemonParams struct {
 	LocalNodeStore       node.LocalNodeStore
 	BGPController        *bgpv1.Controller
 	Shutdowner           hive.Shutdowner
-	SharedResources      k8s.SharedResources
+	Resources            agentK8s.Resources
 	CacheStatus          k8s.CacheStatus
 	NodeManager          nodeManager.NodeManager
 	EndpointManager      endpointmanager.EndpointManager
