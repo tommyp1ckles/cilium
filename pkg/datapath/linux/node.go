@@ -1078,7 +1078,7 @@ func (n *linuxNodeHandler) enableIPsecIPv4(newNode *nodeTypes.Node, zeroMark boo
 		}
 
 		localIP := n.nodeAddressing.IPv4().Router()
-		remoteNodeID := n.allocateIDForNode(newNode)
+		remoteNodeID, _ := n.allocateIDForNode(newNode)
 
 		if n.subnetEncryption() {
 			// Check if we should use the NodeInternalIPs instead of the
@@ -1160,7 +1160,7 @@ func (n *linuxNodeHandler) enableIPsecIPv6(newNode *nodeTypes.Node, zeroMark boo
 		}
 
 		localIP := n.nodeAddressing.IPv6().Router()
-		remoteNodeID := n.allocateIDForNode(newNode)
+		remoteNodeID, _ := n.allocateIDForNode(newNode)
 
 		if n.subnetEncryption() {
 			// Check if we should use the NodeInternalIPs instead of the
@@ -1242,7 +1242,7 @@ func (n *linuxNodeHandler) nodeUpdate(oldNode, newNode *nodeTypes.Node, firstAdd
 		// neighbor update procedure.
 		//
 		// In v1.15, we will have the neighbor sync component report its own
-		// health via stored errors. 
+		// health via stored errors.
 		go n.insertNeighbor(context.Background(), newNode, false)
 	}
 
@@ -1298,7 +1298,7 @@ func (n *linuxNodeHandler) nodeUpdate(oldNode, newNode *nodeTypes.Node, firstAdd
 			newPrefixCluster6 = cmtypes.PrefixClusterFromCIDR(newNode.IPv6AllocCIDR, 0)
 		}
 
-		nodeID := n.allocateIDForNode(newNode)
+		nodeID, _ := n.allocateIDForNode(newNode)
 
 		// Update the tunnel mapping of the node. In case the
 		// node has changed its CIDR range, a new entry in the
