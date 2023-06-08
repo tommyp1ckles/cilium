@@ -1056,6 +1056,14 @@ func getV6LinkLocalIP() (net.IP, error) {
 	return getLinkLocalIP(netlink.FAMILY_V6)
 }
 
+func (n *linuxNodeHandler) validateIPSec(newNode *nodeTypes.Node) error {
+	if n.nodeConfig.EnableIPSec && !n.nodeConfig.EncryptNode {
+		return n.enableIPsec(newNode)
+		//newKey = newNode.EncryptionKey
+	}
+	return nil
+}
+
 func (n *linuxNodeHandler) enableIPsec(newNode *nodeTypes.Node) error {
 	var acc error
 	if newNode.IsLocal() {
@@ -1270,8 +1278,10 @@ func (n *linuxNodeHandler) nodeUpdate(oldNode, newNode *nodeTypes.Node, firstAdd
 		oldIP4, oldIP6                           net.IP
 		newIP4                                   = newNode.GetNodeIP(false)
 		newIP6                                   = newNode.GetNodeIP(true)
-		oldKey, newKey                           uint8
-		isLocalNode                              = false
+		//hasIPv4                                  = newIP4 != nil
+		//hasIPv6                                  = newIP6 != nil
+		oldKey, newKey uint8
+		isLocalNode    = false
 	)
 
 	if oldNode != nil {
@@ -1490,52 +1500,41 @@ func (n *linuxNodeHandler) updateOrRemoveClusterRoute(addressing datapath.NodeAd
 	}
 }
 
-func (n *linuxNodeHandler) replaceHostRules() error {
-	rule := route.Rule{
+func baseRule() route.Rule {
+	return route.Rule{
 		Priority: 1,
 		Mask:     linux_defaults.RouteMarkMask,
 		Table:    linux_defaults.RouteTableIPSec,
 		Protocol: linux_defaults.RTProto,
 	}
+}
 
-	if n.nodeConfig.EnableIPv4 {
+func (n *linuxNodeHandler) replaceHostRules() error {
+	rule := baseRule()
+	replaceRule := func(rule route.Rule, ruleFn func(route.Rule) error) error {
+		// We only apply the encrypt rule if endpoint routes are not used.
 		if !option.Config.EnableEndpointRoutes {
 			rule.Mark = linux_defaults.RouteMarkDecrypt
-			if err := route.ReplaceRule(rule); err != nil {
-				log.WithError(err).Error("Replace IPv4 route decrypt rule failed")
-				return err
+			if err := ruleFn(rule); err != nil {
+				return fmt.Errorf("replace decrypt rule: %w", err)
 			}
 		}
 		rule.Mark = linux_defaults.RouteMarkEncrypt
-		if err := route.ReplaceRule(rule); err != nil {
-			log.WithError(err).Error("Replace IPv4 route encrypt rule failed")
-			return err
+		if err := ruleFn(rule); err != nil {
+			return fmt.Errorf("replace encrypt rule: %w", err)
 		}
+		return nil
 	}
 
-	if n.nodeConfig.EnableIPv6 {
-		rule.Mark = linux_defaults.RouteMarkDecrypt
-		if err := route.ReplaceRuleIPv6(rule); err != nil {
-			log.WithError(err).Error("Replace IPv6 route decrypt rule failed")
-			return err
-		}
-		rule.Mark = linux_defaults.RouteMarkEncrypt
-		if err := route.ReplaceRuleIPv6(rule); err != nil {
-			log.WithError(err).Error("Replace IPv6 route ecrypt rule failed")
-			return err
-		}
+	if err := replaceRule(rule, route.ReplaceRule); err != nil {
+		return err
 	}
 
-	return nil
+	return replaceRule(rule, route.ReplaceRuleIPv6)
 }
 
 func (n *linuxNodeHandler) removeEncryptRules() error {
-	rule := route.Rule{
-		Priority: 1,
-		Mask:     linux_defaults.RouteMarkMask,
-		Table:    linux_defaults.RouteTableIPSec,
-		Protocol: linux_defaults.RTProto,
-	}
+	rule := baseRule()
 
 	rule.Mark = linux_defaults.RouteMarkDecrypt
 	if err := route.DeleteRule(netlink.FAMILY_V4, rule); err != nil {

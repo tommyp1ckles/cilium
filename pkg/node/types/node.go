@@ -564,6 +564,8 @@ func (n *Node) IsLocal() bool {
 	return n != nil && n.Name == GetName() && n.Cluster == getCluster()
 }
 
+// GetIPv4AllocCIDRs returns ipv4 cidrs used for allocating new ip addresses for this node.
+// Also using for node route configuration.
 func (n *Node) GetIPv4AllocCIDRs() []*cidr.CIDR {
 	result := make([]*cidr.CIDR, 0, len(n.IPv4SecondaryAllocCIDRs)+1)
 	if n.IPv4AllocCIDR != nil {
