@@ -69,6 +69,10 @@ func (m *module) Apply(c container) error {
 		return err
 	}
 
+	if err := scope.Provide(moduleProber, dig.Export(false)); err != nil {
+		return err
+	}
+
 	if err := scope.Decorate(m.logger); err != nil {
 		return err
 	}
