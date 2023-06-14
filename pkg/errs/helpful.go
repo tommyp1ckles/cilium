@@ -35,6 +35,40 @@ import (
 //       invalid argument
 //     Failed to create xfrm policy for ipv4
 //       interrupted system call
+//
+// Visualizing Errors:
+//               ┌──────────┐
+//               │Root Err  │ <- High level error, something like
+//               │          │     Ex. "Failed to enable IPSec: ..."
+//               │          │
+//               │          │
+//               └─────┬────┘
+//                     │
+//       ┌─────────────┼──────────────┐
+//       │             │              │
+// ┌─────┴────┐   ┌────┴─────┐  ┌─────┴────┐
+// │Sub Err A │   │ Sub Err B│  │ Sub Err C│ <- Sub errors, where reconcile procedure failed.
+// │          │   │          │  │          │       Ex. 1."Failed to apply xfrm policy: ..."
+// │          │   │          │  │          │           2."Failed to replace default drop route for ipv6: ..."
+// │          │   │          │  │          │
+// └─────┬────┘   └──────┬───┘  └──────────┘
+//       │               │
+//       │               │
+//       │               │
+// ┌─────┴────┐     ┌────┴─────┐
+// │Leaf Err 1│     │Leaf Err 2│
+// │          │     │          │ <- Intermediate errors, from utility libraries:
+// │          │     │          │     Ex."Netlink apply XFRM policy (...): ..."
+// │          │     │          │
+// └──────────┘     └─────┬────┘
+//                        │
+//                        │
+//                   ┌────┴─────┐
+//                   │          │
+//                   │          │ <- Actual "leaf" errors, likely things like unix Syscall errs etc...
+//                   │          │     Ex."EINVAL: invalid argument
+//                   │          │
+//                   └──────────┘
 
 // ciliumError implements an error, that adds additional help information.
 // When unrwapped, this behaves like a normal error, the only way to access
