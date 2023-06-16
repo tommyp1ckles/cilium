@@ -762,6 +762,23 @@ func LoadIPSecKeysFile(path string) (int, uint8, error) {
 	return loadIPSecKeys(file)
 }
 
+var errUnknownAlgo = fmt.Errorf("unexpected xfrm algorithm")
+
+func validateAlgo(algo string) error {
+	switch algo {
+	// Source: https://github.com/torvalds/linux/blob/master/net/xfrm/xfrm_algo.c
+	// Note: Use this function to log errors, rather than terminating in case this
+	// 	list gets out of date.
+	case "rfc4106(gcm(aes))",
+		"rfc4309(ccm(aes))",
+		"rfc4543(gcm(aes))",
+		"rfc7539esp(chacha20,poly1305)":
+		return nil
+	default:
+		return errUnknownAlgo
+	}
+}
+
 func loadIPSecKeys(r io.Reader) (int, uint8, error) {
 	var spi uint8
 	var keyLen int
@@ -816,6 +833,12 @@ func loadIPSecKeys(r io.Reader) (int, uint8, error) {
 			aeadName := s[offsetBase+offsetAeadAlgo]
 			if !strings.HasPrefix(aeadName, "rfc") {
 				return 0, 0, fmt.Errorf("invalid AEAD algorithm %q", aeadName)
+			}
+
+			// If the algo appears invalid, log as error but attempt to proceed, in
+			// case we're wrong.
+			if err := validateAlgo(aeadName); err != nil {
+				log.WithError(err).Errorf("failed to validate algorith %q, will attempt to use anyway")
 			}
 
 			_, aeadKey, err = decodeIPSecKey(s[offsetBase+offsetAeadKey])
