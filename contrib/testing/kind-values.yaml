@@ -25,3 +25,5 @@ readinessProbe:
   failureThreshold: 9999
 startupProbe:
   failureThreshold: 9999
+encryption:
+  enabled: true
