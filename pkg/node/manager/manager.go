@@ -19,6 +19,7 @@ import (
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/datapath/iptables"
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
+	errUtils "github.com/cilium/cilium/pkg/errs"
 	"github.com/cilium/cilium/pkg/hive"
 	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/identity"
@@ -40,7 +41,7 @@ import (
 
 var (
 	randGen                    = rand.NewSafeRand(time.Now().UnixNano())
-	baseBackgroundSyncInterval = time.Minute
+	baseBackgroundSyncInterval = time.Second * 5
 )
 
 const (
@@ -244,6 +245,10 @@ func (m *manager) Stop(hive.HookContext) error {
 	return nil
 }
 
+type topicBasedHealthReporter struct {
+	hr cell.HealthReporter
+}
+
 // ClusterSizeDependantInterval returns a time.Duration that is dependant on
 // the cluster size, i.e. the number of nodes that have been discovered. This
 // can be used to control sync intervals of shared or centralized resources to
@@ -320,10 +325,24 @@ func (m *manager) backgroundSync(ctx context.Context) error {
 			m.metrics.DatapathValidations.Inc()
 		}
 
+		// declare a new topic, to be used for updating the health status upon periodic sync.
+		// this module may also have other topics, such as:
+		// * Reacting to Delete
+		// * Reacting to Update node events.
+		var topicBackgroundSync = cell.NewTopic(
+			// This uniquely identifies the topic (within the module).
+			"backgroundSync",
+			// Helpful description of the topic, will be useful when debugging.
+			"Performs periodic background sync of node datapath",
+		)
 		if errs != nil {
-			m.healthReporter.Degraded("Failed to apply node validation", errs)
+			errs = errUtils.WithHelp(errs, "This may be an issue with local node kernel version. See: https://docs.cilium.io/en/latest/cmdref/cilium_node/")
+			// Emit a health status that the background sync is degraded.
+			m.healthReporter.Degraded(topicBackgroundSync, errs)
 		} else {
-			m.healthReporter.OK("Node validation successful")
+			// Indicate that the background sync is OK, if there are no other degraded topics
+			// then the overall health status will be reported as OK.
+			m.healthReporter.OK(topicBackgroundSync)
 		}
 
 		select {
