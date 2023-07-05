@@ -225,6 +225,10 @@ spec:
         {{- end }}
         {{- if or .Values.prometheus.enabled .Values.hubble.metrics.enabled }}
         ports:
+        - name: events
+          containerPort: 1234
+          hostPort: 1234
+          protocol: TCP
         - name: peer-service
           containerPort: {{ .Values.hubble.peerService.targetPort }}
           hostPort: {{ .Values.hubble.peerService.targetPort }}
