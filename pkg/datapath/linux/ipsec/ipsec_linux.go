@@ -26,6 +26,7 @@ import (
 	"github.com/cilium/cilium/pkg/datapath/linux/linux_defaults"
 	"github.com/cilium/cilium/pkg/datapath/linux/route"
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
+	"github.com/cilium/cilium/pkg/errs"
 	"github.com/cilium/cilium/pkg/fswatcher"
 	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/lock"
@@ -636,7 +637,11 @@ func UpsertIPsecEndpoint(local, remote *net.IPNet, outerLocal, outerRemote net.I
 	if !outerLocal.Equal(outerRemote) {
 		if dir == IPSecDirIn || dir == IPSecDirBoth {
 			if spi, err = ipSecReplaceStateIn(outerLocal, outerRemote, outputMark); err != nil {
-				return 0, fmt.Errorf("unable to replace local state: %s", err)
+				return 0, errs.WithHelp(
+					fmt.Errorf("unable to replace local state: %s", err),
+					"Ensure that your IPSec configuration is correct: https://docs.cilium.io/en/latest/security/network/encryption-ipsec/#generate-import-the-psk",
+				)
+
 			}
 			if err = ipSecReplacePolicyIn(remote, local, outerRemote, outerLocal); err != nil {
 				if !os.IsExist(err) {
@@ -747,6 +752,9 @@ func decodeIPSecKey(keyRaw string) (int, []byte, error) {
 	}
 	keyTrimmed := strings.TrimPrefix(keyRaw, "0x")
 	key, err := hex.DecodeString(keyTrimmed)
+	// if len(key) == 0 {
+	// 	return 0, nil, fmt.Errorf("ipsec key data was empty")
+	// }
 	return len(keyTrimmed), key, err
 }
 
@@ -764,6 +772,23 @@ func LoadIPSecKeysFile(path string) (int, uint8, error) {
 	return loadIPSecKeys(file)
 }
 
+var errUnknownAlgo = fmt.Errorf("unexpected xfrm algorithm")
+
+func validateAlgo(algo string) error {
+	switch algo {
+	// Source: https://github.com/torvalds/linux/blob/master/net/xfrm/xfrm_algo.c
+	// Note: Use this function to log errors, rather than terminating in case this
+	// 	list gets out of date.
+	case "rfc4106(gcm(aes))",
+		"rfc4309(ccm(aes))",
+		"rfc4543(gcm(aes))",
+		"rfc7539esp(chacha20,poly1305)":
+		return nil
+	default:
+		return errUnknownAlgo
+	}
+}
+
 func loadIPSecKeys(r io.Reader) (int, uint8, error) {
 	var spi uint8
 	var keyLen int
@@ -773,7 +798,7 @@ func loadIPSecKeys(r io.Reader) (int, uint8, error) {
 	defer ipSecLock.Unlock()
 
 	if err := encrypt.MapCreate(); err != nil {
-		return 0, 0, fmt.Errorf("Encrypt map create failed: %v", err)
+		return 0, 0, fmt.Errorf("encrypt map create failed: %v", err)
 	}
 
 	scanner := bufio.NewScanner(r)
@@ -801,9 +826,7 @@ func loadIPSecKeys(r io.Reader) (int, uint8, error) {
 		if err != nil {
 			// If no version info is provided assume using key format without
 			// versioning and assign SPI.
-			log.Warning("IPsec secrets without an SPI as the first argument are deprecated and will be unsupported in v1.13.")
-			spiI = 1
-			offsetBase = -1
+			return 0, 0, fmt.Errorf("ipsec secrets must have an SPI as first argument")
 		}
 		if spiI > linux_defaults.IPsecMaxKeyVersion {
 			return 0, 0, fmt.Errorf("encryption key space exhausted. ID must be nonzero and less than %d. Attempted %q", linux_defaults.IPsecMaxKeyVersion+1, s[offsetSPI])
@@ -822,9 +845,15 @@ func loadIPSecKeys(r io.Reader) (int, uint8, error) {
 				return 0, 0, fmt.Errorf("invalid AEAD algorithm %q", aeadName)
 			}
 
+			// If the algo appears invalid, log as error but attempt to proceed, in
+			// case we're wrong.
+			if err := validateAlgo(aeadName); err != nil {
+				log.WithError(err).Errorf("failed to validate algorith %q, will attempt to use anyway")
+			}
+
 			_, aeadKey, err = decodeIPSecKey(s[offsetBase+offsetAeadKey])
 			if err != nil {
-				return 0, 0, fmt.Errorf("unable to decode AEAD key string %q", s[offsetBase+offsetAeadKey])
+				return 0, 0, fmt.Errorf("unable to decode AEAD key string %q: %w", s[offsetBase+offsetAeadKey], err)
 			}
 
 			icvLen, err := strconv.Atoi(s[offsetICV+offsetBase])
@@ -847,13 +876,13 @@ func loadIPSecKeys(r io.Reader) (int, uint8, error) {
 			authAlgo := s[offsetBase+offsetAuthAlgo]
 			keyLen, authKey, err = decodeIPSecKey(s[offsetBase+offsetAuthKey])
 			if err != nil {
-				return 0, 0, fmt.Errorf("unable to decode authentication key string %q", s[offsetBase+offsetAuthKey])
+				return 0, 0, fmt.Errorf("unable to decode authentication key string %q: %w", s[offsetBase+offsetAuthKey], err)
 			}
 
 			encAlgo := s[offsetBase+offsetEncAlgo]
 			_, encKey, err := decodeIPSecKey(s[offsetBase+offsetEncKey])
 			if err != nil {
-				return 0, 0, fmt.Errorf("unable to decode encryption key string %q", s[offsetBase+offsetEncKey])
+				return 0, 0, fmt.Errorf("unable to decode encryption key string %q: %w", s[offsetBase+offsetEncKey], err)
 			}
 
 			ipSecKey.Auth = &netlink.XfrmStateAlgo{
