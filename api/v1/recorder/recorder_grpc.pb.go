@@ -22,7 +22,7 @@ import (
 const _ = grpc.SupportPackageIsVersion7
 
 const (
-	Recorder_Record_FullMethodName = "/recorder.Recorder/Record"
+	Recorder_Record_FullMethodName = "/recorder.Recorder/record"
 )
 
 // RecorderClient is the client API for Recorder service.
@@ -136,7 +136,7 @@ var Recorder_ServiceDesc = grpc.ServiceDesc{
 	Methods:     []grpc.MethodDesc{},
 	Streams: []grpc.StreamDesc{
 		{
-			StreamName:    "Record",
+			StreamName:    "record",
 			Handler:       _Recorder_Record_Handler,
 			ServerStreams: true,
 			ClientStreams: true,

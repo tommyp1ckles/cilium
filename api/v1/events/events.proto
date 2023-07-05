@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Authors of Cilium
+
+syntax = "proto3";
+
+package events;
+
+option go_package = "github.com/cilium/cilium/api/v1/events";
+
+service FlightRecorder {
+    // GetStatus returns streams all current status updates, following this
+    // it will stream all future status updates.
+    rpc GetStatus (StatusUpdateRequest) returns (stream StatusUpdateEvent);
+}
+
+message StatusUpdateEvent {
+    // type is the type of status update event.
+    Update type = 1;
+
+    // message is the message associated with the status update.
+    string message = 2;
+
+    // error provides a error tree of the status update.
+    Error error = 3;
+
+    // module_id specifies the module that the status update is associated with.
+    string module_id = 4;
+}
+
+message StatusUpdateRequest {}
+
+message Error {
+    string message = 1;
+
+    repeated Error wrapped = 2;
+
+    repeated string help = 3;    
+}
+
+enum Update {
+    OK = 0;
+    DEGRADED = 1;
+    STOPPED = 2;
+}

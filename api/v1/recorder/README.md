@@ -240,7 +240,7 @@ Recorder implements the Hubble module for capturing network packets
 
 | Method Name | Request Type | Response Type | Description |
 | ----------- | ------------ | ------------- | ------------|
-| Record | [RecordRequest](#recorder-RecordRequest) stream | [RecordResponse](#recorder-RecordResponse) stream | Record can start and stop a single recording. The recording is automatically stopped if the client aborts this rpc call. |
+| record | [RecordRequest](#recorder-RecordRequest) stream | [RecordResponse](#recorder-RecordResponse) stream | Record can start and stop a single recording. The recording is automatically stopped if the client aborts this rpc call. |
 
  
 

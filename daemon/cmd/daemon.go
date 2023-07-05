@@ -20,7 +20,9 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/sys/unix"
+	"google.golang.org/grpc"
 
+	eventspb "github.com/cilium/cilium/api/v1/events"
 	"github.com/cilium/cilium/api/v1/models"
 	health "github.com/cilium/cilium/cilium-health/launch"
 	"github.com/cilium/cilium/daemon/cmd/cni"
@@ -49,6 +51,7 @@ import (
 	"github.com/cilium/cilium/pkg/endpoint/regeneration"
 	"github.com/cilium/cilium/pkg/endpointmanager"
 	"github.com/cilium/cilium/pkg/eventqueue"
+	"github.com/cilium/cilium/pkg/flightrecorder"
 	"github.com/cilium/cilium/pkg/fqdn"
 	"github.com/cilium/cilium/pkg/hubble/observer"
 	"github.com/cilium/cilium/pkg/identity"
@@ -116,6 +119,7 @@ type Daemon struct {
 	l7Proxy          *proxy.Proxy
 	svc              *service.Service
 	rec              *recorder.Recorder
+	events           *flightrecorder.Events
 	policy           *policy.Repository
 	policyUpdater    *policy.Updater
 	preFilter        datapath.PreFilter
@@ -557,6 +561,22 @@ func newDaemon(ctx context.Context, cleaner *daemonCleanup, params *daemonParams
 
 	d.configModifyQueue = eventqueue.NewEventQueueBuffered("config-modify-queue", ConfigModifyQueueSize)
 	d.configModifyQueue.Run()
+
+	d.events = flightrecorder.NewEvents(params.HealthProvider)
+
+	var opts []grpc.ServerOption
+	grpcServer := grpc.NewServer(opts...)
+	eventspb.RegisterFlightRecorderServer(grpcServer, d.events)
+	go func() {
+		log.Info("Serving events!")
+		lis, err := net.Listen("tcp", ":1234")
+		if err != nil {
+			log.Fatalf("failed to listen: %v", err)
+		}
+		if err := grpcServer.Serve(lis); err != nil {
+			log.Fatalf("failed to serve: %v", err)
+		}
+	}()
 
 	d.rec, err = recorder.NewRecorder(d.ctx, &d)
 	if err != nil {

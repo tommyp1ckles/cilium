@@ -1620,6 +1620,8 @@ type daemonParams struct {
 	L2Announcer          *l2announcer.L2Announcer
 	L7Proxy              *proxy.Proxy
 	DB                   statedb.DB
+	HealthReporter       cell.HealthReporter
+	HealthProvider       cell.Health
 }
 
 func newDaemonPromise(params daemonParams) promise.Promise[*Daemon] {

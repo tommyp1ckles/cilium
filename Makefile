@@ -134,7 +134,7 @@ ifeq ($(SKIP_VET),"false")
 	$(MAKE) govet
 endif
 	@$(ECHO_CHECK) running integration tests...
-	INTEGRATION_TESTS=true $(GO_TEST) $(TEST_UNITTEST_LDFLAGS) $(TESTPKGS) $(GOTEST_BASE) $(GOTEST_COVER_OPTS) | $(GOTEST_FORMATTER)
+	while true; do INTEGRATION_TESTS=true $(GO_TEST) $(TEST_UNITTEST_LDFLAGS) $(TESTPKGS) $(GOTEST_BASE) $(GOTEST_COVER_OPTS) | $(GOTEST_FORMATTER) ; done
 	$(MAKE) generate-cov
 	$(MAKE) stop-kvstores
 
@@ -307,7 +307,7 @@ generate-operator-api: api/v1/operator/openapi.yaml ## Generate cilium-operator 
 	@# sort goimports automatically
 	-$(QUIET)$(GO) run golang.org/x/tools/cmd/goimports -w ./api/v1/operator
 
-generate-hubble-api: api/v1/flow/flow.proto api/v1/peer/peer.proto api/v1/observer/observer.proto api/v1/relay/relay.proto ## Generate hubble proto Go sources.
+generate-hubble-api: api/v1/events/events.proto api/v1/flow/flow.proto api/v1/peer/peer.proto api/v1/observer/observer.proto api/v1/relay/relay.proto ## Generate hubble proto Go sources.
 	$(QUIET) $(MAKE) $(SUBMAKEOPTS) -C api/v1
 
 define generate_k8s_api
