@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -49,7 +50,13 @@ func main() {
 		}
 		modules[u.ModuleId] = u
 		buf := ""
-		for _, status := range modules {
+		sortedKeys := []string{}
+		for k, _ := range modules {
+			sortedKeys = append(sortedKeys, k)
+		}
+		sort.Strings(sortedKeys)
+		for _, k := range sortedKeys {
+			status := modules[k]
 			switch status.Type {
 			case eventspb.Update_OK:
 				// add green emoji
