@@ -36,6 +36,7 @@ type proxyParams struct {
 	Datapath             datapath.Datapath
 	EndpointInfoRegistry logger.EndpointInfoRegistry
 	MonitorAgent         monitoragent.Agent
+	HealthReporter       cell.HealthReporter
 }
 
 func newProxy(params proxyParams) (*Proxy, error) {
@@ -65,6 +66,8 @@ func newProxy(params proxyParams) (*Proxy, error) {
 				return fmt.Errorf("failed to start Envoy AccessLog server: %w", err)
 			}
 			proxy.accessLogServer = accessLogServer
+			topic := cell.NewTopic("cilium-envoy-proxy", "Envoy Proxy for L7 Network Policies")
+			params.HealthReporter.OK(topic)
 
 			return nil
 		},
