@@ -19,6 +19,7 @@ import (
 	endpointid "github.com/cilium/cilium/pkg/endpoint/id"
 	"github.com/cilium/cilium/pkg/endpoint/regeneration"
 	"github.com/cilium/cilium/pkg/endpointmanager/idallocator"
+	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/identity/cache"
 	"github.com/cilium/cilium/pkg/ipcache"
 	"github.com/cilium/cilium/pkg/k8s/watchers/subscriber"
@@ -82,6 +83,8 @@ type endpointManager struct {
 
 	// controllers associated with the endpoint manager.
 	controllers *controller.Manager
+
+	hr cell.HealthReporter
 }
 
 // EndpointResourceSynchronizer is an interface which synchronizes CiliumEndpoint
@@ -96,7 +99,7 @@ type EndpointResourceSynchronizer interface {
 type endpointDeleteFunc func(*endpoint.Endpoint, endpoint.DeleteConfig) []error
 
 // New creates a new endpointManager.
-func New(epSynchronizer EndpointResourceSynchronizer) *endpointManager {
+func New(epSynchronizer EndpointResourceSynchronizer, hr cell.HealthReporter) *endpointManager {
 	mgr := endpointManager{
 		endpoints:                    make(map[uint16]*endpoint.Endpoint),
 		endpointsAux:                 make(map[string]*endpoint.Endpoint),
@@ -104,6 +107,7 @@ func New(epSynchronizer EndpointResourceSynchronizer) *endpointManager {
 		EndpointResourceSynchronizer: epSynchronizer,
 		subscribers:                  make(map[Subscriber]struct{}),
 		controllers:                  controller.NewManager(),
+		hr:                           hr,
 	}
 	mgr.deleteEndpoint = mgr.removeEndpoint
 
@@ -574,6 +578,8 @@ func (mgr *endpointManager) GetPolicyEndpoints() map[policy.Endpoint]struct{} {
 	return eps
 }
 
+var endpointSyncTopic = cell.NewTopic("endpoint-k8s-syncronizer", "Syncs endpoint with k8s CiliumEndpoint")
+
 func (mgr *endpointManager) expose(ep *endpoint.Endpoint) error {
 	newID, err := mgr.AllocateID(ep.ID)
 	if err != nil {
@@ -590,6 +596,7 @@ func (mgr *endpointManager) expose(ep *endpoint.Endpoint) error {
 	mgr.mutex.Unlock()
 
 	mgr.RunK8sCiliumEndpointSync(ep, option.Config)
+	mgr.hr.OK(endpointSyncTopic)
 
 	return nil
 }

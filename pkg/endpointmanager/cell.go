@@ -162,9 +162,10 @@ var (
 type endpointManagerParams struct {
 	cell.In
 
-	Lifecycle hive.Lifecycle
-	Config    EndpointManagerConfig
-	Clientset client.Clientset
+	Lifecycle      hive.Lifecycle
+	Config         EndpointManagerConfig
+	Clientset      client.Clientset
+	HealthReporter cell.HealthReporter
 }
 
 type endpointManagerOut struct {
@@ -178,7 +179,7 @@ type endpointManagerOut struct {
 func newDefaultEndpointManager(p endpointManagerParams) endpointManagerOut {
 	checker := endpoint.CheckHealth
 
-	mgr := New(&watchers.EndpointSynchronizer{Clientset: p.Clientset})
+	mgr := New(&watchers.EndpointSynchronizer{Clientset: p.Clientset}, p.HealthReporter)
 	if p.Config.EndpointGCInterval > 0 {
 		ctx, cancel := context.WithCancel(context.Background())
 		p.Lifecycle.Append(hive.Hook{
