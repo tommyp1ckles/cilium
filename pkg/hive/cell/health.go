@@ -6,6 +6,7 @@ package cell
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -37,6 +38,11 @@ const (
 
 // HealthReporter provides a method of declaring a Modules health status.
 type HealthReporter interface {
+	StoppableReporter
+	StatusReporter
+}
+
+type StatusReporter interface {
 	// OK declares that a Module has achieved a desired state and has not entered
 	// any unexpected or incorrect states.
 	// Modules should only declare themselves as 'OK' once they have stabilized,
@@ -45,14 +51,111 @@ type HealthReporter interface {
 	// health state.
 	OK(status string)
 
-	// Stopped reports that a module has completed, and will no longer report any
-	// health status.
-	Stopped(reason string)
-
 	// Degraded declares that a module has entered a degraded state.
 	// This means that it may have failed to provide it's intended services, or
 	// to perform it's desired task.
 	Degraded(reason string, err error)
+}
+
+type StoppableReporter interface {
+	// Stopped reports that a module has completed, and will no longer report any
+	// health status.
+	Stopped(reason string)
+}
+
+type scopedReporter struct {
+	rootScope    HealthReporter
+	subReporters map[string]Status
+	labels       LabelSet
+	process      func(u Update)
+}
+
+type LabelSet map[string]string
+
+// Produces a stable identifier string for a LabelSet.
+func (l LabelSet) String() string {
+	k := ""
+	keys := make([]string, 0, len(l))
+	for key := range l {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		val := l[key]
+		k += fmt.Sprintf("%s=%s,", key, val)
+	}
+	return k
+}
+
+func (r *scopedReporter) parentCallback() {
+	allOK := true
+	for _, s := range r.subReporters {
+		switch s.Level {
+		case StatusOK:
+		case StatusDegraded:
+			allOK = false
+		case StatusStopped: // TODO: The subreporters probably dont need to access stopped, so
+			//	partition the interface a bit.
+		}
+	}
+	name := r.labels.String()
+	if n, ok := r.labels["name"]; ok {
+		name = n
+	}
+	if allOK {
+		if r.rootScope != nil {
+			r.rootScope.OK("subreporter: " + name) // TODO:
+		} else {
+			r.OK("subreporter: " + name) // TODO:
+		}
+	} else {
+		if r.rootScope != nil {
+			r.rootScope.Degraded("subreporter degraded: "+name, nil) // TODO:
+		} else {
+			r.Degraded("subreporter degraded: "+name, nil) // TODO:
+		}
+	}
+}
+
+func (r *scopedReporter) WithLabels(labels LabelSet) StatusReporter {
+	process := func(u Update) {
+		r.subReporters[labels.String()] = Status{
+			Update:      u,
+			LastUpdated: time.Now(),
+		}
+		r.parentCallback()
+	}
+	sr := &scopedReporter{
+		rootScope:    nil,
+		subReporters: make(map[string]Status),
+		process:      process,
+		labels:       labels,
+	}
+	return sr
+}
+
+func (r *scopedReporter) OK(status string) {
+	r.process(Update{
+		Level:   StatusOK,
+		Message: status,
+	})
+}
+
+func (r *scopedReporter) Degraded(reason string, err error) {
+	r.process(Update{
+		Level:   StatusOK,
+		Message: reason,
+		Err:     err,
+	})
+}
+
+func (r *scopedReporter) Example() {
+	u := r.WithLabels(LabelSet{"name": "node-updater"})
+	d := r.WithLabels(LabelSet{"name": "node-deleter"})
+	u.OK("node updated")
+	for i := 0; i < 10; i++ {
+		d.Degraded("node deletion failed", nil)
+	}
 }
 
 // Health provides exported functions for accessing health status data.
