@@ -7,6 +7,7 @@ type group []Cell
 
 // Group a set of cells. Unlike Module(), Group() does not create a new
 // scope.
+// TODO: We could create reporters this way somehow - but most code wont work with it
 func Group(cells ...Cell) Cell {
 	return group(cells)
 }

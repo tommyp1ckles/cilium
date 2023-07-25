@@ -280,6 +280,52 @@ func TestProvideHealthReporter(t *testing.T) {
 	assert.Equal(t, s3.Level, cell.StatusUnknown)
 }
 
+func TestScopedReporter(t *testing.T) {
+	// TODO: We probably want like foo.bar.{}... or something?
+	type ReporterSchema struct {
+		// Endpoints *struct {
+		// 	Datapath *struct {
+		// 		Regenerate cell.ReporterFunc
+		// 	}
+		// 	Brakes cell.ReporterFunc
+		// }
+		Engine *struct {
+			SparkPlugs cell.ReporterFunc
+		}
+		Axles cell.ReporterFunc
+	}
+
+	testCell := cell.Module(
+		"test",
+		"Test Module",
+		cell.Reporter[*ReporterSchema](),
+		cell.Invoke(func(hr cell.HealthReporter, sr *ReporterSchema) {
+			rearAxles := sr.Axles(context.Background(), "rear")
+			rearAxles.Degraded("1", nil)
+			rearAxles.OK("ok1")
+			// frontAxles := sr.Axles(context.Background(), "front")
+			// frontAxles.OK("2")
+			// sparks := sr.Engine.SparkPlugs(context.Background(), "yep")
+			// sparks.OK("sparks")
+			// rearAxles.OK("3")
+		}),
+	)
+	h := hive.New(
+		testCell,
+		cell.Invoke(func(h cell.Health, lc hive.Lifecycle, shutdowner hive.Shutdowner) {
+			lc.Append(hive.Hook{
+				OnStop: func(hive.HookContext) error {
+					for _, s := range h.All() {
+						fmt.Println("Status:", s)
+					}
+					return nil
+				}})
+		}),
+		shutdownOnStartCell,
+	)
+	assert.NoError(t, h.Run(), "expected Run to succeed")
+}
+
 func TestGroup(t *testing.T) {
 	sum := 0
 
