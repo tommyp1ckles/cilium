@@ -23,6 +23,10 @@ import (
 	"github.com/cilium/cilium/pkg/policy"
 )
 
+type ReporterSchema struct {
+	K8sCiliumEndpointsync cell.ReporterFunc
+}
+
 // Cell provides the EndpointManager which maintains the collection of locally
 // running Cilium endpoints. Also exposed are EndpointsLookup and
 // EndpointsModify APIs that EndpointManager implements. If possible, choose
@@ -32,6 +36,7 @@ var Cell = cell.Module(
 	"Manages the collection of local endpoints",
 
 	cell.Config(defaultEndpointManagerConfig),
+	cell.Reporter[*ReporterSchema](),
 	cell.Provide(newDefaultEndpointManager),
 )
 
@@ -163,6 +168,7 @@ type endpointManagerParams struct {
 	Config          EndpointManagerConfig
 	Clientset       client.Clientset
 	MetricsRegistry *metrics.Registry
+	ReporterSchema  *ReporterSchema
 }
 
 type endpointManagerOut struct {
