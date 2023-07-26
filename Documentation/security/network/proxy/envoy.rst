@@ -16,11 +16,56 @@ for the cluster. Cilium proxy is distributed within the Cilium images.
 
 For more information on the version compatibility matrix, see `Cilium Proxy documentation <https://github.com/cilium/proxy#version-compatibility-matrix>`_.
 
+***********************
+Deployment as DaemonSet
+***********************
+
+Background
+==========
+
+When Cilium L7 functionality (Ingress, Gateway API, Network Policies with L7 functionality, L7 Protocol Visibility)
+is enabled or installed in a Kubernetes cluster, the Cilium agent starts an Envoy proxy as separate process within
+the Cilium agent pod.
+
+That Envoy proxy instance becomes responsible for proxying all matching L7 requests on that node.
+As a result, L7 traffic targeted by policies depends on the availability of the Cilium agent pod.
+
+Alternatively, it's possible to deploy the Envoy proxy as independently life-cycled DaemonSet called ``cilium-envoy``
+instead of running it from within the Cilium Agent Pod.
+
+The communication between Cilium agent and Envoy proxy takes place via UNIX domain sockets in both deployment modes.
+Be that streaming the access logs (e.g. L7 Protocol Visibility), updating the configuration via
+`xDS <https://www.envoyproxy.io/docs/envoy/latest/api-docs/xds_protocol>`_ or accessing the admin interface.
+
+Enable and configure Envoy DaemonSet
+====================================
+
+To enable the dedicated Envoy proxy DaemonSet, install Cilium with the Helm value ``envoy.enabled`` set to ``true``.
+
+Please see the :ref:`helm_reference` (keys with ``envoy.*``) for detailed information on how to configure the Envoy proxy DaemonSet.
+
+Potential Benefits
+==================
+
+- Cilium Agent restarts (e.g. for upgrades) without impacts for the live traffic proxied via Envoy.
+- Envoy patch release upgrades without impacts for the Cilium Agent.
+- Separate CPU and memory limits for Envoy and Cilium Agent for performance isolation.
+- Envoy application log not mixed with the one of the Cilium Agent.
+- Dedicated health probes for the Envoy proxy.
+- Explicit deployment of Envoy proxy during Cilium installation (compared to on demand in the embedded mode).
+
+Known Limitations
+=================
+
+- Due to Pod-to-Pod communication with the Cilium Agent via UNIX domain sockets, Envoy DaemonSet isn't supported with SELinux enabled on the host. This is the default for Red Hat OpenShift.
+
 *************
 Go Extensions
 *************
 
 .. note:: This feature is currently in beta phase.
+
+.. note:: The Go extensions proxylib framework is residing in cilium/proxy repository.
 
 This is a guide for developers who are interested in writing a Go extension to the 
 Envoy proxy as part of Cilium.   
@@ -36,7 +81,7 @@ In sum, you as the developer need only worry about the logic of parsing the prot
 and Cilium + Envoy + eBPF do the heavy-lifting.  
 
 This guide uses simple examples based on a hypothetical "r2d2" protocol 
-(see `proxylib/r2d2/r2d2parser.go <https://github.com/cilium/cilium/blob/main/proxylib/r2d2/r2d2parser.go>`_)
+(see `proxylib/r2d2/r2d2parser.go <https://github.com/cilium/proxy/blob/main/proxylib/r2d2/r2d2parser.go>`_)
 that might be used to talk to a simple protocol droid a long time ago in a galaxy far, far away.   
 But it also points to other real protocols like Memcached and Cassandra that already exist in the cilium/proxylib 
 directory.  
@@ -125,16 +170,16 @@ Step 4: Follow the Cilium Developer Guide
 
 It is easiest to start Cilium development by following the :ref:`dev_guide`
 
-After cloning Cilium: 
+After cloning cilium/proxy repo:
 
 .. code-block:: shell-session
 
-    $ cd cilium 
-    $ contrib/vagrant/start.sh 
+    $ cd proxy
+    $ vagrant up
     $ cd proxylib
 
-While this dev VM is running, you can open additional terminals to the Cilium dev VM
-by running ''vagrant ssh'' from within the cilium source directory.  
+While this dev VM is running, you can open additional terminals to the cilium/proxy dev VM
+by running ''vagrant ssh'' from within the cilium/proxy source directory.
 
 
 Step 5: Create New Proxy Skeleton 
@@ -158,7 +203,7 @@ Also, edit proxylib.go and add the following import line:
 
 :: 
 
-       _ "github.com/cilium/cilium/proxylib/newproto"
+       _ "github.com/cilium/proxy/proxylib/newproto"
 
 
 Step 6: Update OnData Method 
@@ -577,4 +622,4 @@ Getting Started Guides.  cilium/Documentation/gettingstarted/cassandra.rst is
 a good example to follow.   Also be sure to update Documentation/gettingstarted/index.rst
 with a link to this new getting started guide. 
 
-With that, you are ready to post this change for feedback from the Cilium community.  Congrats! 
+With that, you are ready to post this change for feedback from the Cilium community. Congrats!

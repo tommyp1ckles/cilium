@@ -93,6 +93,8 @@ type Controller struct {
 	ciliumNamespace         string
 	defaultLoadbalancerMode string
 	isDefaultIngressClass   bool
+	defaultSecretNamespace  string
+	defaultSecretName       string
 
 	sharedLBStatus *slim_corev1.LoadBalancerStatus
 }
@@ -117,6 +119,8 @@ func NewController(clientset k8sClient.Clientset, options ...Option) (*Controlle
 		sharedLBServiceName:     opts.SharedLBServiceName,
 		ciliumNamespace:         opts.CiliumNamespace,
 		defaultLoadbalancerMode: opts.DefaultLoadbalancerMode,
+		defaultSecretNamespace:  opts.DefaultSecretNamespace,
+		defaultSecretName:       opts.DefaultSecretName,
 		sharedTranslator:        ingressTranslation.NewSharedIngressTranslator(opts.SharedLBServiceName, opts.CiliumNamespace, opts.SecretsNamespace, opts.EnforcedHTTPS, opts.IdleTimeoutSeconds),
 		dedicatedTranslator:     ingressTranslation.NewDedicatedIngressTranslator(opts.SecretsNamespace, opts.EnforcedHTTPS, opts.IdleTimeoutSeconds),
 	}
@@ -126,16 +130,16 @@ func NewController(clientset k8sClient.Clientset, options ...Option) (*Controlle
 		0,
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
-				if ingress := k8s.ObjToV1Ingress(obj); ingress != nil {
+				if ingress := k8s.CastInformerEvent[slim_networkingv1.Ingress](obj); ingress != nil {
 					ic.queue.Add(ingressAddedEvent{ingress: ingress})
 				}
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
-				oldIngress := k8s.ObjToV1Ingress(oldObj)
+				oldIngress := k8s.CastInformerEvent[slim_networkingv1.Ingress](oldObj)
 				if oldIngress == nil {
 					return
 				}
-				newIngress := k8s.ObjToV1Ingress(newObj)
+				newIngress := k8s.CastInformerEvent[slim_networkingv1.Ingress](newObj)
 				if newIngress == nil {
 					return
 				}
@@ -145,7 +149,7 @@ func NewController(clientset k8sClient.Clientset, options ...Option) (*Controlle
 				ic.queue.Add(ingressUpdatedEvent{oldIngress: oldIngress, newIngress: newIngress})
 			},
 			DeleteFunc: func(obj interface{}) {
-				if ingress := k8s.ObjToV1Ingress(obj); ingress != nil {
+				if ingress := k8s.CastInformerEvent[slim_networkingv1.Ingress](obj); ingress != nil {
 					ic.queue.Add(ingressDeletedEvent{ingress: ingress})
 				}
 			},
@@ -179,7 +183,7 @@ func NewController(clientset k8sClient.Clientset, options ...Option) (*Controlle
 
 	ic.secretManager = newNoOpsSecretManager()
 	if ic.enabledSecretsSync {
-		secretManager, err := newSyncSecretsManager(clientset, opts.SecretsNamespace, opts.MaxRetries)
+		secretManager, err := newSyncSecretsManager(clientset, opts.SecretsNamespace, opts.MaxRetries, ic.defaultSecretNamespace, ic.defaultSecretName)
 		if err != nil {
 			return nil, err
 		}
@@ -588,7 +592,7 @@ func (ic *Controller) regenerate(ing *slim_networkingv1.Ingress, forceShared boo
 	m := &model.Model{}
 	if !forceShared && ic.isEffectiveLoadbalancerModeDedicated(ing) {
 		translator = ic.dedicatedTranslator
-		m.HTTP = ingestion.Ingress(*ing)
+		m.HTTP = ingestion.Ingress(*ing, ic.defaultSecretNamespace, ic.defaultSecretName)
 	} else {
 		translator = ic.sharedTranslator
 		for _, k := range ic.ingressStore.ListKeys() {
@@ -597,7 +601,7 @@ func (ic *Controller) regenerate(ing *slim_networkingv1.Ingress, forceShared boo
 				ing.GetDeletionTimestamp() != nil {
 				continue
 			}
-			m.HTTP = append(m.HTTP, ingestion.Ingress(*item)...)
+			m.HTTP = append(m.HTTP, ingestion.Ingress(*item, ic.defaultSecretNamespace, ic.defaultSecretName)...)
 		}
 	}
 

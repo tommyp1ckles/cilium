@@ -5,7 +5,6 @@ package api
 
 import (
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -30,9 +29,6 @@ const (
 	ContextNamespace
 	// ContextPod uses the namespace and pod name for identification purposes in the form of namespace/pod-name.
 	ContextPod
-	// ContextPodShort uses a short version of the pod name. It should
-	// typically map to the deployment/replicaset name. Deprecated.
-	ContextPodShort
 	// ContextPodName uses the pod name for identification purposes
 	ContextPodName
 	// ContextDNS uses the DNS name for identification purposes
@@ -43,6 +39,8 @@ const (
 	// purpose. It uses "reserved:kube-apiserver" label if it's present in the identity label list.
 	// Otherwise, it uses the first label in the identity label list with "reserved:" prefix.
 	ContextReservedIdentity
+	// ContextWorkload uses the namespace and the pod's workload name for identification.
+	ContextWorkload
 	// ContextWorkloadName uses the pod's workload name for identification.
 	ContextWorkloadName
 	// ContextApp uses the pod's app label for identification.
@@ -58,12 +56,11 @@ const ContextOptionsHelp = `
  destinationEgressContext  ::= identifier , { "|", identifier }
  destinationIngressContext ::= identifier , { "|", identifier }
  labels                    ::= label , { ",", label }
- identifier             ::= identity | namespace | pod | pod-short | pod-name | dns | ip | reserved-identity | workload-name | app
+ identifier             ::= identity | namespace | pod | pod-name | dns | ip | reserved-identity | workload | workload-name | app
  label                     ::= source_ip | source_pod | source_namespace | source_workload | source_app | destination_ip | destination_pod | destination_namespace | destination_workload | destination_app | traffic_direction
 `
 
 var (
-	shortPodPattern    = regexp.MustCompile("^(.+?)(-[a-z0-9]+){1,2}$")
 	kubeAPIServerLabel = ciliumLabels.LabelKubeAPIServer.String()
 	// contextLabelsList defines available labels for the ContextLabels
 	// ContextIdentifier and the order of those labels for GetLabelNames and GetLabelValues.
@@ -104,14 +101,14 @@ func (c ContextIdentifier) String() string {
 		return "namespace"
 	case ContextPod:
 		return "pod"
-	case ContextPodShort:
-		return "pod-short"
 	case ContextDNS:
 		return "dns"
 	case ContextIP:
 		return "ip"
 	case ContextReservedIdentity:
 		return "reserved-identity"
+	case ContextWorkload:
+		return "workload"
 	case ContextWorkloadName:
 		return "workload-name"
 	case ContextApp:
@@ -164,8 +161,6 @@ func parseContextIdentifier(s string) (ContextIdentifier, error) {
 		return ContextNamespace, nil
 	case "pod":
 		return ContextPod, nil
-	case "pod-short":
-		return ContextPodShort, nil
 	case "pod-name":
 		return ContextPodName, nil
 	case "dns":
@@ -174,6 +169,8 @@ func parseContextIdentifier(s string) (ContextIdentifier, error) {
 		return ContextIP, nil
 	case "reserved-identity":
 		return ContextReservedIdentity, nil
+	case "workload":
+		return ContextWorkload, nil
 	case "workload-name":
 		return ContextWorkloadName, nil
 	case "app":
@@ -344,10 +341,6 @@ func labelsContext(invertSourceDestination bool, wantedLabels labelsSet, flow *p
 	return outputLabels, nil
 }
 
-func shortenPodName(name string) string {
-	return shortPodPattern.ReplaceAllString(name, "${1}")
-}
-
 func handleReservedIdentityLabels(lbls []string) string {
 	// if reserved:kube-apiserver label is present, return it (instead of reserved:world, etc..)
 	if slices.Contains(lbls, kubeAPIServerLabel) {
@@ -465,11 +458,6 @@ func getContextIDLabelValue(contextID ContextIdentifier, flow *pb.Flow, source b
 		if ep.GetNamespace() != "" {
 			labelValue = ep.GetNamespace() + "/" + labelValue
 		}
-	case ContextPodShort:
-		labelValue = shortenPodName(ep.GetPodName())
-		if ep.GetNamespace() != "" {
-			labelValue = ep.GetNamespace() + "/" + labelValue
-		}
 	case ContextPodName:
 		labelValue = ep.GetPodName()
 	case ContextDNS:
@@ -486,7 +474,13 @@ func getContextIDLabelValue(contextID ContextIdentifier, flow *pb.Flow, source b
 		}
 	case ContextReservedIdentity:
 		labelValue = handleReservedIdentityLabels(ep.GetLabels())
-
+	case ContextWorkload:
+		if workloads := ep.GetWorkloads(); len(workloads) != 0 {
+			labelValue = workloads[0].Name
+		}
+		if labelValue != "" && ep.GetNamespace() != "" {
+			labelValue = ep.GetNamespace() + "/" + labelValue
+		}
 	case ContextWorkloadName:
 		if workloads := ep.GetWorkloads(); len(workloads) != 0 {
 			labelValue = workloads[0].Name

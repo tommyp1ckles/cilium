@@ -4,6 +4,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -11,7 +12,7 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
-	"go.uber.org/multierr"
+	"k8s.io/apimachinery/pkg/util/sets"
 
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/cidr"
@@ -20,6 +21,7 @@ import (
 	datapathOpt "github.com/cilium/cilium/pkg/datapath/option"
 	"github.com/cilium/cilium/pkg/datapath/types"
 	datapathTypes "github.com/cilium/cilium/pkg/datapath/types"
+	"github.com/cilium/cilium/pkg/k8s"
 	lb "github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging/logfields"
@@ -32,12 +34,6 @@ import (
 )
 
 const anyPort = "*"
-
-var (
-	updateMetric = metrics.ServicesCount.WithLabelValues("update")
-	deleteMetric = metrics.ServicesCount.WithLabelValues("delete")
-	addMetric    = metrics.ServicesCount.WithLabelValues("add")
-)
 
 // ErrLocalRedirectServiceExists represents an error when a Local redirect
 // service exists with the same Frontend.
@@ -84,9 +80,10 @@ type envoyCache interface {
 }
 
 type svcInfo struct {
-	hash          string
-	frontend      lb.L3n4AddrID
-	backends      []*lb.Backend
+	hash     string
+	frontend lb.L3n4AddrID
+	backends []*lb.Backend
+	// Hashed `backends`; pointing to the same objects.
 	backendByHash map[string]*lb.Backend
 
 	svcType                   lb.SVCType
@@ -103,6 +100,9 @@ type svcInfo struct {
 	LoopbackHostport          bool
 
 	restoredFromDatapath bool
+	// The hashes of the backends restored from the datapath and
+	// not yet heard about from the service cache.
+	restoredBackendHashes sets.Set[string]
 }
 
 func (svc *svcInfo) isL7LBService() bool {
@@ -239,7 +239,9 @@ type Service struct {
 	svcByID   map[lb.ID]*svcInfo
 
 	backendRefCount counter.StringCounter
-	backendByHash   map[string]*lb.Backend
+	// only used to keep track of the existing hash->ID mapping,
+	// not for loadbalancing decisions.
+	backendByHash map[string]*lb.Backend
 
 	healthServer  healthServer
 	monitorNotify monitorNotify
@@ -716,9 +718,9 @@ func (s *Service) upsertService(params *lb.SVC) (bool, lb.ID, error) {
 	}
 
 	if new {
-		addMetric.Inc()
+		metrics.ServicesEventsCount.WithLabelValues("add").Inc()
 	} else {
-		updateMetric.Inc()
+		metrics.ServicesEventsCount.WithLabelValues("update").Inc()
 	}
 
 	s.notifyMonitorServiceUpsert(svc.frontend, svc.backends,
@@ -804,15 +806,13 @@ func (s *Service) UpdateBackendsState(backends []*lb.Backend) error {
 			// possible to receive an API call for a backend that's already deleted.
 			continue
 		}
-		if be.State == updatedB.State {
-			continue
-		}
 		if !lb.IsValidStateTransition(be.State, updatedB.State) {
 			currentState, _ := be.State.String()
 			newState, _ := updatedB.State.String()
-			e := fmt.Errorf("invalid state transition for backend"+
-				"[%s] (%s) -> (%s)", updatedB.String(), currentState, newState)
-			errs = multierr.Append(errs, e)
+			errs = errors.Join(errs,
+				fmt.Errorf("invalid state transition for backend[%s] (%s) -> (%s)",
+					updatedB.String(), currentState, newState),
+			)
 			continue
 		}
 		be.State = updatedB.State
@@ -823,6 +823,9 @@ func (s *Service) UpdateBackendsState(backends []*lb.Backend) error {
 			for i, b := range info.backends {
 				if b.L3n4Addr.String() != updatedB.L3n4Addr.String() {
 					continue
+				}
+				if b.State == updatedB.State {
+					break
 				}
 				info.backends[i].State = updatedB.State
 				info.backends[i].Preferred = updatedB.Preferred
@@ -872,16 +875,13 @@ func (s *Service) UpdateBackendsState(backends []*lb.Backend) error {
 			logfields.BackendPreferred: b.Preferred,
 		}).Info("Persisting updated backend state for backend")
 		if err := s.lbmap.UpdateBackendWithState(b); err != nil {
-			e := fmt.Errorf("failed to update backend %+v %w", b, err)
-			errs = multierr.Append(errs, e)
+			errs = errors.Join(errs, fmt.Errorf("failed to update backend %+v %w", b, err))
 		}
 	}
 
 	for i := range updateSvcs {
-		err := s.lbmap.UpsertService(updateSvcs[i])
-		errs = multierr.Append(errs, err)
+		errs = errors.Join(errs, s.lbmap.UpsertService(updateSvcs[i]))
 	}
-
 	return errs
 }
 
@@ -951,6 +951,18 @@ func (s *Service) GetDeepCopyServicesByName(name, namespace string) (svcs []*lb.
 	return svcs
 }
 
+// GetDeepCopyServiceByFrontend returns a deep-copy of the service that matches the Frontend address.
+func (s *Service) GetDeepCopyServiceByFrontend(frontend lb.L3n4Addr) (*lb.SVC, bool) {
+	s.RLock()
+	defer s.RUnlock()
+
+	if svc, found := s.svcByHash[frontend.Hash()]; found {
+		return svc.deepCopyToLBSVC(), true
+	}
+
+	return nil, false
+}
+
 // RestoreServices restores services from BPF maps.
 //
 // It first restores all the service entries, followed by backend entries.
@@ -962,28 +974,23 @@ func (s *Service) GetDeepCopyServicesByName(name, namespace string) (svcs []*lb.
 func (s *Service) RestoreServices() error {
 	s.Lock()
 	defer s.Unlock()
-	var errs error
 	backendsById := make(map[lb.BackendID]struct{})
 
+	var errs error
 	// Restore service cache from BPF maps
 	if err := s.restoreServicesLocked(backendsById); err != nil {
-		errs = multierr.Append(errs,
-			fmt.Errorf("error while restoring services: %w", err))
+		errs = errors.Join(errs, fmt.Errorf("error while restoring services: %w", err))
 	}
 
 	// Restore backend IDs
 	if err := s.restoreBackendsLocked(backendsById); err != nil {
-		errs = multierr.Append(errs,
-			fmt.Errorf("error while restoring backends: %w", err))
+		errs = errors.Join(errs, fmt.Errorf("error while restoring backends: %w", err))
 	}
 
 	// Remove LB source ranges for no longer existing services
 	if option.Config.EnableSVCSourceRangeCheck {
-		if err := s.restoreAndDeleteOrphanSourceRanges(); err != nil {
-			return err
-		}
+		errs = errors.Join(errs, s.restoreAndDeleteOrphanSourceRanges())
 	}
-
 	return errs
 }
 
@@ -1064,7 +1071,27 @@ func (s *Service) restoreAndDeleteOrphanSourceRanges() error {
 //
 // The removal is based on an assumption that during the sync period
 // UpsertService() is going to be called for each alive service.
-func (s *Service) SyncWithK8sFinished() error {
+func (s *Service) SyncWithK8sFinished(ensurer func(k8s.ServiceID, *lock.StoppableWaitGroup) bool) error {
+	servicesWithStaleBackends := sets.New[lb.ServiceName]()
+
+	// We need to trigger the stale services refresh while not holding the
+	// lock, to ensure that the generated events can be processed, and to
+	// prevent a possible deadlock in case the events channel is already full.
+	defer func() {
+		swg := lock.NewStoppableWaitGroup()
+
+		for svc := range servicesWithStaleBackends {
+			ensurer(k8s.ServiceID{
+				Cluster:   svc.Cluster,
+				Namespace: svc.Namespace,
+				Name:      svc.Name,
+			}, swg)
+		}
+
+		swg.Stop()
+		swg.Wait()
+	}()
+
 	s.Lock()
 	defer s.Unlock()
 
@@ -1078,7 +1105,18 @@ func (s *Service) SyncWithK8sFinished() error {
 			if err := s.deleteServiceLocked(svc); err != nil {
 				return fmt.Errorf("Unable to remove service %+v: %s", svc, err)
 			}
+		} else if svc.restoredBackendHashes.Len() > 0 {
+			// The service is still associated with stale backends
+			servicesWithStaleBackends.Insert(svc.svcName)
+			log.WithFields(logrus.Fields{
+				logfields.ServiceID:      svc.frontend.ID,
+				logfields.ServiceName:    svc.svcName.String(),
+				logfields.L3n4Addr:       logfields.Repr(svc.frontend.L3n4Addr),
+				logfields.OrphanBackends: svc.restoredBackendHashes.Len(),
+			}).Info("Service has stale backends: triggering refresh")
 		}
+
+		svc.restoredBackendHashes = nil
 	}
 
 	// Remove no longer existing affinity matches
@@ -1525,6 +1563,14 @@ func (s *Service) restoreServicesLocked(svcBackendsById map[lb.BackendID]struct{
 			svcBackendsById[backend.ID] = struct{}{}
 		}
 
+		if len(newSVC.backendByHash) > 0 {
+			// Indicate that these backends were restored from BPF maps,
+			// so that they are not removed until SyncWithK8sFinished()
+			// is executed (if not observed in the meanwhile) to prevent
+			// disrupting valid connections.
+			newSVC.restoredBackendHashes = sets.KeySet(newSVC.backendByHash)
+		}
+
 		// Recalculate Maglev lookup tables if the maps were removed due to
 		// the changed M param.
 		ipv6 := newSVC.frontend.IsIPv6() || (svc.NatPolicy == lb.SVCNatPolicyNat46)
@@ -1609,7 +1655,7 @@ func (s *Service) deleteServiceLocked(svc *svcInfo) error {
 		s.healthServer.DeleteService(lb.ID(svc.frontend.ID))
 	}
 
-	deleteMetric.Inc()
+	metrics.ServicesEventsCount.WithLabelValues("delete").Inc()
 	s.notifyMonitorServiceDelete(svc.frontend.ID)
 
 	return nil
@@ -1631,19 +1677,22 @@ func (s *Service) updateBackendsCacheLocked(svc *svcInfo, backends []*lb.Backend
 			if s.backendRefCount.Add(hash) {
 				id, err := AcquireBackendID(backend.L3n4Addr)
 				if err != nil {
+					s.backendRefCount.Delete(hash)
 					return nil, nil, nil, fmt.Errorf("Unable to acquire backend ID for %q: %s",
 						backend.L3n4Addr, err)
 				}
 				backends[i].ID = id
 				backends[i].Weight = backend.Weight
 				newBackends = append(newBackends, backends[i])
-				// TODO make backendByHash by value not by ref
-				s.backendByHash[hash] = backends[i]
+				s.backendByHash[hash] = backends[i].DeepCopy()
 			} else {
 				backends[i].ID = s.backendByHash[hash].ID
 			}
-			svc.backendByHash[hash] = backends[i]
 		} else {
+			// We observed this backend, hence let's remove it from the list
+			// of the restored ones.
+			svc.restoredBackendHashes.Delete(hash)
+
 			backends[i].ID = b.ID
 			// Backend state can either be updated via kubernetes events,
 			// or service API. If the state update is coming via kubernetes events,
@@ -1672,10 +1721,19 @@ func (s *Service) updateBackendsCacheLocked(svc *svcInfo, backends []*lb.Backend
 				backends[i].State = b.State
 			}
 		}
+		svc.backendByHash[hash] = backends[i]
 	}
 
 	for hash, backend := range svc.backendByHash {
 		if _, found := backendSet[hash]; !found {
+			if svc.restoredBackendHashes.Has(hash) {
+				// Don't treat backends restored from the datapath and not yet observed as
+				// obsolete, because that would cause connections targeting those backends
+				// to be dropped in case we haven't fully synchronized yet.
+				backends = append(backends, backend)
+				continue
+			}
+
 			obsoleteSVCBackendIDs = append(obsoleteSVCBackendIDs, backend.ID)
 			if s.backendRefCount.Delete(hash) {
 				DeleteBackendID(backend.ID)

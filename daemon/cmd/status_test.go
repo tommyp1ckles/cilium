@@ -35,7 +35,7 @@ func (g *GetNodesSuite) SetUpTest(c *C) {
 
 func (g *GetNodesSuite) SetUpSuite(c *C) {
 	var err error
-	nm, err = manager.New("", &fakeConfig.Config{}, nil)
+	nm, err = manager.New(&fakeConfig.Config{}, nil, manager.NewNodeMetrics(), nil)
 	c.Assert(err, IsNil)
 }
 
@@ -68,7 +68,7 @@ func (g *GetNodesSuite) Test_getNodesHandle(c *C) {
 		{
 			name: "create a client ID and store it locally",
 			setupArgs: func() args {
-				nodeDiscovery := nodediscovery.NewNodeDiscovery(nm, nil, mtu.NewConfiguration(0, false, false, false, 0, nil), &cnitypes.NetConf{})
+				nodeDiscovery := nodediscovery.NewNodeDiscovery(nm, nil, mtu.NewConfiguration(0, false, false, false, false, 0, nil), &cnitypes.NetConf{})
 				return args{
 					params: GetClusterNodesParams{
 						ClientID: &zero,
@@ -99,7 +99,7 @@ func (g *GetNodesSuite) Test_getNodesHandle(c *C) {
 		{
 			name: "retrieve nodes diff from a client that was already present",
 			setupArgs: func() args {
-				nodeDiscovery := nodediscovery.NewNodeDiscovery(nm, nil, mtu.NewConfiguration(0, false, false, false, 0, nil), &cnitypes.NetConf{})
+				nodeDiscovery := nodediscovery.NewNodeDiscovery(nm, nil, mtu.NewConfiguration(0, false, false, false, false, 0, nil), &cnitypes.NetConf{})
 				return args{
 					params: GetClusterNodesParams{
 						ClientID: &clientIDs[0],
@@ -152,7 +152,7 @@ func (g *GetNodesSuite) Test_getNodesHandle(c *C) {
 		{
 			name: "retrieve nodes from an expired client, it should be ok because the clean up only happens when on insertion",
 			setupArgs: func() args {
-				nodeDiscovery := nodediscovery.NewNodeDiscovery(nm, nil, mtu.NewConfiguration(0, false, false, false, 0, nil), &cnitypes.NetConf{})
+				nodeDiscovery := nodediscovery.NewNodeDiscovery(nm, nil, mtu.NewConfiguration(0, false, false, false, false, 0, nil), &cnitypes.NetConf{})
 				return args{
 					params: GetClusterNodesParams{
 						ClientID: &clientIDs[0],
@@ -206,7 +206,7 @@ func (g *GetNodesSuite) Test_getNodesHandle(c *C) {
 		{
 			name: "retrieve nodes for a new client, the expired client should be deleted",
 			setupArgs: func() args {
-				nodeDiscovery := nodediscovery.NewNodeDiscovery(nm, nil, mtu.NewConfiguration(0, false, false, false, 0, nil), &cnitypes.NetConf{})
+				nodeDiscovery := nodediscovery.NewNodeDiscovery(nm, nil, mtu.NewConfiguration(0, false, false, false, false, 0, nil), &cnitypes.NetConf{})
 				return args{
 					params: GetClusterNodesParams{
 						ClientID: &zero,
@@ -255,7 +255,7 @@ func (g *GetNodesSuite) Test_getNodesHandle(c *C) {
 		{
 			name: "retrieve nodes for a new client, however the randomizer allocated an existing clientID, so we should return a empty clientID",
 			setupArgs: func() args {
-				nodeDiscovery := nodediscovery.NewNodeDiscovery(nm, nil, mtu.NewConfiguration(0, false, false, false, 0, nil), &cnitypes.NetConf{})
+				nodeDiscovery := nodediscovery.NewNodeDiscovery(nm, nil, mtu.NewConfiguration(0, false, false, false, false, 0, nil), &cnitypes.NetConf{})
 				return args{
 					params: GetClusterNodesParams{
 						ClientID: &zero,
@@ -304,7 +304,7 @@ func (g *GetNodesSuite) Test_getNodesHandle(c *C) {
 		{
 			name: "retrieve nodes for a client that does not want to have diffs, leave all other stored clients alone",
 			setupArgs: func() args {
-				nodeDiscovery := nodediscovery.NewNodeDiscovery(nm, nil, mtu.NewConfiguration(0, false, false, false, 0, nil), &cnitypes.NetConf{})
+				nodeDiscovery := nodediscovery.NewNodeDiscovery(nm, nil, mtu.NewConfiguration(0, false, false, false, false, 0, nil), &cnitypes.NetConf{})
 				return args{
 					params: GetClusterNodesParams{},
 					daemon: &Daemon{
@@ -355,11 +355,8 @@ func (g *GetNodesSuite) Test_getNodesHandle(c *C) {
 		randGen.Seed(0)
 		args := tt.setupArgs()
 		want := tt.setupWanted()
-		h := &getNodes{
-			clients: args.clients,
-			d:       args.daemon,
-		}
-		responder := h.Handle(args.params)
+		h := &getNodes{clients: args.clients}
+		responder := h.Handle(args.daemon, args.params)
 		c.Assert(len(h.clients), checker.DeepEquals, len(want.clients))
 		for k, v := range h.clients {
 			wantClient, ok := want.clients[k]
@@ -410,13 +407,11 @@ func (g *GetNodesSuite) Test_cleanupClients(c *C) {
 		c.Log(tt.name)
 		args := tt.setupArgs()
 		want := tt.setupWanted()
-		h := &getNodes{
-			clients: args.clients,
-			d: &Daemon{
-				nodeDiscovery: nodediscovery.NewNodeDiscovery(nm, nil, mtu.NewConfiguration(0, false, false, false, 0, nil), &cnitypes.NetConf{}),
-			},
-		}
-		h.cleanupClients()
+		h := &getNodes{clients: args.clients}
+		h.cleanupClients(
+			&Daemon{
+				nodeDiscovery: nodediscovery.NewNodeDiscovery(nm, nil, mtu.NewConfiguration(0, false, false, false, false, 0, nil), &cnitypes.NetConf{}),
+			})
 		c.Assert(h.clients, checker.DeepEquals, want.clients)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"sort"
 	"strconv"
 	"strings"
@@ -42,6 +43,7 @@ import (
 	"github.com/cilium/cilium/pkg/maps/fragmap"
 	ipcachemap "github.com/cilium/cilium/pkg/maps/ipcache"
 	"github.com/cilium/cilium/pkg/maps/ipmasq"
+	"github.com/cilium/cilium/pkg/maps/l2respondermap"
 	"github.com/cilium/cilium/pkg/maps/lbmap"
 	"github.com/cilium/cilium/pkg/maps/lxcmap"
 	"github.com/cilium/cilium/pkg/maps/metricsmap"
@@ -143,7 +145,7 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 	encapProto := option.Config.TunnelProtocol
 	if !option.Config.TunnelingEnabled() &&
 		option.Config.EnableNodePort &&
-		option.Config.NodePortMode == option.NodePortModeDSR &&
+		option.Config.NodePortMode != option.NodePortModeSNAT &&
 		option.Config.LoadBalancerDSRDispatch == option.DSRDispatchGeneve {
 		encapProto = option.TunnelGeneve
 	}
@@ -196,7 +198,9 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 	cDefinesMap["WORLD_CIDRS4_MAP"] = worldcidrsmap.MapName4
 	cDefinesMap["WORLD_CIDRS4_MAP_SIZE"] = fmt.Sprintf("%d", worldcidrsmap.MapMaxEntries)
 	cDefinesMap["POLICY_PROG_MAP_SIZE"] = fmt.Sprintf("%d", policymap.PolicyCallMaxEntries)
+	cDefinesMap["L2_RESPONSER_MAP4_SIZE"] = fmt.Sprintf("%d", l2respondermap.DefaultMaxEntries)
 	cDefinesMap["ENCRYPT_MAP"] = encrypt.MapName
+	cDefinesMap["L2_RESPONDER_MAP4"] = l2respondermap.MapName
 	cDefinesMap["CT_CONNECTION_LIFETIME_TCP"] = fmt.Sprintf("%d", int64(option.Config.CTMapEntriesTimeoutTCP.Seconds()))
 	cDefinesMap["CT_CONNECTION_LIFETIME_NONTCP"] = fmt.Sprintf("%d", int64(option.Config.CTMapEntriesTimeoutAny.Seconds()))
 	cDefinesMap["CT_SERVICE_LIFETIME_TCP"] = fmt.Sprintf("%d", int64(option.Config.CTMapEntriesTimeoutSVCTCP.Seconds()))
@@ -283,6 +287,36 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 
 		if option.Config.EncryptNode {
 			cDefinesMap["ENABLE_NODE_ENCRYPTION"] = "1"
+		}
+	}
+
+	if option.Config.EnableL2Announcements {
+		cDefinesMap["ENABLE_L2_ANNOUNCEMENTS"] = "1"
+		// If the agent is down for longer than the lease duration, stop responding
+		cDefinesMap["L2_ANNOUNCEMENTS_MAX_LIVENESS"] = fmt.Sprintf("%dULL", option.Config.L2AnnouncerLeaseDuration.Nanoseconds())
+	}
+
+	if option.Config.EnableEncryptionStrictMode {
+		cDefinesMap["ENCRYPTION_STRICT_MODE"] = "1"
+
+		// when parsing the user input we only accept ipv4 addresses
+		cDefinesMap["STRICT_IPV4_NET"] = fmt.Sprintf("%#x", byteorder.NetIPAddrToHost32(option.Config.EncryptionStrictModeCIDR.Addr()))
+		cDefinesMap["STRICT_IPV4_NET_SIZE"] = fmt.Sprintf("%d", option.Config.EncryptionStrictModeCIDR.Bits())
+
+		cDefinesMap["IPV4_ENCRYPT_IFACE"] = fmt.Sprintf("%#x", byteorder.NetIPv4ToHost32(node.GetIPv4()))
+
+		ipv4Interface, ok := netip.AddrFromSlice(node.GetIPv4().To4())
+		if !ok {
+			return fmt.Errorf("unable to parse node IPv4 address %s", node.GetIPv4())
+		}
+
+		if option.Config.EncryptionStrictModeCIDR.Contains(ipv4Interface) {
+			if !option.Config.EncryptionStrictModeAllowRemoteNodeIdentities {
+				return fmt.Errorf(`encryption strict mode is enabled but the node's IPv4 address is within the strict CIDR range.
+				This will cause the node to drop all traffic.
+				Please either disable encryption or set --encryption-strict-mode-allow-dynamic-lookup=true`)
+			}
+			cDefinesMap["STRICT_IPV4_OVERLAPPING_CIDR"] = "1"
 		}
 	}
 
@@ -462,12 +496,12 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 			if option.Config.EnableIPv4 {
 				cDefinesMap["LB4_SRC_RANGE_MAP"] = lbmap.SourceRange4MapName
 				cDefinesMap["LB4_SRC_RANGE_MAP_SIZE"] =
-					fmt.Sprintf("%d", lbmap.SourceRange4Map.MapInfo.MaxEntries)
+					fmt.Sprintf("%d", lbmap.SourceRange4Map.MaxEntries())
 			}
 			if option.Config.EnableIPv6 {
 				cDefinesMap["LB6_SRC_RANGE_MAP"] = lbmap.SourceRange6MapName
 				cDefinesMap["LB6_SRC_RANGE_MAP_SIZE"] =
-					fmt.Sprintf("%d", lbmap.SourceRange6Map.MapInfo.MaxEntries)
+					fmt.Sprintf("%d", lbmap.SourceRange6Map.MaxEntries())
 			}
 		}
 
@@ -588,18 +622,33 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 			cDefinesMap["SNAT_MAPPING_IPV6_SIZE"] = fmt.Sprintf("%d", option.Config.NATMapEntriesGlobal)
 		}
 
-		if option.Config.EnableIPv4Masquerade && option.Config.EnableBPFMasquerade {
-			cDefinesMap["ENABLE_MASQUERADE"] = "1"
-			cidr := datapath.RemoteSNATDstAddrExclusionCIDRv4()
-			cDefinesMap["IPV4_SNAT_EXCLUSION_DST_CIDR"] =
-				fmt.Sprintf("%#x", byteorder.NetIPv4ToHost32(cidr.IP))
-			ones, _ := cidr.Mask.Size()
-			cDefinesMap["IPV4_SNAT_EXCLUSION_DST_CIDR_LEN"] = fmt.Sprintf("%d", ones)
+		if option.Config.EnableBPFMasquerade {
+			if option.Config.EnableIPv4Masquerade {
+				cDefinesMap["ENABLE_MASQUERADE_IPV4"] = "1"
+				cidr := datapath.RemoteSNATDstAddrExclusionCIDRv4()
+				cDefinesMap["IPV4_SNAT_EXCLUSION_DST_CIDR"] =
+					fmt.Sprintf("%#x", byteorder.NetIPv4ToHost32(cidr.IP))
+				ones, _ := cidr.Mask.Size()
+				cDefinesMap["IPV4_SNAT_EXCLUSION_DST_CIDR_LEN"] = fmt.Sprintf("%d", ones)
 
-			// ip-masq-agent depends on bpf-masq
-			if option.Config.EnableIPMasqAgent {
-				cDefinesMap["ENABLE_IP_MASQ_AGENT"] = "1"
-				cDefinesMap["IP_MASQ_AGENT_IPV4"] = ipmasq.MapName
+				// ip-masq-agent depends on bpf-masq
+				if option.Config.EnableIPMasqAgent {
+					cDefinesMap["ENABLE_IP_MASQ_AGENT_IPV4"] = "1"
+					cDefinesMap["IP_MASQ_AGENT_IPV4"] = ipmasq.MapNameIPv4
+				}
+			}
+			if option.Config.EnableIPv6Masquerade {
+				cDefinesMap["ENABLE_MASQUERADE_IPV6"] = "1"
+				cidr := datapath.RemoteSNATDstAddrExclusionCIDRv6()
+				extraMacrosMap["IPV6_SNAT_EXCLUSION_DST_CIDR"] = cidr.IP.String()
+				fw.WriteString(FmtDefineAddress("IPV6_SNAT_EXCLUSION_DST_CIDR", cidr.IP))
+				extraMacrosMap["IPV6_SNAT_EXCLUSION_DST_CIDR_MASK"] = cidr.Mask.String()
+				fw.WriteString(FmtDefineAddress("IPV6_SNAT_EXCLUSION_DST_CIDR_MASK", cidr.Mask))
+
+				if option.Config.EnableIPMasqAgent {
+					cDefinesMap["ENABLE_IP_MASQ_AGENT_IPV6"] = "1"
+					cDefinesMap["IP_MASQ_AGENT_IPV6"] = ipmasq.MapNameIPv6
+				}
 			}
 		}
 
@@ -878,10 +927,17 @@ func (h *HeaderfileWriter) writeStaticData(fw io.Writer, e datapath.EndpointConf
 			fmt.Fprint(fw, defineUint32("NATIVE_DEV_IFINDEX", 1))
 			fmt.Fprint(fw, "\n")
 		}
-		if option.Config.EnableIPv4Masquerade && option.Config.EnableBPFMasquerade {
-			// NodePort comment above applies to IPV4_MASQUERADE too
-			placeholderIPv4 := []byte{1, 1, 1, 1}
-			fmt.Fprint(fw, defineIPv4("IPV4_MASQUERADE", placeholderIPv4))
+		if option.Config.EnableBPFMasquerade {
+			if option.Config.EnableIPv4Masquerade {
+				// NodePort comment above applies to IPV4_MASQUERADE too
+				placeholderIPv4 := []byte{1, 1, 1, 1}
+				fmt.Fprint(fw, defineIPv4("IPV4_MASQUERADE", placeholderIPv4))
+			}
+			if option.Config.EnableIPv6Masquerade {
+				// NodePort comment above applies to IPV6_MASQUERADE too
+				placeholderIPv6 := []byte{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}
+				fmt.Fprint(fw, defineIPv6("IPV6_MASQUERADE", placeholderIPv6))
+			}
 		}
 		// Dummy value to avoid being optimized when 0
 		fmt.Fprint(fw, defineUint32("SECCTX_FROM_IPCACHE", 1))
@@ -951,10 +1007,6 @@ func (h *HeaderfileWriter) writeTemplateConfig(fw *bufio.Writer, e datapath.Endp
 
 	if e.RequireRouting() {
 		fmt.Fprintf(fw, "#define ENABLE_ROUTING 1\n")
-	}
-
-	if !e.DisableSIPVerification() {
-		fmt.Fprintf(fw, "#define ENABLE_SIP_VERIFICATION 1\n")
 	}
 
 	if !option.Config.EnableHostLegacyRouting && option.Config.DirectRoutingDevice != "" {

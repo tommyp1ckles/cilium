@@ -110,7 +110,6 @@
 # - @cilium/ebpf-lib-maintainers
 # - @cilium/hubble-maintainers
 # - @cilium/image-tools-maintainers
-# - @cilium/iproute2-maintainers
 # - @cilium/metallb-maintainers
 # - @cilium/openshift-terraform-maintainers
 # - @cilium/proxy-maintainers
@@ -270,7 +269,6 @@ Makefile* @cilium/build
 /daemon/cmd/metrics.go @cilium/metrics
 /daemon/cmd/policy* @cilium/sig-policy
 /daemon/cmd/prefilter.go @cilium/sig-datapath
-/daemon/cmd/proxy.go @cilium/proxy
 /daemon/cmd/state.go @cilium/endpoint
 /daemon/cmd/cells*.go @cilium/sig-foundations
 /Documentation/ @cilium/docs-structure
@@ -292,6 +290,7 @@ Makefile* @cilium/build
 /Documentation/conf.py @cilium/docs-structure
 /Documentation/configuration/index.rst @cilium/docs-structure
 /Documentation/contributing/ @cilium/contributing @cilium/docs-structure
+/Documentation/crdlist.rst
 /Documentation/Dockerfile @cilium/docs-structure
 /Documentation/gettingstarted/demo.rst @cilium/docs-structure
 /Documentation/gettingstarted/gettinghelp.rst @cilium/contributing @cilium/docs-structure
@@ -361,6 +360,7 @@ Makefile* @cilium/build
 /install/kubernetes/ @cilium/sig-k8s @cilium/helm
 /install/kubernetes/cilium/templates/hubble* @cilium/sig-k8s @cilium/helm @cilium/sig-hubble
 jenkinsfiles @cilium/ci-structure
+/kvstoremesh @cilium/sig-clustermesh
 /LICENSE @cilium/tophat
 /MAINTAINERS.md @cilium/contributing
 /netlify.toml @cilium/ci-structure
@@ -380,6 +380,7 @@ jenkinsfiles @cilium/ci-structure
 /pkg/auth/ @cilium/sig-servicemesh
 /pkg/aws/ @cilium/aws
 /pkg/azure/ @cilium/azure
+/pkg/backoff/ @cilium/sig-agent
 /pkg/bandwidth/ @cilium/sig-datapath
 /pkg/bgp/ @cilium/sig-bgp
 /pkg/bgpv1/ @cilium/sig-bgp
@@ -419,6 +420,7 @@ jenkinsfiles @cilium/ci-structure
 /pkg/fswatcher/ @cilium/sig-datapath @cilium/sig-hubble
 /pkg/health/ @cilium/sig-agent
 /pkg/hive/ @cilium/sig-foundations
+/pkg/hive/job/metrics.go @cilium/sig-foundations @cilium/metrics
 /pkg/hubble/ @cilium/sig-hubble
 /pkg/hubble/metrics @cilium/sig-hubble @cilium/sig-hubble-api
 /pkg/identity @cilium/sig-policy
@@ -436,8 +438,8 @@ jenkinsfiles @cilium/ci-structure
 /pkg/k8s/watchers/cilium_cidr_group_test.go @cilium/sig-policy
 /pkg/k8s/apis/cilium.io/client/crds/v2/ @cilium/sig-k8s
 /pkg/k8s/apis/cilium.io/v2/ @cilium/api @cilium/sig-k8s
-/pkg/kafka/ @cilium/proxy
 /pkg/kvstore/ @cilium/kvstore
+/pkg/l2announcer/ @cilium/sig-agent
 /pkg/labels @cilium/sig-policy @cilium/api
 /pkg/labelsfilter @cilium/sig-policy
 /pkg/launcher @cilium/sig-agent
@@ -468,6 +470,7 @@ jenkinsfiles @cilium/ci-structure
 /pkg/promise @cilium/sig-foundations
 /pkg/proxy/ @cilium/proxy
 /pkg/proxy/accesslog @cilium/api
+/pkg/rate/metrics @cilium/metrics
 /pkg/recorder @cilium/sig-datapath
 /pkg/redirectpolicy @cilium/sig-lb
 /pkg/safeio @cilium/sig-agent
@@ -487,7 +490,6 @@ jenkinsfiles @cilium/ci-structure
 /pkg/versioncheck/ @cilium/sig-agent
 /plugins/cilium-cni/ @cilium/sig-k8s
 /plugins/cilium-docker/ @cilium/docker
-/proxylib/ @cilium/proxy
 /README.rst @cilium/docs-structure
 /SECURITY.md @cilium/contributing
 /stable.txt @cilium/tophat

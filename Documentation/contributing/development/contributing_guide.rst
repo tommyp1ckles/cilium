@@ -35,12 +35,10 @@ Clone and Provision Environment
 #. Fork the Cilium repository to your GitHub user or organization.
 #. Turn off GitHub actions for your fork as described in the `GitHub Docs <https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository#managing-github-actions-permissions-for-your-repository>`_.
    This is recommended to avoid unnecessary CI notification failures on the fork.
-#. Clone your ``${YOUR_GITHUB_USERNAME_OR_ORG}/cilium`` fork into your ``GOPATH``, and setup the base repository as ``upstream`` remote:
+#. Clone your ``${YOUR_GITHUB_USERNAME_OR_ORG}/cilium`` fork and setup the base repository as ``upstream`` remote:
 
    .. code-block:: shell-session
 
-      mkdir -p "${GOPATH}/src/github.com/cilium"
-      cd "${GOPATH}/src/github.com/cilium"
       git clone https://github.com/${YOUR_GITHUB_USERNAME_OR_ORG}/cilium.git
       cd cilium
       git remote add upstream https://github.com/cilium/cilium.git
@@ -75,7 +73,7 @@ requirements have been met:
    bisecting of commits in the event of a bug affecting the tree.
 #. All code is covered by unit and/or runtime tests where feasible.
 #. All changes have been tested and checked for regressions by running the
-   existing testsuite against your changes. See the :ref:`testsuite` section
+   existing testsuite against your changes. See the :ref:`testsuite-legacy` section
    for additional details.
 #. All commits contain a well written commit description including a title,
    description and a ``Fixes: #XXX`` line if the commit addresses a particular
@@ -246,7 +244,7 @@ Getting a pull request merged
       to build log for required action (e.g. Please run ``go mod tidy && go mod
       vendor`` and submit your changes, etc).
 
-   #. :ref:`ci_jenkins`: Will run a series of tests:
+   #. :ref:`ci_gha`: Will run a series of tests:
 
       #. Unit tests
       #. Single node runtime tests

@@ -15,6 +15,7 @@ import (
 	"github.com/cilium/cilium/pkg/k8s/client"
 	"github.com/cilium/cilium/pkg/k8s/resource"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
+	slim_networkingv1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/networking/v1"
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 )
 
@@ -30,6 +31,8 @@ var (
 
 		cell.Provide(
 			k8s.ServiceResource,
+			k8s.EndpointsResource,
+
 			func(lc hive.Lifecycle, cs client.Clientset) (LocalNodeResource, error) {
 				return k8s.NodeResource(
 					lc, cs,
@@ -55,6 +58,7 @@ var (
 				)
 			},
 			k8s.NamespaceResource,
+			k8s.NetworkPolicyResource,
 			k8s.CiliumNetworkPolicyResource,
 			k8s.CiliumClusterwideNetworkPolicyResource,
 			k8s.CiliumCIDRGroupResource,
@@ -79,10 +83,12 @@ type Resources struct {
 	cell.In
 
 	Services                         resource.Resource[*slim_corev1.Service]
+	Endpoints                        resource.Resource[*k8s.Endpoints]
 	LocalNode                        LocalNodeResource
 	LocalCiliumNode                  LocalCiliumNodeResource
 	LocalPods                        LocalPodResource
 	Namespaces                       resource.Resource[*slim_corev1.Namespace]
+	NetworkPolicies                  resource.Resource[*slim_networkingv1.NetworkPolicy]
 	CiliumNetworkPolicies            resource.Resource[*cilium_api_v2.CiliumNetworkPolicy]
 	CiliumClusterwideNetworkPolicies resource.Resource[*cilium_api_v2.CiliumClusterwideNetworkPolicy]
 	CIDRGroups                       resource.Resource[*cilium_api_v2alpha1.CiliumCIDRGroup]

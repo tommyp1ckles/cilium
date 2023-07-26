@@ -803,10 +803,9 @@ These types correspond to definitions in pkg/policy/l4.go
 
 | Name | Number | Description |
 | ---- | ------ | ----------- |
-| NONE | 0 |  |
-| NULL | 1 |  |
-| MTLS_SPIFFE | 2 |  |
-| ALWAYS_FAIL | 3 |  |
+| DISABLED | 0 |  |
+| SPIRE | 1 |  |
+| TEST_ALWAYS_FAIL | 2 |  |
 
 
 
@@ -978,6 +977,8 @@ here.
 | INVALID_CLUSTER_ID | 192 |  |
 | UNSUPPORTED_PROTOCOL_FOR_DSR_ENCAP | 193 |  |
 | NO_EGRESS_GATEWAY | 194 |  |
+| UNENCRYPTED_TRAFFIC | 195 |  |
+| TTL_EXCEEDED | 196 |  |
 
 
 

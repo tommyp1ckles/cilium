@@ -26,6 +26,9 @@ const (
 	// GopsPortApiserver is the default value for option.GopsPort in the apiserver
 	GopsPortApiserver = 9892
 
+	// GopsPortKVStoreMesh is the default value for option.GopsPort in kvstoremesh
+	GopsPortKVStoreMesh = 9894
+
 	// IPv6ClusterAllocCIDR is the default value for option.IPv6ClusterAllocCIDR
 	IPv6ClusterAllocCIDR = IPv6ClusterAllocCIDRBase + "/64"
 
@@ -204,9 +207,6 @@ const (
 	// EnableHostLegacyRouting is the default value for using the old routing path via stack.
 	EnableHostLegacyRouting = false
 
-	// EnableExternalIPs is the default value for k8s service with externalIPs feature.
-	EnableExternalIPs = true
-
 	// K8sEnableEndpointSlice is the default value for k8s EndpointSlice feature.
 	K8sEnableEndpointSlice = true
 
@@ -219,6 +219,10 @@ const (
 	// IPsecKeyRotationDuration is the time to wait before removing old keys when
 	// the IPsec key is changing.
 	IPsecKeyRotationDuration = 5 * time.Minute
+
+	// Enable watcher for IPsec key. If disabled, a restart of the agent will
+	// be necessary on key rotations.
+	EnableIPsecKeyWatcher = true
 
 	// EncryptNode enables encrypting traffic from host networking applications
 	// which are not part of Cilium manged pods.
@@ -498,10 +502,10 @@ const (
 	// InstallNoConntrackRules instructs Cilium to install Iptables rules to skip netfilter connection tracking on all pod traffic.
 	InstallNoConntrackIptRules = false
 
-	// WireguardSubnetV4 is a default wireguard tunnel subnet
+	// WireguardSubnetV4 is a default WireGuard tunnel subnet
 	WireguardSubnetV4 = "172.16.43.0/24"
 
-	// WireguardSubnetV6 is a default wireguard tunnel subnet
+	// WireguardSubnetV6 is a default WireGuard tunnel subnet
 	WireguardSubnetV6 = "fdc9:281f:04d7:9ee9::1/64"
 
 	// ExternalClusterIP enables cluster external access to ClusterIP services.

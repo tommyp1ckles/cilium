@@ -12,6 +12,7 @@ import (
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
 
+// Describes the specified Amazon Web Services Verified Access instances.
 func (c *Client) DescribeVerifiedAccessInstances(ctx context.Context, params *DescribeVerifiedAccessInstancesInput, optFns ...func(*Options)) (*DescribeVerifiedAccessInstancesOutput, error) {
 	if params == nil {
 		params = &DescribeVerifiedAccessInstancesInput{}
@@ -28,22 +29,36 @@ func (c *Client) DescribeVerifiedAccessInstances(ctx context.Context, params *De
 }
 
 type DescribeVerifiedAccessInstancesInput struct {
+
+	// Checks whether you have the required permissions for the action, without
+	// actually making the request, and provides an error response. If you have the
+	// required permissions, the error response is DryRunOperation . Otherwise, it is
+	// UnauthorizedOperation .
 	DryRun *bool
 
+	// One or more filters. Filter names and values are case-sensitive.
 	Filters []types.Filter
 
+	// The maximum number of results to return with a single call. To retrieve the
+	// remaining results, make another call with the returned nextToken value.
 	MaxResults *int32
 
+	// The token for the next page of results.
 	NextToken *string
 
+	// The IDs of the Verified Access instances.
 	VerifiedAccessInstanceIds []string
 
 	noSmithyDocumentSerde
 }
 
 type DescribeVerifiedAccessInstancesOutput struct {
+
+	// The token to use to retrieve the next page of results. This value is null when
+	// there are no more results to return.
 	NextToken *string
 
+	// The IDs of the Verified Access instances.
 	VerifiedAccessInstances []types.VerifiedAccessInstance
 
 	// Metadata pertaining to the operation's result.
@@ -88,7 +103,7 @@ func (c *Client) addOperationDescribeVerifiedAccessInstancesMiddlewares(stack *m
 	if err = awsmiddleware.AddRecordResponseTiming(stack); err != nil {
 		return err
 	}
-	if err = addClientUserAgent(stack); err != nil {
+	if err = addClientUserAgent(stack, options); err != nil {
 		return err
 	}
 	if err = smithyhttp.AddErrorCloseResponseBodyMiddleware(stack); err != nil {
@@ -98,6 +113,9 @@ func (c *Client) addOperationDescribeVerifiedAccessInstancesMiddlewares(stack *m
 		return err
 	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opDescribeVerifiedAccessInstances(options.Region), middleware.Before); err != nil {
+		return err
+	}
+	if err = awsmiddleware.AddRecursionDetection(stack); err != nil {
 		return err
 	}
 	if err = addRequestIDRetrieverMiddleware(stack); err != nil {
@@ -123,6 +141,8 @@ var _ DescribeVerifiedAccessInstancesAPIClient = (*Client)(nil)
 // DescribeVerifiedAccessInstancesPaginatorOptions is the paginator options for
 // DescribeVerifiedAccessInstances
 type DescribeVerifiedAccessInstancesPaginatorOptions struct {
+	// The maximum number of results to return with a single call. To retrieve the
+	// remaining results, make another call with the returned nextToken value.
 	Limit int32
 
 	// Set to true if pagination should stop if the service returns a pagination token

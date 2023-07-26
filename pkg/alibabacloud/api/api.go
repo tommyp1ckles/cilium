@@ -62,6 +62,30 @@ func NewClient(vpcClient *vpc.Client, client *ecs.Client, metrics MetricsAPI, ra
 	}
 }
 
+// GetInstance returns the instance including its ENIs by the given instanceID
+func (c *Client) GetInstance(ctx context.Context, vpcs ipamTypes.VirtualNetworkMap, subnets ipamTypes.SubnetMap, instanceID string) (*ipamTypes.Instance, error) {
+	instance := ipamTypes.Instance{}
+	instance.Interfaces = map[string]ipamTypes.InterfaceRevision{}
+
+	networkInterfaceSets, err := c.describeNetworkInterfacesByInstance(ctx, instanceID)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, iface := range networkInterfaceSets {
+		ifId := iface.NetworkInterfaceId
+		_, eni, err := parseENI(&iface, vpcs, subnets)
+		if err != nil {
+			return nil, err
+		}
+
+		instance.Interfaces[ifId] = ipamTypes.InterfaceRevision{
+			Resource: eni,
+		}
+	}
+	return &instance, nil
+}
+
 // GetInstances returns the list of all instances including their ENIs as instanceMap
 func (c *Client) GetInstances(ctx context.Context, vpcs ipamTypes.VirtualNetworkMap, subnets ipamTypes.SubnetMap) (*ipamTypes.InstanceMap, error) {
 	instances := ipamTypes.NewInstanceMap()
@@ -182,13 +206,30 @@ func (c *Client) GetVPCs(ctx context.Context) (ipamTypes.VirtualNetworkMap, erro
 
 // GetInstanceTypes returns all the known ECS instance types in the configured region
 func (c *Client) GetInstanceTypes(ctx context.Context) ([]ecs.InstanceType, error) {
+	var result []ecs.InstanceType
 	req := ecs.CreateDescribeInstanceTypesRequest()
-	resp, err := c.ecsClient.DescribeInstanceTypes(req)
-	if err != nil {
-		return nil, err
+	// When there are many instance types, some instance limits can not be queried,
+	// so use NextToken and MaxResults for paging query.
+	// MaxResults is the number of entries on each page, the maximum value of this parameter is 100.
+	// Ref: https://www.alibabacloud.com/help/en/elastic-compute-service/latest/describeinstancetypes
+	req.MaxResults = requests.NewInteger(100)
+	for {
+		resp, err := c.ecsClient.DescribeInstanceTypes(req)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, v := range resp.InstanceTypes.InstanceType {
+			result = append(result, v)
+		}
+
+		if resp.NextToken == "" {
+			break
+		}
+		req.NextToken = resp.NextToken
 	}
 
-	return resp.InstanceTypes.InstanceType, nil
+	return result, nil
 }
 
 // GetSecurityGroups return all sg
@@ -308,7 +349,7 @@ func (c *Client) AttachNetworkInterface(ctx context.Context, instanceID, eniID s
 // WaitENIAttached check ENI is attached to ECS and return attached ECS instanceID
 func (c *Client) WaitENIAttached(ctx context.Context, eniID string) (string, error) {
 	instanceID := ""
-	err := wait.ExponentialBackoffWithContext(ctx, maxAttachRetries, func() (done bool, err error) {
+	err := wait.ExponentialBackoffWithContext(ctx, maxAttachRetries, func(ctx context.Context) (done bool, err error) {
 		eni, err := c.DescribeNetworkInterface(ctx, eniID)
 		if err != nil {
 			return false, err
@@ -379,6 +420,35 @@ func (c *Client) describeNetworkInterfaces(ctx context.Context) ([]ecs.NetworkIn
 		} else {
 			req.NextToken = resp.NextToken
 		}
+	}
+
+	return result, nil
+}
+
+func (c *Client) describeNetworkInterfacesByInstance(ctx context.Context, instanceID string) ([]ecs.NetworkInterfaceSet, error) {
+	var result []ecs.NetworkInterfaceSet
+
+	for i := 1; ; {
+		req := ecs.CreateDescribeNetworkInterfacesRequest()
+		req.PageNumber = requests.NewInteger(i)
+		req.PageSize = requests.NewInteger(1000)
+		req.InstanceId = instanceID
+		c.limiter.Limit(ctx, "DescribeNetworkInterfaces")
+		resp, err := c.ecsClient.DescribeNetworkInterfaces(req)
+		if err != nil {
+			return nil, err
+		}
+		if len(resp.NetworkInterfaceSets.NetworkInterfaceSet) == 0 {
+			break
+		}
+
+		for _, v := range resp.NetworkInterfaceSets.NetworkInterfaceSet {
+			result = append(result, v)
+		}
+		if resp.TotalCount < resp.PageNumber*resp.PageSize {
+			break
+		}
+		i++
 	}
 
 	return result, nil

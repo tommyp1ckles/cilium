@@ -2,26 +2,24 @@ name: ClusterMesh (ci-multicluster)
 
 # Any change in triggers needs to be reflected in the concurrency group.
 on:
-  issue_comment:
-    types:
-      - created
+  workflow_dispatch:
+    inputs:
+      PR-number:
+        description: "Pull request number."
+        required: true
+      context-ref:
+        description: "Context in which the workflow runs. If PR is from a fork, will be the PR target branch (general case). If PR is NOT from a fork, will be the PR branch itself (this allows committers to test changes to workflows directly from PRs)."
+        required: true
+      SHA:
+        description: "SHA under test (head of the PR branch)."
+        required: true
+      extra-args:
+        description: "[JSON object] Arbitrary arguments passed from the trigger comment via regex capture group. Parse with 'fromJson(inputs.extra-args).argName' in workflow."
+        required: false
+        default: '{}'
   # Run every 6 hours
   schedule:
     - cron:  '0 3/6 * * *'
-  ### FOR TESTING PURPOSES
-  # This workflow runs in the context of `main`, and ignores changes to
-  # workflow files in PRs. For testing changes to this workflow from a PR:
-  # - Make sure the PR uses a branch from the base repository (requires write
-  #   privileges). It will not work with a branch from a fork (missing secrets).
-  # - Uncomment the `pull_request` event below, commit separately with a `DO
-  #   NOT MERGE` message, and push to the PR. As long as the commit is present,
-  #   any push to the PR will trigger this workflow.
-  # - Don't forget to remove the `DO NOT MERGE` commit once satisfied. The run
-  #   will disappear from the PR checks: please provide a direct link to the
-  #   successful workflow run (can be found from Actions tab) in a comment.
-  #
-  # pull_request: {}
-  ###
 
 # By specifying the access of one of the scopes, all of those that are not
 # specified are set to 'none'.
@@ -30,7 +28,7 @@ permissions:
   contents: read
   # To allow retrieving information from the PR API
   pull-requests: read
-  # So that Sibz/github-status-action can write into the status API
+  # To be able to set commit status
   statuses: write
 
 concurrency:
@@ -39,36 +37,27 @@ concurrency:
   # - Event type
   # - A unique identifier depending on event type:
   #   - schedule: SHA
-  #   - issue_comment: PR number
-  #   - pull_request: PR number
+  #   - workflow_dispatch: PR number
   #
   # This structure ensures a unique concurrency group name is generated for each
-  # type of testing:
-  # - schedule: {name} schedule {SHA}
-  # - issue_comment: {name} issue_comment {PR number}
-  # - pull_request: {name} pull_request {PR number}
-  #
-  # Note: for `issue_comment` triggers, we additionally need to filter out based
-  # on comment content, otherwise any comment will interrupt workflow runs.
+  # type of testing, such that re-runs will cancel the previous run.
   group: |
     ${{ github.workflow }}
     ${{ github.event_name }}
     ${{
       (github.event_name == 'schedule' && github.sha) ||
-      (github.event_name == 'issue_comment' && (
-        github.event.comment.body == '/ci-multicluster' ||
-        github.event.comment.body == '/test'
-      ) && github.event.issue.number) ||
-      (github.event_name == 'pull_request' && github.event.pull_request.number)
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.PR-number)
     }}
   cancel-in-progress: true
 
 env:
-  kind_version: v0.17.0
+  # renovate: datasource=github-releases depName=kubernetes-sigs/kind
+  kind_version: v0.20.0
   k8s_version: v1.27.1
   # renovate: datasource=github-releases depName=cilium/cilium-cli
-  cilium_cli_version: v0.14.5
+  cilium_cli_version: v0.15.3
   cilium_cli_ci_version:
+  CILIUM_CLI_MODE: helm
   clusterName1: cluster1-${{ github.run_id }}
   clusterName2: cluster2-${{ github.run_id }}
   contextName1: kind-cluster1-${{ github.run_id }}
@@ -76,105 +65,20 @@ env:
   check_url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
 jobs:
-  check_changes:
-    name: Deduce required tests from code changes
-    if: |
-      (github.event_name == 'issue_comment' &&
-        (github.event.comment.body == '/ci-multicluster' ||
-         github.event.comment.body == '/test')) ||
-      github.event_name == 'schedule' ||
-      github.event_name == 'pull_request'
+  commit-status-start:
     runs-on: ubuntu-latest
-    outputs:
-      tested: ${{ steps.tested-tree.outputs.src }}
     steps:
-      # Because we run on issue comments, we need to checkout the code for
-      # paths-filter to work.
-      - name: Checkout code
-        if: ${{ github.event.issue.pull_request }}
-        uses: actions/checkout@8e5e7e5ab8b370d6c329ec480221332ada57f0ab # v3.5.2
+      - name: Set initial commit status
+        uses: myrotvorets/set-commit-status-action@243b4f7e597f62335408d58001edf8a02cf3e1fd # v1.1.7  
         with:
-          persist-credentials: false
-      - name: Retrieve pull request's base and head
-        if: ${{ github.event.issue.pull_request }}
-        id: pr
-        run: |
-          curl ${{ github.event.issue.pull_request.url }} > pr.json
-          echo "base=$(jq -r '.base.sha' pr.json)" >> $GITHUB_OUTPUT
-          echo "head=$(jq -r '.head.sha' pr.json)" >> $GITHUB_OUTPUT
-      - name: Check code changes
-        if: ${{ github.event.issue.pull_request }}
-        uses: dorny/paths-filter@4512585405083f25c027a35db413c2b3b9006d50 # v2.11.1
-        id: tested-tree
-        with:
-          base: ${{ steps.pr.outputs.base }}
-          ref: ${{ steps.pr.outputs.head }}
-          filters: |
-            src:
-              - '!(test|Documentation)/**'
+          sha: ${{ inputs.SHA || github.sha }}
 
-  setup-report:
-    runs-on: ubuntu-latest
-    needs: check_changes
-    name: Set commit status to pending
-    outputs:
-      sha: ${{ steps.vars.outputs.sha }}
-    steps:
-    - name: Set up job variables
-      id: vars
-      run: |
-        if [ ${{ github.event.issue.pull_request || github.event.pull_request }} ]; then
-          PR_API_JSON=$(curl \
-            -H "Accept: application/vnd.github.v3+json" \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            ${{ github.event.issue.pull_request.url || github.event.pull_request.url }})
-          SHA=$(echo "$PR_API_JSON" | jq -r ".head.sha")
-        else
-          SHA=${{ github.sha }}
-        fi
-        echo "sha=${SHA}" >> $GITHUB_OUTPUT
-
-    - name: Set commit status to pending
-      uses: Sibz/github-status-action@650dd1a882a76dbbbc4576fb5974b8d22f29847f # v1.1.6
-      with:
-        authToken: ${{ secrets.GITHUB_TOKEN }}
-        sha: ${{ steps.vars.outputs.sha }}
-        context: ${{ github.workflow }}
-        description: ClusterMesh connectivity test in progress...
-        state: pending
-        target_url: ${{ env.check_url }}
-
-  skip-test-run:
-    # If the modified files are not relevant for this test then we can skip
-    # this test and mark it as successful.
-    if: github.event.comment.body == '/test' && needs.check_changes.outputs.tested == 'false'
-    runs-on: ubuntu-latest
-    needs: setup-report
-    name: Set commit status to success (skipped)
-    steps:
-    - name: Set commit status to success
-      uses: Sibz/github-status-action@650dd1a882a76dbbbc4576fb5974b8d22f29847f # v1.1.6
-      with:
-        authToken: ${{ secrets.GITHUB_TOKEN }}
-        sha: ${{ needs.setup-report.outputs.sha }}
-        context: ${{ github.workflow }}
-        description: ClusterMesh connectivity tests skipped
-        state: success
-        target_url: ${{ env.check_url }}
-
-  # This job is skipped when the workflow was triggered with the generic `/test`
-  # trigger if the only modified files were under `test/` or `Documentation/`.
   installation-and-connectivity:
-    needs: setup-report
-    name: Setup & Test
-    if: |
-      ((github.event_name == 'issue_comment' &&
-        ((github.event.comment.body == '/ci-multicluster') ||
-         (github.event.comment.body == '/test' && needs.check_changes.outputs.tested == 'true'))) ||
-      github.event_name == 'schedule' ||
-      github.event_name == 'pull_request')
+    name: "Installation and Connectivity Test"
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      job_name: "Installation and Connectivity Test"
 
     strategy:
       fail-fast: false
@@ -185,12 +89,18 @@ jobs:
             ipfamily: 'ipv4'
             encryption: 'disabled'
             kube-proxy: 'iptables'
+            kvstoremesh: true
+            cm-auth-mode-1: 'legacy'
+            cm-auth-mode-2: 'legacy'
 
           - name: '2'
             tunnel: 'disabled'
             ipfamily: 'ipv4'
             encryption: 'wireguard'
             kube-proxy: 'none'
+            kvstoremesh: false
+            cm-auth-mode-1: 'migration'
+            cm-auth-mode-2: 'migration'
 
           # IPsec encryption cannot be used with BPF NodePort.
           - name: '3'
@@ -198,6 +108,9 @@ jobs:
             ipfamily: 'ipv4'
             encryption: 'ipsec'
             kube-proxy: 'iptables'
+            kvstoremesh: true
+            cm-auth-mode-1: 'cluster'
+            cm-auth-mode-2: 'cluster'
 
           # IPsec encryption is currently not supported in case of ipv6-only clusters (#23553)
           # Wireguard encryption is currently affected by a bug in case of ipv6-only clusters (#23917)
@@ -206,6 +119,9 @@ jobs:
             ipfamily: 'ipv6'
             encryption: 'disabled'
             kube-proxy: 'none'
+            kvstoremesh: false
+            cm-auth-mode-1: 'legacy'
+            cm-auth-mode-2: 'migration'
 
           # IPsec encryption cannot be used with BPF NodePort.
           - name: '5'
@@ -213,18 +129,27 @@ jobs:
             ipfamily: 'dual'
             encryption: 'ipsec'
             kube-proxy: 'iptables'
+            kvstoremesh: true
+            cm-auth-mode-1: 'migration'
+            cm-auth-mode-2: 'cluster'
 
           - name: '6'
             tunnel: 'vxlan'
             ipfamily: 'ipv4'
             encryption: 'disabled'
             kube-proxy: 'none'
+            kvstoremesh: false
+            cm-auth-mode-1: 'cluster'
+            cm-auth-mode-2: 'cluster'
 
           - name: '7'
             tunnel: 'vxlan'
             ipfamily: 'ipv4'
             encryption: 'wireguard'
             kube-proxy: 'iptables'
+            kvstoremesh: true
+            cm-auth-mode-1: 'cluster'
+            cm-auth-mode-2: 'cluster'
 
           # IPsec encryption cannot be used with BPF NodePort.
           - name: '8'
@@ -232,6 +157,9 @@ jobs:
             ipfamily: 'ipv4'
             encryption: 'ipsec'
             kube-proxy: 'iptables'
+            kvstoremesh: false
+            cm-auth-mode-1: 'cluster'
+            cm-auth-mode-2: 'cluster'
 
         # Tunneling is currently not supported in case of ipv6-only clusters (#17240)
         #  - name: '9'
@@ -239,18 +167,24 @@ jobs:
         #    ipfamily: 'ipv6'
         #    encryption: 'disabled'
         #    kube-proxy: 'none'
+        #    kvstoremesh: true
+        #    cm-auth-mode-1: 'cluster'
+        #    cm-auth-mode-2: 'cluster'
 
           - name: '10'
             tunnel: 'vxlan'
             ipfamily: 'dual'
             encryption: 'wireguard'
             kube-proxy: 'iptables'
+            kvstoremesh: false
+            cm-auth-mode-1: 'cluster'
+            cm-auth-mode-2: 'cluster'
 
     steps:
-    - name: Checkout GitHub main
-      uses: actions/checkout@8e5e7e5ab8b370d6c329ec480221332ada57f0ab # v3.5.2
+    - name: Checkout context ref
+      uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
       with:
-        ref: ${{ github.event.repository.default_branch }}
+        ref: ${{ inputs.context-ref || github.sha }}
         persist-credentials: false
 
     - name: Set Environment Variables
@@ -259,10 +193,15 @@ jobs:
     - name: Set up job variables for GHA environment
       id: vars
       run: |
-        SHA=${{ needs.setup-report.outputs.sha }}
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          SHA="${{ inputs.SHA }}"
+        else
+          SHA="${{ github.sha }}"
+        fi
 
         # bpf.masquerade is disabled due to #23283
         CILIUM_INSTALL_DEFAULTS="--chart-directory=install/kubernetes/cilium \
+          --helm-set=debug.enabled=true \
           --helm-set=image.repository=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-ci \
           --helm-set=image.useDigest=false \
           --helm-set=image.tag=${SHA} \
@@ -271,9 +210,18 @@ jobs:
           --helm-set=operator.image.tag=${SHA} \
           --helm-set=operator.image.useDigest=false \
           --helm-set=bpf.masquerade=false \
-          --config monitor-aggregation=none \
-          --rollback=false \
-          --version="
+          --helm-set=bpf.monitorAggregation=none \
+          --helm-set=hubble.enabled=true \
+          --helm-set=hubble.relay.enabled=true \
+          --helm-set=hubble.relay.image.override=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/hubble-relay-ci:${SHA} \
+          --helm-set=hubble.relay.image.useDigest=false \
+          --helm-set=clustermesh.useAPIServer=true \
+          --helm-set=clustermesh.apiserver.kvstoremesh.enabled=${{ matrix.kvstoremesh }} \
+          --helm-set=clustermesh.apiserver.image.override=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/clustermesh-apiserver-ci:${SHA} \
+          --helm-set=clustermesh.apiserver.image.useDigest=false \
+          --helm-set=clustermesh.apiserver.kvstoremesh.image.override=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/kvstoremesh-ci:${SHA} \
+          --helm-set=clustermesh.apiserver.kvstoremesh.image.useDigest=false \
+          "
 
         CILIUM_INSTALL_TUNNEL="--helm-set=tunnel=vxlan"
         if [ "${{ matrix.tunnel }}" == "disabled" ]; then
@@ -310,11 +258,11 @@ jobs:
             ;;
         esac
 
-        HUBBLE_ENABLE_DEFAULTS="--chart-directory=install/kubernetes/cilium \
-          --helm-set=hubble.relay.image.override=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/hubble-relay-ci:${SHA} \
-          --helm-set=hubble.relay.image.useDigest=false"
-        CLUSTERMESH_ENABLE_DEFAULTS="--apiserver-image=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/clustermesh-apiserver-ci \
-          --apiserver-version=${SHA} --service-type=NodePort"
+        CILIUM_INSTALL_ENCRYPTION=""
+        if [ "${{ matrix.encryption }}" != "disabled" ]; then
+          CILIUM_INSTALL_ENCRYPTION="--helm-set=encryption.enabled=true \
+            --helm-set=encryption.type=${{ matrix.encryption }}"
+        fi
 
         CONNECTIVITY_TEST_DEFAULTS="--hubble=false \
           --flow-validation=disabled \
@@ -330,10 +278,10 @@ jobs:
             --test='!/pod-to-cidr'"
         fi
 
-        echo cilium_install_defaults="${CILIUM_INSTALL_DEFAULTS} ${CILIUM_INSTALL_TUNNEL} ${CILIUM_INSTALL_IPFAMILY}" >> $GITHUB_OUTPUT
-        echo hubble_enable_defaults=${HUBBLE_ENABLE_DEFAULTS} >> $GITHUB_OUTPUT
+        echo cilium_install_defaults="${CILIUM_INSTALL_DEFAULTS} ${CILIUM_INSTALL_TUNNEL} \
+          ${CILIUM_INSTALL_IPFAMILY} ${CILIUM_INSTALL_ENCRYPTION}" >> $GITHUB_OUTPUT
         echo connectivity_test_defaults=${CONNECTIVITY_TEST_DEFAULTS} >> $GITHUB_OUTPUT
-        echo clustermesh_enable_defaults=${CLUSTERMESH_ENABLE_DEFAULTS} >> $GITHUB_OUTPUT
+        echo sha=${SHA} >> $GITHUB_OUTPUT
 
         echo kind_pod_cidr_1=${KIND_POD_CIDR_1} >> $GITHUB_OUTPUT
         echo kind_svc_cidr_1=${KIND_SVC_CIDR_1} >> $GITHUB_OUTPUT
@@ -341,7 +289,7 @@ jobs:
         echo kind_svc_cidr_2=${KIND_SVC_CIDR_2} >> $GITHUB_OUTPUT
 
     - name: Install Cilium CLI
-      uses: cilium/cilium-cli@d610d6e2774e29aef9565bad935e3b4943d541af # v0.14.5
+      uses: cilium/cilium-cli@829ae9b4d2c65104343051ad77b618b92a2c2b75 # v0.15.3
       with:
         release-version: ${{ env.cilium_cli_version }}
         ci-version: ${{ env.cilium_cli_ci_version }}
@@ -363,7 +311,7 @@ jobs:
           envsubst < ./.github/kind-config.yaml.tmpl > ./.github/kind-config-cluster2.yaml
 
     - name: Create Kind cluster 1
-      uses: helm/kind-action@fa81e57adff234b2908110485695db0f181f3c67 # v1.7.0
+      uses: helm/kind-action@dda0770415bac9fc20092cacbc54aa298604d140 # v1.8.0
       with:
         cluster_name: ${{ env.clusterName1 }}
         version: ${{ env.kind_version }}
@@ -372,7 +320,7 @@ jobs:
         wait: 0 # The control-plane never becomes ready, since no CNI is present
 
     - name: Create Kind cluster 2
-      uses: helm/kind-action@fa81e57adff234b2908110485695db0f181f3c67 # v1.7.0
+      uses: helm/kind-action@dda0770415bac9fc20092cacbc54aa298604d140 # v1.8.0
       with:
         cluster_name: ${{ env.clusterName2 }}
         version: ${{ env.kind_version }}
@@ -404,7 +352,7 @@ jobs:
       shell: bash
       run: |
         for image in cilium-ci operator-generic-ci hubble-relay-ci clustermesh-apiserver-ci ; do
-          until docker manifest inspect quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/$image:${{ needs.setup-report.outputs.sha }} &> /dev/null; do sleep 45s; done
+          until docker manifest inspect quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/$image:${{ steps.vars.outputs.sha }} &> /dev/null; do sleep 45s; done
         done
 
     # We need to checkout the SHA to retrieve the Helm chart
@@ -414,49 +362,45 @@ jobs:
     # in a Kubernetes cluster, so it won't have access to the privileged
     # environment from there.
     - name: Checkout SHA
-      uses: actions/checkout@8e5e7e5ab8b370d6c329ec480221332ada57f0ab # v3.5.2
+      uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
       with:
-        ref: ${{ needs.setup-report.outputs.sha }}
+        ref: ${{ steps.vars.outputs.sha }}
         persist-credentials: false
 
-    - name: Install Cilium in cluster1
-      run: |
-        # Using the deprecated flag --cluster-name due to cilium/cilium-cli#1347
-        # --helm-set cluster.name ${{ env.clusterName1 }}
-        cilium --context ${{ env.contextName1 }} install \
-          ${{ steps.vars.outputs.cilium_install_defaults }} \
-          --encryption ${{ matrix.encryption }} \
-          --cluster-name ${{ env.clusterName1 }} \
-          --helm-set cluster.id=1
-
-    - name: Copy the IPsec secret to cluster2, as they must match
+    - name: Create the IPSec secret in both clusters
       if: matrix.encryption == 'ipsec'
       run: |
-        kubectl --context ${{ env.contextName1 }} get secret -n kube-system cilium-ipsec-keys -o yaml |
+        SECRET="3 rfc4106(gcm(aes)) $(openssl rand -hex 20) 128"
+        kubectl --context ${{ env.contextName1 }} create -n kube-system secret generic cilium-ipsec-keys --from-literal=keys="${SECRET}"
+        kubectl --context ${{ env.contextName2 }} create -n kube-system secret generic cilium-ipsec-keys --from-literal=keys="${SECRET}"
+
+    - name: Install Cilium in cluster1
+      id: install-cilium-cluster1
+      run: |
+        # Explicitly configure the NodePort to make sure that it is different in
+        # each cluster, to workaround #24692
+        cilium --context ${{ env.contextName1 }} install \
+          ${{ steps.vars.outputs.cilium_install_defaults }} \
+          --helm-set cluster.name=${{ env.clusterName1 }} \
+          --helm-set cluster.id=1 \
+          --helm-set clustermesh.apiserver.service.nodePort=32379 \
+          --helm-set clustermesh.apiserver.tls.authMode=${{ matrix.cm-auth-mode-1 }}
+
+    - name: Copy the Cilium CA secret to cluster2, as they must match
+      run: |
+        kubectl --context ${{ env.contextName1 }} get secret -n kube-system cilium-ca -o yaml |
           kubectl --context ${{ env.contextName2 }} create -f -
 
     - name: Install Cilium in cluster2
       run: |
-        # Using the deprecated form --cluster-name due to cilium/cilium-cli#1347
-        # --helm-set cluster.name ${{ env.clusterName2 }}
+        # Explicitly configure the NodePort to make sure that it is different in
+        # each cluster, to workaround #24692
         cilium --context ${{ env.contextName2 }} install \
           ${{ steps.vars.outputs.cilium_install_defaults }} \
-          --encryption ${{ matrix.encryption }} \
-          --cluster-name ${{ env.clusterName2 }} \
+          --helm-set cluster.name=${{ env.clusterName2 }} \
           --helm-set cluster.id=255 \
-          --inherit-ca ${{ env.contextName1 }}
-
-    - name: Enable Hubble
-      run: |
-        cilium --context ${{ env.contextName1 }} hubble enable ${{ steps.vars.outputs.hubble_enable_defaults }} --wait=false
-        cilium --context ${{ env.contextName2 }} hubble enable ${{ steps.vars.outputs.hubble_enable_defaults }} --wait=false --relay=false
-        cilium --context ${{ env.contextName1 }} status --wait
-        cilium --context ${{ env.contextName2 }} status --wait
-
-    - name: Enable Cluster Mesh
-      run: |
-        cilium --context ${{ env.contextName1 }} clustermesh enable ${{ steps.vars.outputs.clustermesh_enable_defaults }}
-        cilium --context ${{ env.contextName2 }} clustermesh enable ${{ steps.vars.outputs.clustermesh_enable_defaults }}
+          --helm-set clustermesh.apiserver.service.nodePort=32380 \
+          --helm-set clustermesh.apiserver.tls.authMode=${{ matrix.cm-auth-mode-2 }}
 
     - name: Wait for cluster mesh status to be ready
       run: |
@@ -482,12 +426,18 @@ jobs:
         sleep 10s
         [[ $(pgrep -f "cilium.*hubble.*port-forward|kubectl.*port-forward.*hubble-relay" | wc -l) == 2 ]]
 
-    - name: Run connectivity test
+    - name: Make JUnit report directory
       run: |
-        cilium --context ${{ env.contextName1 }} connectivity test ${{ steps.vars.outputs.connectivity_test_defaults }}
+        mkdir -p cilium-junits
+
+    - name: Run connectivity test (${{ join(matrix.*, ', ') }})
+      run: |
+        cilium --context ${{ env.contextName1 }} connectivity test ${{ steps.vars.outputs.connectivity_test_defaults }} \
+        --junit-file "cilium-junits/${{ env.job_name }} (${{ join(matrix.*, ', ') }}).xml" \
+        --junit-property github_job_step="Run connectivity test (${{ join(matrix.*, ', ') }})"
 
     - name: Post-test information gathering
-      if: ${{ !success() }}
+      if: ${{ !success() && steps.install-cilium-cluster1.outcome != 'skipped' }}
       run: |
         cilium --context ${{ env.contextName1 }} status
         cilium --context ${{ env.contextName1 }} clustermesh status
@@ -496,62 +446,43 @@ jobs:
 
         kubectl config use-context ${{ env.contextName1 }}
         kubectl get pods --all-namespaces -o wide
-        cilium sysdump --output-filename cilium-sysdump-context1-final
+        cilium sysdump --output-filename cilium-sysdump-context1-final-${{ join(matrix.*, '-') }}
 
         kubectl config use-context ${{ env.contextName2 }}
         kubectl get pods --all-namespaces -o wide
-        cilium sysdump --output-filename cilium-sysdump-context2-final
+        cilium sysdump --output-filename cilium-sysdump-context2-final-${{ join(matrix.*, '-') }}
       shell: bash {0} # Disable default fail-fast behaviour so that all commands run independently
 
     - name: Upload artifacts
       if: ${{ !success() }}
       uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce # v3.1.2
       with:
-        name: cilium-sysdumps-${{ matrix.name }}
+        name: cilium-sysdumps
         path: cilium-sysdump-*.zip
         retention-days: 5
 
-  report-success:
-    runs-on: ubuntu-latest
-    needs: [setup-report, installation-and-connectivity]
-    name: Set commit status to success
-    if: ${{ success() }}
-    steps:
-    - uses: Sibz/github-status-action@650dd1a882a76dbbbc4576fb5974b8d22f29847f # v1.1.6
+    - name: Upload JUnits [junit]
+      if: ${{ always() }}
+      uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce # v3.1.2
       with:
-        authToken: ${{ secrets.GITHUB_TOKEN }}
-        sha: ${{ needs.setup-report.outputs.sha }}
-        context: ${{ github.workflow }}
-        description: ClusterMesh connectivity tests succeeded
-        state: success
-        target_url: ${{ env.check_url }}
+        name: cilium-junits
+        path: cilium-junits/*.xml
+        retention-days: 5
 
-  report-failure:
-    runs-on: ubuntu-latest
-    needs: [setup-report, installation-and-connectivity]
-    name: Set commit status to failure
-    if: ${{ failure() }}
-    steps:
-    - uses: Sibz/github-status-action@650dd1a882a76dbbbc4576fb5974b8d22f29847f # v1.1.6
+    - name: Publish Test Results As GitHub Summary
+      if: ${{ always() }}
+      uses: aanm/junit2md@332ebf0fddd34e91b03a832cfafaa826306558f9 # v0.0.3
       with:
-        authToken: ${{ secrets.GITHUB_TOKEN }}
-        sha: ${{ needs.setup-report.outputs.sha }}
-        context: ${{ github.workflow }}
-        description: ClusterMesh connectivity tests failed
-        state: failure
-        target_url: ${{ env.check_url }}
+        junit-directory: "cilium-junits"
 
-  report-cancelled:
+
+  commit-status-final:
+    if: ${{ always() }}
+    needs: installation-and-connectivity
     runs-on: ubuntu-latest
-    needs: [setup-report, installation-and-connectivity]
-    name: Set commit status to cancelled
-    if: ${{ cancelled() }}
     steps:
-    - uses: Sibz/github-status-action@650dd1a882a76dbbbc4576fb5974b8d22f29847f # v1.1.6
-      with:
-        authToken: ${{ secrets.GITHUB_TOKEN }}
-        sha: ${{ needs.setup-report.outputs.sha }}
-        context: ${{ github.workflow }}
-        description: ClusterMesh connectivity tests cancelled
-        state: error
-        target_url: ${{ env.check_url }}
+      - name: Set final commit status
+        uses: myrotvorets/set-commit-status-action@243b4f7e597f62335408d58001edf8a02cf3e1fd # v1.1.7  
+        with:
+          sha: ${{ inputs.SHA || github.sha }}
+          status: ${{ needs.installation-and-connectivity.result }}

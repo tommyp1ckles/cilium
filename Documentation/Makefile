@@ -56,6 +56,11 @@ update-cmdref: builder-image cilium-build ## Update the command reference docume
 	-$(QUIET)rm -rf cmdref/cilium*.md
 	$(QUIET)$(DOCKER_RUN) ./update-cmdref.sh
 
+.PHONY: update-crdlist
+update-crdlist:
+	@$(ECHO_GEN)crdlist
+	make -C ../ generate-crd-docs
+
 codeowners.rst: $(ROOT_DIR)/CODEOWNERS
 	@$(ECHO_GEN)$@
 	$(QUIET)$(DOCKER_RUN) ./update-codeowners.sh
@@ -63,7 +68,7 @@ codeowners.rst: $(ROOT_DIR)/CODEOWNERS
 .PHONY: update-codeowners
 update-codeowners: codeowners.rst
 
-check: builder-image api-flaggen update-cmdref update-helm-values update-codeowners ## Validate command and Helm references, as well as policy examples.
+check: builder-image api-flaggen update-cmdref update-crdlist update-helm-values update-codeowners ## Validate command and Helm references, as well as policy examples.
 	@$(ECHO_CHECK) cmdref
 	$(QUIET) ./check-cmdref.sh
 	@$(ECHO_CHECK) $(HELM_VALUES)
@@ -74,6 +79,8 @@ check: builder-image api-flaggen update-cmdref update-helm-values update-codeown
 	$(QUIET) ./check-codeowners.sh
 	@$(ECHO_CHECK) configuration/api-restrictions-table.rst
 	$(QUIET) ./check-flaggen.sh
+	@$(ECHO_CHECK) crdlist.rst
+	$(QUIET) ./check-crdlist.sh
 
 ifeq ($(V),0)
 SPHINX_OPTS += -q
@@ -85,10 +92,6 @@ api-flaggen:
 	$(QUIET)$(GO) run $(ROOT_DIR)/tools/api-flaggen \
 		2>/dev/null \
 		> configuration/api-restrictions-table.rst
-
-copy-api:
-	@$(ECHO_GEN)_api
-	$(QUIET)cp -r ../api/. _api
 
 update-helm-values: $(HELM_VALUES) ## Update the Helm reference documentation.
 
@@ -106,14 +109,15 @@ $(HELM_VALUES): FORCE
 	$(QUIET)$(HELM_DOCS) -d -c $(HELM_DOCS_CHARTS_DIR) -t $(HELM_DOCS_OUTPUT_DIR)/$(TMP_FILE_1).tmpl > $(TMP_FILE_1)
 	$(QUIET)awk -F'|' '{print "|"$$2"|"$$5"|"$$3"|"$$4"|"}' $(TMP_FILE_1) > $(TMP_FILE_2)
 	$(QUIET)$(M2R) --overwrite $(TMP_FILE_2)
+	$(QUIET)sed -i 's/^\(   \* - \)\([[:print:]]\+\)$$/\1:spelling:ignore:`\2`/' $@
 	$(QUIET)printf '..\n  %s\n\n%s\n' "AUTO-GENERATED. Please DO NOT edit manually." "$$(cat $@)" > $@
 	$(QUIET)$(RM) -- $(TMP_FILE_1) $(TMP_FILE_2)
 
-epub latex html: builder-image copy-api update-helm-values ## Check documentation and render it under the specified format.
+epub latex html: builder-image update-helm-values ## Check documentation and render it under the specified format.
 	@$(ECHO_GEN)_build/$@
 	$(QUIET)$(DOCKER_RUN) ./check-build.sh $(@) $(SPHINX_OPTS)
 
-html-netlify: copy-api
+html-netlify:
 	@$(ECHO_GEN)_build/$@
 	$(QUIET) SKIP_LINT=1 ./check-build.sh html $(SPHINX_OPTS)
 

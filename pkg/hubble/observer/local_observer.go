@@ -27,6 +27,7 @@ import (
 	observerTypes "github.com/cilium/cilium/pkg/hubble/observer/types"
 	"github.com/cilium/cilium/pkg/hubble/parser"
 	parserErrors "github.com/cilium/cilium/pkg/hubble/parser/errors"
+	"github.com/cilium/cilium/pkg/hubble/parser/fieldmask"
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 )
 
@@ -61,11 +62,14 @@ type LocalObserverServer struct {
 
 	// numObservedFlows counts how many flows have been observed
 	numObservedFlows uint64
+
+	namespaceManager NamespaceManager
 }
 
 // NewLocalServer returns a new local observer server.
 func NewLocalServer(
 	payloadParser *parser.Parser,
+	namespaceManager NamespaceManager,
 	logger logrus.FieldLogger,
 	options ...observeroption.Option,
 ) (*LocalObserverServer, error) {
@@ -83,13 +87,14 @@ func NewLocalServer(
 	}).Info("Configuring Hubble server")
 
 	s := &LocalObserverServer{
-		log:           logger,
-		ring:          container.NewRing(opts.MaxFlows),
-		events:        make(chan *observerTypes.MonitorEvent, opts.MonitorBuffer),
-		stopped:       make(chan struct{}),
-		payloadParser: payloadParser,
-		startTime:     time.Now(),
-		opts:          opts,
+		log:              logger,
+		ring:             container.NewRing(opts.MaxFlows),
+		events:           make(chan *observerTypes.MonitorEvent, opts.MonitorBuffer),
+		stopped:          make(chan struct{}),
+		payloadParser:    payloadParser,
+		startTime:        time.Now(),
+		namespaceManager: namespaceManager,
+		opts:             opts,
 	}
 
 	for _, f := range s.opts.OnServerInit {
@@ -142,6 +147,8 @@ nextEvent:
 		}
 
 		if flow, ok := ev.Event.(*flowpb.Flow); ok {
+			// track namespaces seen.
+			s.trackNamespaces(flow)
 			for _, f := range s.opts.OnDecodedFlow {
 				stop, err := f.OnDecodedFlow(ctx, flow)
 				if err != nil {
@@ -217,6 +224,11 @@ func (s *LocalObserverServer) GetNodes(ctx context.Context, req *observerpb.GetN
 	return nil, status.Errorf(codes.Unimplemented, "GetNodes not implemented")
 }
 
+// GetNamespaces implements observerpb.ObserverClient.GetNamespaces.
+func (s *LocalObserverServer) GetNamespaces(ctx context.Context, req *observerpb.GetNamespacesRequest) (*observerpb.GetNamespacesResponse, error) {
+	return &observerpb.GetNamespacesResponse{Namespaces: s.namespaceManager.GetNamespaces()}, nil
+}
+
 // GetFlows implements the proto method for client requests.
 func (s *LocalObserverServer) GetFlows(
 	req *observerpb.GetFlowsRequest,
@@ -276,15 +288,15 @@ func (s *LocalObserverServer) GetFlows(
 		return err
 	}
 
-	mask, err := createFilter(req.Experimental.GetFieldMask())
+	mask, err := fieldmask.New(req.Experimental.GetFieldMask())
 	if err != nil {
 		return err
 	}
 
 	var flow *flowpb.Flow
-	if mask.active() {
+	if mask.Active() {
 		flow = new(flowpb.Flow)
-		mask.alloc(flow.ProtoReflect())
+		mask.Alloc(flow.ProtoReflect())
 	}
 
 nextEvent:
@@ -311,9 +323,9 @@ nextEvent:
 					continue nextEvent
 				}
 			}
-			if mask.active() {
+			if mask.Active() {
 				// Copy only fields in the mask
-				mask.copy(flow.ProtoReflect(), ev.ProtoReflect())
+				mask.Copy(flow.ProtoReflect(), ev.ProtoReflect())
 				ev = flow
 			}
 			resp = &observerpb.GetFlowsResponse{
@@ -607,6 +619,22 @@ func (r *eventsReader) Next(ctx context.Context) (*v1.Event, error) {
 		}
 
 		return e, nil
+	}
+}
+
+func (s *LocalObserverServer) trackNamespaces(flow *flowpb.Flow) {
+	// track namespaces seen.
+	if srcNs := flow.GetSource().GetNamespace(); srcNs != "" {
+		s.namespaceManager.AddNamespace(&observerpb.Namespace{
+			Namespace: srcNs,
+			Cluster:   nodeTypes.GetClusterName(),
+		})
+	}
+	if dstNs := flow.GetDestination().GetNamespace(); dstNs != "" {
+		s.namespaceManager.AddNamespace(&observerpb.Namespace{
+			Namespace: dstNs,
+			Cluster:   nodeTypes.GetClusterName(),
+		})
 	}
 }
 

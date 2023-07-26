@@ -34,6 +34,7 @@ import (
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/socketlb"
 	"github.com/cilium/cilium/pkg/sysctl"
+	wgTypes "github.com/cilium/cilium/pkg/wireguard/types"
 )
 
 const (
@@ -265,6 +266,13 @@ func (l *Loader) reinitializeXDPLocked(ctx context.Context, extraCArgs []string)
 		return nil
 	}
 	for _, dev := range option.Config.GetDevices() {
+		// When WG & encrypt-node are on, the devices include cilium_wg0 to attach bpf_host
+		// so that NodePort's rev-{S,D}NAT translations happens for a reply from the remote node.
+		// So We need to exclude cilium_wg0 not to attach the XDP program when XDP acceleration
+		// is enabled, otherwise we will get "operation not supported" error.
+		if dev == wgTypes.IfaceName {
+			continue
+		}
 		if err := compileAndLoadXDPProg(ctx, dev, option.Config.XDPMode, extraCArgs); err != nil {
 			return err
 		}
@@ -319,6 +327,23 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 	}
 	args[initArgMode] = string(mode)
 
+	var nodeIPv4, nodeIPv6 net.IP
+	args[initArgIPv4NodeIP] = "<nil>"
+	args[initArgIPv6NodeIP] = "<nil>"
+	if option.Config.EnableIPv4 {
+		nodeIPv4 = node.GetInternalIPv4Router()
+		args[initArgIPv4NodeIP] = nodeIPv4.String()
+	}
+	if option.Config.EnableIPv6 {
+		nodeIPv6 = node.GetIPv6Router()
+		args[initArgIPv6NodeIP] = nodeIPv6.String()
+		// Docker <17.05 has an issue which causes IPv6 to be disabled in the initns for all
+		// interface (https://github.com/docker/libnetwork/issues/1720)
+		// Enable IPv6 for now
+		sysSettings = append(sysSettings,
+			sysctl.Setting{Name: "net.ipv6.conf.all.disable_ipv6", Val: "0", IgnoreErr: false})
+	}
+
 	// Datapath initialization
 	hostDev1, hostDev2, err := SetupBaseDevice(deviceMTU)
 	if err != nil {
@@ -326,6 +351,21 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 	}
 	args[initArgHostDev1] = hostDev1.Attrs().Name
 	args[initArgHostDev2] = hostDev2.Attrs().Name
+
+	if option.Config.IPAM == ipamOption.IPAMENI {
+		var err error
+		if sysSettings, err = addENIRules(sysSettings, o.Datapath().LocalNodeAddressing()); err != nil {
+			return fmt.Errorf("unable to install ip rule for ENI multi-node NodePort: %w", err)
+		}
+	}
+
+	// Any code that relies on sysctl settings being applied needs to be called after this.
+	sysctl.ApplySettings(sysSettings)
+
+	// add internal ipv4 and ipv6 addresses to cilium_host
+	if err := addHostDeviceAddr(hostDev1, nodeIPv4, nodeIPv6); err != nil {
+		return fmt.Errorf("failed to add internal IP address to %s: %w", hostDev1.Attrs().Name, err)
+	}
 
 	if err := l.writeNodeConfigHeader(o); err != nil {
 		log.WithError(err).Error("Unable to write node config header")
@@ -359,35 +399,13 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 	args[initArgLib] = "<nil>"
 	args[initArgRundir] = option.Config.StateDir
 
-	if option.Config.EnableIPv4 {
-		args[initArgIPv4NodeIP] = node.GetInternalIPv4Router().String()
-	} else {
-		args[initArgIPv4NodeIP] = "<nil>"
-	}
-
-	if option.Config.EnableIPv6 {
-		args[initArgIPv6NodeIP] = node.GetIPv6Router().String()
-		// Docker <17.05 has an issue which causes IPv6 to be disabled in the initns for all
-		// interface (https://github.com/docker/libnetwork/issues/1720)
-		// Enable IPv6 for now
-		sysSettings = append(sysSettings,
-			sysctl.Setting{Name: "net.ipv6.conf.all.disable_ipv6", Val: "0", IgnoreErr: false})
-	} else {
-		args[initArgIPv6NodeIP] = "<nil>"
-	}
-
 	args[initArgMTU] = fmt.Sprintf("%d", deviceMTU)
 
 	args[initArgSocketLB] = "<nil>"
 	args[initArgSocketLBPeer] = "<nil>"
 	args[initArgCgroupRoot] = "<nil>"
 	args[initArgBpffsRoot] = "<nil>"
-
-	if len(option.Config.GetDevices()) != 0 {
-		args[initArgDevices] = strings.Join(option.Config.GetDevices(), ";")
-	} else {
-		args[initArgDevices] = "<nil>"
-	}
+	args[initArgDevices] = "<nil>"
 
 	if !option.Config.TunnelingEnabled() {
 		if option.Config.EnableIPv4EgressGateway || option.Config.EnableHighScaleIPcache {
@@ -398,7 +416,7 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 
 	if !option.Config.TunnelingEnabled() &&
 		option.Config.EnableNodePort &&
-		option.Config.NodePortMode == option.NodePortModeDSR &&
+		option.Config.NodePortMode != option.NodePortModeSNAT &&
 		option.Config.LoadBalancerDSRDispatch == option.DSRDispatchGeneve {
 		encapProto = option.TunnelGeneve
 	}
@@ -411,14 +429,8 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 		args[initArgTunnelPort] = fmt.Sprintf("%d", option.Config.TunnelPort)
 	}
 
-	if option.Config.EnableNodePort {
-		args[initArgNodePort] = "true"
-	} else {
-		args[initArgNodePort] = "false"
-	}
-
+	args[initArgNodePort] = "<nil>"
 	args[initArgNodePortBind] = "<nil>"
-
 	args[initBPFCPU] = "<nil>"
 	args[initArgNrCPUs] = "<nil>"
 
@@ -433,15 +445,6 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 		logfields.BPFInsnSet:     args[initBPFCPU],
 		logfields.BPFClockSource: clockSource[option.Config.ClockSource],
 	}).Info("Setting up BPF datapath")
-
-	if option.Config.IPAM == ipamOption.IPAMENI {
-		var err error
-		if sysSettings, err = addENIRules(sysSettings, o.Datapath().LocalNodeAddressing()); err != nil {
-			return fmt.Errorf("unable to install ip rule for ENI multi-node NodePort: %w", err)
-		}
-	}
-
-	sysctl.ApplySettings(sysSettings)
 
 	if option.Config.InstallIptRules && option.Config.EnableL7Proxy {
 		args[initArgProxyRule] = "true"
@@ -527,7 +530,7 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 	}
 
 	// Reinstall proxy rules for any running proxies if needed
-	if p != nil {
+	if option.Config.EnableL7Proxy {
 		if err := p.ReinstallRules(ctx); err != nil {
 			return err
 		}

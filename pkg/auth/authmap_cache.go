@@ -4,19 +4,26 @@
 package auth
 
 import (
+	"errors"
 	"fmt"
+
+	"github.com/cilium/ebpf"
+	"github.com/sirupsen/logrus"
+	"golang.org/x/exp/maps"
 
 	"github.com/cilium/cilium/pkg/lock"
 )
 
 type authMapCache struct {
+	logger            logrus.FieldLogger
 	authmap           authMap
 	cacheEntries      map[authKey]authInfo
 	cacheEntriesMutex lock.RWMutex
 }
 
-func newAuthMapCache(authmap authMap) *authMapCache {
+func newAuthMapCache(logger logrus.FieldLogger, authmap authMap) *authMapCache {
 	return &authMapCache{
+		logger:       logger,
 		authmap:      authmap,
 		cacheEntries: map[authKey]authInfo{},
 	}
@@ -26,7 +33,11 @@ func (r *authMapCache) All() (map[authKey]authInfo, error) {
 	r.cacheEntriesMutex.RLock()
 	defer r.cacheEntriesMutex.RUnlock()
 
-	return r.cacheEntries, nil
+	result := make(map[authKey]authInfo)
+	for k, v := range r.cacheEntries {
+		result[k] = v
+	}
+	return maps.Clone(result), nil
 }
 
 func (r *authMapCache) Get(key authKey) (authInfo, error) {
@@ -58,7 +69,13 @@ func (r *authMapCache) Delete(key authKey) error {
 	defer r.cacheEntriesMutex.Unlock()
 
 	if err := r.authmap.Delete(key); err != nil {
-		return err
+		if !errors.Is(err, ebpf.ErrKeyNotExist) {
+			return fmt.Errorf("failed to delete auth entry from map: %w", err)
+		}
+
+		r.logger.
+			WithField("key", key).
+			Warning("Failed to delete already deleted auth entry")
 	}
 
 	delete(r.cacheEntries, key)
@@ -66,8 +83,31 @@ func (r *authMapCache) Delete(key authKey) error {
 	return nil
 }
 
+func (r *authMapCache) DeleteIf(predicate func(key authKey, info authInfo) bool) error {
+	r.cacheEntriesMutex.Lock()
+	defer r.cacheEntriesMutex.Unlock()
+
+	for k, v := range r.cacheEntries {
+		if predicate(k, v) {
+			// delete every entry individually to keep the cache in sync in case of an error
+			if err := r.authmap.Delete(k); err != nil {
+				if !errors.Is(err, ebpf.ErrKeyNotExist) {
+					return fmt.Errorf("failed to delete auth entry from map: %w", err)
+				}
+
+				r.logger.
+					WithField("key", k).
+					Warning("Failed to delete already deleted auth entry")
+			}
+			delete(r.cacheEntries, k)
+		}
+	}
+
+	return nil
+}
+
 func (r *authMapCache) restoreCache() error {
-	log.Debug("auth: starting cache restore")
+	r.logger.Debug("Starting cache restore")
 
 	all, err := r.authmap.All()
 	if err != nil {
@@ -77,6 +117,8 @@ func (r *authMapCache) restoreCache() error {
 		r.cacheEntries[k] = v
 	}
 
-	log.Debugf("auth: restored %d entries", len(r.cacheEntries))
+	r.logger.
+		WithField("cached_entries", len(r.cacheEntries)).
+		Debug("Restored entries")
 	return nil
 }

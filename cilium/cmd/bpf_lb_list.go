@@ -70,7 +70,7 @@ func dumpSVC(serviceList map[string][]string) {
 
 	parseBackendEntry := func(key bpf.MapKey, value bpf.MapValue) {
 		id := key.(lbmap.BackendKey).GetID()
-		backendMap[id] = value.DeepCopyMapValue().(lbmap.BackendValue).ToHost()
+		backendMap[id] = value.(lbmap.BackendValue).ToHost()
 	}
 	if err := lbmap.Backend4MapV3.DumpWithCallbackIfExists(parseBackendEntry); err != nil {
 		Fatalf("Unable to dump IPv4 backends table: %s", err)
@@ -169,7 +169,7 @@ var bpfLBListCmd = &cobra.Command{
 }
 
 func init() {
-	bpfLBCmd.AddCommand(bpfLBListCmd)
+	BPFLBCmd.AddCommand(bpfLBListCmd)
 	bpfLBListCmd.Flags().BoolVarP(&listRevNAT, "revnat", "", false, "List reverse NAT entries")
 	bpfLBListCmd.Flags().BoolVarP(&listFrontends, "frontends", "", false, "List all service frontend entries")
 	bpfLBListCmd.Flags().BoolVarP(&listBackends, "backends", "", false, "List all service backend entries")

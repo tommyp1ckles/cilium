@@ -2,8 +2,8 @@ apiVersion: v2
 name: cilium
 displayName: Cilium
 home: https://cilium.io/
-version: 1.14.0-dev
-appVersion: 1.14.0-dev
+version: 1.15.0-dev
+appVersion: 1.15.0-dev
 kubeVersion: ">= 1.16.0-0"
 icon: https://cdn.jsdelivr.net/gh/cilium/cilium@main/Documentation/images/logo-solo.svg
 description: eBPF-based Networking, Security, and Observability
@@ -130,3 +130,16 @@ annotations:
       displayName: Cilium CIDR Group
       description: |
         CiliumCIDRGroup is a list of CIDRs that can be referenced as a single entity from CiliumNetworkPolicies.
+    - kind: CiliumL2AnnouncementPolicy
+      version: v2alpha1
+      name: ciliuml2announcementpolicies.cilium.io
+      displayName: Cilium L2 Announcement Policy
+      description: |
+        CiliumL2AnnouncementPolicy is a policy which determines which service IPs will be announced to
+        the local area network, by which nodes, and via which interfaces.
+    - kind: CiliumPodIPPool
+      version: v2alpha1
+      name: ciliumpodippools.cilium.io
+      displayName: Cilium Pod IP Pool
+      description: |
+        CiliumPodIPPool defines an IP pool that can be used for pooled IPAM (i.e. the multi-pool IPAM mode).

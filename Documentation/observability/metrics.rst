@@ -176,22 +176,28 @@ so this functionality is currently opt-in, though we believe all of the Hubble
 metrics conform to the OpenMetrics requirements.
 
 
+.. _clustermesh_apiserver_metrics:
+
 Cluster Mesh API Server Metrics
 ===============================
 
-Cluster Mesh API Server metrics provide insights into both the state of the
-``clustermesh-apiserver`` process and the sidecar etcd instance.
+Cluster Mesh API Server metrics provide insights into the state of the
+``clustermesh-apiserver`` process, the ``kvstoremesh`` process (if enabled),
+and the sidecar etcd instance.
 Cluster Mesh API Server metrics are exported under the ``cilium_clustermesh_apiserver_``
+Prometheus namespace. KVStoreMesh metrics are exported under the ``cilium_kvstoremesh_``
 Prometheus namespace. Etcd metrics are exported under the ``etcd_`` Prometheus namespace.
 
 
 Installation
 ------------
 
-You can enable metrics for ``clustermesh-apiserver`` with the Helm value
-``clustermesh.apiserver.metrics.enabled=true``.
-To enable metrics for the sidecar etcd instance, use
-``clustermesh.apiserver.metrics.etcd.enabled=true``.
+You can enable the metrics for different Cluster Mesh API Server components by
+setting the following values:
+
+* clustermesh-apiserver: ``clustermesh.apiserver.metrics.enabled=true``
+* kvstoremesh: ``clustermesh.apiserver.metrics.kvstoremesh.enabled=true``
+* sidecar etcd instance: ``clustermesh.apiserver.metrics.etcd.enabled=true``
 
 .. parsed-literal::
 
@@ -199,9 +205,11 @@ To enable metrics for the sidecar etcd instance, use
      --namespace kube-system \\
      --set clustermesh.useAPIServer=true \\
      --set clustermesh.apiserver.metrics.enabled=true \\
+     --set clustermesh.apiserver.metrics.kvstoremesh.enabled=true \\
      --set clustermesh.apiserver.metrics.etcd.enabled=true
 
-The ports can be configured via ``clustermesh.apiserver.metrics.port`` and
+You can figure the ports by way of ``clustermesh.apiserver.metrics.port``,
+``clustermesh.apiserver.metrics.kvstoremesh.port`` and
 ``clustermesh.apiserver.metrics.etcd.port`` respectively.
 
 You can automatically create a
@@ -442,6 +450,17 @@ Name                                        Labels                              
 ``k8s_terminating_endpoints_events_total``                                                     Enabled    Number of terminating endpoint events received from Kubernetes
 =========================================== ================================================== ========== ========================================================
 
+Kubernetes Rest Client
+~~~~~~~~~~~~~~~~~~~~~~
+
+============================================= ============================================= ========== ===========================================================
+Name                                          Labels                                        Default    Description
+============================================= ============================================= ========== ===========================================================
+``k8s_client_api_latency_time_seconds``       ``path``, ``method``                          Enabled    Duration of processed API calls labeled by path and method
+``k8s_client_rate_limiter_duration_seconds``  ``path``, ``method``                          Enabled    Kubernetes client rate limiter latency in seconds. Broken down by path and method
+``k8s_client_api_calls_total``                ``host``, ``method``, ``return_code``         Enabled    Number of API calls made to kube-apiserver labeled by host, method and return code
+============================================= ============================================= ========== ===========================================================
+
 IPAM
 ~~~~
 
@@ -485,6 +504,18 @@ Name                               Labels                           Default     
 ``fqdn_active_names``              ``endpoint``                     Disabled     Number of domains inside the DNS cache that have not expired (by TTL), per endpoint
 ``fqdn_active_ips``                ``endpoint``                     Disabled     Number of IPs inside the DNS cache associated with a domain that has not expired (by TTL), per endpoint
 ``fqdn_alive_zombie_connections``  ``endpoint``                     Disabled     Number of IPs associated with domains that have expired (by TTL) yet still associated with an active connection (aka zombie), per endpoint
+================================== ================================ ============ ========================================================
+
+Jobs
+~~~~
+
+================================== ================================ ============ ========================================================
+Name                               Labels                           Default      Description
+================================== ================================ ============ ========================================================
+``jobs_errors_total``              ``job``                          Enabled      Number of jobs runs that returned an error
+``jobs_one_shot_run_seconds``      ``job``                          Enabled      Histogram of one shot job run duration
+``jobs_timer_run_seconds``         ``job``                          Enabled      Histogram of timer job run duration
+``jobs_observer_run_seconds``      ``job``                          Enabled      Histogram of observer job run duration
 ================================== ================================ ============ ========================================================
 
 .. _metrics_api_rate_limiting:
@@ -548,6 +579,20 @@ Name                                     Labels                                 
 ``ipam_needed_ips``                      ``target_node``                                                   Enabled    Number of IPs needed to satisfy allocation on a node.
 ======================================== ================================================================= ========== ========================================================
 
+LB-IPAM
+~~~~~~~
+
+======================================== ================================================================= ========== ========================================================
+Name                                     Labels                                                            Default    Description
+======================================== ================================================================= ========== ========================================================
+``lbipam_conflicting_pools_total``                                                                         Enabled    Number of conflicting pools
+``lbipam_ips_available_total``           ``pool``                                                          Enabled    Number of available IPs per pool
+``lbipam_ips_used_total``                ``pool``                                                          Enabled    Number of used IPs per pool
+``lbipam_services_matching_total``                                                                         Enabled    Number of matching services
+``lbipam_services_unsatisfied_total``                                                                      Enabled    Number of services which did not get requested IPs
+======================================== ================================================================= ========== ========================================================
+
+
 Hubble
 ------
 
@@ -597,11 +642,11 @@ Option Value          Description
 ``identity``          All Cilium security identity labels
 ``namespace``         Kubernetes namespace name
 ``pod``               Kubernetes pod name and namespace name in the form of ``namespace/pod``.
-``pod-short``         Deprecated, will be removed in Cilium 1.14 - use ``workload-name|pod-name`` instead. Short version of the Kubernetes pod name. Typically the deployment/replicaset name.
 ``pod-name``          Kubernetes pod name.
 ``dns``               All known DNS names of the source or destination (comma-separated)
 ``ip``                The IPv4 or IPv6 address
 ``reserved-identity`` Reserved identity label.
+``workload``          Kubernetes pod's workload name and namespace in the form of ``namespace/workload-name``.
 ``workload-name``     Kubernetes pod's workload name (workloads are: Deployment, Statefulset, Daemonset, ReplicationController, CronJob, Job, DeploymentConfig (OpenShift), etc).
 ``app``               Kubernetes pod's app name, derived from pod labels (``app.kubernetes.io/name``, ``k8s-app``, or ``app``).
 ===================== ===================================================================================
@@ -891,6 +936,8 @@ Options
 
 This metric supports :ref:`Context Options<hubble_context_options>`.
 
+.. _clustermesh_apiserver_metrics_reference:
+
 clustermesh-apiserver
 ---------------------
 
@@ -920,3 +967,72 @@ Name                                     Labels                                 
 ``kvstore_sync_queue_size``              ``scope``, ``source_cluster``                Number of elements queued for synchronization in the kvstore
 ``kvstore_initial_sync_completed``       ``scope``, ``source_cluster``, ``action``    Whether the initial synchronization from/to the kvstore has completed
 ======================================== ============================================ ========================================================
+
+API Rate Limiting
+~~~~~~~~~~~~~~~~~
+
+============================================== ================================ ========================================================
+Name                                           Labels                           Description
+============================================== ================================ ========================================================
+``api_limiter_processed_requests_total``       ``api_call``, ``outcome``        Total number of API requests processed
+``api_limiter_processing_duration_seconds``    ``api_call``, ``value``          Mean and estimated processing duration in seconds
+``api_limiter_rate_limit``                     ``api_call``, ``value``          Current rate limiting configuration (limit and burst)
+``api_limiter_requests_in_flight``             ``api_call``  ``value``          Current and maximum allowed number of requests in flight
+``api_limiter_wait_duration_seconds``          ``api_call``, ``value``          Mean, min, and max wait duration
+============================================== ================================ ========================================================
+
+.. _kvstoremesh_metrics_reference:
+
+kvstoremesh
+-----------
+
+Configuration
+^^^^^^^^^^^^^
+
+To expose any metrics, invoke ``kvstoremesh`` with the
+``--prometheus-serve-addr`` option. This option takes a ``IP:Port`` pair but
+passing an empty IP (e.g. ``:9964``) binds the server to all available
+interfaces (there is usually only one interface in a container).
+
+Exported Metrics
+^^^^^^^^^^^^^^^^
+
+All metrics are exported under the ``cilium_kvstoremesh_`` Prometheus namespace.
+
+Remote clusters
+~~~~~~~~~~~~~~~
+
+==================================== ======================================= =================================================================
+Name                                 Labels                                                       Description
+==================================== ======================================= =================================================================
+``remote_clusters``                  ``source_cluster``                      The total number of remote clusters meshed with the local cluster
+``remote_cluster_failures``          ``source_cluster``, ``target_cluster``  The total number of failures related to the remote cluster
+``remote_cluster_last_failure_ts``   ``source_cluster``, ``target_cluster``  The timestamp of the last failure of the remote cluster
+``remote_cluster_readiness_status``  ``source_cluster``, ``target_cluster``  The readiness status of the remote cluster
+==================================== ======================================= =================================================================
+
+KVstore
+~~~~~~~
+
+======================================== ============================================ ========================================================
+Name                                     Labels                                       Description
+======================================== ============================================ ========================================================
+``kvstore_operations_duration_seconds``  ``action``, ``kind``, ``outcome``, ``scope`` Duration of kvstore operation
+``kvstore_events_queue_seconds``         ``action``, ``scope``                        Seconds waited before a received event was queued
+``kvstore_quorum_errors_total``          ``error``                                    Number of quorum errors
+``kvstore_sync_queue_size``              ``scope``, ``source_cluster``                Number of elements queued for synchronization in the kvstore
+``kvstore_initial_sync_completed``       ``scope``, ``source_cluster``, ``action``    Whether the initial synchronization from/to the kvstore has completed
+======================================== ============================================ ========================================================
+
+API Rate Limiting
+~~~~~~~~~~~~~~~~~
+
+============================================== ================================ ========================================================
+Name                                           Labels                           Description
+============================================== ================================ ========================================================
+``api_limiter_processed_requests_total``       ``api_call``, ``outcome``        Total number of API requests processed
+``api_limiter_processing_duration_seconds``    ``api_call``, ``value``          Mean and estimated processing duration in seconds
+``api_limiter_rate_limit``                     ``api_call``, ``value``          Current rate limiting configuration (limit and burst)
+``api_limiter_requests_in_flight``             ``api_call``  ``value``          Current and maximum allowed number of requests in flight
+``api_limiter_wait_duration_seconds``          ``api_call``, ``value``          Mean, min, and max wait duration
+============================================== ================================ ========================================================

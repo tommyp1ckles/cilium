@@ -4,8 +4,12 @@
 package auth
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"time"
+
+	"github.com/sirupsen/logrus"
 
 	"github.com/cilium/cilium/pkg/auth/certs"
 	"github.com/cilium/cilium/pkg/identity"
@@ -23,18 +27,20 @@ func (key signalAuthKey) String() string {
 }
 
 type authManager struct {
-	signalChannel <-chan signalAuthKey
-	ipCache       ipCache
-	authHandlers  map[policy.AuthType]authHandler
-	authmap       authMap
+	logger       logrus.FieldLogger
+	ipCache      ipCache
+	authHandlers map[policy.AuthType]authHandler
+	authmap      authMap
 
-	mutex   lock.Mutex
-	pending map[authKey]struct{}
+	mutex                    lock.Mutex
+	pending                  map[authKey]struct{}
+	handleAuthenticationFunc func(a *authManager, k authKey, reAuth bool)
 }
 
 // ipCache is the set of interactions the auth manager performs with the IPCache
 type ipCache interface {
 	GetNodeIP(uint16) string
+	GetNodeID(nodeIP net.IP) (nodeID uint16, exists bool)
 }
 
 // authHandler is responsible to handle authentication for a specific auth type
@@ -54,12 +60,7 @@ type authResponse struct {
 	expirationTime time.Time
 }
 
-func newAuthManager(
-	signalChannel <-chan signalAuthKey,
-	authHandlers []authHandler,
-	authmap authMap,
-	ipCache ipCache,
-) (*authManager, error) {
+func newAuthManager(logger logrus.FieldLogger, authHandlers []authHandler, authmap authMap, ipCache ipCache) (*authManager, error) {
 	ahs := map[policy.AuthType]authHandler{}
 	for _, ah := range authHandlers {
 		if ah == nil {
@@ -72,45 +73,82 @@ func newAuthManager(
 	}
 
 	return &authManager{
-		signalChannel: signalChannel,
-		authHandlers:  ahs,
-		authmap:       authmap,
-		ipCache:       ipCache,
-		pending:       make(map[authKey]struct{}),
+		logger:                   logger,
+		authHandlers:             ahs,
+		authmap:                  authmap,
+		ipCache:                  ipCache,
+		pending:                  make(map[authKey]struct{}),
+		handleAuthenticationFunc: handleAuthentication,
 	}, nil
 }
 
-// start receives auth required signals from the signal channel and spawns
-// a new go routine for each authentication request
-func (a *authManager) start() {
-	go func() {
-		for key := range a.signalChannel {
-			k := authKey{
-				localIdentity:  identity.NumericIdentity(key.LocalIdentity),
-				remoteIdentity: identity.NumericIdentity(key.RemoteIdentity),
-				remoteNodeID:   key.RemoteNodeID,
-				authType:       policy.AuthType(key.AuthType),
-			}
+// handleAuthRequest receives auth required signals and spawns a new go routine for each authentication request.
+func (a *authManager) handleAuthRequest(_ context.Context, key signalAuthKey) error {
+	k := authKey{
+		localIdentity:  identity.NumericIdentity(key.LocalIdentity),
+		remoteIdentity: identity.NumericIdentity(key.RemoteIdentity),
+		remoteNodeID:   key.RemoteNodeID,
+		authType:       policy.AuthType(key.AuthType),
+	}
 
-			if a.markPendingAuth(k) {
-				go func(key authKey) {
-					defer a.clearPendingAuth(key)
+	a.logger.
+		WithField("key", k).
+		Debug("Handle authentication request")
 
-					// Check if the auth is actually required, as we might have
-					// updated the authmap since the datapath issued the auth
-					// required signal.
-					if i, err := a.authmap.Get(key); err == nil && i.expiration.After(time.Now()) {
-						log.Debugf("auth: Already authenticated, skipped authentication for key %v", key)
-						return
-					}
+	a.handleAuthenticationFunc(a, k, false)
 
-					if err := a.authenticate(key); err != nil {
-						log.WithError(err).Warningf("auth: Failed to authenticate request for key %v", key)
-					}
-				}(k)
+	return nil
+}
+
+func (a *authManager) handleCertificateRotationEvent(_ context.Context, event certs.CertificateRotationEvent) error {
+	a.logger.
+		WithField("identity", event.Identity).
+		Debug("Handle certificate rotation event")
+
+	all, err := a.authmap.All()
+	if err != nil {
+		return fmt.Errorf("failed to get all auth map entries: %w", err)
+	}
+
+	for k := range all {
+		if k.localIdentity == event.Identity || k.remoteIdentity == event.Identity {
+			a.handleAuthenticationFunc(a, k, true)
+		}
+	}
+
+	return nil
+}
+
+func handleAuthentication(a *authManager, k authKey, reAuth bool) {
+	if !a.markPendingAuth(k) {
+		a.logger.
+			WithField("key", k).
+			Debug("Pending authentication, skipping authentication")
+		return
+	}
+
+	go func(key authKey) {
+		defer a.clearPendingAuth(key)
+
+		if !reAuth {
+			// Check if the auth is actually required, as we might have
+			// updated the authmap since the datapath issued the auth
+			// required signal.
+			if i, err := a.authmap.Get(key); err == nil && i.expiration.After(time.Now()) {
+				a.logger.
+					WithField("key", key).
+					Debug("Already authenticated, skipping authentication")
+				return
 			}
 		}
-	}()
+
+		if err := a.authenticate(key); err != nil {
+			a.logger.
+				WithError(err).
+				WithField("key", key).
+				Warning("Failed to authenticate request")
+		}
+	}(k)
 }
 
 // markPendingAuth checks if there is a pending authentication for the given key.
@@ -130,14 +168,19 @@ func (a *authManager) markPendingAuth(key authKey) bool {
 
 // clearPendingAuth marks the pending authentication as finished.
 func (a *authManager) clearPendingAuth(key authKey) {
+	a.logger.
+		WithField("key", key).
+		Debug("Clearing pending authentication")
+
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
 	delete(a.pending, key)
 }
 
 func (a *authManager) authenticate(key authKey) error {
-	log.Debugf("auth: policy is requiring authentication type %s between local and remote identities %d<->%d",
-		key.authType, key.localIdentity, key.remoteIdentity)
+	a.logger.
+		WithField("key", key).
+		Debug("Policy is requiring authentication")
 
 	// Authenticate according to the requested auth type
 	h, ok := a.authHandlers[key.authType]
@@ -165,8 +208,10 @@ func (a *authManager) authenticate(key authKey) error {
 		return fmt.Errorf("failed to update BPF map in datapath: %w", err)
 	}
 
-	log.Debugf("auth: Successfully authenticated for type %s identity %d<->%d, remote host %s",
-		key.authType, key.localIdentity, key.remoteIdentity, nodeIP)
+	a.logger.
+		WithField("key", key).
+		WithField("remote_node_ip", nodeIP).
+		Debug("Successfully authenticated")
 
 	return nil
 }

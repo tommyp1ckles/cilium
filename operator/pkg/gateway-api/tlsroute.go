@@ -17,10 +17,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"sigs.k8s.io/controller-runtime/pkg/source"
 	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
+	"github.com/cilium/cilium/operator/pkg/gateway-api/helpers"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 )
 
@@ -43,12 +43,12 @@ func (r *tlsRouteReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			var backendServices []string
 			for _, rule := range hr.Spec.Rules {
 				for _, backend := range rule.BackendRefs {
-					if !IsService(backend.BackendObjectReference) {
+					if !helpers.IsService(backend.BackendObjectReference) {
 						continue
 					}
 					backendServices = append(backendServices,
 						types.NamespacedName{
-							Namespace: namespaceDerefOr(backend.Namespace, hr.Namespace),
+							Namespace: helpers.NamespaceDerefOr(backend.Namespace, hr.Namespace),
 							Name:      string(backend.Name),
 						}.String(),
 					)
@@ -65,12 +65,12 @@ func (r *tlsRouteReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			hr := rawObj.(*gatewayv1alpha2.TLSRoute)
 			var gateways []string
 			for _, parent := range hr.Spec.ParentRefs {
-				if !IsGateway(parent) {
+				if !helpers.IsGateway(parent) {
 					continue
 				}
 				gateways = append(gateways,
 					types.NamespacedName{
-						Namespace: namespaceDerefOr(parent.Namespace, hr.Namespace),
+						Namespace: helpers.NamespaceDerefOr(parent.Namespace, hr.Namespace),
 						Name:      string(parent.Name),
 					}.String(),
 				)
@@ -85,11 +85,11 @@ func (r *tlsRouteReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// Watch for changes to TLSRoute
 		For(&gatewayv1alpha2.TLSRoute{}).
 		// Watch for changes to Backend services
-		Watches(&source.Kind{Type: &corev1.Service{}}, r.enqueueRequestForBackendService()).
+		Watches(&corev1.Service{}, r.enqueueRequestForBackendService()).
 		// Watch for changes to Gateways and enqueue TLSRoutes that reference them
-		Watches(&source.Kind{Type: &gatewayv1beta1.Gateway{}}, r.enqueueRequestForGateway()).
+		Watches(&gatewayv1beta1.Gateway{}, r.enqueueRequestForGateway()).
 		// Watch for changes to Gateways and enqueue TLSRoutes that reference them,
-		Watches(&source.Kind{Type: &gatewayv1beta1.Gateway{}}, r.enqueueRequestForGateway(),
+		Watches(&gatewayv1beta1.Gateway{}, r.enqueueRequestForGateway(),
 			builder.WithPredicates(
 				predicate.NewPredicateFuncs(hasMatchingController(context.Background(), mgr.GetClient(), controllerName)),
 			)).
@@ -107,7 +107,7 @@ func (r *tlsRouteReconciler) enqueueRequestForGateway() handler.EventHandler {
 }
 
 func (r *tlsRouteReconciler) enqueueFromIndex(index string) handler.MapFunc {
-	return func(o client.Object) []reconcile.Request {
+	return func(ctx context.Context, o client.Object) []reconcile.Request {
 		scopedLog := log.WithFields(logrus.Fields{
 			logfields.Controller: "tlsRoute",
 			logfields.Resource:   client.ObjectKeyFromObject(o),

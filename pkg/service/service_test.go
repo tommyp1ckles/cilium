@@ -10,13 +10,17 @@ import (
 
 	. "github.com/cilium/checkmate"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"golang.org/x/exp/maps"
 
 	"github.com/cilium/cilium/pkg/checker"
 	"github.com/cilium/cilium/pkg/cidr"
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	datapathOpt "github.com/cilium/cilium/pkg/datapath/option"
 	datapathTypes "github.com/cilium/cilium/pkg/datapath/types"
+	"github.com/cilium/cilium/pkg/k8s"
 	lb "github.com/cilium/cilium/pkg/loadbalancer"
+	"github.com/cilium/cilium/pkg/lock"
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/service/healthserver"
@@ -135,7 +139,15 @@ type ManagerTestSuite struct {
 	ipv6                        bool
 }
 
-var _ = Suite(&ManagerTestSuite{})
+var (
+	_           = Suite(&ManagerTestSuite{})
+	surrogateFE = *lb.NewL3n4AddrID(lb.TCP, cmtypes.MustParseAddrCluster("0.0.0.0"), 80, lb.ScopeExternal, 0)
+	frontend1   = *lb.NewL3n4AddrID(lb.TCP, cmtypes.MustParseAddrCluster("1.1.1.1"), 80, lb.ScopeExternal, 0)
+	frontend2   = *lb.NewL3n4AddrID(lb.TCP, cmtypes.MustParseAddrCluster("1.1.1.2"), 80, lb.ScopeExternal, 0)
+	frontend3   = *lb.NewL3n4AddrID(lb.TCP, cmtypes.MustParseAddrCluster("f00d::1"), 80, lb.ScopeExternal, 0)
+
+	backends1, backends2, backends3, backends4, backends5, backends6 []*lb.Backend
+)
 
 func (m *ManagerTestSuite) SetUpTest(c *C) {
 	serviceIDAlloc.resetLocalID()
@@ -158,25 +170,7 @@ func (m *ManagerTestSuite) SetUpTest(c *C) {
 	m.prevOptionExternalClusterIP = option.Config.ExternalClusterIP
 
 	m.ipv6 = option.Config.EnableIPv6
-}
-
-func (m *ManagerTestSuite) TearDownTest(c *C) {
-	serviceIDAlloc.resetLocalID()
-	backendIDAlloc.resetLocalID()
-	option.Config.EnableSessionAffinity = m.prevOptionSessionAffinity
-	option.Config.EnableSVCSourceRangeCheck = m.prevOptionLBSourceRanges
-	option.Config.NodePortAlg = m.prevOptionNPAlgo
-	option.Config.DatapathMode = m.prevOptionDPMode
-	option.Config.ExternalClusterIP = m.prevOptionExternalClusterIP
-	option.Config.EnableIPv6 = m.ipv6
-}
-
-var (
-	surrogateFE = *lb.NewL3n4AddrID(lb.TCP, cmtypes.MustParseAddrCluster("0.0.0.0"), 80, lb.ScopeExternal, 0)
-	frontend1   = *lb.NewL3n4AddrID(lb.TCP, cmtypes.MustParseAddrCluster("1.1.1.1"), 80, lb.ScopeExternal, 0)
-	frontend2   = *lb.NewL3n4AddrID(lb.TCP, cmtypes.MustParseAddrCluster("1.1.1.2"), 80, lb.ScopeExternal, 0)
-	frontend3   = *lb.NewL3n4AddrID(lb.TCP, cmtypes.MustParseAddrCluster("f00d::1"), 80, lb.ScopeExternal, 0)
-	backends1   = []*lb.Backend{
+	backends1 = []*lb.Backend{
 		lb.NewBackend(0, lb.TCP, cmtypes.MustParseAddrCluster("10.0.0.1"), 8080),
 		lb.NewBackend(0, lb.TCP, cmtypes.MustParseAddrCluster("10.0.0.2"), 8080),
 	}
@@ -198,7 +192,18 @@ var (
 	backends6 = []*lb.Backend{
 		lb.NewBackend(0, lb.TCP, cmtypes.MustParseAddrCluster("10.0.0.7"), 8080),
 	}
-)
+}
+
+func (m *ManagerTestSuite) TearDownTest(c *C) {
+	serviceIDAlloc.resetLocalID()
+	backendIDAlloc.resetLocalID()
+	option.Config.EnableSessionAffinity = m.prevOptionSessionAffinity
+	option.Config.EnableSVCSourceRangeCheck = m.prevOptionLBSourceRanges
+	option.Config.NodePortAlg = m.prevOptionNPAlgo
+	option.Config.DatapathMode = m.prevOptionDPMode
+	option.Config.ExternalClusterIP = m.prevOptionExternalClusterIP
+	option.Config.EnableIPv6 = m.ipv6
+}
 
 func (m *ManagerTestSuite) TestUpsertAndDeleteService(c *C) {
 	m.testUpsertAndDeleteService(c)
@@ -610,7 +615,7 @@ func (m *ManagerTestSuite) TestSyncWithK8sFinished(c *C) {
 
 	// cilium-agent finished the initialization, and thus SyncWithK8sFinished
 	// is called
-	err = m.svc.SyncWithK8sFinished()
+	err = m.svc.SyncWithK8sFinished(func(k8s.ServiceID, *lock.StoppableWaitGroup) bool { return true })
 	c.Assert(err, IsNil)
 
 	// svc1 should be removed from cilium while svc2 is synced
@@ -629,6 +634,89 @@ func (m *ManagerTestSuite) TestSyncWithK8sFinished(c *C) {
 	for _, b := range lbmap.ServiceByID[uint16(id2)].Backends {
 		c.Assert(m.lbmap.AffinityMatch[uint16(id2)][b.ID], Equals, struct{}{})
 	}
+}
+
+func TestRestoreServiceWithStaleBackends(t *testing.T) {
+	backendAddrs := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4", "10.0.0.5"}
+
+	service := func(ns, name, frontend string, backends ...string) *lb.SVC {
+		var bes []*lb.Backend
+		for _, backend := range backends {
+			bes = append(bes, lb.NewBackend(0, lb.TCP, cmtypes.MustParseAddrCluster(backend), 8080))
+		}
+
+		return &lb.SVC{
+			Frontend:         *lb.NewL3n4AddrID(lb.TCP, cmtypes.MustParseAddrCluster(frontend), 80, lb.ScopeExternal, 0),
+			Backends:         bes,
+			Type:             lb.SVCTypeClusterIP,
+			ExtTrafficPolicy: lb.SVCTrafficPolicyCluster,
+			IntTrafficPolicy: lb.SVCTrafficPolicyCluster,
+			Name:             lb.ServiceName{Name: name, Namespace: ns},
+		}
+	}
+
+	toBackendAddrs := func(backends []*lb.Backend) (addrs []string) {
+		for _, be := range backends {
+			addrs = append(addrs, be.L3n4Addr.AddrCluster.Addr().String())
+		}
+		return
+	}
+
+	lbmap := mockmaps.NewLBMockMap()
+	svc := NewService(nil, nil, lbmap)
+
+	_, id1, err := svc.upsertService(service("foo", "bar", "172.16.0.1", backendAddrs...))
+	require.NoError(t, err, "Failed to upsert service")
+
+	require.Contains(t, lbmap.ServiceByID, uint16(id1), "lbmap not populated correctly")
+	require.ElementsMatch(t, backendAddrs, toBackendAddrs(lbmap.ServiceByID[uint16(id1)].Backends), "lbmap not populated correctly")
+	require.ElementsMatch(t, backendAddrs, toBackendAddrs(maps.Values(lbmap.BackendByID)), "lbmap not populated correctly")
+
+	// Recreate the Service structure, but keep the lbmap to restore services from
+	svc = NewService(nil, nil, lbmap)
+	require.NoError(t, svc.RestoreServices(), "Failed to restore services")
+
+	// Simulate a set of service updates. Until synchronization completes, a given service
+	// might not yet contain all backends, in case they either belong to different endpointslices
+	// or different clusters.
+	_, id1bis, err := svc.upsertService(service("foo", "bar", "172.16.0.1", "10.0.0.3"))
+	require.NoError(t, err, "Failed to upsert service")
+	require.Equal(t, id1, id1bis, "Service ID changed unexpectedly")
+
+	// No backend should have been removed yet
+	require.Contains(t, lbmap.ServiceByID, uint16(id1), "lbmap incorrectly modified")
+	require.ElementsMatch(t, backendAddrs, toBackendAddrs(lbmap.ServiceByID[uint16(id1)].Backends), "lbmap incorrectly modified")
+	require.ElementsMatch(t, backendAddrs, toBackendAddrs(maps.Values(lbmap.BackendByID)), "lbmap incorrectly modified")
+
+	// Let's do it once more
+	_, id1ter, err := svc.upsertService(service("foo", "bar", "172.16.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.5"))
+	require.NoError(t, err, "Failed to upsert service")
+	require.Equal(t, id1, id1ter, "Service ID changed unexpectedly")
+
+	// No backend should have been removed yet
+	require.Contains(t, lbmap.ServiceByID, uint16(id1), "lbmap incorrectly modified")
+	require.ElementsMatch(t, backendAddrs, toBackendAddrs(lbmap.ServiceByID[uint16(id1)].Backends), "lbmap incorrectly modified")
+	require.ElementsMatch(t, backendAddrs, toBackendAddrs(maps.Values(lbmap.BackendByID)), "lbmap incorrectly modified")
+
+	// Trigger a new upsertion: this mimics what would eventually happen when calling ServiceCache.EnsureService()
+	ensurer := func(id k8s.ServiceID, swg *lock.StoppableWaitGroup) bool {
+		defer swg.Done()
+		if id.Namespace == "foo" && id.Name == "bar" {
+			_, _, err := svc.upsertService(service("foo", "bar", "172.16.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.5"))
+			require.NoError(t, err, "Failed to upsert service")
+			return true
+		}
+		require.Fail(t, "Unexpected service ID", "Service ID: %v", id)
+		return false
+	}
+
+	require.NoError(t, svc.SyncWithK8sFinished(ensurer), "Failed to trigger garbage collection")
+
+	// Stale backends should now have been removed
+	require.Contains(t, lbmap.ServiceByID, uint16(id1), "stale backends not correctly removed from lbmap")
+	finalBackendAddrs := []string{"10.0.0.2", "10.0.0.3", "10.0.0.5"}
+	require.ElementsMatch(t, finalBackendAddrs, toBackendAddrs(lbmap.ServiceByID[uint16(id1)].Backends), "stale backends not correctly removed from lbmap")
+	require.ElementsMatch(t, finalBackendAddrs, toBackendAddrs(maps.Values(lbmap.BackendByID)), "stale backends not correctly removed from lbmap")
 }
 
 func (m *ManagerTestSuite) TestHealthCheckNodePort(c *C) {
@@ -796,16 +884,12 @@ func (m *ManagerTestSuite) TestHealthCheckNodePortDisabled(c *C) {
 
 func (m *ManagerTestSuite) TestGetServiceNameByAddr(c *C) {
 	fe := frontend1.DeepCopy()
-	be := make([]*lb.Backend, 0, len(backends1))
-	for _, backend := range backends1 {
-		be = append(be, backend.DeepCopy())
-	}
 	name := "svc1"
 	namespace := "ns1"
 	hcport := uint16(3)
 	p := &lb.SVC{
 		Frontend:            *fe,
-		Backends:            be,
+		Backends:            backends1,
 		Type:                lb.SVCTypeNodePort,
 		ExtTrafficPolicy:    lb.SVCTrafficPolicyCluster,
 		IntTrafficPolicy:    lb.SVCTrafficPolicyCluster,
@@ -968,11 +1052,6 @@ func (m *ManagerTestSuite) TestUpsertServiceWithTerminatingBackends(c *C) {
 		Name:                      lb.ServiceName{Name: "svc1", Namespace: "ns1"},
 	}
 
-	// Reset state as backends are pointers to lb.Backend
-	p.Backends[0].State = lb.BackendStateActive
-	p.Backends[1].State = lb.BackendStateActive
-	p.Backends[2].State = lb.BackendStateActive
-
 	created, id1, err := m.svc.UpsertService(p)
 
 	c.Assert(err, IsNil)
@@ -1031,10 +1110,6 @@ func (m *ManagerTestSuite) TestUpsertServiceWithOnlyTerminatingBackends(c *C) {
 		SessionAffinityTimeoutSec: 100,
 		Name:                      lb.ServiceName{Name: "svc1", Namespace: "ns1"},
 	}
-
-	// Reset state as backends are pointers to lb.Backend
-	p.Backends[0].State = lb.BackendStateActive
-	p.Backends[1].State = lb.BackendStateActive
 
 	created, id1, err := m.svc.UpsertService(p)
 
@@ -1102,9 +1177,15 @@ func (m *ManagerTestSuite) TestUpsertServiceWithOnlyTerminatingBackends(c *C) {
 func (m *ManagerTestSuite) TestUpsertServiceWithExternalClusterIP(c *C) {
 	option.Config.NodePortAlg = option.NodePortAlgMaglev
 	option.Config.ExternalClusterIP = true
+	backends := make([]*lb.Backend, 0, len(backends1))
+	for _, b := range backends1 {
+		backends = append(backends, b.DeepCopy())
+	}
+	backends[0].State = lb.BackendStateActive
+	backends[1].State = lb.BackendStateActive
 	p := &lb.SVC{
 		Frontend:         frontend1,
-		Backends:         backends1,
+		Backends:         backends,
 		Type:             lb.SVCTypeClusterIP,
 		ExtTrafficPolicy: lb.SVCTrafficPolicyCluster,
 		IntTrafficPolicy: lb.SVCTrafficPolicyCluster,
@@ -1120,7 +1201,7 @@ func (m *ManagerTestSuite) TestUpsertServiceWithExternalClusterIP(c *C) {
 	c.Assert(len(m.lbmap.BackendByID), Equals, 2)
 	c.Assert(m.svc.svcByID[id1].svcName.Name, Equals, "svc1")
 	c.Assert(m.svc.svcByID[id1].svcName.Namespace, Equals, "ns1")
-	c.Assert(m.lbmap.DummyMaglevTable[uint16(id1)], Equals, len(backends1))
+	c.Assert(m.lbmap.DummyMaglevTable[uint16(id1)], Equals, len(backends))
 }
 
 // Tests whether upsert service doesn't provision the Maglev LUT for ClusterIP,
@@ -1162,11 +1243,6 @@ func (m *ManagerTestSuite) TestRestoreServiceWithTerminatingBackends(c *C) {
 		SessionAffinityTimeoutSec: 100,
 		Name:                      lb.ServiceName{Name: "svc1", Namespace: "ns1"},
 	}
-
-	// Reset state as backends are pointers to lb.Backend
-	p.Backends[0].State = lb.BackendStateActive
-	p.Backends[1].State = lb.BackendStateActive
-	p.Backends[2].State = lb.BackendStateActive
 
 	created, id1, err := m.svc.UpsertService(p)
 
@@ -1297,7 +1373,12 @@ func (m *ManagerTestSuite) TestL7LoadBalancerServiceOverride(c *C) {
 // Tests that services with the given backends are updated with the new backend
 // state.
 func (m *ManagerTestSuite) TestUpdateBackendsState(c *C) {
-	backends := backends1
+	backends := make([]*lb.Backend, 0, len(backends1))
+	for _, b := range backends1 {
+		backends = append(backends, b.DeepCopy())
+	}
+	backends[0].State = lb.BackendStateActive
+	backends[1].State = lb.BackendStateActive
 	p1 := &lb.SVC{
 		Frontend: frontend1,
 		Backends: backends,
@@ -1377,7 +1458,15 @@ func (m *ManagerTestSuite) TestUpdateBackendsState(c *C) {
 // Tests that backend states are restored.
 func (m *ManagerTestSuite) TestRestoreServiceWithBackendStates(c *C) {
 	option.Config.NodePortAlg = option.NodePortAlgMaglev
-	backends := append(backends1, backends4...)
+	bs := append(backends1, backends4...)
+	backends := make([]*lb.Backend, 0, len(bs))
+	for _, b := range bs {
+		backends = append(backends, b.DeepCopy())
+	}
+	backends[0].State = lb.BackendStateActive
+	backends[1].State = lb.BackendStateActive
+	backends[2].State = lb.BackendStateActive
+
 	p1 := &lb.SVC{
 		Frontend:                  frontend1,
 		Backends:                  backends,
@@ -1430,11 +1519,9 @@ func (m *ManagerTestSuite) TestRestoreServiceWithBackendStates(c *C) {
 func (m *ManagerTestSuite) TestUpsertServiceWithZeroWeightBackends(c *C) {
 	option.Config.NodePortAlg = option.NodePortAlgMaglev
 	backends := append(backends1, backends4...)
-	backends[0].State = lb.BackendStateActive
 	backends[1].Weight = 0
 	backends[1].State = lb.BackendStateMaintenance
 	backends[2].Weight = 1
-	backends[2].State = lb.BackendStateActive
 
 	p := &lb.SVC{
 		Frontend:                  frontend1,
@@ -1458,8 +1545,10 @@ func (m *ManagerTestSuite) TestUpsertServiceWithZeroWeightBackends(c *C) {
 	c.Assert(len(m.lbmap.BackendByID), Equals, 3)
 	hash := backends[1].L3n4Addr.Hash()
 	c.Assert(m.svc.backendByHash[hash].State, Equals, lb.BackendStateMaintenance)
-	hash = backends[2].L3n4Addr.Hash()
-	c.Assert(m.svc.backendByHash[hash].State, Equals, lb.BackendStateActive)
+	c.Assert(m.svc.svcByID[id1].backendByHash[hash].State, Equals, lb.BackendStateMaintenance)
+	hash2 := backends[2].L3n4Addr.Hash()
+	c.Assert(m.svc.backendByHash[hash2].State, Equals, lb.BackendStateActive)
+	c.Assert(m.svc.svcByID[id1].backendByHash[hash2].State, Equals, lb.BackendStateActive)
 	c.Assert(m.lbmap.DummyMaglevTable[uint16(id1)], Equals, 2)
 
 	// Update existing backend weight
@@ -1472,7 +1561,7 @@ func (m *ManagerTestSuite) TestUpsertServiceWithZeroWeightBackends(c *C) {
 	c.Assert(created, Equals, false)
 	c.Assert(len(m.lbmap.ServiceByID[uint16(id1)].Backends), Equals, 3)
 	c.Assert(len(m.lbmap.BackendByID), Equals, 3)
-	c.Assert(m.svc.backendByHash[hash].State, Equals, lb.BackendStateMaintenance)
+	c.Assert(m.svc.svcByID[id1].backendByHash[hash2].State, Equals, lb.BackendStateMaintenance)
 	c.Assert(m.lbmap.DummyMaglevTable[uint16(id1)], Equals, 1)
 
 	// Delete backends with weight 0
@@ -1485,6 +1574,71 @@ func (m *ManagerTestSuite) TestUpsertServiceWithZeroWeightBackends(c *C) {
 	c.Assert(len(m.lbmap.ServiceByID[uint16(id1)].Backends), Equals, 1)
 	c.Assert(len(m.lbmap.BackendByID), Equals, 1)
 	c.Assert(m.lbmap.DummyMaglevTable[uint16(id1)], Equals, 1)
+}
+
+func (m *ManagerTestSuite) TestUpdateBackendsStateWithBackendSharedAcrossServices(c *C) {
+	option.Config.NodePortAlg = option.NodePortAlgMaglev
+	be := append(backends1, backends4...)
+	backends := make([]*lb.Backend, 0, len(be))
+	for _, b := range be {
+		backends = append(backends, b.DeepCopy())
+	}
+	backends[0].State = lb.BackendStateActive
+	backends[1].State = lb.BackendStateActive
+	backends[2].State = lb.BackendStateMaintenance
+	hash0 := backends[0].L3n4Addr.Hash()
+	hash1 := backends[1].L3n4Addr.Hash()
+	hash2 := backends[2].L3n4Addr.Hash()
+
+	p := &lb.SVC{
+		Frontend:                  frontend1,
+		Backends:                  backends,
+		Type:                      lb.SVCTypeNodePort,
+		ExtTrafficPolicy:          lb.SVCTrafficPolicyCluster,
+		IntTrafficPolicy:          lb.SVCTrafficPolicyCluster,
+		SessionAffinity:           true,
+		SessionAffinityTimeoutSec: 100,
+		Name: lb.ServiceName{
+			Name:      "svc1",
+			Namespace: "ns1",
+		},
+	}
+	r := &lb.SVC{
+		Frontend:                  frontend2,
+		Backends:                  backends,
+		Type:                      lb.SVCTypeNodePort,
+		ExtTrafficPolicy:          lb.SVCTrafficPolicyCluster,
+		IntTrafficPolicy:          lb.SVCTrafficPolicyCluster,
+		SessionAffinity:           true,
+		SessionAffinityTimeoutSec: 100,
+		Name: lb.ServiceName{
+			Name:      "svc2",
+			Namespace: "ns1",
+		},
+	}
+	svcHash2 := r.Frontend.Hash()
+
+	_, _, err := m.svc.UpsertService(p)
+	c.Assert(err, IsNil)
+	_, _, err = m.svc.UpsertService(r)
+	c.Assert(err, IsNil)
+	_, id1, err := m.svc.UpsertService(r)
+
+	// Assert expected backend states after consecutive upsert service calls that share the backends.
+	c.Assert(err, IsNil)
+	c.Assert(len(m.lbmap.ServiceByID[uint16(id1)].Backends), Equals, 3)
+	c.Assert(len(m.lbmap.BackendByID), Equals, 3)
+	c.Assert(m.svc.backendByHash[hash0].State, Equals, lb.BackendStateActive)
+	c.Assert(m.svc.backendByHash[hash1].State, Equals, lb.BackendStateActive)
+	c.Assert(m.svc.backendByHash[hash2].State, Equals, lb.BackendStateMaintenance)
+
+	backends[1].State = lb.BackendStateMaintenance
+	err = m.svc.UpdateBackendsState(backends)
+
+	c.Assert(err, IsNil)
+	c.Assert(m.svc.backendByHash[hash1].State, Equals, lb.BackendStateMaintenance)
+	c.Assert(m.svc.svcByHash[svcHash2].backends[1].State, Equals, lb.BackendStateMaintenance)
+	c.Assert(m.svc.svcByHash[svcHash2].backendByHash[hash1].State, Equals, lb.BackendStateMaintenance)
 }
 
 func Test_filterServiceBackends(t *testing.T) {

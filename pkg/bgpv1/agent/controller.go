@@ -7,13 +7,12 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
-	"time"
 
 	"github.com/sirupsen/logrus"
 
 	"github.com/cilium/workerpool"
 
-	"github.com/cilium/cilium/pkg/bgpv1/types"
+	"github.com/cilium/cilium/pkg/bgpv1/agent/signaler"
 	"github.com/cilium/cilium/pkg/hive"
 	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/ip"
@@ -27,9 +26,6 @@ import (
 	"github.com/cilium/cilium/pkg/option"
 )
 
-// minHoldTime represents the minimal BGP hold time duration
-const minHoldTime = 3 * time.Second
-
 var (
 	log = logging.DefaultLogger.WithField(logfields.LogSubsys, "bgp-control-plane")
 )
@@ -39,42 +35,6 @@ var (
 	// multiple policies which apply to its host.
 	ErrMultiplePolicies = fmt.Errorf("more then one CiliumBGPPeeringPolicy applies to this node, please ensure only a single Policy matches this node's labels")
 )
-
-// Signaler multiplexes multiple event sources into a single level-triggered
-// event.
-//
-// Signaler should always be constructed with a channel of size 1.
-//
-// Use of a Signaler allows for bursts of events to be "rolled-up".
-// This is a suitable approach since the Controller checks the entire state of
-// the world on each iteration of its control loop.
-//
-// Additionally, this precludes any need for ordering between different event
-// sources.
-type Signaler struct {
-	Sig chan struct{}
-}
-
-// NewSignaler constructs a Signaler
-func NewSignaler() Signaler {
-	return Signaler{
-		Sig: make(chan struct{}, 1),
-	}
-}
-
-// Event adds an edge triggered event to the Signaler.
-//
-// A controller which uses this Signaler will be notified of this event some
-// time after.
-//
-// This signature adheres to the common event handling signatures of
-// cache.ResourceEventHandlerFuncs for convenience.
-func (s Signaler) Event(_ interface{}) {
-	select {
-	case s.Sig <- struct{}{}:
-	default:
-	}
-}
 
 // ControlPlaneState captures a subset of Cilium's runtime state.
 //
@@ -94,13 +54,15 @@ type ControlPlaneState struct {
 	IPv4 netip.Addr
 	// The current IPv6 address of the agent, reachable externally.
 	IPv6 netip.Addr
+	// The current node name
+	CurrentNodeName string
 }
 
 // ResolveRouterID resolves router ID, if we have an annotation and it can be
 // parsed into a valid ipv4 address use it. If not, determine if Cilium is
 // configured with an IPv4 address, if so use it. If neither, return an error,
 // we cannot assign an router ID.
-func (cstate *ControlPlaneState) ResolveRouterID(localASN int) (string, error) {
+func (cstate *ControlPlaneState) ResolveRouterID(localASN int64) (string, error) {
 	if _, ok := cstate.Annotations[localASN]; ok {
 		if parsed, err := netip.ParseAddr(cstate.Annotations[localASN].RouterID); err == nil && !parsed.IsUnspecified() {
 			return parsed.String(), nil
@@ -142,7 +104,7 @@ type Controller struct {
 	// when it occurs the Controller will query each
 	// informer for the latest API information required
 	// to drive it's control loop.
-	Sig Signaler
+	Sig *signaler.BGPCPSignaler
 	// BGPMgr is an implementation of the BGPRouterManager interface
 	// and provides a declarative API for configuring BGP peers.
 	BGPMgr BGPRouterManager
@@ -155,7 +117,8 @@ type ControllerParams struct {
 	cell.In
 
 	Lifecycle      hive.Lifecycle
-	Sig            Signaler
+	Shutdowner     hive.Shutdowner
+	Sig            *signaler.BGPCPSignaler
 	RouteMgr       BGPRouterManager
 	PolicyResource resource.Resource[*v2alpha1api.CiliumBGPPeeringPolicy]
 	DaemonConfig   *option.DaemonConfig
@@ -263,11 +226,6 @@ func (c *Controller) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			killCTX, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
-			defer cancel()
-
-			c.FullWithdrawal(killCTX) // kill any BGP sessions
-
 			l.Info("Cilium BGP Control Plane Controller shut down")
 			return
 		case <-c.Sig.Sig:
@@ -286,7 +244,8 @@ func (c *Controller) Run(ctx context.Context) {
 //
 // Policy selection follows the following rules:
 //   - A policy matches a node if said policy's "nodeSelector" field matches
-//     the node's labels
+//     the node's labels. If "nodeSelector" is omitted, it is unconditionally
+//     selected.
 //   - If (N > 1) policies match the provided *corev1.Node an error is returned.
 //     only a single policy may apply to a node to avoid ambiguity at this stage
 //     of development.
@@ -295,11 +254,10 @@ func PolicySelection(ctx context.Context, labels map[string]string, policies []*
 		l = log.WithFields(logrus.Fields{
 			"component": "PolicySelection",
 		})
-	)
-	// determine which policies match our node's labels.
-	var (
-		selected   *v2alpha1api.CiliumBGPPeeringPolicy
-		slimLabels = slimlabels.Set(labels)
+
+		// determine which policies match our node's labels.
+		selectedPolicy *v2alpha1api.CiliumBGPPeeringPolicy
+		slimLabels     = slimlabels.Set(labels)
 	)
 
 	// range over policies and see if any match this node's labels.
@@ -308,25 +266,38 @@ func PolicySelection(ctx context.Context, labels map[string]string, policies []*
 	// one policy applies to a node, we disconnect from all BGP peers and log
 	// an error.
 	for _, policy := range policies {
-		nodeSelector, err := slimmetav1.LabelSelectorAsSelector(policy.Spec.NodeSelector)
-		if err != nil {
-			l.WithError(err).Error("Failed to convert CiliumBGPPeeringPolicy's NodeSelector to a label.Selector interface")
-		}
+		var selected bool
+
 		l.WithFields(logrus.Fields{
-			"policyNodeSelector": nodeSelector.String(),
+			"policyName":         policy.Name,
 			"nodeLabels":         slimLabels,
+			"policyNodeSelector": policy.Spec.NodeSelector.String(),
 		}).Debug("Comparing BGP policy node selector with node's labels")
-		if nodeSelector.Matches(slimLabels) {
-			if selected != nil {
+
+		if policy.Spec.NodeSelector == nil {
+			selected = true
+		} else {
+			nodeSelector, err := slimmetav1.LabelSelectorAsSelector(policy.Spec.NodeSelector)
+			if err != nil {
+				l.WithError(err).Error("Failed to convert CiliumBGPPeeringPolicy's NodeSelector to a label.Selector interface")
+				continue
+			}
+			if nodeSelector.Matches(slimLabels) {
+				selected = true
+			}
+		}
+
+		if selected {
+			if selectedPolicy != nil {
 				return nil, ErrMultiplePolicies
 			}
-			selected = policy
+			selectedPolicy = policy
 		}
 	}
 
 	// no policy was discovered, tell router manager to withdrawal peers if they
 	// are configured.
-	return selected, nil
+	return selectedPolicy, nil
 }
 
 // Reconcile is the control loop for the Controller.
@@ -373,7 +344,8 @@ func (c *Controller) Reconcile(ctx context.Context) error {
 	}
 
 	// apply policy defaults to have consistent default config across sub-systems
-	policy = c.applyPolicyDefaults(policy)
+	policy = policy.DeepCopy() // deepcopy to not modify the policy object in store
+	policy.SetDefaults()
 
 	err = c.validatePolicy(policy)
 	if err != nil {
@@ -400,15 +372,21 @@ func (c *Controller) Reconcile(ctx context.Context) error {
 		return fmt.Errorf("failed to retrieve Node's pod CIDR ranges: %w", err)
 	}
 
+	currentNodeName, err := c.NodeSpec.CurrentNodeName()
+	if err != nil {
+		return fmt.Errorf("failed to retrieve current node's name: %w", err)
+	}
+
 	ipv4, _ := ip.AddrFromIP(nodeaddr.GetIPv4())
 	ipv6, _ := ip.AddrFromIP(nodeaddr.GetIPv6())
 
 	// define our current point-in-time control plane state.
 	state := &ControlPlaneState{
-		PodCIDRs:    podCIDRs,
-		Annotations: annoMap,
-		IPv4:        ipv4,
-		IPv6:        ipv6,
+		PodCIDRs:        podCIDRs,
+		Annotations:     annoMap,
+		IPv4:            ipv4,
+		IPv6:            ipv6,
+		CurrentNodeName: currentNodeName,
 	}
 
 	// call bgp sub-systems required to apply this policy's BGP topology.
@@ -426,45 +404,14 @@ func (c *Controller) FullWithdrawal(ctx context.Context) {
 	_ = c.BGPMgr.ConfigurePeers(ctx, nil, nil) // cannot fail, no need for error handling
 }
 
-// applyPolicyDefaults applies default values on the CiliumBGPPeeringPolicy.
-func (c *Controller) applyPolicyDefaults(policy *v2alpha1api.CiliumBGPPeeringPolicy) *v2alpha1api.CiliumBGPPeeringPolicy {
-	p := policy.DeepCopy() // deepcopy to not modify the policy object in store
-	for _, r := range p.Spec.VirtualRouters {
-		for j := range r.Neighbors {
-			n := &r.Neighbors[j]
-			if n.ConnectRetryTime.Duration == 0 {
-				n.ConnectRetryTime.Duration = types.DefaultBGPConnectRetryTime
-			}
-			if n.HoldTime.Duration == 0 {
-				// RFC4271 Sec 4.4 says that hold time can be 0 and has a special meaning that disables keepalive.
-				// However, as GoBGP defaults the hold time for 0 value, it cannot be 0 in our case.
-				n.HoldTime.Duration = types.DefaultBGPHoldTime
-			}
-			if n.KeepAliveTime.Duration == 0 {
-				n.KeepAliveTime.Duration = n.HoldTime.Duration / 3
-			}
-		}
-	}
-	return p
-}
-
 // validatePolicy validates the CiliumBGPPeeringPolicy.
+// The validation is normally done by kube-apiserver (based on CRD validation markers),
+// this validates only those constraints that cannot be enforced by them.
 func (c *Controller) validatePolicy(policy *v2alpha1api.CiliumBGPPeeringPolicy) error {
 	for _, r := range policy.Spec.VirtualRouters {
 		for _, n := range r.Neighbors {
-			if n.ConnectRetryTime.Duration < 0 {
-				return fmt.Errorf("connectRetryTime is negative for peer ASN %d, IP %s", n.PeerASN, n.PeerAddress)
-			}
-			if n.HoldTime.Duration < minHoldTime {
-				// RFC4271 Sec 4.2 says that the hold time MUST be zero or at least 3 seconds.
-				// However, as GoBGP defaults the hold time for 0 value, it cannot be 0 in our case.
-				return fmt.Errorf("holdTime is lower than %v for peer ASN %d, IP %s", minHoldTime, n.PeerASN, n.PeerAddress)
-			}
-			if n.KeepAliveTime.Duration < 0 {
-				return fmt.Errorf("keepAliveTime is negative for peer ASN %d, IP %s", n.PeerASN, n.PeerAddress)
-			}
-			if n.KeepAliveTime.Duration > n.HoldTime.Duration {
-				return fmt.Errorf("keepAliveTime time larger than holdTime for peer ASN %d, IP %s", n.PeerASN, n.PeerAddress)
+			if err := n.Validate(); err != nil {
+				return err
 			}
 		}
 	}

@@ -45,10 +45,19 @@ import (
 func initKubeProxyReplacementOptions() error {
 	if option.Config.KubeProxyReplacement != option.KubeProxyReplacementStrict &&
 		option.Config.KubeProxyReplacement != option.KubeProxyReplacementPartial &&
-		option.Config.KubeProxyReplacement != option.KubeProxyReplacementDisabled {
+		option.Config.KubeProxyReplacement != option.KubeProxyReplacementDisabled &&
+		option.Config.KubeProxyReplacement != option.KubeProxyReplacementTrue &&
+		option.Config.KubeProxyReplacement != option.KubeProxyReplacementFalse {
 		return fmt.Errorf("Invalid value for --%s: %s", option.KubeProxyReplacement, option.Config.KubeProxyReplacement)
 	}
 
+	if option.Config.KubeProxyReplacement == option.KubeProxyReplacementStrict ||
+		option.Config.KubeProxyReplacement == option.KubeProxyReplacementPartial ||
+		option.Config.KubeProxyReplacement == option.KubeProxyReplacementDisabled {
+		log.Warnf("Deprecated value for --%s: %s (use either \"true\", or \"false\")", option.KubeProxyReplacement, option.Config.KubeProxyReplacement)
+	}
+
+	// This will be removed in v1.15
 	if option.Config.KubeProxyReplacement == option.KubeProxyReplacementDisabled {
 		log.Infof("Auto-disabling %q, %q, %q, %q features and falling back to %q",
 			option.EnableNodePort, option.EnableExternalIPs,
@@ -62,7 +71,9 @@ func initKubeProxyReplacementOptions() error {
 		return nil
 	}
 
-	if option.Config.KubeProxyReplacement == option.KubeProxyReplacementStrict {
+	if option.Config.KubeProxyReplacement == option.KubeProxyReplacementStrict ||
+		option.Config.KubeProxyReplacement == option.KubeProxyReplacementTrue {
+
 		log.Infof("Auto-enabling %q, %q, %q, %q, %q features",
 			option.EnableNodePort, option.EnableExternalIPs,
 			option.EnableSocketLB, option.EnableHostPort,
@@ -73,6 +84,15 @@ func initKubeProxyReplacementOptions() error {
 		option.Config.EnableExternalIPs = true
 		option.Config.EnableSocketLB = true
 		option.Config.EnableSessionAffinity = true
+	}
+
+	if option.Config.KubeProxyReplacement != option.KubeProxyReplacementDisabled &&
+		option.Config.EnableEnvoyConfig && !option.Config.EnableIPSec &&
+		!option.Config.EnableNodePort {
+		// CiliumEnvoyConfig L7 LB only works with bpf node port enabled
+		log.Infof("Auto-enabling %s for %s",
+			option.EnableNodePort, option.EnableEnvoyConfig)
+		option.Config.EnableNodePort = true
 	}
 
 	if option.Config.EnableNodePort {
@@ -91,7 +111,8 @@ func initKubeProxyReplacementOptions() error {
 			option.Config.LoadBalancerDSRDispatch != option.DSRDispatchIPIP &&
 			option.Config.LoadBalancerDSRDispatch != option.DSRDispatchGeneve ||
 			option.Config.NodePortMode == option.NodePortModeHybrid &&
-				option.Config.LoadBalancerDSRDispatch != option.DSRDispatchOption {
+				option.Config.LoadBalancerDSRDispatch != option.DSRDispatchOption &&
+				option.Config.LoadBalancerDSRDispatch != option.DSRDispatchGeneve {
 			return fmt.Errorf("Invalid value for --%s: %s", option.LoadBalancerDSRDispatch, option.Config.LoadBalancerDSRDispatch)
 		}
 
@@ -153,6 +174,15 @@ func initKubeProxyReplacementOptions() error {
 			return fmt.Errorf("Invalid value for --%s: %s", option.NodePortAcceleration, option.Config.NodePortAcceleration)
 		}
 
+		if option.Config.NodePortAcceleration != option.NodePortAccelerationDisabled &&
+			option.Config.EnableWireguard && option.Config.EncryptNode {
+			log.WithField(logfields.Hint,
+				"Disable XDP acceleration to encrypt N/S Loadbalancer traffic.").
+				Warnf("With %s: %s and %s, %s enabled, N/S Loadbalancer traffic won't be encrypted "+
+					"when an intermediate node redirects a request to another node where a selected backend is running.",
+					option.NodePortAcceleration, option.Config.NodePortAcceleration, option.EnableWireguard, option.EncryptNode)
+		}
+
 		if !option.Config.NodePortBindProtection {
 			log.Warning("NodePort BPF configured without bind(2) protection against service ports")
 		}
@@ -195,7 +225,7 @@ func initKubeProxyReplacementOptions() error {
 				option.Config.NodePortMode, option.Config.LoadBalancerDSRDispatch, option.Config.TunnelProtocol)
 		}
 
-		if option.Config.NodePortMode == option.NodePortModeDSR &&
+		if option.Config.NodePortMode != option.NodePortModeSNAT &&
 			option.Config.LoadBalancerDSRDispatch == option.DSRDispatchGeneve &&
 			option.Config.TunnelingEnabled() && option.Config.TunnelProtocol != option.TunnelGeneve {
 			return fmt.Errorf("Node Port %q mode with %s dispatch requires %s tunneling.",
@@ -212,6 +242,14 @@ func initKubeProxyReplacementOptions() error {
 			}
 		}
 
+		if option.Config.EnableHighScaleIPcache {
+			if option.Config.NodePortMode != option.NodePortModeDSR ||
+				option.Config.LoadBalancerDSRDispatch != option.DSRDispatchGeneve {
+				return fmt.Errorf("The high-scale IPcache mode requires Node Port mode %q with %s dispatch",
+					option.NodePortModeDSR, option.DSRDispatchGeneve)
+			}
+		}
+
 		option.Config.EnableHealthDatapath =
 			option.Config.DatapathMode == datapathOption.DatapathModeLBOnly &&
 				option.Config.NodePortMode == option.NodePortModeDSR &&
@@ -224,7 +262,7 @@ func initKubeProxyReplacementOptions() error {
 		// required for NAT operations
 		if !option.Config.KubeProxyReplacementFullyEnabled() {
 			return fmt.Errorf("%s requires the agent to run with %s=%s.",
-				option.InstallNoConntrackIptRules, option.KubeProxyReplacement, option.KubeProxyReplacementStrict)
+				option.InstallNoConntrackIptRules, option.KubeProxyReplacement, option.KubeProxyReplacementTrue)
 		}
 
 		if option.Config.MasqueradingEnabled() && !option.Config.EnableBPFMasquerade {
@@ -395,11 +433,8 @@ func finishKubeProxyReplacementInit() error {
 		case option.Config.IptablesMasqueradingEnabled():
 			msg = fmt.Sprintf("BPF host routing requires %s.", option.EnableBPFMasquerade)
 		// KPR=strict is needed or we might rely on netfilter.
-		case option.Config.KubeProxyReplacement != option.KubeProxyReplacementStrict:
-			msg = fmt.Sprintf("BPF host routing requires %s=%s.", option.KubeProxyReplacement, option.KubeProxyReplacementStrict)
-		// All cases below still need to be implemented ...
-		case option.Config.EnableEndpointRoutes && option.Config.EnableIPv6:
-			msg = fmt.Sprintf("BPF host routing is currently not supported with %s when IPv6 is enabled.", option.EnableEndpointRoutes)
+		case option.Config.KubeProxyReplacement != option.KubeProxyReplacementStrict && option.Config.KubeProxyReplacement != option.KubeProxyReplacementTrue:
+			msg = fmt.Sprintf("BPF host routing requires %s=%s.", option.KubeProxyReplacement, option.KubeProxyReplacementTrue)
 		default:
 			if probes.HaveProgramHelper(ebpf.SchedCLS, asm.FnRedirectNeigh) != nil ||
 				probes.HaveProgramHelper(ebpf.SchedCLS, asm.FnRedirectPeer) != nil {

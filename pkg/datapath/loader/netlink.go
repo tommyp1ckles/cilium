@@ -366,15 +366,20 @@ func (l *Loader) reloadIPSecOnLinkChanges() {
 
 		for {
 			// Wait for first update or trigger before reinitializing.
+		getUpdate:
 			select {
-			case _, ok := <-updates:
+			case u, ok := <-updates:
 				if !ok {
 					return
+				}
+				// Ignore veth devices
+				if u.Type() == "veth" {
+					goto getUpdate
 				}
 			case <-trigger:
 			}
 
-			log.Info("Reinitializing IPsec due to link changes")
+			log.Info("Reinitializing IPsec due to device changes")
 			err := l.reinitializeIPSec(ctx)
 			if err != nil {
 				// We may fail if links have been removed during the reload. In this case
@@ -391,15 +396,51 @@ func (l *Loader) reloadIPSecOnLinkChanges() {
 				select {
 				case <-settled:
 					break settleLoop
-				case <-updates:
+				case u := <-updates:
+					// Ignore veth devices
+					if u.Type() == "veth" {
+						continue
+					}
+
+					// Trigger reinit immediately after
+					// settle duration has passed.
 					select {
 					case trigger <- struct{}{}:
 					default:
 					}
-					break settleLoop
 				}
 
 			}
 		}
 	}()
+}
+
+// addHostDeviceAddr add internal ipv4 and ipv6 addresses to the cilium_host device.
+func addHostDeviceAddr(hostDev netlink.Link, ipv4, ipv6 net.IP) error {
+	if ipv4 != nil {
+		addr := netlink.Addr{
+			IPNet: &net.IPNet{
+				IP:   ipv4,
+				Mask: net.CIDRMask(32, 32), // corresponds to /32
+			},
+		}
+
+		if err := netlink.AddrReplace(hostDev, &addr); err != nil {
+			return err
+		}
+	}
+	if ipv6 != nil {
+		addr := netlink.Addr{
+			IPNet: &net.IPNet{
+				IP:   ipv6,
+				Mask: net.CIDRMask(64, 128), // corresponds to /64
+			},
+		}
+
+		if err := netlink.AddrReplace(hostDev, &addr); err != nil {
+			return err
+		}
+
+	}
+	return nil
 }

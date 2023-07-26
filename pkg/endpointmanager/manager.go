@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
 
 	"github.com/cilium/cilium/pkg/completion"
@@ -28,6 +27,7 @@ import (
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/mcastmanager"
 	"github.com/cilium/cilium/pkg/metrics"
+	"github.com/cilium/cilium/pkg/metrics/metric"
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
@@ -183,7 +183,7 @@ func (mgr *endpointManager) UpdatePolicyMaps(ctx context.Context, notifyWg *sync
 
 // InitMetrics hooks the endpointManager into the metrics subsystem. This can
 // only be done once, globally, otherwise the metrics library will panic.
-func (mgr *endpointManager) InitMetrics() {
+func (mgr *endpointManager) InitMetrics(registry *metrics.Registry) {
 	if option.Config.DryMode {
 		return
 	}
@@ -192,14 +192,14 @@ func (mgr *endpointManager) InitMetrics() {
 		// would result in negative counts.
 		// It must be thread-safe.
 
-		metrics.Endpoint = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		metrics.Endpoint = metric.NewGaugeFunc(metric.GaugeOpts{
 			Namespace: metrics.Namespace,
 			Name:      "endpoint",
 			Help:      "Number of endpoints managed by this agent",
 		},
 			func() float64 { return float64(len(mgr.GetEndpoints())) },
 		)
-		metrics.MustRegister(metrics.Endpoint)
+		registry.MustRegister(metrics.Endpoint)
 	})
 }
 
@@ -603,11 +603,21 @@ func (mgr *endpointManager) RestoreEndpoint(ep *endpoint.Endpoint) error {
 
 // AddEndpoint takes the prepared endpoint object and starts managing it.
 func (mgr *endpointManager) AddEndpoint(owner regeneration.Owner, ep *endpoint.Endpoint, reason string) (err error) {
-	ep.SetDefaultConfiguration(false)
-
 	if ep.ID != 0 {
 		return fmt.Errorf("Endpoint ID is already set to %d", ep.ID)
 	}
+
+	// Updating logger to re-populate pod fields
+	// when endpoint and its logger are created pod details are not populated
+	// and all subsequent logs have empty pod details like ip addresses, k8sPodName
+	// this update will populate pod details in logger
+	ep.UpdateLogger(map[string]interface{}{
+		logfields.ContainerID: ep.GetShortContainerID(),
+		logfields.IPv4:        ep.GetIPv4Address(),
+		logfields.IPv6:        ep.GetIPv6Address(),
+		logfields.K8sPodName:  ep.GetK8sNamespaceAndPodName(),
+	})
+
 	err = mgr.expose(ep)
 	if err != nil {
 		return err

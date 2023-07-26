@@ -10,6 +10,7 @@ import (
 
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/bgpv1/types"
+	v2alpha1api "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 
 	gobgp "github.com/osrg/gobgp/v3/api"
 )
@@ -51,6 +52,10 @@ func (g *GoBGPServer) GetPeerState(ctx context.Context) (types.GetPeerStateRespo
 
 		peerState := &models.BgpPeer{}
 
+		if peer.Transport != nil {
+			peerState.PeerPort = int64(peer.Transport.RemotePort)
+		}
+
 		if peer.Conf != nil {
 			peerState.LocalAsn = int64(peer.Conf.LocalAsn)
 			peerState.PeerAddress = peer.Conf.NeighborAddress
@@ -74,6 +79,12 @@ func (g *GoBGPServer) GetPeerState(ctx context.Context) (types.GetPeerStateRespo
 			peerState.Families = append(peerState.Families, toAgentAfiSafiState(afiSafi.State))
 		}
 
+		if peer.EbgpMultihop != nil && peer.EbgpMultihop.Enabled {
+			peerState.EbgpMultihopTTL = int64(peer.EbgpMultihop.MultihopTtl)
+		} else {
+			peerState.EbgpMultihopTTL = int64(v2alpha1api.DefaultBGPEBGPMultihopTTL) // defaults to 1 if not enabled
+		}
+
 		if peer.Timers != nil {
 			tConfig := peer.Timers.Config
 			tState := peer.Timers.State
@@ -90,6 +101,12 @@ func (g *GoBGPServer) GetPeerState(ctx context.Context) (types.GetPeerStateRespo
 					peerState.AppliedKeepAliveTimeSeconds = int64(tState.KeepaliveInterval)
 				}
 			}
+		}
+
+		peerState.GracefulRestart = &models.BgpGracefulRestart{}
+		if peer.GracefulRestart != nil {
+			peerState.GracefulRestart.Enabled = peer.GracefulRestart.Enabled
+			peerState.GracefulRestart.RestartTimeSeconds = int64(peer.GracefulRestart.RestartTime)
 		}
 
 		data = append(data, peerState)
@@ -202,4 +219,64 @@ func toAgentSafi(s gobgp.Family_Safi) types.Safi {
 	default:
 		return types.SafiUnknown
 	}
+}
+
+func toGoBGPTableType(t types.TableType) (gobgp.TableType, error) {
+	switch t {
+	case types.TableTypeLocRIB:
+		return gobgp.TableType_LOCAL, nil
+	case types.TableTypeAdjRIBIn:
+		return gobgp.TableType_ADJ_IN, nil
+	case types.TableTypeAdjRIBOut:
+		return gobgp.TableType_ADJ_OUT, nil
+	default:
+		return gobgp.TableType_LOCAL, fmt.Errorf("unknown table type %d", t)
+	}
+}
+
+// GetRoutes retrieves routes from the RIB of underlying router
+func (g *GoBGPServer) GetRoutes(ctx context.Context, r *types.GetRoutesRequest) (*types.GetRoutesResponse, error) {
+	errs := []error{}
+	var routes []*types.Route
+
+	fn := func(destination *gobgp.Destination) {
+		paths, err := ToAgentPaths(destination.Paths)
+		if err != nil {
+			errs = append(errs, err)
+			return
+		}
+		routes = append(routes, &types.Route{
+			Prefix: destination.Prefix,
+			Paths:  paths,
+		})
+	}
+
+	tt, err := toGoBGPTableType(r.TableType)
+	if err != nil {
+		return nil, fmt.Errorf("invalid table type: %w", err)
+	}
+
+	family := &gobgp.Family{
+		Afi:  gobgp.Family_Afi(r.Family.Afi),
+		Safi: gobgp.Family_Safi(r.Family.Safi),
+	}
+
+	var neighbor string
+	if r.Neighbor.IsValid() {
+		neighbor = r.Neighbor.String()
+	}
+
+	req := &gobgp.ListPathRequest{
+		TableType: tt,
+		Family:    family,
+		Name:      neighbor,
+	}
+
+	if err := g.server.ListPath(ctx, req, fn); err != nil {
+		return nil, err
+	}
+
+	return &types.GetRoutesResponse{
+		Routes: routes,
+	}, nil
 }

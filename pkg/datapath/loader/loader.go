@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path"
+	"strings"
 	"sync"
 
 	"github.com/sirupsen/logrus"
@@ -138,7 +139,7 @@ func nullifyStringSubstitutions(strings map[string]string) map[string]string {
 // Since the two object files should only differ by the values of their
 // NODE_MAC symbols, we can avoid a full compilation.
 func patchHostNetdevDatapath(ep datapath.Endpoint, objPath, dstPath, ifName string,
-	bpfMasqIPv4Addrs map[string]net.IP) error {
+	bpfMasqIPv4Addrs, bpfMasqIPv6Addrs map[string]net.IP) error {
 
 	hostObj, err := elf.Open(objPath)
 	if err != nil {
@@ -175,10 +176,15 @@ func patchHostNetdevDatapath(ep datapath.Endpoint, objPath, dstPath, ifName stri
 	if option.Config.EnableNodePort {
 		opts["NATIVE_DEV_IFINDEX"] = uint64(ifIndex)
 	}
-	if option.Config.EnableIPv4Masquerade && option.Config.EnableBPFMasquerade && bpfMasqIPv4Addrs != nil {
-		if option.Config.EnableIPv4 {
+	if option.Config.EnableBPFMasquerade {
+		if option.Config.EnableIPv4Masquerade && bpfMasqIPv4Addrs != nil {
 			ipv4 := bpfMasqIPv4Addrs[ifName]
 			opts["IPV4_MASQUERADE"] = uint64(byteorder.NetIPv4ToHost32(ipv4))
+		}
+		if option.Config.EnableIPv6Masquerade && bpfMasqIPv6Addrs != nil {
+			ipv6 := bpfMasqIPv6Addrs[ifName]
+			opts["IPV6_MASQUERADE_1"] = sliceToBe64(ipv6[0:8])
+			opts["IPV6_MASQUERADE_2"] = sliceToBe64(ipv6[8:16])
 		}
 	}
 
@@ -189,6 +195,90 @@ func patchHostNetdevDatapath(ep datapath.Endpoint, objPath, dstPath, ifName stri
 	strings[callsMapHostDevice] = bpf.LocalMapName(callsmap.NetdevMapName, uint16(ifIndex))
 
 	return hostObj.Write(dstPath, opts, strings)
+}
+
+func isObsoleteDev(dev string) bool {
+	// exclude devices we never attach to/from_netdev to.
+	for _, prefix := range defaults.ExcludedDevicePrefixes {
+		if strings.HasPrefix(dev, prefix) {
+			return false
+		}
+	}
+
+	// exclude devices that will still be managed going forward.
+	for _, d := range option.Config.GetDevices() {
+		if dev == d {
+			return false
+		}
+	}
+
+	return true
+}
+
+// removeObsoleteNetdevPrograms removes cil_to_netdev and cil_from_netdev from devices
+// that cilium potentially doesn't manage anymore after a restart, e.g. if the set of
+// devices in option.Config.GetDevices() changes between restarts.
+//
+// This code assumes that the agent was upgraded from a prior version while maintaining
+// the same list of managed physical devices. This ensures that all tc bpf filters get
+// replaced using the naming convention of the 'current' agent build. For example,
+// before 1.13, most filters were named e.g. bpf_host.o:[to-host], to be changed to
+// cilium-<device> in 1.13, then to cil_to_host-<device> in 1.14. As a result, this
+// function only cleans up filters following the current naming scheme.
+func removeObsoleteNetdevPrograms() error {
+	links, err := netlink.LinkList()
+	if err != nil {
+		return fmt.Errorf("retrieving all netlink devices: %w", err)
+	}
+
+	// collect all devices that have netdev programs attached on either ingress or egress.
+	ingressDevs := []netlink.Link{}
+	egressDevs := []netlink.Link{}
+	for _, l := range links {
+		if !isObsoleteDev(l.Attrs().Name) {
+			continue
+		}
+
+		ingressFilters, err := netlink.FilterList(l, directionToParent(dirIngress))
+		if err != nil {
+			return fmt.Errorf("listing ingress filters: %w", err)
+		}
+		for _, filter := range ingressFilters {
+			if bpfFilter, ok := filter.(*netlink.BpfFilter); ok {
+				if strings.HasPrefix(bpfFilter.Name, symbolFromHostNetdevEp) {
+					ingressDevs = append(ingressDevs, l)
+				}
+			}
+		}
+
+		egressFilters, err := netlink.FilterList(l, directionToParent(dirEgress))
+		if err != nil {
+			return fmt.Errorf("listing egress filters: %w", err)
+		}
+		for _, filter := range egressFilters {
+			if bpfFilter, ok := filter.(*netlink.BpfFilter); ok {
+				if strings.HasPrefix(bpfFilter.Name, symbolToHostNetdevEp) {
+					egressDevs = append(egressDevs, l)
+				}
+			}
+		}
+	}
+
+	for _, dev := range ingressDevs {
+		err = RemoveTCFilters(dev.Attrs().Name, directionToParent(dirIngress))
+		if err != nil {
+			log.WithError(err).Errorf("couldn't remove ingress tc filters from %s", dev.Attrs().Name)
+		}
+	}
+
+	for _, dev := range egressDevs {
+		err = RemoveTCFilters(dev.Attrs().Name, directionToParent(dirEgress))
+		if err != nil {
+			log.WithError(err).Errorf("couldn't remove egress tc filters from %s", dev.Attrs().Name)
+		}
+	}
+
+	return nil
 }
 
 // reloadHostDatapath loads bpf_host programs attached to the host device
@@ -222,13 +312,14 @@ func (l *Loader) reloadHostDatapath(ctx context.Context, ep datapath.Endpoint, o
 		symbols = append(symbols, symbolToHostEp)
 		directions = append(directions, dirIngress)
 		secondDevObjPath := path.Join(ep.StateDir(), hostEndpointPrefix+"_"+defaults.SecondHostDevice+".o")
-		if err := patchHostNetdevDatapath(ep, objPath, secondDevObjPath, defaults.SecondHostDevice, nil); err != nil {
+		if err := patchHostNetdevDatapath(ep, objPath, secondDevObjPath, defaults.SecondHostDevice, nil, nil); err != nil {
 			return err
 		}
 		objPaths = append(objPaths, secondDevObjPath)
 	}
 
 	bpfMasqIPv4Addrs := node.GetMasqIPv4AddrsWithDevices()
+	bpfMasqIPv6Addrs := node.GetMasqIPv6AddrsWithDevices()
 
 	for _, device := range option.Config.GetDevices() {
 		if _, err := netlink.LinkByName(device); err != nil {
@@ -237,7 +328,7 @@ func (l *Loader) reloadHostDatapath(ctx context.Context, ep datapath.Endpoint, o
 		}
 
 		netdevObjPath := path.Join(ep.StateDir(), hostEndpointNetdevPrefix+device+".o")
-		if err := patchHostNetdevDatapath(ep, objPath, netdevObjPath, device, bpfMasqIPv4Addrs); err != nil {
+		if err := patchHostNetdevDatapath(ep, objPath, netdevObjPath, device, bpfMasqIPv4Addrs, bpfMasqIPv6Addrs); err != nil {
 			return err
 		}
 		objPaths = append(objPaths, netdevObjPath)
@@ -284,6 +375,12 @@ func (l *Loader) reloadHostDatapath(ctx context.Context, ep datapath.Endpoint, o
 		}
 		// Defer map removal until all interfaces' progs have been replaced.
 		defer finalize()
+	}
+
+	// call at the end of the function so that we can easily detect if this removes necessary
+	// programs that have just been attached.
+	if err := removeObsoleteNetdevPrograms(); err != nil {
+		log.WithError(err).Error("Failed to remove obsolete netdev programs")
 	}
 
 	return nil
@@ -346,19 +443,21 @@ func (l *Loader) reloadDatapath(ctx context.Context, ep datapath.Endpoint, dirs 
 	return nil
 }
 
-func (l *Loader) replaceNetworkDatapath(ctx context.Context, interfaces []string) error {
+func (l *Loader) replaceNetworkDatapath(ctx context.Context, interfaces []string) (err error) {
 	progs := []progDefinition{{progName: symbolFromNetwork, direction: dirIngress}}
 	for _, iface := range option.Config.EncryptInterface {
-		finalize, err := replaceDatapath(ctx, iface, networkObj, progs, "")
-		if err != nil {
-			log.WithField(logfields.Interface, iface).WithError(err).Fatal("Load encryption network failed")
+		finalize, replaceErr := replaceDatapath(ctx, iface, networkObj, progs, "")
+		if replaceErr != nil {
+			log.WithField(logfields.Interface, iface).WithError(replaceErr).Error("Load encryption network failed")
+			// Return the error to the caller, but keep trying replacing other interfaces.
+			err = replaceErr
+		} else {
+			log.WithField(logfields.Interface, iface).Info("Encryption network program (re)loaded")
+			// Defer map removal until all interfaces' progs have been replaced.
+			defer finalize()
 		}
-		log.WithField(logfields.Interface, iface).Info("Encryption network program (re)loaded")
-
-		// Defer map removal until all interfaces' progs have been replaced.
-		defer finalize()
 	}
-	return nil
+	return
 }
 
 func (l *Loader) replaceOverlayDatapath(ctx context.Context, cArgs []string, iface string) error {

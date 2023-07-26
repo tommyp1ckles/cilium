@@ -36,8 +36,9 @@ import (
 
 const (
 	// KubectlCmd Kubernetes controller command
-	KubectlCmd   = "kubectl"
-	kubeDNSLabel = "k8s-app=kube-dns"
+	KubectlCmd    = "kubectl"
+	kubeDNSLabel  = "k8s-app=kube-dns"
+	operatorLabel = "io.cilium/app=operator"
 
 	// DNSHelperTimeout is a predefined timeout value for K8s DNS commands. It
 	// must be larger than 5 minutes because kubedns has a hardcoded resync
@@ -1110,9 +1111,10 @@ func (kub *Kubectl) GetNodeNameByLabelContext(ctx context.Context, label string)
 	return out, nil
 }
 
-// GetNodeIPByLabel returns the IPv4 of the node with cilium.io/ci-node=label.
+// getNodeIPByLabel returns the first IP of the node with cilium.io/ci-node=label
+// for the given ipFamily.
 // An error is returned if a node cannot be found.
-func (kub *Kubectl) GetNodeIPByLabel(label string, external bool) (string, error) {
+func (kub *Kubectl) getNodeIPByLabel(label string, external bool, ipFamily v1.IPFamily) (string, error) {
 	ipType := "InternalIP"
 	if external {
 		ipType = "ExternalIP"
@@ -1130,13 +1132,35 @@ func (kub *Kubectl) GetNodeIPByLabel(label string, external bool) (string, error
 	}
 
 	for _, ipStr := range strings.Fields(out) {
-		if ip := net.ParseIP(ipStr); ip.To4() != nil {
-			return ipStr, nil
+		ip := net.ParseIP(ipStr)
+		switch ipFamily {
+		case v1.IPv4Protocol:
+			if ip.To4() != nil {
+				return ipStr, nil
+			}
+		case v1.IPv6Protocol:
+			if ip.To4() == nil {
+				return ipStr, nil
+			}
+		default:
+			return "", fmt.Errorf("IP family %q unknown", ipFamily)
 		}
 	}
 
-	return "", fmt.Errorf("found %s ip addrs, but they do not belong to the v4 family",
-		out)
+	return "", fmt.Errorf("found %s ip addrs, but they do not belong to the %s family",
+		out, ipFamily)
+}
+
+// GetNodeIPByLabel returns the IPv4 of the node with cilium.io/ci-node=label.
+// An error is returned if a node cannot be found.
+func (kub *Kubectl) GetNodeIPByLabel(label string, external bool) (string, error) {
+	return kub.getNodeIPByLabel(label, external, v1.IPv4Protocol)
+}
+
+// GetNodeIPv6ByLabel returns the IPv6 of the node with cilium.io/ci-node=label.
+// An error is returned if a node cannot be found.
+func (kub *Kubectl) GetNodeIPv6ByLabel(label string, external bool) (string, error) {
+	return kub.getNodeIPByLabel(label, external, v1.IPv6Protocol)
 }
 
 func (kub *Kubectl) getIfaceByIPAddr(label string, ipAddr string) (string, error) {
@@ -2143,6 +2167,19 @@ func (kub *Kubectl) ScaleUpDNS() *CmdRes {
 	return res
 }
 
+// SetCiliumOperatorReplicas sets the number of replicas for the cilium-operator.
+func (kub *Kubectl) SetCiliumOperatorReplicas(nReplicas int) *CmdRes {
+	res := kub.ExecShort(fmt.Sprintf("%s get deploy -n %s -l %s -o jsonpath='{.items[*].metadata.name}'", KubectlCmd, CiliumNamespace, operatorLabel))
+	if !res.WasSuccessful() {
+		return res
+	}
+
+	// kubectl -n kube-system patch deploy cilium-operator --patch '{"spec": { "replicas":1}}'
+	name := res.Stdout()
+	spec := fmt.Sprintf("{\"spec\": { \"replicas\":%d}}", nReplicas)
+	return kub.ExecShort(fmt.Sprintf("%s patch deploy -n %s %s --patch '%s'", KubectlCmd, CiliumNamespace, name, spec))
+}
+
 // redeployDNS deletes the kube-dns pods and does not wait for the deletion
 // to complete.
 func (kub *Kubectl) redeployDNS() *CmdRes {
@@ -2476,7 +2513,6 @@ func (kub *Kubectl) overwriteHelmOptions(options map[string]string) error {
 
 		if RunsOn54OrLaterKernel() {
 			opts["bpf.masquerade"] = "true"
-			opts["enableIPv6Masquerade"] = "false"
 		}
 
 		for key, value := range opts {
@@ -2529,6 +2565,11 @@ func (kub *Kubectl) overwriteHelmOptions(options map[string]string) error {
 
 		options["enableCiliumEndpointSlice"] = "true"
 	}
+
+	if !SupportIPv6Connectivity() {
+		options["ipv6.enabled"] = "false"
+	}
+
 	return nil
 }
 
@@ -2906,6 +2947,26 @@ func (kub *Kubectl) CiliumExecMustSucceedOnAll(ctx context.Context, cmd string, 
 	for _, pod := range pods {
 		kub.CiliumExecMustSucceed(ctx, pod, cmd, optionalDescription...).
 			ExpectSuccess("failed to execute %q on Cilium pod %s", cmd, pod)
+	}
+}
+
+// ExecUntilMatch executes the specified command repeatedly for the
+// specified pod until the given substring is present in stdout.
+// If the timeout is reached it will return an error.
+func (kub *Kubectl) ExecUntilMatch(namespace, pod, cmd, substr string) (*CmdRes, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), ShortCommandTimeout)
+	defer cancel()
+	var res *CmdRes
+	for {
+		select {
+		case <-ctx.Done():
+			return res, fmt.Errorf("timeout waiting for %q to be present in stdout", substr)
+		default:
+			res = kub.ExecPodCmd(namespace, pod, cmd)
+			if strings.Contains(res.Stdout(), substr) {
+				return res, nil
+			}
+		}
 	}
 }
 
@@ -3618,58 +3679,6 @@ func (kub *Kubectl) DumpCiliumCommandOutput(ctx context.Context, namespace strin
 		return
 	}
 
-	ReportOnPod := func(pod string) {
-		logger := kub.Logger().WithField("CiliumPod", pod)
-
-		logsPath := filepath.Join(kub.BasePath(), testPath)
-
-		// Get bugtool output. Since bugtool output is dumped in the pod's filesystem,
-		// copy it over with `kubectl cp`.
-		bugtoolCmd := fmt.Sprintf("%s exec -n %s %s -- %s %s",
-			KubectlCmd, namespace, pod, CiliumBugtool, CiliumBugtoolArgs)
-		res := kub.ExecContext(ctx, bugtoolCmd, ExecOptions{SkipLog: true})
-		if !res.WasSuccessful() {
-			logger.Errorf("%s failed: %s", bugtoolCmd, res.CombineOutput().String())
-			return
-		}
-		// Default output directory is /tmp for bugtool.
-		res = kub.ExecContext(ctx, fmt.Sprintf("%s exec -n %s %s -- ls /tmp/", KubectlCmd, namespace, pod))
-		tmpList := res.ByLines()
-		for _, line := range tmpList {
-			// Only copy over bugtool output to directory.
-			if !strings.Contains(line, CiliumBugtool) {
-				continue
-			}
-
-			res = kub.ExecContext(ctx, fmt.Sprintf("%[1]s cp %[2]s/%[3]s:/tmp/%[4]s /tmp/%[4]s",
-				KubectlCmd, namespace, pod, line),
-				ExecOptions{SkipLog: true})
-			if !res.WasSuccessful() {
-				logger.Errorf("'%s' failed: %s", res.GetCmd(), res.CombineOutput())
-				continue
-			}
-
-			archiveName := filepath.Join(logsPath, fmt.Sprintf("bugtool-%s", pod))
-			res = kub.ExecContext(ctx, fmt.Sprintf("mkdir -p %q", archiveName))
-			if !res.WasSuccessful() {
-				logger.WithField("cmd", res.GetCmd()).Errorf(
-					"cannot create bugtool archive folder: %s", res.CombineOutput())
-				continue
-			}
-
-			cmd := fmt.Sprintf("tar -xf /tmp/%s -C %q --strip-components=1", line, archiveName)
-			res = kub.ExecContext(ctx, cmd, ExecOptions{SkipLog: true})
-			if !res.WasSuccessful() {
-				logger.WithField("cmd", cmd).Errorf(
-					"Cannot untar bugtool output: %s", res.CombineOutput())
-				continue
-			}
-			//Remove bugtool artifact, so it'll be not used if any other fail test
-			_ = kub.ExecPodCmdBackground(ctx, namespace, pod, "cilium-agent", fmt.Sprintf("rm /tmp/%s", line))
-		}
-
-	}
-
 	pods, err := kub.GetCiliumPodsContext(ctx, namespace)
 	if err != nil {
 		kub.Logger().WithError(err).Error("cannot retrieve cilium pods on ReportDump")
@@ -3691,7 +3700,6 @@ func (kub *Kubectl) DumpCiliumCommandOutput(ctx context.Context, namespace strin
 	kub.reportMapContext(kvstoreCmdCtx, testPath, ciliumKubCLICommandsKVStore, namespace, CiliumSelector)
 
 	for _, pod := range pods {
-		ReportOnPod(pod)
 		kub.GatherCiliumCoreDumps(ctx, pod)
 	}
 }
@@ -3700,14 +3708,6 @@ func (kub *Kubectl) DumpCiliumCommandOutput(ctx context.Context, namespace strin
 // directory
 func (kub *Kubectl) GatherLogs(ctx context.Context) {
 	reportCmds := map[string]string{
-		"kubectl get pods --all-namespaces -o json":                          "pods.json",
-		"kubectl get services --all-namespaces -o json":                      "svc.json",
-		"kubectl get nodes -o json":                                          "nodes.json",
-		"kubectl get cn -o json":                                             "ciliumnodes.json",
-		"kubectl get ds --all-namespaces -o json":                            "ds.json",
-		"kubectl get cnp --all-namespaces -o json":                           "cnp.json",
-		"kubectl get cep --all-namespaces -o json":                           "cep.json",
-		"kubectl get netpol --all-namespaces -o json":                        "netpol.json",
 		"kubectl describe pods --all-namespaces":                             "pods_status.txt",
 		"kubectl get replicationcontroller --all-namespaces -o json":         "replicationcontroller.json",
 		"kubectl get deployment --all-namespaces -o json":                    "deployment.json",
@@ -3716,12 +3716,6 @@ func (kub *Kubectl) GatherLogs(ctx context.Context) {
 		"kubectl get serviceaccount --all-namespaces -o json":                "serviceaccounts.json",
 		"kubectl get clusterrole -o json":                                    "clusterroles.json",
 		"kubectl get clusterrolebinding -o json":                             "clusterrolebindings.json",
-
-		fmt.Sprintf("kubectl get cm cilium-config -n %s -o json", CiliumNamespace):                                                   "cilium-config.json",
-		fmt.Sprintf("kubectl logs -l k8s-app=cilium -n %s --timestamps -c clean-cilium-state --tail -1", CiliumNamespace):            "cilium-init-container-logs.txt",
-		fmt.Sprintf("kubectl logs -l k8s-app=cilium -n %s --timestamps -c clean-cilium-state --previous --tail -1", CiliumNamespace): "cilium-init-container-logs-previous.txt",
-		fmt.Sprintf("kubectl logs -l k8s-app=cilium -n %s --timestamps --all-containers --tail -1", CiliumNamespace):                 "cilium-combined-logs.txt",
-		fmt.Sprintf("kubectl logs -l k8s-app=cilium -n %s --timestamps --all-containers --previous --tail -1", CiliumNamespace):      "cilium-combined-logs-previous.txt",
 	}
 
 	kub.GeneratePodLogGatheringCommands(ctx, reportCmds)

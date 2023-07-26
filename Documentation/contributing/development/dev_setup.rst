@@ -82,6 +82,52 @@ Finally, in order to run Cilium locally on VMs, you need:
 | `VirtualBox <https://www.virtualbox.org/wiki/Downloads>`_  | >= 5.2                | N/A (OS-specific)                                                              |
 +------------------------------------------------------------+-----------------------+--------------------------------------------------------------------------------+
 
+Kind-based Setup (preferred)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+You can find the setup for a `kind <https://kind.sigs.k8s.io/>`_ environment in
+``contrib/scripts/kind.sh``. This setup doesn't require any VMs and/or
+VirtualBox on Linux, but does require `Docker for Mac
+<https://docs.docker.com/desktop/install/mac-install/>`_ for Mac OS.
+
+Makefile targets automate the task of spinning up an environment and building
+Cilium images:
+
+* ``make kind``: Creates a kind cluster based on the configuration passed in.
+  For more information, see _`Configuration for clusters`.
+* ``make kind-image``: Builds all Cilium images and loads them into the
+  cluster.
+* ``make kind-image-agent``: Builds the Cilium Agent image only and loads it
+  into the cluster.
+* ``make kind-image-operator``: Builds the Cilium Operator (generic) image only
+  and loads it into the cluster.
+* ``make kind-debug``: Builds all Cilium images with optimizations disabled and
+  ``dlv`` embedded for live debugging enabled and loads the images into the
+  cluster.
+* ``make kind-debug-agent``: Like ``kind-debug``, but for the agent image only.
+  Use if only the agent image needs to be rebuilt for faster iteration.
+* ``make kind-install-cilium``: Installs Cilium into the cluster using the
+  Cilium CLI.
+* ``make kind-down``: Tears down and deletes the cluster.
+
+The preceding list includes the most used commands for convenience. For more
+targets, see the ``Makefile``.
+
+Configuration for clusters
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``make kind`` takes a few environment variables to modify the configuration of
+the clusters it creates. The following parameters are the most commonly used:
+
+* ``CONTROLPLANES``: How many control-plane nodes are created.
+* ``WORKERS``: How many worker nodes are created.
+* ``CLUSTER_NAME``: The name of the Kubernetes cluster.
+* ``IMAGE``: The image for kind, for example: ``kindest/node:v1.11.10``.
+* ``KUBEPROXY_MODE``: Pass directly as ``kubeProxyMode`` to the kind
+  configuration Custom Resource Definition (CRD).
+
+For more environment variables, see ``contrib/scripts/kind.sh``.
+
 Vagrant Setup
 ~~~~~~~~~~~~~
 
@@ -211,9 +257,9 @@ If you want to connect to the Kubernetes cluster running inside the developer VM
 
 .. code-block:: shell-session
 
-    $ export KUBECONFIG=$KUBECONFIG:$GOPATH/src/github.com/cilium/cilium/vagrant.kubeconfig
+    $ export KUBECONFIG=$KUBECONFIG:${PATH_TO_CILIUM_REPO}/vagrant.kubeconfig
 
-and add ``127.0.0.1 k8s1`` to your hosts file.
+where ``PATH_TO_CILIUM_REPO`` is the path of your local clone of the Cilium git repository. Also add ``127.0.0.1 k8s1`` to your hosts file.
 
 If you have any issue with the provided vagrant box
 ``cilium/ubuntu`` or need a different box format, you may
@@ -495,6 +541,55 @@ Making Changes
    This make target works both inside and outside the Vagrant VM, assuming that ``docker``
    is running in the environment.
 
+Update a golang version
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Minor version
+^^^^^^^^^^^^^
+
+Each Cilium release is tied to a specific version of Golang via an explicit constraint
+in our Renovate configuration.
+
+We aim to build and release all maintained Cilium branches using a Golang version
+that is actively supported. This needs to be balanced against the desire to avoid
+regressions in Golang that may impact Cilium. Golang supports two minor versions
+at any given time – when updating the version used by a Cilium branch, you should
+choose the older of the two supported versions.
+
+To update the minor version of Golang used by a release, you will first need to
+update the Renovate configuration found in ``.github/renovate.json5``. For each
+minor release, there will be a section that looks like this:
+
+.. code-block:: json
+
+    {
+      "matchPackageNames": [
+        "docker.io/library/golang",
+        "go"
+      ],
+      "allowedVersions": "<1.21",
+      "matchBaseBranches": [
+        "v1.14"
+      ]
+    }
+
+To allow Renovate to create a pull request that updates the minor Golang version,
+bump the ``allowedVersions`` constraint to include the desired minor version. Once
+this change has been merged, Renovate will create a pull request that updates the
+Golang version. Minor version updates may require further changes to ensure that
+all Cilium features are working correctly – use the CI to identify any issues that
+require further changes, and bring them to the attention of the Cilium maintainers
+in the pull request.
+
+Once the CI is passing, the PR will be merged as part of the standard version
+upgrade process.
+
+Patch version
+^^^^^^^^^^^^^
+
+New patch versions of Golang are picked up automatically by the CI; there should
+normally be no need to update the version manually.
+
 Add/update a golang dependency
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -558,15 +653,12 @@ Minor version
    deprecated fields from the upstream code. New functions / fields / structs
    added in upstream that are not used in Cilium, can be removed.
 
-#. Open files ``jenkinsfiles/{kubernetes-upstream,ginkgo-kernel}.Jenkinsfile``,
-   and bump the versions being tested. More important is to make sure the
-   pipeline used on all PRs are running with the new Kubernetes version by
-   default. Make sure the files ``contributing/testing/{ci,e2e}.rst`` are up to
-   date with these changes.
+#. Make sure the workflows used on all PRs are running with the new Kubernetes
+   version by default. Make sure the files ``contributing/testing/{ci,e2e}.rst``
+   are up to date with these changes.
 
 #. Update documentation files:
    - Documentation/contributing/testing/e2e.rst
-   - Documentation/network/istio.rst
    - Documentation/network/kubernetes/compatibility.rst
    - Documentation/network/kubernetes/requirements.rst
 
@@ -609,22 +701,16 @@ Minor version
 #. Provision a new dev VM to check if the provisioning scripts work correctly
    with the new k8s version.
 
-#. Run ``git add vendor/ test/provision/manifest/ Documentation/ && git commit -sam "Update k8s tests and libraries to v1.27.0-rc.0"``
+#. Run ``git add vendor/ test/provision/manifest/ Documentation/ && git commit -sam "Update k8s tests and libraries to v1.28.0-rc.0"``
 
 #. Submit all your changes into a new PR.
 
-#. Ping the CI team to make changes in Jenkins (adding new pipeline and
-   dedicated test trigger ``/test-X.XX-4.19`` where ``X.XX`` is the new
-   Kubernetes version).
+#. Ensure that the target CI workflows are running and passing after updating
+   the target k8s versions in the GitHub action workflows.
 
-#. Run ``/test-upstream-k8s`` and the new ``/test-X.XX-4.19`` from the PR once
-   Jenkins is up-to-date.
-
-#. Once CI is green and PR has been merged, ping the CI team again so that they:
-   #. Rotate the Jenkins pipelines and triggers due to removed/added K8s versions.
-
-   #. Update the `Cilium CI matrix`_, ``.github/maintainers-little-helper.yaml``,
-      and GitHub required PR checks accordingly.
+#. Once CI is green and PR has been merged, ping the CI team again so that they
+   update the `Cilium CI matrix`_, ``.github/maintainers-little-helper.yaml``,
+   and GitHub required PR checks accordingly.
 
 .. _Cilium CI matrix: https://docs.google.com/spreadsheets/d/1TThkqvVZxaqLR-Ela4ZrcJ0lrTJByCqrbdCjnI32_X0
 

@@ -8,7 +8,11 @@
 #include "dbg.h"
 #include "trace.h"
 #include "l3.h"
+
+#if defined(ENABLE_WIREGUARD) && __ctx_is == __ctx_skb
 #include "lib/wireguard.h"
+#endif /* defined(ENABLE_WIREGUARD) && __ctx_is == __ctx_skb */
+
 #include "high_scale_ipcache.h"
 
 #ifdef HAVE_ENCAP
@@ -37,7 +41,6 @@ __encap_with_nodeid(struct __ctx_buff *ctx, __u32 src_ip, __be16 src_port,
 		    enum trace_reason ct_reason, __u32 monitor, int *ifindex)
 {
 	__u32 node_id;
-	int ret;
 
 	/* When encapsulating, a packet originating from the local host is
 	 * being considered as a packet from a remote node as it is being
@@ -50,13 +53,11 @@ __encap_with_nodeid(struct __ctx_buff *ctx, __u32 src_ip, __be16 src_port,
 
 	cilium_dbg(ctx, DBG_ENCAP, node_id, seclabel);
 
-	ret = ctx_set_encap_info(ctx, src_ip, src_port, node_id, seclabel, vni,
-				 NULL, 0, ifindex);
-	if (ret == CTX_ACT_REDIRECT)
-		send_trace_notify(ctx, TRACE_TO_OVERLAY, seclabel, dstid, 0, *ifindex,
-				  ct_reason, monitor);
+	send_trace_notify(ctx, TRACE_TO_OVERLAY, seclabel, dstid, 0, *ifindex,
+			  ct_reason, monitor);
 
-	return ret;
+	return ctx_set_encap_info(ctx, src_ip, src_port, node_id, seclabel, vni,
+				  NULL, 0, ifindex);
 }
 
 static __always_inline int
@@ -68,7 +69,7 @@ __encap_and_redirect_with_nodeid(struct __ctx_buff *ctx, __u32 src_ip __maybe_un
 	int ifindex;
 	int ret = 0;
 
-#ifdef ENABLE_WIREGUARD
+#if defined(ENABLE_WIREGUARD) && __ctx_is == __ctx_skb
 	/* Redirect the packet to the WireGuard tunnel device for encryption
 	 * if needed.
 	 *
@@ -81,7 +82,7 @@ __encap_and_redirect_with_nodeid(struct __ctx_buff *ctx, __u32 src_ip __maybe_un
 	ret = wg_maybe_redirect_to_encrypt(ctx);
 	if (IS_ERR(ret) || ret == CTX_ACT_REDIRECT)
 		return ret;
-#endif /* ENABLE_WIREGUARD */
+#endif /* defined(ENABLE_WIREGUARD) && __ctx_is == __ctx_skb */
 
 	ret = __encap_with_nodeid(ctx, src_ip, 0, tunnel_endpoint, seclabel, dstid,
 				  vni, trace->reason, trace->monitor,
@@ -126,12 +127,12 @@ __encap_and_redirect_lxc(struct __ctx_buff *ctx, __be32 tunnel_endpoint,
 						seclabel);
 #endif
 
-#if !defined(ENABLE_NODEPORT) && (defined(ENABLE_IPSEC) || defined(ENABLE_HOST_FIREWALL))
-	/* For IPSec and the host firewall, traffic from a pod to a remote node
-	 * is sent through the tunnel. In the case of node --> VIP@remote pod,
-	 * packets may be DNATed when they enter the remote node. If kube-proxy
-	 * is used, the response needs to go through the stack on the way to
-	 * the tunnel, to apply the correct reverse DNAT.
+#if !defined(ENABLE_NODEPORT) && defined(ENABLE_HOST_FIREWALL)
+	/* For the host firewall, traffic from a pod to a remote node is sent
+	 * through the tunnel. In the case of node --> VIP@remote pod, packets may
+	 * be DNATed when they enter the remote node. If kube-proxy is used, the
+	 * response needs to go through the stack on the way to the tunnel, to
+	 * apply the correct reverse DNAT.
 	 * See #14674 for details.
 	 */
 	ret = __encap_with_nodeid(ctx, 0, 0, tunnel_endpoint, seclabel, dstid,
@@ -145,7 +146,7 @@ __encap_and_redirect_lxc(struct __ctx_buff *ctx, __be32 tunnel_endpoint,
 #else
 	return __encap_and_redirect_with_nodeid(ctx, 0, tunnel_endpoint,
 						seclabel, dstid, NOT_VTEP_DST, trace);
-#endif /* !ENABLE_NODEPORT && (ENABLE_IPSEC || ENABLE_HOST_FIREWALL) */
+#endif /* !ENABLE_NODEPORT && ENABLE_HOST_FIREWALL */
 }
 
 #if defined(TUNNEL_MODE) || defined(ENABLE_HIGH_SCALE_IPCACHE)
@@ -215,21 +216,25 @@ encap_and_redirect_netdev(struct __ctx_buff *ctx, struct tunnel_key *k,
 }
 #endif /* TUNNEL_MODE || ENABLE_HIGH_SCALE_IPCACHE */
 
-static __always_inline __be16 tunnel_gen_src_port_v4(void)
+static __always_inline __be16
+tunnel_gen_src_port_v4(struct ipv4_ct_tuple *tuple __maybe_unused)
 {
 #if __ctx_is == __ctx_xdp
-	/* TODO hash, based on CT tuple */
-	return bpf_htons(TUNNEL_PORT);
+	__be32 hash = hash_from_tuple_v4(tuple);
+
+	return (hash >> 16)  ^ (__be16)hash;
 #else
 	return 0;
 #endif
 }
 
-static __always_inline __be16 tunnel_gen_src_port_v6(void)
+static __always_inline __be16
+tunnel_gen_src_port_v6(struct ipv6_ct_tuple *tuple __maybe_unused)
 {
 #if __ctx_is == __ctx_xdp
-	/* TODO hash, based on CT tuple */
-	return bpf_htons(TUNNEL_PORT);
+	__be32 hash = hash_from_tuple_v6(tuple);
+
+	return (hash >> 16)  ^ (__be16)hash;
 #else
 	return 0;
 #endif
@@ -245,7 +250,6 @@ __encap_with_nodeid_opt(struct __ctx_buff *ctx, __u32 src_ip, __be16 src_port,
 			__u32 monitor, int *ifindex)
 {
 	__u32 node_id;
-	int ret;
 
 	/* When encapsulating, a packet originating from the local host is
 	 * being considered as a packet from a remote node as it is being
@@ -258,13 +262,11 @@ __encap_with_nodeid_opt(struct __ctx_buff *ctx, __u32 src_ip, __be16 src_port,
 
 	cilium_dbg(ctx, DBG_ENCAP, node_id, seclabel);
 
-	ret = ctx_set_encap_info(ctx, src_ip, src_port, node_id, seclabel, vni, opt,
-				 opt_len, ifindex);
-	if (ret == CTX_ACT_REDIRECT)
-		send_trace_notify(ctx, TRACE_TO_OVERLAY, seclabel, dstid, 0, *ifindex,
-				  ct_reason, monitor);
+	send_trace_notify(ctx, TRACE_TO_OVERLAY, seclabel, dstid, 0, *ifindex,
+			  ct_reason, monitor);
 
-	return ret;
+	return ctx_set_encap_info(ctx, src_ip, src_port, node_id, seclabel, vni, opt,
+				  opt_len, ifindex);
 }
 
 static __always_inline void
@@ -286,7 +288,7 @@ set_geneve_dsr_opt6(__be16 port, const union v6addr *addr,
 	gopt->hdr.opt_class = bpf_htons(DSR_GENEVE_OPT_CLASS);
 	gopt->hdr.type = DSR_GENEVE_OPT_TYPE;
 	gopt->hdr.length = DSR_IPV6_GENEVE_OPT_LEN;
-	ipv6_addr_copy(&gopt->addr, addr);
+	ipv6_addr_copy((union v6addr *)&gopt->addr, addr);
 	gopt->port = port;
 }
 #endif

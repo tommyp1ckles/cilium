@@ -46,6 +46,7 @@ import (
 	"github.com/cilium/cilium/pkg/k8s"
 	"github.com/cilium/cilium/pkg/k8s/apis"
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
+	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	k8sversion "github.com/cilium/cilium/pkg/k8s/version"
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/logging"
@@ -58,33 +59,43 @@ import (
 )
 
 var (
-	binaryName = filepath.Base(os.Args[0])
-
-	log = logging.DefaultLogger.WithField(logfields.LogSubsys, binaryName)
-
-	rootCmd = &cobra.Command{
-		Use:   binaryName,
-		Short: "Run " + binaryName,
-	}
-
-	leaderElectionResourceLockName = "cilium-operator-resource-lock"
-
-	// Use a Go context so we can tell the leaderelection code when we
-	// want to step down
-	leaderElectionCtx       context.Context
-	leaderElectionCtxCancel context.CancelFunc
-
-	operatorAddr string
-
-	// isLeader is an atomic boolean value that is true when the Operator is
-	// elected leader. Otherwise, it is false.
-	isLeader atomic.Bool
-
-	// OperatorCell are the operator specific cells without infrastructure cells.
-	// Used also in tests.
-	OperatorCell = cell.Module(
+	Operator = cell.Module(
 		"operator",
 		"Cilium Operator",
+
+		Infrastructure,
+		ControlPlane,
+	)
+
+	Infrastructure = cell.Module(
+		"operator-infra",
+		"Operator Infrastructure",
+
+		// Register the pprof HTTP handlers, to get runtime profiling data.
+		pprof.Cell,
+		cell.ProvidePrivate(func(cfg operatorPprofConfig) pprof.Config {
+			return pprof.Config{
+				Pprof:        cfg.OperatorPprof,
+				PprofAddress: cfg.OperatorPprofAddress,
+				PprofPort:    cfg.OperatorPprofPort,
+			}
+		}),
+		cell.Config(operatorPprofConfig{
+			OperatorPprofAddress: operatorOption.PprofAddressOperator,
+			OperatorPprofPort:    operatorOption.PprofPortOperator,
+		}),
+
+		// Runs the gops agent, a tool to diagnose Go processes.
+		gops.Cell(defaults.GopsPortOperator),
+
+		// Provides Clientset, API for accessing Kubernetes objects.
+		k8sClient.Cell,
+	)
+
+	// ControlPlane implements the control functions.
+	ControlPlane = cell.Module(
+		"operator-controlplane",
+		"Operator Control Plane",
 
 		cell.Invoke(
 			registerOperatorHooks,
@@ -142,13 +153,66 @@ var (
 		),
 	)
 
-	operatorHive *hive.Hive = newOperatorHive()
+	binaryName = filepath.Base(os.Args[0])
 
-	Vp *viper.Viper = operatorHive.Viper()
+	log = logging.DefaultLogger.WithField(logfields.LogSubsys, binaryName)
+
+	FlagsHooks []ProviderFlagsHooks
+
+	leaderElectionResourceLockName = "cilium-operator-resource-lock"
+
+	// Use a Go context so we can tell the leaderelection code when we
+	// want to step down
+	leaderElectionCtx       context.Context
+	leaderElectionCtxCancel context.CancelFunc
+
+	// isLeader is an atomic boolean value that is true when the Operator is
+	// elected leader. Otherwise, it is false.
+	isLeader atomic.Bool
 )
 
-func Execute() {
-	if err := rootCmd.Execute(); err != nil {
+func NewOperatorCmd(h *hive.Hive) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   binaryName,
+		Short: "Run " + binaryName,
+		Run: func(cobraCmd *cobra.Command, args []string) {
+			cmdRefDir := h.Viper().GetString(option.CMDRef)
+			if cmdRefDir != "" {
+				genMarkdown(cobraCmd, cmdRefDir)
+				os.Exit(0)
+			}
+
+			initEnv(h.Viper())
+
+			if err := h.Run(); err != nil {
+				log.Fatal(err)
+			}
+		},
+	}
+
+	h.RegisterFlags(cmd.Flags())
+
+	// Enable fallback to direct API probing to check for support of Leases in
+	// case Discovery API fails.
+	h.Viper().Set(option.K8sEnableAPIDiscovery, true)
+
+	cmd.AddCommand(
+		MetricsCmd,
+		h.Command(),
+	)
+
+	InitGlobalFlags(cmd, h.Viper())
+	for _, hook := range FlagsHooks {
+		hook.RegisterProviderFlag(cmd, h.Viper())
+	}
+
+	cobra.OnInitialize(option.InitConfig(cmd, "Cilium-Operator", "cilium-operators", h.Viper()))
+
+	return cmd
+}
+
+func Execute(cmd *cobra.Command) {
+	if err := cmd.Execute(); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
@@ -176,55 +240,7 @@ func registerOperatorHooks(lc hive.Lifecycle, llc *LeaderLifecycle, clientset k8
 	})
 }
 
-func newOperatorHive() *hive.Hive {
-	h := hive.New(
-		pprof.Cell,
-		cell.ProvidePrivate(func(cfg operatorPprofConfig) pprof.Config {
-			return pprof.Config{
-				Pprof:        cfg.OperatorPprof,
-				PprofAddress: cfg.OperatorPprofAddress,
-				PprofPort:    cfg.OperatorPprofPort,
-			}
-		}),
-		cell.Config(operatorPprofConfig{
-			OperatorPprofAddress: operatorOption.PprofAddressOperator,
-			OperatorPprofPort:    operatorOption.PprofPortOperator,
-		}),
-
-		gops.Cell(defaults.GopsPortOperator),
-		k8sClient.Cell,
-		OperatorCell,
-	)
-	h.RegisterFlags(rootCmd.Flags())
-
-	// Enable fallback to direct API probing to check for support of Leases in
-	// case Discovery API fails.
-	h.Viper().Set(option.K8sEnableAPIDiscovery, true)
-
-	return h
-}
-
-func init() {
-	rootCmd.AddCommand(MetricsCmd)
-	rootCmd.AddCommand(operatorHive.Command())
-
-	rootCmd.Run = func(cobraCmd *cobra.Command, args []string) {
-		cmdRefDir := operatorHive.Viper().GetString(option.CMDRef)
-		if cmdRefDir != "" {
-			genMarkdown(cobraCmd, cmdRefDir)
-			os.Exit(0)
-		}
-
-		initEnv()
-
-		if err := operatorHive.Run(); err != nil {
-			log.Fatal(err)
-		}
-	}
-}
-
-func initEnv() {
-	vp := operatorHive.Viper()
+func initEnv(vp *viper.Viper) {
 	// Prepopulate option.Config with options from CLI.
 	option.Config.Populate(vp)
 	operatorOption.Config.Populate(vp)
@@ -397,7 +413,8 @@ func (legacy *legacyOnLeader) onStart(_ hive.HookContext) error {
 	isLeader.Store(true)
 
 	// If CiliumEndpointSlice feature is enabled, create CESController, start CEP watcher and run controller.
-	if legacy.clientset.IsEnabled() && !option.Config.DisableCiliumEndpointCRD && option.Config.EnableCiliumEndpointSlice {
+	// Knowing CES are enabled only if CiliumEndpoint CRD are enabled too.
+	if legacy.clientset.IsEnabled() && option.Config.EnableCiliumEndpointSlice {
 		log.Info("Create and run CES controller, start CEP watcher")
 		// Initialize  the CES controller
 		cesController := ces.NewCESController(
@@ -406,8 +423,8 @@ func (legacy *legacyOnLeader) onStart(_ hive.HookContext) error {
 			legacy.clientset,
 			operatorOption.Config.CESMaxCEPsInCES,
 			operatorOption.Config.CESSlicingMode,
-			float64(legacy.clientset.Config().K8sClientQPS),
-			legacy.clientset.Config().K8sClientBurst)
+			operatorOption.Config.CESWriteQPSLimit,
+			operatorOption.Config.CESWriteQPSBurst)
 		// Start CEP watcher
 		operatorWatchers.CiliumEndpointsSliceInit(legacy.ctx, &legacy.wg, legacy.clientset, cesController)
 		// Start the CES controller, after current CEPs are synced locally in cache.
@@ -459,6 +476,12 @@ func (legacy *legacyOnLeader) onStart(_ hive.HookContext) error {
 			log.WithError(err).Fatalf("Unable to init %s allocator", ipamMode)
 		}
 
+		if pooledAlloc, ok := alloc.(operatorWatchers.PooledAllocatorProvider); ok {
+			// The following operation will block until all pools are restored, thus it
+			// is safe to continue starting node allocation right after return.
+			operatorWatchers.StartIPPoolAllocator(legacy.ctx, legacy.clientset, pooledAlloc, legacy.resources.CiliumPodIPPools)
+		}
+
 		nm, err := alloc.Start(legacy.ctx, &ciliumNodeUpdateImplementation{legacy.clientset})
 		if err != nil {
 			log.WithError(err).Fatalf("Unable to start %s allocator", ipamMode)
@@ -485,6 +508,7 @@ func (legacy *legacyOnLeader) onStart(_ hive.HookContext) error {
 
 				Clientset:  legacy.clientset,
 				Services:   legacy.resources.Services,
+				Endpoints:  legacy.resources.Endpoints,
 				SharedOnly: true,
 			})
 			// If K8s is enabled we can do the service translation automagically by
@@ -519,14 +543,24 @@ func (legacy *legacyOnLeader) onStart(_ hive.HookContext) error {
 							// k8s service for etcd. As soon the k8s caches are
 							// synced, this hijack will stop happening.
 							sc := k8s.NewServiceCache(nil)
-							slimSvcObj := k8s.ConvertToK8sService(k8sSvc)
-							slimSvc := k8s.ObjToV1Services(slimSvcObj)
-							if slimSvc == nil {
-								// This will never happen but still log it
-								scopedLog.Warnf("BUG: invalid k8s service: %s", slimSvcObj)
+							slimSvcObj, err := k8s.TransformToK8sService(k8sSvc)
+							if err != nil {
+								scopedLog.WithFields(logrus.Fields{
+									logfields.ServiceName:      k8sSvc.Name,
+									logfields.ServiceNamespace: k8sSvc.Namespace,
+								}).Error("Failed to transform k8s service")
+							} else {
+								slimSvc := k8s.CastInformerEvent[slim_corev1.Service](slimSvcObj)
+								if slimSvc == nil {
+									// This will never happen but still log it
+									scopedLog.WithFields(logrus.Fields{
+										logfields.ServiceName:      k8sSvc.Name,
+										logfields.ServiceNamespace: k8sSvc.Namespace,
+									}).Warn("BUG: invalid k8s service")
+								}
+								sc.UpdateService(slimSvc, nil)
+								svcGetter = operatorWatchers.NewServiceGetter(sc)
 							}
-							sc.UpdateService(slimSvc, nil)
-							svcGetter = operatorWatchers.NewServiceGetter(sc)
 						case k8sErrors.IsNotFound(err):
 							scopedLog.Error("Service not found in k8s")
 						default:
@@ -537,7 +571,7 @@ func (legacy *legacyOnLeader) onStart(_ hive.HookContext) error {
 					log := log.WithField(logfields.LogSubsys, "etcd")
 					goopts = &kvstore.ExtraOptions{
 						DialOption: []grpc.DialOption{
-							grpc.WithContextDialer(k8s.CreateCustomDialer(svcGetter, log)),
+							grpc.WithContextDialer(k8s.CreateCustomDialer(svcGetter, log, true)),
 						},
 					}
 				}
@@ -662,6 +696,8 @@ func (legacy *legacyOnLeader) onStart(_ hive.HookContext) error {
 			ingress.WithCiliumNamespace(operatorOption.Config.CiliumK8sNamespace),
 			ingress.WithSharedLBServiceName(operatorOption.Config.IngressSharedLBServiceName),
 			ingress.WithDefaultLoadbalancerMode(operatorOption.Config.IngressDefaultLoadbalancerMode),
+			ingress.WithDefaultSecretNamespace(operatorOption.Config.IngressDefaultSecretNamespace),
+			ingress.WithDefaultSecretName(operatorOption.Config.IngressDefaultSecretName),
 			ingress.WithIdleTimeoutSeconds(operatorOption.Config.ProxyIdleTimeoutSeconds),
 		)
 		if err != nil {

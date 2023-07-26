@@ -10,6 +10,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/pointer"
 
 	"github.com/cilium/cilium/daemon/k8s"
 	"github.com/cilium/cilium/pkg/annotation"
@@ -19,6 +20,7 @@ import (
 	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/hive/job"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
+	k8sPkg "github.com/cilium/cilium/pkg/k8s"
 	cilium_api_v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	cilium_api_v2alpha1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
@@ -70,7 +72,7 @@ var (
 		nodeSelector: labels,
 		virtualRouters: []cilium_api_v2alpha1.CiliumBGPVirtualRouter{
 			{
-				LocalASN: int(ciliumASN),
+				LocalASN: int64(ciliumASN),
 			},
 		},
 	}
@@ -138,6 +140,9 @@ func newFixture(conf fixtureConfig) *fixture {
 			)
 		}),
 
+		// endpoints
+		cell.Provide(k8sPkg.EndpointsResource),
+
 		// Provide the mocked client cells directly
 		cell.Provide(func() k8sClient.Clientset {
 			return f.fakeClientSet
@@ -166,12 +171,12 @@ func newFixture(conf fixtureConfig) *fixture {
 func setupSingleNeighbor(ctx context.Context, f *fixture) error {
 	bgpPolicy := baseBGPPolicy
 	bgpPolicy.virtualRouters[0] = cilium_api_v2alpha1.CiliumBGPVirtualRouter{
-		LocalASN:      int(ciliumASN),
-		ExportPodCIDR: true,
+		LocalASN:      int64(ciliumASN),
+		ExportPodCIDR: pointer.Bool(true),
 		Neighbors: []cilium_api_v2alpha1.CiliumBGPNeighbor{
 			{
 				PeerAddress: dummies[instance1Link].ipv4.String(),
-				PeerASN:     int(gobgpASN),
+				PeerASN:     int64(gobgpASN),
 			},
 		},
 	}
@@ -217,6 +222,8 @@ func setup(ctx context.Context, peerConfigs []gobgpConfig, fixConfig fixtureConf
 		for _, peer := range peers {
 			peer.stopGoBGP()
 		}
+
+		f.bgp.BGPMgr.Stop()
 
 		f.hive.Stop(ctx)
 		teardownLinks()

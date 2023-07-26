@@ -7,17 +7,29 @@ import (
 	"context"
 	"net/netip"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/pointer"
 
 	"github.com/cilium/cilium/pkg/bgpv1/agent"
 	"github.com/cilium/cilium/pkg/bgpv1/types"
+	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
+	"github.com/cilium/cilium/pkg/k8s"
 	v2alpha1api "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	"github.com/cilium/cilium/pkg/k8s/resource"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
+)
+
+// We use similar local listen ports as the tests in the pkg/bgpv1/test package.
+// It is important to NOT use ports from the /proc/sys/net/ipv4/ip_local_port_range
+// (defaulted to 32768-60999 on most Linux distributions) to avoid collisions with
+// the ephemeral (source) ports. As this range is configurable, ideally, we should
+// use the IANA-assigned ports below 1024 (e.g. 179) or mock GoBGP in these tests.
+// See https://github.com/cilium/cilium/issues/26209 for more info.
+const (
+	localListenPort  = 1793
+	localListenPort2 = 1794
 )
 
 // TestPreflightReconciler ensures if a BgpServer must be recreated, due to
@@ -31,9 +43,9 @@ func TestPreflightReconciler(t *testing.T) {
 		// routerID to reconcile
 		newRouterID string
 		// local listen port of original server
-		localPort int
+		localPort int32
 		// local listen port to reconcile
-		newLocalPort int
+		newLocalPort int32
 		// virtual router configuration to reconcile, used mostly for pointer
 		// comparison
 		config *v2alpha1api.CiliumBGPVirtualRouter
@@ -46,8 +58,8 @@ func TestPreflightReconciler(t *testing.T) {
 			name:           "no change",
 			routerID:       "192.168.0.1",
 			newRouterID:    "192.168.0.1",
-			localPort:      45450,
-			newLocalPort:   45450,
+			localPort:      localListenPort,
+			newLocalPort:   localListenPort,
 			config:         &v2alpha1api.CiliumBGPVirtualRouter{},
 			shouldRecreate: false,
 			err:            nil,
@@ -56,8 +68,8 @@ func TestPreflightReconciler(t *testing.T) {
 			name:           "router-id change",
 			routerID:       "192.168.0.1",
 			newRouterID:    "192.168.0.2",
-			localPort:      45450,
-			newLocalPort:   45450,
+			localPort:      localListenPort,
+			newLocalPort:   localListenPort,
 			config:         &v2alpha1api.CiliumBGPVirtualRouter{},
 			shouldRecreate: true,
 			err:            nil,
@@ -66,8 +78,8 @@ func TestPreflightReconciler(t *testing.T) {
 			name:           "local-port change",
 			routerID:       "192.168.0.1",
 			newRouterID:    "192.168.0.1",
-			localPort:      45450,
-			newLocalPort:   45451,
+			localPort:      localListenPort,
+			newLocalPort:   localListenPort2,
 			config:         &v2alpha1api.CiliumBGPVirtualRouter{},
 			shouldRecreate: true,
 			err:            nil,
@@ -76,8 +88,8 @@ func TestPreflightReconciler(t *testing.T) {
 			name:           "local-port, router-id change",
 			routerID:       "192.168.0.1",
 			newRouterID:    "192.168.0.2",
-			localPort:      45450,
-			newLocalPort:   45451,
+			localPort:      localListenPort,
+			newLocalPort:   localListenPort2,
 			config:         &v2alpha1api.CiliumBGPVirtualRouter{},
 			shouldRecreate: true,
 			err:            nil,
@@ -90,8 +102,9 @@ func TestPreflightReconciler(t *testing.T) {
 				Global: types.BGPGlobal{
 					ASN:        64125,
 					RouterID:   tt.routerID,
-					ListenPort: int32(tt.localPort),
+					ListenPort: tt.localPort,
 				},
+				CState: &agent.ControlPlaneState{},
 			}
 			testSC, err := NewServerWithConfig(context.Background(), srvParams)
 			if err != nil {
@@ -145,7 +158,14 @@ func TestPreflightReconciler(t *testing.T) {
 // TestNeighborReconciler confirms the `neighborReconciler` function configures
 // the desired BGP neighbors given a CiliumBGPVirtualRouter configuration.
 func TestNeighborReconciler(t *testing.T) {
-	var table = []struct {
+	type checkTimers struct {
+		holdTimer         bool
+		connectRetryTimer bool
+		keepaliveTimer    bool
+		grRestartTime     bool
+	}
+
+	table := []struct {
 		// name of the test
 		name string
 		// existing neighbors, expanded to CiliumBGPNeighbor during test
@@ -154,6 +174,8 @@ func TestNeighborReconciler(t *testing.T) {
 		//
 		// this is the resulting neighbors we expect on the BgpServer.
 		newNeighbors []v2alpha1api.CiliumBGPNeighbor
+		// checks validates set timer values
+		checks checkTimers
 		// error provided or nil
 		err error
 	}{
@@ -164,8 +186,20 @@ func TestNeighborReconciler(t *testing.T) {
 				{PeerASN: 64124, PeerAddress: "192.168.0.2/32"},
 			},
 			newNeighbors: []v2alpha1api.CiliumBGPNeighbor{
-				{PeerASN: 64124, PeerAddress: "192.168.0.1/32"},
+				{PeerASN: 64124, PeerAddress: "192.168.0.1/32", PeerPort: pointer.Int32(v2alpha1api.DefaultBGPPeerPort)},
+				{PeerASN: 64124, PeerAddress: "192.168.0.2/32", PeerPort: pointer.Int32(v2alpha1api.DefaultBGPPeerPort)},
+			},
+			err: nil,
+		},
+		{
+			name: "neighbor with peer port",
+			neighbors: []v2alpha1api.CiliumBGPNeighbor{
+				{PeerASN: 64124, PeerAddress: "192.168.0.1/32", PeerPort: pointer.Int32(42424)},
 				{PeerASN: 64124, PeerAddress: "192.168.0.2/32"},
+			},
+			newNeighbors: []v2alpha1api.CiliumBGPNeighbor{
+				{PeerASN: 64124, PeerAddress: "192.168.0.1/32", PeerPort: pointer.Int32(42424)},
+				{PeerASN: 64124, PeerAddress: "192.168.0.2/32", PeerPort: pointer.Int32(v2alpha1api.DefaultBGPPeerPort)},
 			},
 			err: nil,
 		},
@@ -176,9 +210,9 @@ func TestNeighborReconciler(t *testing.T) {
 				{PeerASN: 64124, PeerAddress: "192.168.0.2/32"},
 			},
 			newNeighbors: []v2alpha1api.CiliumBGPNeighbor{
-				{PeerASN: 64124, PeerAddress: "192.168.0.1/32"},
-				{PeerASN: 64124, PeerAddress: "192.168.0.2/32"},
-				{PeerASN: 64124, PeerAddress: "192.168.0.3/32"},
+				{PeerASN: 64124, PeerAddress: "192.168.0.1/32", PeerPort: pointer.Int32(v2alpha1api.DefaultBGPPeerPort)},
+				{PeerASN: 64124, PeerAddress: "192.168.0.2/32", PeerPort: pointer.Int32(v2alpha1api.DefaultBGPPeerPort)},
+				{PeerASN: 64124, PeerAddress: "192.168.0.3/32", PeerPort: pointer.Int32(v2alpha1api.DefaultBGPPeerPort)},
 			},
 			err: nil,
 		},
@@ -190,22 +224,72 @@ func TestNeighborReconciler(t *testing.T) {
 				{PeerASN: 64124, PeerAddress: "192.168.0.3/32"},
 			},
 			newNeighbors: []v2alpha1api.CiliumBGPNeighbor{
-				{PeerASN: 64124, PeerAddress: "192.168.0.1/32"},
-				{PeerASN: 64124, PeerAddress: "192.168.0.2/32"},
+				{PeerASN: 64124, PeerAddress: "192.168.0.1/32", PeerPort: pointer.Int32(v2alpha1api.DefaultBGPPeerPort)},
+				{PeerASN: 64124, PeerAddress: "192.168.0.2/32", PeerPort: pointer.Int32(v2alpha1api.DefaultBGPPeerPort)},
 			},
 			err: nil,
 		},
 		{
 			name: "update neighbor",
 			neighbors: []v2alpha1api.CiliumBGPNeighbor{
-				{PeerASN: 64124, PeerAddress: "192.168.0.1/32", ConnectRetryTime: metav1.Duration{Duration: 120 * time.Second}},
-				{PeerASN: 64124, PeerAddress: "192.168.0.2/32", ConnectRetryTime: metav1.Duration{Duration: 120 * time.Second}},
-				{PeerASN: 64124, PeerAddress: "192.168.0.3/32", ConnectRetryTime: metav1.Duration{Duration: 120 * time.Second}},
+				{PeerASN: 64124, PeerAddress: "192.168.0.1/32", ConnectRetryTimeSeconds: pointer.Int32(120)},
+				{PeerASN: 64124, PeerAddress: "192.168.0.2/32", ConnectRetryTimeSeconds: pointer.Int32(120)},
+				{PeerASN: 64124, PeerAddress: "192.168.0.3/32", ConnectRetryTimeSeconds: pointer.Int32(120)},
 			},
 			newNeighbors: []v2alpha1api.CiliumBGPNeighbor{
-				{PeerASN: 64124, PeerAddress: "192.168.0.1/32", ConnectRetryTime: metav1.Duration{Duration: 99 * time.Second}},
-				{PeerASN: 64124, PeerAddress: "192.168.0.2/32", ConnectRetryTime: metav1.Duration{Duration: 120 * time.Second}},
-				{PeerASN: 64124, PeerAddress: "192.168.0.3/32", ConnectRetryTime: metav1.Duration{Duration: 120 * time.Second}},
+				{PeerASN: 64124, PeerAddress: "192.168.0.1/32", PeerPort: pointer.Int32(v2alpha1api.DefaultBGPPeerPort), ConnectRetryTimeSeconds: pointer.Int32(99)},
+				{PeerASN: 64124, PeerAddress: "192.168.0.2/32", PeerPort: pointer.Int32(v2alpha1api.DefaultBGPPeerPort), ConnectRetryTimeSeconds: pointer.Int32(120)},
+				{PeerASN: 64124, PeerAddress: "192.168.0.3/32", PeerPort: pointer.Int32(v2alpha1api.DefaultBGPPeerPort), ConnectRetryTimeSeconds: pointer.Int32(120)},
+			},
+			checks: checkTimers{
+				connectRetryTimer: true,
+			},
+			err: nil,
+		},
+		{
+			name: "update neighbor - graceful restart",
+			neighbors: []v2alpha1api.CiliumBGPNeighbor{
+				{PeerASN: 64124, PeerAddress: "192.168.0.1/32", GracefulRestart: &v2alpha1api.CiliumBGPNeighborGracefulRestart{
+					Enabled:            true,
+					RestartTimeSeconds: pointer.Int32(v2alpha1api.DefaultBGPGRRestartTimeSeconds),
+				}},
+				{PeerASN: 64124, PeerAddress: "192.168.0.2/32", GracefulRestart: &v2alpha1api.CiliumBGPNeighborGracefulRestart{
+					Enabled:            true,
+					RestartTimeSeconds: pointer.Int32(v2alpha1api.DefaultBGPGRRestartTimeSeconds),
+				}},
+				{PeerASN: 64124, PeerAddress: "192.168.0.3/32", GracefulRestart: &v2alpha1api.CiliumBGPNeighborGracefulRestart{
+					Enabled:            true,
+					RestartTimeSeconds: pointer.Int32(v2alpha1api.DefaultBGPGRRestartTimeSeconds),
+				}},
+			},
+			newNeighbors: []v2alpha1api.CiliumBGPNeighbor{
+				{PeerASN: 64124, PeerAddress: "192.168.0.1/32", PeerPort: pointer.Int32(v2alpha1api.DefaultBGPPeerPort), GracefulRestart: &v2alpha1api.CiliumBGPNeighborGracefulRestart{
+					Enabled:            false,
+					RestartTimeSeconds: pointer.Int32(0),
+				}},
+				{PeerASN: 64124, PeerAddress: "192.168.0.2/32", PeerPort: pointer.Int32(v2alpha1api.DefaultBGPPeerPort), GracefulRestart: &v2alpha1api.CiliumBGPNeighborGracefulRestart{
+					Enabled:            true,
+					RestartTimeSeconds: pointer.Int32(v2alpha1api.DefaultBGPGRRestartTimeSeconds),
+				}},
+				{PeerASN: 64124, PeerAddress: "192.168.0.3/32", PeerPort: pointer.Int32(v2alpha1api.DefaultBGPPeerPort), GracefulRestart: &v2alpha1api.CiliumBGPNeighborGracefulRestart{
+					Enabled:            true,
+					RestartTimeSeconds: pointer.Int32(v2alpha1api.DefaultBGPGRRestartTimeSeconds),
+				}},
+			},
+			checks: checkTimers{
+				grRestartTime: true,
+			},
+			err: nil,
+		},
+		{
+			name: "update neighbor port",
+			neighbors: []v2alpha1api.CiliumBGPNeighbor{
+				{PeerASN: 64124, PeerAddress: "192.168.0.1/32", PeerPort: pointer.Int32(v2alpha1api.DefaultBGPPeerPort)},
+				{PeerASN: 64124, PeerAddress: "192.168.0.2/32"},
+			},
+			newNeighbors: []v2alpha1api.CiliumBGPNeighbor{
+				{PeerASN: 64124, PeerAddress: "192.168.0.1/32", PeerPort: pointer.Int32(42424)},
+				{PeerASN: 64124, PeerAddress: "192.168.0.2/32", PeerPort: pointer.Int32(v2alpha1api.DefaultBGPPeerPort)},
 			},
 			err: nil,
 		},
@@ -229,6 +313,7 @@ func TestNeighborReconciler(t *testing.T) {
 					RouterID:   "127.0.0.1",
 					ListenPort: -1,
 				},
+				CState: &agent.ControlPlaneState{},
 			}
 			testSC, err := NewServerWithConfig(context.Background(), srvParams)
 			if err != nil {
@@ -243,9 +328,11 @@ func TestNeighborReconciler(t *testing.T) {
 				Neighbors: []v2alpha1api.CiliumBGPNeighbor{},
 			}
 			for _, n := range tt.neighbors {
+				n.SetDefaults()
 				oldc.Neighbors = append(oldc.Neighbors, n)
 				testSC.Server.AddNeighbor(context.Background(), types.NeighborRequest{
 					Neighbor: &n,
+					VR:       oldc,
 				})
 			}
 			testSC.Config = oldc
@@ -255,9 +342,8 @@ func TestNeighborReconciler(t *testing.T) {
 				LocalASN:  64125,
 				Neighbors: []v2alpha1api.CiliumBGPNeighbor{},
 			}
-			for _, n := range tt.newNeighbors {
-				newc.Neighbors = append(newc.Neighbors, n)
-			}
+			newc.Neighbors = append(newc.Neighbors, tt.newNeighbors...)
+			newc.SetDefaults()
 
 			err = neighborReconciler(context.Background(), testSC, newc, nil)
 			if (tt.err == nil) != (err == nil) {
@@ -270,45 +356,38 @@ func TestNeighborReconciler(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed creating test BgpServer: %v", err)
 			}
-			peers := getPeerResp.Peers
+			var runningPeers []v2alpha1api.CiliumBGPNeighbor
 
-			if len(tt.newNeighbors) == 0 && len(peers) > 0 {
-				t.Fatalf("got: %v, want: %v", len(peers), len(tt.newNeighbors))
-			}
+			for _, peer := range getPeerResp.Peers {
+				toCiliumPeer := v2alpha1api.CiliumBGPNeighbor{
+					PeerAddress: toHostPrefix(peer.PeerAddress),
+					PeerPort:    pointer.Int32(int32(peer.PeerPort)),
+					PeerASN:     peer.PeerAsn,
+				}
 
-			for _, n := range tt.newNeighbors {
-				prefix := netip.MustParsePrefix(n.PeerAddress)
-				var seen bool
-				for _, p := range peers {
-					addr := netip.MustParseAddr(p.PeerAddress)
-					if prefix.Addr() == addr {
-						seen = true
-						if n.ConnectRetryTime.Duration != 0 && int64(n.ConnectRetryTime.Seconds()) != p.ConnectRetryTimeSeconds {
-							t.Fatalf("ConnectRetryTime does not match: wanted: %d, got: %d", int64(n.ConnectRetryTime.Seconds()), p.ConnectRetryTimeSeconds)
-						}
+				if tt.checks.holdTimer {
+					toCiliumPeer.HoldTimeSeconds = pointer.Int32(int32(peer.ConfiguredHoldTimeSeconds))
+				}
+
+				if tt.checks.connectRetryTimer {
+					toCiliumPeer.ConnectRetryTimeSeconds = pointer.Int32(int32(peer.ConnectRetryTimeSeconds))
+				}
+
+				if tt.checks.keepaliveTimer {
+					toCiliumPeer.KeepAliveTimeSeconds = pointer.Int32(int32(peer.ConfiguredKeepAliveTimeSeconds))
+				}
+
+				if tt.checks.grRestartTime {
+					toCiliumPeer.GracefulRestart = &v2alpha1api.CiliumBGPNeighborGracefulRestart{
+						Enabled:            peer.GracefulRestart.Enabled,
+						RestartTimeSeconds: pointer.Int32(int32(peer.GracefulRestart.RestartTimeSeconds)),
 					}
 				}
-				if !seen {
-					t.Fatalf("wanted neighbor %v, not present", n)
-				}
+
+				runningPeers = append(runningPeers, toCiliumPeer)
 			}
 
-			for _, p := range peers {
-				paddr := netip.MustParseAddr(p.PeerAddress)
-				var seen bool
-				for _, n := range tt.newNeighbors {
-					addr := netip.MustParsePrefix(n.PeerAddress)
-					if paddr == addr.Addr() {
-						seen = true
-						if n.ConnectRetryTime.Duration != 0 && int64(n.ConnectRetryTime.Seconds()) != p.ConnectRetryTimeSeconds {
-							t.Fatalf("ConnectRetryTime does not match: wanted: %d, got: %d", int64(n.ConnectRetryTime.Seconds()), p.ConnectRetryTimeSeconds)
-						}
-					}
-				}
-				if !seen {
-					t.Fatalf("wanted peer %v, not present", p.PeerAddress)
-				}
-			}
+			require.ElementsMatch(t, tt.newNeighbors, runningPeers)
 		})
 	}
 }
@@ -386,10 +465,11 @@ func TestExportPodCIDRReconciler(t *testing.T) {
 					RouterID:   "127.0.0.1",
 					ListenPort: -1,
 				},
+				CState: &agent.ControlPlaneState{},
 			}
 			oldc := &v2alpha1api.CiliumBGPVirtualRouter{
 				LocalASN:      64125,
-				ExportPodCIDR: tt.enabled,
+				ExportPodCIDR: pointer.Bool(tt.enabled),
 				Neighbors:     []v2alpha1api.CiliumBGPNeighbor{},
 			}
 			testSC, err := NewServerWithConfig(context.Background(), srvParams)
@@ -411,7 +491,7 @@ func TestExportPodCIDRReconciler(t *testing.T) {
 
 			newc := &v2alpha1api.CiliumBGPVirtualRouter{
 				LocalASN:      64125,
-				ExportPodCIDR: tt.shouldEnable,
+				ExportPodCIDR: pointer.Bool(tt.shouldEnable),
 				Neighbors:     []v2alpha1api.CiliumBGPNeighbor{},
 			}
 			newcstate := agent.ControlPlaneState{
@@ -467,6 +547,203 @@ func TestExportPodCIDRReconciler(t *testing.T) {
 }
 
 func TestLBServiceReconciler(t *testing.T) {
+	blueSelector := slim_metav1.LabelSelector{MatchLabels: map[string]string{"color": "blue"}}
+	redSelector := slim_metav1.LabelSelector{MatchLabels: map[string]string{"color": "red"}}
+	svc1Name := resource.Key{Name: "svc-1", Namespace: "default"}
+	svc1NonDefaultName := resource.Key{Name: "svc-1", Namespace: "non-default"}
+	svc2NonDefaultName := resource.Key{Name: "svc-2", Namespace: "non-default"}
+	ingressV4 := "192.168.0.1"
+	ingressV4_2 := "192.168.0.2"
+	ingressV4Prefix := ingressV4 + "/32"
+	ingressV4Prefix_2 := ingressV4_2 + "/32"
+	ingressV6 := "fd00:192:168::1"
+	ingressV6Prefix := ingressV6 + "/128"
+
+	svc1 := &slim_corev1.Service{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      svc1Name.Name,
+			Namespace: svc1Name.Namespace,
+			Labels:    blueSelector.MatchLabels,
+		},
+		Spec: slim_corev1.ServiceSpec{
+			Type: slim_corev1.ServiceTypeLoadBalancer,
+		},
+		Status: slim_corev1.ServiceStatus{
+			LoadBalancer: slim_corev1.LoadBalancerStatus{
+				Ingress: []slim_corev1.LoadBalancerIngress{
+					{
+						IP: ingressV4,
+					},
+				},
+			},
+		},
+	}
+
+	svc1TwoIngress := svc1.DeepCopy()
+	svc1TwoIngress.Status.LoadBalancer.Ingress =
+		append(svc1TwoIngress.Status.LoadBalancer.Ingress,
+			slim_corev1.LoadBalancerIngress{IP: ingressV6})
+
+	svc1RedLabel := svc1.DeepCopy()
+	svc1RedLabel.ObjectMeta.Labels = redSelector.MatchLabels
+
+	svc1NonDefault := svc1.DeepCopy()
+	svc1NonDefault.Namespace = svc1NonDefaultName.Namespace
+	svc1NonDefault.Status.LoadBalancer.Ingress[0] = slim_corev1.LoadBalancerIngress{IP: ingressV4_2}
+
+	svc1NonLB := svc1.DeepCopy()
+	svc1NonLB.Spec.Type = slim_corev1.ServiceTypeClusterIP
+
+	svc1ETPLocal := svc1.DeepCopy()
+	svc1ETPLocal.Spec.ExternalTrafficPolicy = slim_corev1.ServiceExternalTrafficPolicyLocal
+
+	svc1ETPLocalTwoIngress := svc1TwoIngress.DeepCopy()
+	svc1ETPLocalTwoIngress.Spec.ExternalTrafficPolicy = slim_corev1.ServiceExternalTrafficPolicyLocal
+
+	svc1IPv6ETPLocal := svc1.DeepCopy()
+	svc1IPv6ETPLocal.Status.LoadBalancer.Ingress[0] = slim_corev1.LoadBalancerIngress{IP: ingressV6}
+	svc1IPv6ETPLocal.Spec.ExternalTrafficPolicy = slim_corev1.ServiceExternalTrafficPolicyLocal
+
+	svc2NonDefault := &slim_corev1.Service{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      svc2NonDefaultName.Name,
+			Namespace: svc2NonDefaultName.Namespace,
+			Labels:    blueSelector.MatchLabels,
+		},
+		Spec: slim_corev1.ServiceSpec{
+			Type: slim_corev1.ServiceTypeLoadBalancer,
+		},
+		Status: slim_corev1.ServiceStatus{
+			LoadBalancer: slim_corev1.LoadBalancerStatus{
+				Ingress: []slim_corev1.LoadBalancerIngress{
+					{
+						IP: ingressV4_2,
+					},
+				},
+			},
+		},
+	}
+
+	eps1IPv4Local := &k8s.Endpoints{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "svc-1-ipv4",
+			Namespace: "default",
+		},
+		EndpointSliceID: k8s.EndpointSliceID{
+			ServiceID: k8s.ServiceID{
+				Name:      "svc-1",
+				Namespace: "default",
+			},
+			EndpointSliceName: "svc-1-ipv4",
+		},
+		Backends: map[cmtypes.AddrCluster]*k8s.Backend{
+			cmtypes.MustParseAddrCluster("10.0.0.1"): {
+				NodeName: "node1",
+			},
+		},
+	}
+
+	eps1IPv4Remote := &k8s.Endpoints{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "svc-1-ipv4",
+			Namespace: "default",
+		},
+		EndpointSliceID: k8s.EndpointSliceID{
+			ServiceID: k8s.ServiceID{
+				Name:      "svc-1",
+				Namespace: "default",
+			},
+			EndpointSliceName: "svc-1-ipv4",
+		},
+		Backends: map[cmtypes.AddrCluster]*k8s.Backend{
+			cmtypes.MustParseAddrCluster("10.0.0.2"): {
+				NodeName: "node2",
+			},
+		},
+	}
+
+	eps1IPv4Mixed := &k8s.Endpoints{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "svc-1-ipv4",
+			Namespace: "default",
+		},
+		EndpointSliceID: k8s.EndpointSliceID{
+			ServiceID: k8s.ServiceID{
+				Name:      "svc-1",
+				Namespace: "default",
+			},
+			EndpointSliceName: "svc-1-ipv4",
+		},
+		Backends: map[cmtypes.AddrCluster]*k8s.Backend{
+			cmtypes.MustParseAddrCluster("10.0.0.1"): {
+				NodeName: "node1",
+			},
+			cmtypes.MustParseAddrCluster("10.0.0.2"): {
+				NodeName: "node2",
+			},
+		},
+	}
+
+	eps1IPv6Local := &k8s.Endpoints{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "svc-1-ipv6",
+			Namespace: "default",
+		},
+		EndpointSliceID: k8s.EndpointSliceID{
+			ServiceID: k8s.ServiceID{
+				Name:      "svc-1",
+				Namespace: "default",
+			},
+			EndpointSliceName: "svc-1-ipv6",
+		},
+		Backends: map[cmtypes.AddrCluster]*k8s.Backend{
+			cmtypes.MustParseAddrCluster("fd00:10::1"): {
+				NodeName: "node1",
+			},
+		},
+	}
+
+	eps1IPv6Remote := &k8s.Endpoints{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "svc-1-ipv6",
+			Namespace: "default",
+		},
+		EndpointSliceID: k8s.EndpointSliceID{
+			ServiceID: k8s.ServiceID{
+				Name:      "svc-1",
+				Namespace: "default",
+			},
+			EndpointSliceName: "svc-1-ipv6",
+		},
+		Backends: map[cmtypes.AddrCluster]*k8s.Backend{
+			cmtypes.MustParseAddrCluster("fd00:10::2"): {
+				NodeName: "node2",
+			},
+		},
+	}
+
+	eps1IPv6Mixed := &k8s.Endpoints{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "svc-1-ipv4",
+			Namespace: "default",
+		},
+		EndpointSliceID: k8s.EndpointSliceID{
+			ServiceID: k8s.ServiceID{
+				Name:      "svc-1",
+				Namespace: "default",
+			},
+			EndpointSliceName: "svc-1-ipv4",
+		},
+		Backends: map[cmtypes.AddrCluster]*k8s.Backend{
+			cmtypes.MustParseAddrCluster("fd00:10::1"): {
+				NodeName: "node1",
+			},
+			cmtypes.MustParseAddrCluster("fd00:10::2"): {
+				NodeName: "node2",
+			},
+		},
+	}
+
 	var table = []struct {
 		// name of the test case
 		name string
@@ -480,6 +757,8 @@ func TestLBServiceReconciler(t *testing.T) {
 		upsertedServices []*slim_corev1.Service
 		// the services which will be "deleted" in the diffstore
 		deletedServices []resource.Key
+		// the endpoints which will be "upserted" in the diffstore
+		upsertedEndpoints []*k8s.Endpoints
 		// the updated PodCIDR blocks to reconcile, these are string encoded
 		// for the convenience of attaching directly to the NodeSpec.PodCIDRs
 		// field.
@@ -490,202 +769,86 @@ func TestLBServiceReconciler(t *testing.T) {
 		// Add 1 ingress
 		{
 			name:               "lb-svc-1-ingress",
-			oldServiceSelector: &slim_metav1.LabelSelector{MatchLabels: map[string]string{"color": "blue"}},
-			newServiceSelector: &slim_metav1.LabelSelector{MatchLabels: map[string]string{"color": "blue"}},
+			oldServiceSelector: &blueSelector,
+			newServiceSelector: &blueSelector,
 			advertised:         make(map[resource.Key][]string),
-			upsertedServices: []*slim_corev1.Service{
-				{
-					ObjectMeta: slim_metav1.ObjectMeta{
-						Name:      "svc-1",
-						Namespace: "default",
-						Labels: map[string]string{
-							"color": "blue",
-						},
-					},
-					Spec: slim_corev1.ServiceSpec{
-						Type: slim_corev1.ServiceTypeLoadBalancer,
-					},
-					Status: slim_corev1.ServiceStatus{
-						LoadBalancer: slim_corev1.LoadBalancerStatus{
-							Ingress: []slim_corev1.LoadBalancerIngress{
-								{
-									IP: "1.2.3.4",
-								},
-							},
-						},
-					},
-				},
-			},
+			upsertedServices:   []*slim_corev1.Service{svc1},
 			updated: map[resource.Key][]string{
-				{Name: "svc-1", Namespace: "default"}: {
-					"1.2.3.4/32",
+				svc1Name: {
+					ingressV4Prefix,
 				},
 			},
 		},
 		// Add 2 ingress
 		{
 			name:               "lb-svc-2-ingress",
-			oldServiceSelector: &slim_metav1.LabelSelector{MatchLabels: map[string]string{"color": "blue"}},
-			newServiceSelector: &slim_metav1.LabelSelector{MatchLabels: map[string]string{"color": "blue"}},
+			oldServiceSelector: &blueSelector,
+			newServiceSelector: &blueSelector,
 			advertised:         make(map[resource.Key][]string),
-			upsertedServices: []*slim_corev1.Service{
-				{
-					ObjectMeta: slim_metav1.ObjectMeta{
-						Name:      "svc-1",
-						Namespace: "default",
-						Labels: map[string]string{
-							"color": "blue",
-						},
-					},
-					Spec: slim_corev1.ServiceSpec{
-						Type: slim_corev1.ServiceTypeLoadBalancer,
-					},
-					Status: slim_corev1.ServiceStatus{
-						LoadBalancer: slim_corev1.LoadBalancerStatus{
-							Ingress: []slim_corev1.LoadBalancerIngress{
-								{
-									IP: "1.2.3.4",
-								},
-								{
-									IP: "ff::2.3.4.5",
-								},
-							},
-						},
-					},
-				},
-			},
+			upsertedServices:   []*slim_corev1.Service{svc1TwoIngress},
 			updated: map[resource.Key][]string{
-				{Name: "svc-1", Namespace: "default"}: {
-					"1.2.3.4/32",
-					"ff::2.3.4.5/128",
+				svc1Name: {
+					ingressV4Prefix,
+					ingressV6Prefix,
 				},
 			},
 		},
 		// Delete service
 		{
 			name:               "delete-svc",
-			oldServiceSelector: &slim_metav1.LabelSelector{MatchLabels: map[string]string{"color": "blue"}},
-			newServiceSelector: &slim_metav1.LabelSelector{MatchLabels: map[string]string{"color": "blue"}},
+			oldServiceSelector: &blueSelector,
+			newServiceSelector: &blueSelector,
 			advertised: map[resource.Key][]string{
-				{Name: "svc-1", Namespace: "default"}: {
-					"1.2.3.4/32",
+				svc1Name: {
+					ingressV4Prefix,
 				},
 			},
 			deletedServices: []resource.Key{
-				{Name: "svc-1", Namespace: "default"},
+				svc1Name,
 			},
 			updated: map[resource.Key][]string{},
 		},
 		// Update service to no longer match
 		{
 			name:               "update-service-no-match",
-			oldServiceSelector: &slim_metav1.LabelSelector{MatchLabels: map[string]string{"color": "blue"}},
-			newServiceSelector: &slim_metav1.LabelSelector{MatchLabels: map[string]string{"color": "blue"}},
+			oldServiceSelector: &blueSelector,
+			newServiceSelector: &blueSelector,
 			advertised: map[resource.Key][]string{
-				{Name: "svc-1", Namespace: "default"}: {
-					"1.2.3.4/32",
+				svc1Name: {
+					ingressV4Prefix,
 				},
 			},
-			upsertedServices: []*slim_corev1.Service{
-				{
-					ObjectMeta: slim_metav1.ObjectMeta{
-						Name:      "svc-1",
-						Namespace: "default",
-						Labels: map[string]string{
-							"color": "red",
-						},
-					},
-					Spec: slim_corev1.ServiceSpec{
-						Type: slim_corev1.ServiceTypeLoadBalancer,
-					},
-					Status: slim_corev1.ServiceStatus{
-						LoadBalancer: slim_corev1.LoadBalancerStatus{
-							Ingress: []slim_corev1.LoadBalancerIngress{
-								{
-									IP: "1.2.3.4",
-								},
-							},
-						},
-					},
-				},
-			},
-			updated: map[resource.Key][]string{},
+			upsertedServices: []*slim_corev1.Service{svc1RedLabel},
+			updated:          map[resource.Key][]string{},
 		},
 		// Update vRouter to no longer match
 		{
 			name:               "update-vrouter-selector",
-			oldServiceSelector: &slim_metav1.LabelSelector{MatchLabels: map[string]string{"color": "blue"}},
-			newServiceSelector: &slim_metav1.LabelSelector{MatchLabels: map[string]string{"color": "red"}},
+			oldServiceSelector: &blueSelector,
+			newServiceSelector: &redSelector,
 			advertised: map[resource.Key][]string{
-				{Name: "svc-1", Namespace: "default"}: {
-					"1.2.3.4/32",
+				svc1Name: {
+					ingressV4Prefix,
 				},
 			},
-			upsertedServices: []*slim_corev1.Service{
-				{
-					ObjectMeta: slim_metav1.ObjectMeta{
-						Name:      "svc-1",
-						Namespace: "default",
-						Labels: map[string]string{
-							"color": "blue",
-						},
-					},
-					Spec: slim_corev1.ServiceSpec{
-						Type: slim_corev1.ServiceTypeLoadBalancer,
-					},
-					Status: slim_corev1.ServiceStatus{
-						LoadBalancer: slim_corev1.LoadBalancerStatus{
-							Ingress: []slim_corev1.LoadBalancerIngress{
-								{
-									IP: "1.2.3.4",
-								},
-							},
-						},
-					},
-				},
-			},
-			updated: map[resource.Key][]string{},
+			upsertedServices: []*slim_corev1.Service{svc1},
+			updated:          map[resource.Key][]string{},
 		},
 		// 1 -> 2 ingress
 		{
 			name:               "update-1-to-2-ingress",
-			oldServiceSelector: &slim_metav1.LabelSelector{MatchLabels: map[string]string{"color": "blue"}},
-			newServiceSelector: &slim_metav1.LabelSelector{MatchLabels: map[string]string{"color": "blue"}},
+			oldServiceSelector: &blueSelector,
+			newServiceSelector: &blueSelector,
 			advertised: map[resource.Key][]string{
-				{Name: "svc-1", Namespace: "default"}: {
-					"1.2.3.4/32",
+				svc1Name: {
+					ingressV4Prefix,
 				},
 			},
-			upsertedServices: []*slim_corev1.Service{
-				{
-					ObjectMeta: slim_metav1.ObjectMeta{
-						Name:      "svc-1",
-						Namespace: "default",
-						Labels: map[string]string{
-							"color": "blue",
-						},
-					},
-					Spec: slim_corev1.ServiceSpec{
-						Type: slim_corev1.ServiceTypeLoadBalancer,
-					},
-					Status: slim_corev1.ServiceStatus{
-						LoadBalancer: slim_corev1.LoadBalancerStatus{
-							Ingress: []slim_corev1.LoadBalancerIngress{
-								{
-									IP: "1.2.3.4",
-								},
-								{
-									IP: "2.3.4.5",
-								},
-							},
-						},
-					},
-				},
-			},
+			upsertedServices: []*slim_corev1.Service{svc1TwoIngress},
 			updated: map[resource.Key][]string{
-				{Name: "svc-1", Namespace: "default"}: {
-					"1.2.3.4/32",
-					"2.3.4.5/32",
+				svc1Name: {
+					ingressV4Prefix,
+					ingressV6Prefix,
 				},
 			},
 		},
@@ -695,30 +858,8 @@ func TestLBServiceReconciler(t *testing.T) {
 			oldServiceSelector: nil,
 			newServiceSelector: nil,
 			advertised:         map[resource.Key][]string{},
-			upsertedServices: []*slim_corev1.Service{
-				{
-					ObjectMeta: slim_metav1.ObjectMeta{
-						Name:      "svc-1",
-						Namespace: "default",
-						Labels: map[string]string{
-							"color": "blue",
-						},
-					},
-					Spec: slim_corev1.ServiceSpec{
-						Type: slim_corev1.ServiceTypeLoadBalancer,
-					},
-					Status: slim_corev1.ServiceStatus{
-						LoadBalancer: slim_corev1.LoadBalancerStatus{
-							Ingress: []slim_corev1.LoadBalancerIngress{
-								{
-									IP: "1.2.3.4",
-								},
-							},
-						},
-					},
-				},
-			},
-			updated: map[resource.Key][]string{},
+			upsertedServices:   []*slim_corev1.Service{svc1},
+			updated:            map[resource.Key][]string{},
 		},
 		// Namespace selector
 		{
@@ -727,52 +868,12 @@ func TestLBServiceReconciler(t *testing.T) {
 			newServiceSelector: &slim_metav1.LabelSelector{MatchLabels: map[string]string{"io.kubernetes.service.namespace": "default"}},
 			advertised:         map[resource.Key][]string{},
 			upsertedServices: []*slim_corev1.Service{
-				{
-					ObjectMeta: slim_metav1.ObjectMeta{
-						Name:      "svc-1",
-						Namespace: "default",
-						Labels: map[string]string{
-							"color": "blue",
-						},
-					},
-					Spec: slim_corev1.ServiceSpec{
-						Type: slim_corev1.ServiceTypeLoadBalancer,
-					},
-					Status: slim_corev1.ServiceStatus{
-						LoadBalancer: slim_corev1.LoadBalancerStatus{
-							Ingress: []slim_corev1.LoadBalancerIngress{
-								{
-									IP: "1.2.3.4",
-								},
-							},
-						},
-					},
-				},
-				{
-					ObjectMeta: slim_metav1.ObjectMeta{
-						Name:      "svc-2",
-						Namespace: "non-default",
-						Labels: map[string]string{
-							"color": "blue",
-						},
-					},
-					Spec: slim_corev1.ServiceSpec{
-						Type: slim_corev1.ServiceTypeLoadBalancer,
-					},
-					Status: slim_corev1.ServiceStatus{
-						LoadBalancer: slim_corev1.LoadBalancerStatus{
-							Ingress: []slim_corev1.LoadBalancerIngress{
-								{
-									IP: "2.3.4.5",
-								},
-							},
-						},
-					},
-				},
+				svc1,
+				svc2NonDefault,
 			},
 			updated: map[resource.Key][]string{
-				{Name: "svc-1", Namespace: "default"}: {
-					"1.2.3.4/32",
+				svc1Name: {
+					ingressV4Prefix,
 				},
 			},
 		},
@@ -783,88 +884,163 @@ func TestLBServiceReconciler(t *testing.T) {
 			newServiceSelector: &slim_metav1.LabelSelector{MatchLabels: map[string]string{"io.kubernetes.service.name": "svc-1"}},
 			advertised:         map[resource.Key][]string{},
 			upsertedServices: []*slim_corev1.Service{
-				{
-					ObjectMeta: slim_metav1.ObjectMeta{
-						Name:      "svc-1",
-						Namespace: "default",
-						Labels: map[string]string{
-							"color": "blue",
-						},
-					},
-					Spec: slim_corev1.ServiceSpec{
-						Type: slim_corev1.ServiceTypeLoadBalancer,
-					},
-					Status: slim_corev1.ServiceStatus{
-						LoadBalancer: slim_corev1.LoadBalancerStatus{
-							Ingress: []slim_corev1.LoadBalancerIngress{
-								{
-									IP: "1.2.3.4",
-								},
-							},
-						},
-					},
-				},
-				{
-					ObjectMeta: slim_metav1.ObjectMeta{
-						Name:      "svc-1",
-						Namespace: "non-default",
-						Labels: map[string]string{
-							"color": "blue",
-						},
-					},
-					Spec: slim_corev1.ServiceSpec{
-						Type: slim_corev1.ServiceTypeLoadBalancer,
-					},
-					Status: slim_corev1.ServiceStatus{
-						LoadBalancer: slim_corev1.LoadBalancerStatus{
-							Ingress: []slim_corev1.LoadBalancerIngress{
-								{
-									IP: "2.3.4.5",
-								},
-							},
-						},
-					},
-				},
+				svc1,
+				svc1NonDefault,
 			},
 			updated: map[resource.Key][]string{
-				{Name: "svc-1", Namespace: "default"}: {
-					"1.2.3.4/32",
+				svc1Name: {
+					ingressV4Prefix,
 				},
-				{Name: "svc-1", Namespace: "non-default"}: {
-					"2.3.4.5/32",
+				svc1NonDefaultName: {
+					ingressV4Prefix_2,
 				},
 			},
 		},
 		// No-LB service
 		{
 			name:               "non-lb svc",
-			oldServiceSelector: &slim_metav1.LabelSelector{MatchLabels: map[string]string{"color": "blue"}},
-			newServiceSelector: &slim_metav1.LabelSelector{MatchLabels: map[string]string{"color": "blue"}},
+			oldServiceSelector: &blueSelector,
+			newServiceSelector: &blueSelector,
 			advertised:         map[resource.Key][]string{},
-			upsertedServices: []*slim_corev1.Service{
-				{
-					ObjectMeta: slim_metav1.ObjectMeta{
-						Name:      "svc-1",
-						Namespace: "default",
-						Labels: map[string]string{
-							"color": "blue",
-						},
-					},
-					Spec: slim_corev1.ServiceSpec{
-						Type: slim_corev1.ServiceTypeClusterIP,
-					},
-					Status: slim_corev1.ServiceStatus{
-						LoadBalancer: slim_corev1.LoadBalancerStatus{
-							Ingress: []slim_corev1.LoadBalancerIngress{
-								{
-									IP: "1.2.3.4",
-								},
-							},
-						},
-					},
+			upsertedServices:   []*slim_corev1.Service{svc1NonLB},
+			updated:            map[resource.Key][]string{},
+		},
+		// Service without endpoints
+		{
+			name:               "etp-local-no-endpoints",
+			oldServiceSelector: &blueSelector,
+			newServiceSelector: &blueSelector,
+			advertised:         map[resource.Key][]string{},
+			upsertedServices:   []*slim_corev1.Service{svc1ETPLocal},
+			upsertedEndpoints:  []*k8s.Endpoints{},
+			updated:            map[resource.Key][]string{},
+		},
+		// externalTrafficPolicy=Local && IPv4 && single slice && local endpoint
+		{
+			name:               "etp-local-ipv4-single-slice-local",
+			oldServiceSelector: &blueSelector,
+			newServiceSelector: &blueSelector,
+			advertised:         map[resource.Key][]string{},
+			upsertedServices:   []*slim_corev1.Service{svc1ETPLocal},
+			upsertedEndpoints:  []*k8s.Endpoints{eps1IPv4Local},
+			updated: map[resource.Key][]string{
+				svc1Name: {
+					ingressV4Prefix,
 				},
 			},
-			updated: map[resource.Key][]string{},
+		},
+		// externalTrafficPolicy=Local && IPv4 && single slice && remote endpoint
+		{
+			name:               "etp-local-ipv4-single-slice-remote",
+			oldServiceSelector: &blueSelector,
+			newServiceSelector: &blueSelector,
+			advertised:         map[resource.Key][]string{},
+			upsertedServices:   []*slim_corev1.Service{svc1ETPLocal},
+			upsertedEndpoints:  []*k8s.Endpoints{eps1IPv4Remote},
+			updated:            map[resource.Key][]string{},
+		},
+		// externalTrafficPolicy=Local && IPv4 && single slice && mixed endpoint
+		{
+			name:               "etp-local-ipv4-single-slice-mixed",
+			oldServiceSelector: &blueSelector,
+			newServiceSelector: &blueSelector,
+			advertised:         map[resource.Key][]string{},
+			upsertedServices:   []*slim_corev1.Service{svc1ETPLocal},
+			upsertedEndpoints:  []*k8s.Endpoints{eps1IPv4Mixed},
+			updated: map[resource.Key][]string{
+				svc1Name: {
+					ingressV4Prefix,
+				},
+			},
+		},
+		// externalTrafficPolicy=Local && IPv6 && single slice && local endpoint
+		{
+			name:               "etp-local-ipv6-single-slice-local",
+			oldServiceSelector: &blueSelector,
+			newServiceSelector: &blueSelector,
+			advertised:         map[resource.Key][]string{},
+			upsertedServices:   []*slim_corev1.Service{svc1IPv6ETPLocal},
+			upsertedEndpoints:  []*k8s.Endpoints{eps1IPv6Local},
+			updated: map[resource.Key][]string{
+				svc1Name: {
+					ingressV6Prefix,
+				},
+			},
+		},
+		// externalTrafficPolicy=Local && IPv6 && single slice && remote endpoint
+		{
+			name:               "etp-local-ipv6-single-slice-remote",
+			oldServiceSelector: &blueSelector,
+			newServiceSelector: &blueSelector,
+			advertised:         map[resource.Key][]string{},
+			upsertedServices:   []*slim_corev1.Service{svc1IPv6ETPLocal},
+			upsertedEndpoints:  []*k8s.Endpoints{eps1IPv6Remote},
+			updated:            map[resource.Key][]string{},
+		},
+		// externalTrafficPolicy=Local && IPv6 && single slice && mixed endpoint
+		{
+			name:               "etp-local-ipv6-single-slice-mixed",
+			oldServiceSelector: &blueSelector,
+			newServiceSelector: &blueSelector,
+			advertised:         map[resource.Key][]string{},
+			upsertedServices:   []*slim_corev1.Service{svc1IPv6ETPLocal},
+			upsertedEndpoints:  []*k8s.Endpoints{eps1IPv6Mixed},
+			updated: map[resource.Key][]string{
+				svc1Name: {
+					ingressV6Prefix,
+				},
+			},
+		},
+		// externalTrafficPolicy=Local && Dual && two slices && local endpoint
+		{
+			name:               "etp-local-dual-two-slices-local",
+			oldServiceSelector: &blueSelector,
+			newServiceSelector: &blueSelector,
+			advertised:         map[resource.Key][]string{},
+			upsertedServices:   []*slim_corev1.Service{svc1ETPLocalTwoIngress},
+			upsertedEndpoints: []*k8s.Endpoints{
+				eps1IPv4Local,
+				eps1IPv6Local,
+			},
+			updated: map[resource.Key][]string{
+				svc1Name: {
+					ingressV4Prefix,
+					ingressV6Prefix,
+				},
+			},
+		},
+		// externalTrafficPolicy=Local && Dual && two slices && remote endpoint
+		{
+			name:               "etp-local-dual-two-slices-remote",
+			oldServiceSelector: &blueSelector,
+			newServiceSelector: &blueSelector,
+			advertised:         map[resource.Key][]string{},
+			upsertedServices:   []*slim_corev1.Service{svc1ETPLocalTwoIngress},
+			upsertedEndpoints: []*k8s.Endpoints{
+				eps1IPv4Remote,
+				eps1IPv6Remote,
+			},
+			updated: map[resource.Key][]string{
+				svc1Name: {},
+			},
+		},
+		// externalTrafficPolicy=Local && Dual && two slices && mixed endpoint
+		{
+			name:               "etp-local-dual-two-slices-mixed",
+			oldServiceSelector: &blueSelector,
+			newServiceSelector: &blueSelector,
+			advertised:         map[resource.Key][]string{},
+			upsertedServices:   []*slim_corev1.Service{svc1ETPLocalTwoIngress},
+			upsertedEndpoints: []*k8s.Endpoints{
+				eps1IPv4Mixed,
+				eps1IPv6Mixed,
+			},
+			updated: map[resource.Key][]string{
+				svc1Name: {
+					ingressV4Prefix,
+					ingressV6Prefix,
+				},
+			},
 		},
 	}
 	for _, tt := range table {
@@ -877,6 +1053,7 @@ func TestLBServiceReconciler(t *testing.T) {
 					RouterID:   "127.0.0.1",
 					ListenPort: -1,
 				},
+				CState: &agent.ControlPlaneState{},
 			}
 			oldc := &v2alpha1api.CiliumBGPVirtualRouter{
 				LocalASN:        64125,
@@ -910,7 +1087,8 @@ func TestLBServiceReconciler(t *testing.T) {
 				ServiceSelector: tt.newServiceSelector,
 			}
 			newcstate := agent.ControlPlaneState{
-				IPv4: netip.MustParseAddr("127.0.0.1"),
+				IPv4:            netip.MustParseAddr("127.0.0.1"),
+				CurrentNodeName: "node1",
 			}
 
 			diffstore := newFakeDiffStore[*slim_corev1.Service]()
@@ -921,7 +1099,12 @@ func TestLBServiceReconciler(t *testing.T) {
 				diffstore.Delete(key)
 			}
 
-			reconciler := NewLBServiceReconciler(diffstore)
+			epDiffStore := newFakeDiffStore[*k8s.Endpoints]()
+			for _, obj := range tt.upsertedEndpoints {
+				epDiffStore.Upsert(obj)
+			}
+
+			reconciler := NewLBServiceReconciler(diffstore, epDiffStore)
 			err = reconciler.Reconciler.Reconcile(context.Background(), ReconcileParams{
 				Server: testSC,
 				NewC:   newc,
@@ -982,10 +1165,11 @@ func TestLBServiceReconciler(t *testing.T) {
 func TestReconcileAfterServerReinit(t *testing.T) {
 	var (
 		routerID        = "192.168.0.1"
-		localPort       = 45450
-		localASN        = 64125
+		localPort       = int32(localListenPort)
+		localASN        = int64(64125)
 		newRouterID     = "192.168.0.2"
 		diffstore       = newFakeDiffStore[*slim_corev1.Service]()
+		epDiffStore     = newFakeDiffStore[*k8s.Endpoints]()
 		serviceSelector = &slim_metav1.LabelSelector{MatchLabels: map[string]string{"color": "blue"}}
 		obj             = &slim_corev1.Service{
 			ObjectMeta: slim_metav1.ObjectMeta{
@@ -1017,6 +1201,7 @@ func TestReconcileAfterServerReinit(t *testing.T) {
 			RouterID:   "127.0.0.1",
 			ListenPort: -1,
 		},
+		CState: &agent.ControlPlaneState{},
 	}
 
 	testSC, err := NewServerWithConfig(context.Background(), srvParams)
@@ -1031,7 +1216,7 @@ func TestReconcileAfterServerReinit(t *testing.T) {
 	// Validate pod CIDR and service announcements work as expected
 	newc := &v2alpha1api.CiliumBGPVirtualRouter{
 		LocalASN:        localASN,
-		ExportPodCIDR:   true,
+		ExportPodCIDR:   pointer.Bool(true),
 		Neighbors:       []v2alpha1api.CiliumBGPNeighbor{},
 		ServiceSelector: serviceSelector,
 	}
@@ -1049,7 +1234,7 @@ func TestReconcileAfterServerReinit(t *testing.T) {
 	require.NoError(t, err)
 
 	diffstore.Upsert(obj)
-	reconciler := NewLBServiceReconciler(diffstore)
+	reconciler := NewLBServiceReconciler(diffstore, epDiffStore)
 	err = reconciler.Reconciler.Reconcile(context.Background(), ReconcileParams{
 		Server: testSC,
 		NewC:   newc,
@@ -1079,11 +1264,21 @@ func TestReconcileAfterServerReinit(t *testing.T) {
 	require.NoError(t, err)
 
 	// Update LB service
-	reconciler = NewLBServiceReconciler(diffstore)
+	reconciler = NewLBServiceReconciler(diffstore, epDiffStore)
 	err = reconciler.Reconciler.Reconcile(context.Background(), ReconcileParams{
 		Server: testSC,
 		NewC:   newc,
 		CState: cstate,
 	})
 	require.NoError(t, err)
+}
+
+// hostPrefixLen returns addr/32 for ipv4 address and addr/128 for ipv6 address
+func toHostPrefix(addr string) string {
+	addrNet := netip.MustParseAddr(addr)
+	bits := 32
+	if addrNet.Is6() {
+		bits = 128
+	}
+	return netip.PrefixFrom(addrNet, bits).String()
 }

@@ -12,7 +12,7 @@ import (
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
 
-// Describes the curent Infrastructure Performance metric subscriptions.
+// Describes the current Infrastructure Performance metric subscriptions.
 func (c *Client) DescribeAwsNetworkPerformanceMetricSubscriptions(ctx context.Context, params *DescribeAwsNetworkPerformanceMetricSubscriptionsInput, optFns ...func(*Options)) (*DescribeAwsNetworkPerformanceMetricSubscriptionsOutput, error) {
 	if params == nil {
 		params = &DescribeAwsNetworkPerformanceMetricSubscriptionsInput{}
@@ -32,8 +32,8 @@ type DescribeAwsNetworkPerformanceMetricSubscriptionsInput struct {
 
 	// Checks whether you have the required permissions for the action, without
 	// actually making the request, and provides an error response. If you have the
-	// required permissions, the error response is DryRunOperation. Otherwise, it is
-	// UnauthorizedOperation.
+	// required permissions, the error response is DryRunOperation . Otherwise, it is
+	// UnauthorizedOperation .
 	DryRun *bool
 
 	// One or more filters.
@@ -100,7 +100,7 @@ func (c *Client) addOperationDescribeAwsNetworkPerformanceMetricSubscriptionsMid
 	if err = awsmiddleware.AddRecordResponseTiming(stack); err != nil {
 		return err
 	}
-	if err = addClientUserAgent(stack); err != nil {
+	if err = addClientUserAgent(stack, options); err != nil {
 		return err
 	}
 	if err = smithyhttp.AddErrorCloseResponseBodyMiddleware(stack); err != nil {
@@ -110,6 +110,9 @@ func (c *Client) addOperationDescribeAwsNetworkPerformanceMetricSubscriptionsMid
 		return err
 	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opDescribeAwsNetworkPerformanceMetricSubscriptions(options.Region), middleware.Before); err != nil {
+		return err
+	}
+	if err = awsmiddleware.AddRecursionDetection(stack); err != nil {
 		return err
 	}
 	if err = addRequestIDRetrieverMiddleware(stack); err != nil {

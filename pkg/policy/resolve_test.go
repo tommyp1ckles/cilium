@@ -289,15 +289,17 @@ func (ds *PolicyTestSuite) TestL7WithIngressWildcard(c *C) {
 	defer repo.Mutex.RUnlock()
 	selPolicy, err := repo.resolvePolicyLocked(fooIdentity)
 	c.Assert(err, IsNil)
+	c.Assert(selPolicy.L4Policy.redirectTypes, Equals, redirectTypeEnvoy)
+
 	policy := selPolicy.DistillPolicy(DummyOwner{}, false)
 
 	expectedEndpointPolicy := EndpointPolicy{
 		selectorPolicy: &selectorPolicy{
 			Revision:      repo.GetRevision(),
 			SelectorCache: repo.GetSelectorCache(),
-			L4Policy: &L4Policy{
+			L4Policy: L4Policy{
 				Revision: repo.GetRevision(),
-				Ingress: L4PolicyMap{
+				Ingress: L4DirectionPolicy{PortRules: L4PolicyMap{
 					"80/TCP": {
 						Port:     80,
 						Protocol: api.ProtoTCP,
@@ -316,8 +318,8 @@ func (ds *PolicyTestSuite) TestL7WithIngressWildcard(c *C) {
 						},
 						RuleOrigin: map[CachedSelector]labels.LabelArrayList{wildcardCachedSelector: {nil}},
 					},
-				},
-				Egress:        L4PolicyMap{},
+				}},
+				Egress:        newL4DirectionPolicy(),
 				redirectTypes: redirectTypeEnvoy,
 			},
 			IngressPolicyEnabled: true,
@@ -391,9 +393,9 @@ func (ds *PolicyTestSuite) TestL7WithLocalHostWildcardd(c *C) {
 		selectorPolicy: &selectorPolicy{
 			Revision:      repo.GetRevision(),
 			SelectorCache: repo.GetSelectorCache(),
-			L4Policy: &L4Policy{
+			L4Policy: L4Policy{
 				Revision: repo.GetRevision(),
-				Ingress: L4PolicyMap{
+				Ingress: L4DirectionPolicy{PortRules: L4PolicyMap{
 					"80/TCP": {
 						Port:     80,
 						Protocol: api.ProtoTCP,
@@ -413,8 +415,8 @@ func (ds *PolicyTestSuite) TestL7WithLocalHostWildcardd(c *C) {
 						},
 						RuleOrigin: map[CachedSelector]labels.LabelArrayList{wildcardCachedSelector: {nil}},
 					},
-				},
-				Egress:        L4PolicyMap{},
+				}},
+				Egress:        newL4DirectionPolicy(),
 				redirectTypes: redirectTypeEnvoy,
 			},
 			IngressPolicyEnabled: true,
@@ -476,16 +478,16 @@ func (ds *PolicyTestSuite) TestMapStateWithIngressWildcard(c *C) {
 	c.Assert(err, IsNil)
 	policy := selPolicy.DistillPolicy(DummyOwner{}, false)
 
-	rule1MapStateEntry := NewMapStateEntry(wildcardCachedSelector, labels.LabelArrayList{ruleLabel}, false, false, AuthTypeNone)
-	allowEgressMapStateEntry := NewMapStateEntry(nil, labels.LabelArrayList{ruleLabelAllowAnyEgress}, false, false, AuthTypeNone)
+	rule1MapStateEntry := NewMapStateEntry(wildcardCachedSelector, labels.LabelArrayList{ruleLabel}, false, false, DefaultAuthType, AuthTypeDisabled)
+	allowEgressMapStateEntry := NewMapStateEntry(nil, labels.LabelArrayList{ruleLabelAllowAnyEgress}, false, false, ExplicitAuthType, AuthTypeDisabled)
 
 	expectedEndpointPolicy := EndpointPolicy{
 		selectorPolicy: &selectorPolicy{
 			Revision:      repo.GetRevision(),
 			SelectorCache: repo.GetSelectorCache(),
-			L4Policy: &L4Policy{
+			L4Policy: L4Policy{
 				Revision: repo.GetRevision(),
-				Ingress: L4PolicyMap{
+				Ingress: L4DirectionPolicy{PortRules: L4PolicyMap{
 					"80/TCP": {
 						Port:     80,
 						Protocol: api.ProtoTCP,
@@ -498,8 +500,8 @@ func (ds *PolicyTestSuite) TestMapStateWithIngressWildcard(c *C) {
 						},
 						RuleOrigin: map[CachedSelector]labels.LabelArrayList{wildcardCachedSelector: {ruleLabel}},
 					},
-				},
-				Egress: L4PolicyMap{},
+				}},
+				Egress: newL4DirectionPolicy(),
 			},
 			IngressPolicyEnabled: true,
 			EgressPolicyEnabled:  false,
@@ -563,8 +565,8 @@ func (ds *PolicyTestSuite) TestMapStateWithIngress(c *C) {
 				}},
 			},
 			{
-				Auth: &api.Auth{
-					Type: api.AuthTypeNull,
+				Authentication: &api.Authentication{
+					Mode: api.AuthenticationModeDisabled,
 				},
 				IngressCommonRule: api.IngressCommonRule{
 					FromEndpoints: []api.EndpointSelector{
@@ -618,16 +620,16 @@ func (ds *PolicyTestSuite) TestMapStateWithIngress(c *C) {
 	cachedSelectorTest := testSelectorCache.FindCachedIdentitySelector(api.NewESFromLabels(lblTest))
 	c.Assert(cachedSelectorTest, Not(IsNil))
 
-	rule1MapStateEntry := NewMapStateEntry(cachedSelectorTest, labels.LabelArrayList{ruleLabel}, false, false, AuthTypeNone)
-	allowEgressMapStateEntry := NewMapStateEntry(nil, labels.LabelArrayList{ruleLabelAllowAnyEgress}, false, false, AuthTypeNone)
+	rule1MapStateEntry := NewMapStateEntry(cachedSelectorTest, labels.LabelArrayList{ruleLabel}, false, false, DefaultAuthType, AuthTypeDisabled)
+	allowEgressMapStateEntry := NewMapStateEntry(nil, labels.LabelArrayList{ruleLabelAllowAnyEgress}, false, false, ExplicitAuthType, AuthTypeDisabled)
 
 	expectedEndpointPolicy := EndpointPolicy{
 		selectorPolicy: &selectorPolicy{
 			Revision:      repo.GetRevision(),
 			SelectorCache: repo.GetSelectorCache(),
-			L4Policy: &L4Policy{
+			L4Policy: L4Policy{
 				Revision: repo.GetRevision(),
-				Ingress: L4PolicyMap{
+				Ingress: L4DirectionPolicy{PortRules: L4PolicyMap{
 					"80/TCP": {
 						Port:     80,
 						Protocol: api.ProtoTCP,
@@ -637,8 +639,8 @@ func (ds *PolicyTestSuite) TestMapStateWithIngress(c *C) {
 						PerSelectorPolicies: L7DataMap{
 							cachedSelectorWorld: nil,
 							cachedSelectorTest: &PerSelectorPolicy{
-								Auth: &api.Auth{
-									Type: api.AuthTypeNull,
+								Authentication: &api.Authentication{
+									Mode: api.AuthenticationModeDisabled,
 								},
 								CanShortCircuit: true,
 							},
@@ -649,7 +651,9 @@ func (ds *PolicyTestSuite) TestMapStateWithIngress(c *C) {
 						},
 					},
 				},
-				Egress: L4PolicyMap{},
+					features: authRules,
+				},
+				Egress: newL4DirectionPolicy(),
 			},
 			IngressPolicyEnabled: true,
 			EgressPolicyEnabled:  false,
@@ -658,8 +662,8 @@ func (ds *PolicyTestSuite) TestMapStateWithIngress(c *C) {
 		PolicyMapState: MapState{
 			{TrafficDirection: trafficdirection.Egress.Uint8()}:                          allowEgressMapStateEntry,
 			{Identity: uint32(identity.ReservedIdentityWorld), DestPort: 80, Nexthdr: 6}: rule1MapStateEntry.WithOwners(cachedSelectorWorld),
-			{Identity: 192, DestPort: 80, Nexthdr: 6}:                                    rule1MapStateEntry.WithAuthType(AuthTypeNull),
-			{Identity: 194, DestPort: 80, Nexthdr: 6}:                                    rule1MapStateEntry.WithAuthType(AuthTypeNull),
+			{Identity: 192, DestPort: 80, Nexthdr: 6}:                                    rule1MapStateEntry.WithAuthType(AuthTypeDisabled),
+			{Identity: 194, DestPort: 80, Nexthdr: 6}:                                    rule1MapStateEntry.WithAuthType(AuthTypeDisabled),
 		},
 	}
 

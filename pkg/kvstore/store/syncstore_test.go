@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/cilium/cilium/pkg/metrics"
+	"github.com/cilium/cilium/pkg/metrics/metric"
 	"github.com/cilium/cilium/pkg/option"
 )
 
@@ -33,6 +34,8 @@ type fakeBackend struct {
 
 	errorsOnUpdate map[string]uint
 	errorsOnDelete map[string]uint
+
+	leaseExpiredObserver func(key string)
 }
 
 func NewFakeBackend(t *testing.T, expectLease bool) *fakeBackend {
@@ -83,6 +86,10 @@ func (fb *fakeBackend) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+func (fb *fakeBackend) RegisterLeaseExpiredObserver(prefix string, fn func(key string)) {
+	fb.leaseExpiredObserver = fn
+}
+
 type fakeRateLimiter struct{ whenCalled, forgetCalled chan *KVPair }
 
 func NewFakeRateLimiter() *fakeRateLimiter {
@@ -110,7 +117,7 @@ func eventually(in <-chan *KVPair) *KVPair {
 func TestWorkqueueSyncStore(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	backend := NewFakeBackend(t, true)
-	store := NewWorkqueueSyncStore(backend, "/foo/bar")
+	store := NewWorkqueueSyncStore("qux", backend, "/foo/bar")
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -158,12 +165,16 @@ func TestWorkqueueSyncStore(t *testing.T) {
 	store.DeleteKey(ctx, NewKVPair("key2", ""))
 	require.Equal(t, NewKVPair("/foo/bar/key2", ""), eventually(backend.deleted))
 	require.Equal(t, NewKVPair("/foo/bar/key2", ""), eventually(backend.deleted))
+
+	// Executing the lease expired observer should trigger a new update for the given key.
+	backend.leaseExpiredObserver("/foo/bar/key1")
+	require.Equal(t, NewKVPair("/foo/bar/key1", "valueC"), eventually(backend.updated))
 }
 
 func TestWorkqueueSyncStoreWithoutLease(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	backend := NewFakeBackend(t, false)
-	store := NewWorkqueueSyncStore(backend, "/foo/bar", WSSWithoutLease())
+	store := NewWorkqueueSyncStore("qux", backend, "/foo/bar", WSSWithoutLease())
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -187,7 +198,7 @@ func TestWorkqueueSyncStoreWithRateLimiter(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	backend := NewFakeBackend(t, true)
 	limiter := NewFakeRateLimiter()
-	store := NewWorkqueueSyncStore(backend, "/foo/bar", WSSWithRateLimiter(limiter))
+	store := NewWorkqueueSyncStore("qux", backend, "/foo/bar", WSSWithRateLimiter(limiter))
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -214,7 +225,7 @@ func TestWorkqueueSyncStoreWithRateLimiter(t *testing.T) {
 func TestWorkqueueSyncStoreWithWorkers(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	backend := NewFakeBackend(t, true)
-	store := NewWorkqueueSyncStore(backend, "/foo/bar", WSSWithWorkers(2))
+	store := NewWorkqueueSyncStore("qux", backend, "/foo/bar", WSSWithWorkers(2))
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -245,7 +256,7 @@ func TestWorkqueueSyncStoreSynced(t *testing.T) {
 		return func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			backend := NewFakeBackend(t, true)
-			store := NewWorkqueueSyncStore(backend, "foo/bar", opts...)
+			store := NewWorkqueueSyncStore("qux", backend, "foo/bar", opts...)
 
 			var wg sync.WaitGroup
 			wg.Add(1)
@@ -279,7 +290,7 @@ func TestWorkqueueSyncStoreSynced(t *testing.T) {
 		require.Equal(t, NewKVPair("callback/executed", ""), eventually(backend.updated))
 		require.Equal(t, NewKVPair("callback/executed", ""), eventually(backend.updated))
 		require.Equal(t, NewKVPair("foo/bar/key3", "value3"), eventually(backend.updated))
-	}, WSSWithSourceClusterName("qux")))
+	}))
 
 	t.Run("key-override", runnable(func(t *testing.T, ctx context.Context, backend *fakeBackend, store SyncStore) {
 		store.UpsertKey(ctx, NewKVPair("key1", "value1"))
@@ -291,7 +302,7 @@ func TestWorkqueueSyncStoreSynced(t *testing.T) {
 		require.Equal(t, NewKVPair("foo/bar/key2", "value2"), eventually(backend.updated))
 		require.Equal(t, "cilium/synced/qux/override", eventually(backend.updated).Key)
 		require.Equal(t, NewKVPair("foo/bar/key3", "value3"), eventually(backend.updated))
-	}, WSSWithSourceClusterName("qux"), WSSWithSyncedKeyOverride("override")))
+	}, WSSWithSyncedKeyOverride("override")))
 
 	t.Run("key-upsertion-failure", runnable(func(t *testing.T, ctx context.Context, backend *fakeBackend, store SyncStore) {
 		backend.errorsOnUpdate["foo/bar/key1"] = 1
@@ -307,7 +318,7 @@ func TestWorkqueueSyncStoreSynced(t *testing.T) {
 		require.Equal(t, NewKVPair("foo/bar/key1", "value1"), eventually(backend.updated))
 		// The synced key shall be created only once key1 has been successfully upserted.
 		require.Equal(t, "cilium/synced/qux/foo/bar", eventually(backend.updated).Key)
-	}, WSSWithSourceClusterName("qux")))
+	}))
 
 	t.Run("synced-upsertion-failure", runnable(func(t *testing.T, ctx context.Context, backend *fakeBackend, store SyncStore) {
 		backend.errorsOnUpdate["cilium/synced/qux/foo/bar"] = 1
@@ -320,7 +331,7 @@ func TestWorkqueueSyncStoreSynced(t *testing.T) {
 		require.Equal(t, NewKVPair("foo/bar/key2", "value2"), eventually(backend.updated))
 		require.Equal(t, "cilium/synced/qux/foo/bar", eventually(backend.updated).Key)
 		require.Equal(t, "cilium/synced/qux/foo/bar", eventually(backend.updated).Key)
-	}, WSSWithSourceClusterName("qux")))
+	}))
 
 	// Assert that the synced key is created only after key1 has been successfully upserted also in case there are multiple workers
 	t.Run("multiple-workers", runnable(func(t *testing.T, ctx context.Context, backend *fakeBackend, store SyncStore) {
@@ -332,25 +343,40 @@ func TestWorkqueueSyncStoreSynced(t *testing.T) {
 		require.Equal(t, NewKVPair("foo/bar/key1", "value1"), eventually(backend.updated))
 		require.Equal(t, NewKVPair("foo/bar/key1", "value1"), eventually(backend.updated))
 		require.Equal(t, "cilium/synced/qux/foo/bar", eventually(backend.updated).Key)
-	}, WSSWithSourceClusterName("qux"), WSSWithWorkers(10)))
+	}, WSSWithWorkers(10)))
+
+	// Assert that the synced key gets recreated if the corresponding lease expired
+	t.Run("lease-expiration", runnable(func(t *testing.T, ctx context.Context, backend *fakeBackend, store SyncStore) {
+		callback := func(ctx context.Context) {
+			backend.Update(ctx, "callback/executed", []byte{}, true)
+		}
+
+		store.UpsertKey(ctx, NewKVPair("key1", "value1"))
+		store.Synced(ctx, callback)
+
+		require.Equal(t, NewKVPair("foo/bar/key1", "value1"), eventually(backend.updated))
+		require.Equal(t, "cilium/synced/qux/foo/bar", eventually(backend.updated).Key)
+		require.Equal(t, NewKVPair("callback/executed", ""), eventually(backend.updated))
+		backend.leaseExpiredObserver("cilium/synced/qux/foo/bar")
+		require.Equal(t, "cilium/synced/qux/foo/bar", eventually(backend.updated).Key)
+		// The callback shall not be executed a second time
+	}))
 }
 
 func TestWorkqueueSyncStoreMetrics(t *testing.T) {
-	defer func(name string, queue, sync metrics.GaugeVec) {
+	defer func(name string, queue, sync metric.Vec[metric.Gauge]) {
 		option.Config.ClusterName = name
 		metrics.KVStoreSyncQueueSize = queue
 		metrics.KVStoreInitialSyncCompleted = sync
 	}(option.Config.ClusterName, metrics.KVStoreSyncQueueSize, metrics.KVStoreInitialSyncCompleted)
 
-	option.Config.ClusterName = "foo"
-	cfg, collectors := metrics.CreateConfiguration([]string{"cilium_kvstore_sync_queue_size", "cilium_kvstore_initial_sync_completed"})
-	require.True(t, cfg.KVStoreSyncQueueSizeEnabled)
-	require.True(t, cfg.KVStoreInitialSyncCompletedEnabled)
-	require.Len(t, collectors, 2)
+	legacyMetrics := metrics.NewLegacyMetrics()
+	require.True(t, legacyMetrics.KVStoreSyncQueueSize.IsEnabled())
+	require.True(t, legacyMetrics.KVStoreInitialSyncCompleted.IsEnabled())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	backend := NewFakeBackend(t, true)
-	store := NewWorkqueueSyncStore(backend, "cilium/state/nodes/v1")
+	store := NewWorkqueueSyncStore("foo", backend, "cilium/state/nodes/v1")
 
 	// The queue size should be initially zero.
 	require.Equal(t, float64(0), testutil.ToFloat64(metrics.KVStoreSyncQueueSize.WithLabelValues("nodes/v1", "foo")))
@@ -416,9 +442,4 @@ func TestWorkqueueSyncStoreMetrics(t *testing.T) {
 
 	// Once all elements have been processed, the metric should be zero.
 	require.Equal(t, float64(0), testutil.ToFloat64(metrics.KVStoreSyncQueueSize.WithLabelValues("nodes/v1", "foo")))
-
-	// The metric should reflect the specified cluster name if overwritten.
-	storeWithClusterName := NewWorkqueueSyncStore(backend, "cilium/state/nodes/v1", WSSWithSourceClusterName("bar"))
-	storeWithClusterName.UpsertKey(ctx, NewKVPair("key2", "value2"))
-	require.Equal(t, float64(1), testutil.ToFloat64(metrics.KVStoreSyncQueueSize.WithLabelValues("nodes/v1", "bar")))
 }

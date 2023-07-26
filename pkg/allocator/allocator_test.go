@@ -6,16 +6,22 @@ package allocator
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	. "github.com/cilium/checkmate"
+	"github.com/stretchr/testify/require"
+	"golang.org/x/exp/maps"
 
 	"github.com/cilium/cilium/pkg/idpool"
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/rand"
 	"github.com/cilium/cilium/pkg/rate"
+	"github.com/cilium/cilium/pkg/stream"
 )
 
 const (
@@ -34,6 +40,8 @@ type dummyBackend struct {
 	mutex      lock.RWMutex
 	identities map[idpool.ID]AllocatorKey
 	handler    CacheMutations
+
+	disableListDone bool
 }
 
 func newDummyBackend() Backend {
@@ -156,11 +164,19 @@ func (d *dummyBackend) Release(ctx context.Context, id idpool.ID, key AllocatorK
 func (d *dummyBackend) ListAndWatch(ctx context.Context, handler CacheMutations, stopChan chan struct{}) {
 	d.mutex.Lock()
 	d.handler = handler
-	for id, k := range d.identities {
-		d.handler.OnModify(id, k)
+
+	// Sort by ID to ensure consistent ordering
+	ids := maps.Keys(d.identities)
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, id := range ids {
+		d.handler.OnModify(id, d.identities[id])
 	}
 	d.mutex.Unlock()
-	d.handler.OnListDone()
+
+	if !d.disableListDone {
+		d.handler.OnListDone()
+	}
+
 	<-stopChan
 }
 
@@ -349,6 +365,64 @@ func (s *AllocatorSuite) TestAllocateCached(c *C) {
 	testAllocator(c, idpool.ID(256), randomTestName(), "a") // enable use of local cache
 }
 
+func TestObserveAllocatorChanges(t *testing.T) {
+	backend := newDummyBackend()
+	allocator, err := NewAllocator(TestAllocatorKey(""), backend, WithMin(idpool.ID(1)), WithMax(idpool.ID(256)), WithoutGC())
+	require.NoError(t, err)
+	require.NotNil(t, allocator)
+
+	numAllocations := 10
+
+	// Allocate few ids
+	for i := 0; i < numAllocations; i++ {
+		key := TestAllocatorKey(fmt.Sprintf("key%04d", i))
+		id, new, firstUse, err := allocator.Allocate(context.Background(), key)
+		require.NoError(t, err)
+		require.NotEqual(t, 0, id)
+		require.True(t, new)
+		require.True(t, firstUse)
+
+		// refcnt must be 1
+		require.Equal(t, uint64(1), allocator.localKeys.keys[allocator.encodeKey(key)].refcnt)
+	}
+
+	// Subscribe to the changes. This should replay the current state.
+	ctx, cancel := context.WithCancel(context.Background())
+	changes := stream.ToChannel[AllocatorChange](ctx, allocator)
+	for i := 0; i < numAllocations; i++ {
+		change := <-changes
+		// Since these are replayed in hash map traversal order, just validate that
+		// the fields are set.
+		require.True(t, strings.HasPrefix(change.Key.String(), "key0"))
+		require.NotEqual(t, 0, change.ID)
+		require.Equal(t, AllocatorChangeUpsert, change.Kind)
+	}
+
+	// After replay we should see a sync event.
+	change := <-changes
+	require.Equal(t, AllocatorChangeSync, change.Kind)
+
+	// Simulate changes to the allocations via the backend
+	go func() {
+		backend.(*dummyBackend).handler.OnAdd(idpool.ID(123), TestAllocatorKey("remote"))
+		backend.(*dummyBackend).handler.OnDelete(idpool.ID(123), TestAllocatorKey("remote"))
+	}()
+
+	// Check that we observe the allocation and the deletions.
+	change = <-changes
+	require.Equal(t, AllocatorChangeUpsert, change.Kind)
+	require.Equal(t, TestAllocatorKey("remote"), change.Key)
+
+	change = <-changes
+	require.Equal(t, AllocatorChangeDelete, change.Kind)
+	require.Equal(t, TestAllocatorKey("remote"), change.Key)
+
+	// Cancel the subscription and verify it completes.
+	cancel()
+	_, notClosed := <-changes
+	require.False(t, notClosed)
+}
+
 // The following tests are currently disabled as they are not 100% reliable in
 // the Jenkins CI.
 // These were copied from pkg/kvstore/allocator/allocator_test.go and don't
@@ -434,3 +508,127 @@ func (s *AllocatorSuite) TestAllocateCached(c *C) {
 //
 //	wg.Wait()
 //}
+
+func TestWatchRemoteKVStore(t *testing.T) {
+	var wg sync.WaitGroup
+
+	run := func(ctx context.Context, rc *RemoteCache) context.CancelFunc {
+		ctx, cancel := context.WithCancel(ctx)
+		wg.Add(1)
+		go func() {
+			rc.Watch(ctx)
+			wg.Done()
+		}()
+		return cancel
+	}
+
+	stop := func(cancel context.CancelFunc) {
+		cancel()
+		wg.Wait()
+	}
+
+	global := Allocator{remoteCaches: make(map[string]*RemoteCache)}
+	events := make(AllocatorEventChan, 10)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Ensure that the goroutines are properly collected also in case the test fails.
+	defer stop(cancel)
+
+	newRemoteAllocator := func(backend Backend) *Allocator {
+		remote, err := NewAllocator(TestAllocatorKey(""), backend, WithEvents(events), WithoutAutostart(), WithoutGC())
+		require.NoError(t, err)
+
+		return remote
+	}
+
+	// Add a new remote cache, and assert that it is registered correctly
+	// and the proper events are emitted
+	backend := newDummyBackend()
+	remote := newRemoteAllocator(backend)
+
+	backend.AllocateID(ctx, idpool.ID(1), TestAllocatorKey("foo"))
+	backend.AllocateID(ctx, idpool.ID(2), TestAllocatorKey("baz"))
+
+	rc := global.NewRemoteCache("remote", remote)
+	require.False(t, rc.Synced(), "The cache should not be synchronized")
+	cancel = run(ctx, rc)
+
+	require.Equal(t, AllocatorEvent{ID: idpool.ID(1), Key: TestAllocatorKey("foo"), Typ: kvstore.EventTypeModify}, <-events)
+	require.Equal(t, AllocatorEvent{ID: idpool.ID(2), Key: TestAllocatorKey("baz"), Typ: kvstore.EventTypeModify}, <-events)
+
+	require.Eventually(t, func() bool {
+		global.remoteCachesMutex.RLock()
+		defer global.remoteCachesMutex.RUnlock()
+		return global.remoteCaches["remote"] == rc
+	}, 1*time.Second, 10*time.Millisecond)
+
+	require.True(t, rc.Synced(), "The cache should now be synchronized")
+	stop(cancel)
+	require.False(t, rc.Synced(), "The cache should no longer be synchronized when stopped")
+
+	// Add a new remote cache with the same name, and assert that it overrides
+	// the previous one, and the proper events are emitted (including deletions
+	// for all stale keys)
+	backend = newDummyBackend()
+	remote = newRemoteAllocator(backend)
+
+	backend.AllocateID(ctx, idpool.ID(1), TestAllocatorKey("qux"))
+	backend.AllocateID(ctx, idpool.ID(5), TestAllocatorKey("bar"))
+
+	rc = global.NewRemoteCache("remote", remote)
+	cancel = run(ctx, rc)
+
+	require.Equal(t, AllocatorEvent{ID: idpool.ID(1), Key: TestAllocatorKey("qux"), Typ: kvstore.EventTypeModify}, <-events)
+	require.Equal(t, AllocatorEvent{ID: idpool.ID(5), Key: TestAllocatorKey("bar"), Typ: kvstore.EventTypeModify}, <-events)
+	require.Equal(t, AllocatorEvent{ID: idpool.ID(2), Key: TestAllocatorKey("baz"), Typ: kvstore.EventTypeDelete}, <-events)
+
+	require.Eventually(t, func() bool {
+		global.remoteCachesMutex.RLock()
+		defer global.remoteCachesMutex.RUnlock()
+		return global.remoteCaches["remote"] == rc
+	}, 1*time.Second, 10*time.Millisecond)
+
+	stop(cancel)
+
+	// Add a new remote cache with the same name, but cancel the context before
+	// the ListDone event is received, and assert that it does not override the
+	// existing entry. A deletion event should also be emitted for any object
+	// detected as part of the initial list operation, which was not present in
+	// the existing cache.
+	backend = newDummyBackend()
+	backend.(*dummyBackend).disableListDone = true
+	remote = newRemoteAllocator(backend)
+	backend.AllocateID(ctx, idpool.ID(1), TestAllocatorKey("qux"))
+	backend.AllocateID(ctx, idpool.ID(7), TestAllocatorKey("foo"))
+
+	oc := global.NewRemoteCache("remote", remote)
+	cancel = run(ctx, oc)
+
+	require.Equal(t, AllocatorEvent{ID: idpool.ID(1), Key: TestAllocatorKey("qux"), Typ: kvstore.EventTypeModify}, <-events)
+	require.Equal(t, AllocatorEvent{ID: idpool.ID(7), Key: TestAllocatorKey("foo"), Typ: kvstore.EventTypeModify}, <-events)
+	require.False(t, rc.Synced(), "The cache should not be synchronized if the ListDone event has not been received")
+
+	stop(cancel)
+
+	require.Equal(t, AllocatorEvent{ID: idpool.ID(7), Key: TestAllocatorKey("foo"), Typ: kvstore.EventTypeDelete}, <-events)
+	require.Equal(t, rc, global.remoteCaches["remote"])
+
+	require.Len(t, events, 0)
+
+	// Remove the remote caches and assert that a deletion event is triggered
+	// for all entries.
+	global.RemoveRemoteKVStore("remote")
+
+	require.Len(t, events, 2)
+
+	// Given that the drained events are spilled out from a map there is no
+	// ordering guarantee; hence, let's sort them before checking.
+	drained := make([]AllocatorEvent, 2)
+	drained[0] = <-events
+	drained[1] = <-events
+	sort.Slice(drained, func(i, j int) bool { return drained[i].ID < drained[j].ID })
+
+	require.Equal(t, AllocatorEvent{ID: idpool.ID(1), Key: TestAllocatorKey("qux"), Typ: kvstore.EventTypeDelete}, drained[0])
+	require.Equal(t, AllocatorEvent{ID: idpool.ID(5), Key: TestAllocatorKey("bar"), Typ: kvstore.EventTypeDelete}, drained[1])
+}

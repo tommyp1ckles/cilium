@@ -16,6 +16,7 @@
 #include "endian.h"
 #include "mono.h"
 #include "config.h"
+#include "tunnel.h"
 
 #ifndef AF_INET
 #define AF_INET 2
@@ -150,12 +151,13 @@ union v6addr {
 	__u8 addr[16];
 } __packed;
 
-static __always_inline bool validate_ethertype(struct __ctx_buff *ctx,
-					       __u16 *proto)
+static __always_inline bool validate_ethertype_l2_off(struct __ctx_buff *ctx,
+						      int l2_off, __u16 *proto)
 {
-	void *data = ctx_data(ctx);
+	const __u64 tot_len = l2_off + ETH_HLEN;
 	void *data_end = ctx_data_end(ctx);
-	struct ethhdr *eth = data;
+	void *data = ctx_data(ctx);
+	struct ethhdr *eth;
 
 	if (ETH_HLEN == 0) {
 		/* The packet is received on L2-less device. Determine L3
@@ -165,20 +167,30 @@ static __always_inline bool validate_ethertype(struct __ctx_buff *ctx,
 		return true;
 	}
 
-	if (data + ETH_HLEN > data_end)
+	if (data + tot_len > data_end)
 		return false;
+
+	eth = data + l2_off;
+
 	*proto = eth->h_proto;
 	if (bpf_ntohs(*proto) < ETH_P_802_3_MIN)
 		return false; /* non-Ethernet II unsupported */
+
 	return true;
+}
+
+static __always_inline bool validate_ethertype(struct __ctx_buff *ctx,
+					       __u16 *proto)
+{
+	return validate_ethertype_l2_off(ctx, 0, proto);
 }
 
 static __always_inline __maybe_unused bool
 ____revalidate_data_pull(struct __ctx_buff *ctx, void **data_, void **data_end_,
 			 void **l3, const __u32 l3_len, const bool pull,
-			 __u32 eth_hlen)
+			 __u32 l3_off)
 {
-	const __u64 tot_len = eth_hlen + l3_len;
+	const __u64 tot_len = l3_off + l3_len;
 	void *data_end;
 	void *data;
 
@@ -194,16 +206,17 @@ ____revalidate_data_pull(struct __ctx_buff *ctx, void **data_, void **data_end_,
 	*data_ = data;
 	*data_end_ = data_end;
 
-	*l3 = data + eth_hlen;
+	*l3 = data + l3_off;
 	return true;
 }
 
 static __always_inline __maybe_unused bool
 __revalidate_data_pull(struct __ctx_buff *ctx, void **data, void **data_end,
-		       void **l3, const __u32 l3_len, const bool pull)
+		       void **l3, const __u32 l3_off, const __u32 l3_len,
+		       const bool pull)
 {
 	return ____revalidate_data_pull(ctx, data, data_end, l3, l3_len, pull,
-					ETH_HLEN);
+					l3_off);
 }
 
 /* revalidate_data_pull() initializes the provided pointers from the ctx and
@@ -214,14 +227,17 @@ __revalidate_data_pull(struct __ctx_buff *ctx, void **data, void **data_end,
  * false otherwise.
  */
 #define revalidate_data_pull(ctx, data, data_end, ip)			\
-	__revalidate_data_pull(ctx, data, data_end, (void **)ip, sizeof(**ip), true)
+	__revalidate_data_pull(ctx, data, data_end, (void **)ip, ETH_HLEN, sizeof(**ip), true)
+
+#define revalidate_data_l3_off(ctx, data, data_end, ip, l3_off)		\
+	__revalidate_data_pull(ctx, data, data_end, (void **)ip, l3_off, sizeof(**ip), false)
 
 /* revalidate_data() initializes the provided pointers from the ctx.
  * Returns true if 'ctx' is long enough for an IP header of the provided type,
  * false otherwise.
  */
 #define revalidate_data(ctx, data, data_end, ip)			\
-	__revalidate_data_pull(ctx, data, data_end, (void **)ip, sizeof(**ip), false)
+	revalidate_data_l3_off(ctx, data, data_end, ip, ETH_HLEN)
 
 /* Macros for working with L3 cilium defined IPV6 addresses */
 #define BPF_V6(dst, ...)	BPF_V6_1(dst, fetch_ipv6(__VA_ARGS__))
@@ -379,6 +395,10 @@ struct auth_info {
  */
 enum {
 	RUNTIME_CONFIG_UTIME_OFFSET = 0, /* Index to Unix time offset in 512 ns units */
+	/* Last monotonic time, periodically set by the agent to
+	 * tell the datapath its still updating maps
+	 */
+	RUNTIME_CONFIG_AGENT_LIVENESS = 1,
 };
 
 struct metrics_key {
@@ -590,8 +610,11 @@ enum {
 #define DROP_INVALID_CLUSTER_ID	-192
 #define DROP_DSR_ENCAP_UNSUPP_PROTO	-193
 #define DROP_NO_EGRESS_GATEWAY	-194
+#define DROP_UNENCRYPTED_TRAFFIC -195
+#define DROP_TTL_EXCEEDED	-196
 
 #define NAT_PUNT_TO_STACK	DROP_NAT_NOT_NEEDED
+#define NAT_NEEDED		CTX_ACT_OK
 #define NAT_46X64_RECIRC	100
 
 /* Cilium metrics reasons for forwarding packets and other stats.
@@ -701,27 +724,6 @@ enum metric_dir {
 #define DSR_IPV6_OPT_LEN	(sizeof(struct dsr_opt_v6) - 4)
 #define DSR_IPV6_EXT_LEN	((sizeof(struct dsr_opt_v6) - 8) / 8)
 
-/* The high-order bit of the Geneve option type indicates that
- * this is a critical option.
- *
- * https://www.rfc-editor.org/rfc/rfc8926.html#name-tunnel-options
- */
-#define GENEVE_OPT_TYPE_CRIT	0x80
-
-/* Geneve option used to carry service addr and port for DSR.
- *
- * Class = 0x014B (Cilium according to [1])
- * Type  = 0x1   (vendor-specific)
- *
- * [1]: https://www.iana.org/assignments/nvo3/nvo3.xhtml#geneve-option-class
- */
-#define DSR_GENEVE_OPT_CLASS	0x014B
-#define DSR_GENEVE_OPT_TYPE	(GENEVE_OPT_TYPE_CRIT | 0x01)
-#define DSR_IPV4_GENEVE_OPT_LEN	\
-	((sizeof(struct geneve_dsr_opt4) - sizeof(struct geneve_opt_hdr)) / 4)
-#define DSR_IPV6_GENEVE_OPT_LEN	\
-	((sizeof(struct geneve_dsr_opt6) - sizeof(struct geneve_opt_hdr)) / 4)
-
 /* We cap key index at 4 bits because mark value is used to map ctx to key */
 #define MAX_KEY_INDEX 15
 
@@ -781,14 +783,20 @@ enum {
 #define CB_SRV6_SID_3		CB_POLICY	/* Alias, non-overlapping */
 #define	CB_CLUSTER_ID_INGRESS	CB_POLICY	/* Alias, non-overlapping */
 #define CB_HSIPC_PORT		CB_POLICY	/* Alias, non-overlapping */
+#define CB_DSR_SRC_LABEL	CB_POLICY	/* Alias, non-overlapping */
 	CB_NAT,
 #define	CB_ADDR_V6_3		CB_NAT		/* Alias, non-overlapping */
 #define	CB_FROM_HOST		CB_NAT		/* Alias, non-overlapping */
 #define CB_SRV6_SID_4		CB_NAT		/* Alias, non-overlapping */
+#define CB_DSR_L3_OFF		CB_NAT		/* Alias, non-overlapping */
 	CB_CT_STATE,
 #define	CB_ADDR_V6_4		CB_CT_STATE	/* Alias, non-overlapping */
 #define	CB_ENCRYPT_IDENTITY	CB_CT_STATE	/* Alias, non-overlapping,
 						 * Not used by xfrm.
+						 */
+#define	CB_ENCRYPT_DST		CB_CT_STATE	/* Alias, non-overlapping,
+						 * Not used by xfrm.
+						 * Can be removed in v1.15.
 						 */
 #define	CB_CUSTOM_CALLS		CB_CT_STATE	/* Alias, non-overlapping */
 #define	CB_SRV6_VRF_ID		CB_CT_STATE	/* Alias, non-overlapping */
@@ -1183,56 +1191,6 @@ struct lpm_v6_key {
 struct lpm_val {
 	/* Just dummy for now. */
 	__u8 flags;
-};
-
-struct geneve_opt_hdr {
-	__be16 opt_class;
-	__u8 type;
-#ifdef __LITTLE_ENDIAN_BITFIELD
-	__u8 length:5,
-	     rsvd:3;
-#else
-	__u8 rsvd:3,
-	     length:5;
-#endif
-};
-
-struct geneve_dsr_opt4 {
-	struct geneve_opt_hdr hdr;
-	__be32	addr;
-	__be16	port;
-	__u16	pad;
-};
-
-struct geneve_dsr_opt6 {
-	struct geneve_opt_hdr hdr;
-	union v6addr addr;
-	__be16	port;
-	__u16	pad;
-};
-
-struct genevehdr {
-#ifdef __LITTLE_ENDIAN_BITFIELD
-	__u8 opt_len:6,
-	     ver:2;
-	__u8 rsvd:6,
-	     critical:1,
-	     control:1;
-#else
-	__u8 ver:2,
-	     opt_len:6;
-	__u8 control:1,
-	     critical:1,
-	     rsvd:6;
-#endif
-	__be16 protocol_type;
-	__u8 vni[3];
-	__u8 reserved;
-};
-
-struct vxlanhdr {
-	__be32 vx_flags;
-	__be32 vx_vni;
 };
 
 /* Older kernels don't support the larger tunnel key structure and we don't

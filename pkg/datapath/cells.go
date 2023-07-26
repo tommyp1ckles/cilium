@@ -8,10 +8,14 @@ import (
 	"path/filepath"
 
 	"github.com/cilium/cilium/pkg/bpf"
+	"github.com/cilium/cilium/pkg/datapath/agentliveness"
+	"github.com/cilium/cilium/pkg/datapath/garp"
 	"github.com/cilium/cilium/pkg/datapath/iptables"
+	"github.com/cilium/cilium/pkg/datapath/l2responder"
 	"github.com/cilium/cilium/pkg/datapath/link"
 	linuxdatapath "github.com/cilium/cilium/pkg/datapath/linux"
 	"github.com/cilium/cilium/pkg/datapath/linux/utime"
+	"github.com/cilium/cilium/pkg/datapath/tables"
 	"github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/hive"
@@ -21,6 +25,7 @@ import (
 	"github.com/cilium/cilium/pkg/maps/eventsmap"
 	"github.com/cilium/cilium/pkg/maps/nodemap"
 	monitorAgent "github.com/cilium/cilium/pkg/monitor/agent"
+	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
 	wg "github.com/cilium/cilium/pkg/wireguard/agent"
 	wgTypes "github.com/cilium/cilium/pkg/wireguard/types"
@@ -49,24 +54,39 @@ var Cell = cell.Module(
 		newDatapath,
 	),
 
+	// This cell periodically updates the agent liveness value in configmap.Map to inform
+	// the datapath of the liveness of the agent.
+	agentliveness.Cell,
+
+	// The responder reconciler takes desired state about L3->L2 address translation responses and reconciles
+	// it to the BPF L2 responder map.
+	l2responder.Cell,
+
+	// This cell defines StateDB tables and their schemas for tables which are used to transfer information
+	// between datapath components and more high-level components.
+	tables.Cell,
+
+	// Gratuitous ARP event processor emits GARP packets on k8s pod creation events.
+	garp.Cell,
+
 	cell.Provide(func(dp types.Datapath) ipcache.NodeIDHandler {
 		return dp.NodeIDs()
 	}),
 )
 
-func newWireguardAgent(lc hive.Lifecycle) *wg.Agent {
+func newWireguardAgent(lc hive.Lifecycle, localNodeStore *node.LocalNodeStore) *wg.Agent {
 	var wgAgent *wg.Agent
 	if option.Config.EnableWireguard {
 		if option.Config.EnableIPSec {
-			log.Fatalf("Wireguard (--%s) cannot be used with IPSec (--%s)",
+			log.Fatalf("WireGuard (--%s) cannot be used with IPsec (--%s)",
 				option.EnableWireguard, option.EnableIPSecName)
 		}
 
 		var err error
 		privateKeyPath := filepath.Join(option.Config.StateDir, wgTypes.PrivKeyFilename)
-		wgAgent, err = wg.NewAgent(privateKeyPath)
+		wgAgent, err = wg.NewAgent(privateKeyPath, localNodeStore)
 		if err != nil {
-			log.Fatalf("failed to initialize wireguard: %s", err)
+			log.Fatalf("failed to initialize WireGuard: %s", err)
 		}
 
 		lc.Append(hive.Hook{
@@ -76,7 +96,7 @@ func newWireguardAgent(lc hive.Lifecycle) *wg.Agent {
 			},
 		})
 	} else {
-		// Delete wireguard device from previous run (if such exists)
+		// Delete WireGuard device from previous run (if such exists)
 		link.DeleteByName(wgTypes.IfaceName)
 	}
 	return wgAgent

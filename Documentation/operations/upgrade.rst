@@ -329,6 +329,61 @@ Annotations:
   being rerouted towards an Egress Gateway.
 * If Gateway API feature is enabled, please upgrade related CRDs to v0.6.x. This is
   mainly for ReferenceGrant resource version change (i.e. from v1alpha2 to v1beta1).
+* The attribute ``auth.type`` is renamed to ``authentication.mode`` in both Ingress and
+  Egress rules in CiliumNetworkPolicy CRD. The old attribute name is no longer supported,
+  please update your CiliumNetworkPolicy CRD accordingly. Also applicable values for this
+  attribute are changed to ``disabled``, ``required`` and ``test-always-fail``.
+* Cilium agents now automatically clean up possible stale information about meshed
+  clusters after reconnecting to the corresponding remote kvstores (see :gh-issue:`24740`
+  for the rationale behind this change). This might lead to brief connectivity disruptions
+  towards remote pods and global services when v1.14 Cilium agents connect to older
+  versions of the *clustermesh-apiserver*, and the *clustermesh-apiserver* is restarted.
+  Please upgrade the *clustermesh-apiserver* in all clusters before the Cilium agents
+  to prevent the possibility of connectivity disruptions. Note: this issue does not
+  affect setups using a persistent etcd cluster instead of the ephemeral one bundled
+  with the *clustermesh-apiserver*.
+* Deny policies now always take precedence over allow policies. Previously, a CIDR-based
+  allow policy would always allow traffic, even if there was an overlapping CIDR-based deny policy
+  to deny the same traffic. Now, a CIDR-based deny policy drops traffic when there is
+  an allow policy for the same traffic.
+
+  Verify that all of your CIDR-based deny and allow policies work
+  as intended. The following example shows an allow policy that would previously allow
+  all egress traffic to ``20.1.1.1`` for its selector, but that traffic will now be dropped
+  by the deny policy:
+
+  .. code-block:: yaml
+
+     apiVersion: "cilium.io/v2"
+     kind: CiliumNetworkPolicy
+     metadata:
+       name: "allow-to-external-service"
+     spec:
+       endpointSelector:
+         matchLabels:
+           app: some-specific-app
+       egress:
+         - toCIDR:
+           - 20.1.1.1/32
+
+  .. code-block:: yaml
+
+     apiVersion: "cilium.io/v2"
+     kind: CiliumNetworkPolicy
+     metadata:
+       name: "deny-all-external-egress-traffic"
+     spec:
+       endpointSelector: {}
+       egressDeny:
+       - toCIDR:
+         - 0.0.0.0/0
+
+* IPv6 on ``cilium_host`` now is assigned from IPAM pool, rather than using the
+  same IPv6 as native host interface, like ``eth0`` (:gh-issue:`23445`). This
+  fixes broken IPv6 access in some scenarios, such as ICMPv6 to host
+  (:gh-issue:`14509`), L7 policy enabled cluster (:gh-issue:`21954`), IPsec
+  enabled cluster (:gh-issue:`23461`). After upgrade, you may notice the
+  changes in ``cilium_host``'s IPv6 and related routing rules.
 
 Removed Options
 ~~~~~~~~~~~~~~~
@@ -343,6 +398,10 @@ New Options
   ``tunnel=disabled``, now deprecated.
 * ``tunnel-protocol``: This option allows setting the tunneling protocol, in place
   of e.g., ``tunnel=vxlan``.
+* ``tls-relay-client-ca-files``: This option lets you provide a certificate authority (CA)
+  key and cert in Hubble Relay to authenticate Hubble Relay's clients with mTLS. When you provide a CA key and cert,
+  Hubble Relay enforces mTLS authentication on its clients (for example, Hubble CLI
+  client can't connect to Hubble Relay using ``--tls-allow-insecure``).
 
 Deprecated Options
 ~~~~~~~~~~~~~~~~~~
@@ -351,6 +410,30 @@ Deprecated Options
   native-routing mode, set ``routing-mode=native`` (previously
   ``tunnel=disabled``). To configure the tunneling protocol, set
   ``tunnel-protocol=geneve`` (previously ``tunnel=geneve``).
+* The ``disable-cnp-status-updates``, ``cnp-node-status-gc-interval duration`` and ``enable-k8s-event-handover``
+  options are deprecated and will be removed in v1.15. There is no replacement for these
+  flags as enabling them causes scalability and performance issues even in small clusters.
+* The ``cluster-pool-v2beta`` IPAM mode is deprecated and will be removed in v1.15.
+  The functionality to dynamically allocate Pod CIDRs is now provided  by the
+  more flexible ``multi-pool`` IPAM mode.
+* The following Hubble Relay options are deprecated and will be removed in v1.15:
+   * ``tls-client-cert-file`` (replaced with ``tls-hubble-client-cert-file``).
+   * ``tls-client-key-file`` (replaced with ``tls-hubble-client-key-file``).
+   * ``tls-server-cert-file`` (replaced with ``tls-relay-server-cert-file``).
+   * ``tls-server-key-file`` (replaced with ``tls-relay-server-key-file``).
+* The ``kube-proxy-replacement`` option's values ``strict``, ``partial`` and
+  ``disabled`` are deprecated and will be removed in v1.15. They are replaced
+  by ``true`` and ``false``. ``true`` corresponds to ``strict``, i.e. enables
+  all kube-proxy replacement features. ``false`` disables kube-proxy
+  replacement but allows users to selectively enable each kube-proxy replacement
+  feature individually.
+
+
+Deprecated Commands
+~~~~~~~~~~~~~~~~~~~
+
+* The ``cilium endpoint regenerate`` command is deprecated and will be removed
+  in v1.15.
 
 Added Metrics
 ~~~~~~~~~~~~~
@@ -361,6 +444,14 @@ Added Metrics
 * ``cilium_operator_ipam_available_ips``
 * ``cilium_operator_ipam_used_ips``
 * ``cilium_operator_ipam_needed_ips``
+* ``kvstore_sync_queue_size``
+* ``kvstore_initial_sync_completed``
+
+You can now additionally configure the *clustermesh-apiserver* to expose a set
+of metrics about the synchronization process, kvstore operations, and the sidecar
+etcd instance. Please refer to :ref:`clustermesh_apiserver_metrics` and
+:ref:`the clustermesh-apiserver metrics reference<clustermesh_apiserver_metrics_reference>`
+for more information.
 
 Deprecated Metrics
 ~~~~~~~~~~~~~~~~~~
@@ -388,6 +479,11 @@ Helm Options
 * Following the deprecation of the ``tunnel`` agent flag, ``tunnel`` is being
   deprecated in favor of ``routingMode`` and ``tunnelProtocol`` and will be
   removed in v1.15.
+* Following the deprecation of the ``disable-cnp-status-updates``,
+  ``cnp-node-status-gc-interval duration`` and ``enable-k8s-event-handover`` options,
+  corresponding helm values ``enableCnpStatusUpdates``, ``enableK8sEventHandover``
+  are being deprecated and will be removed in 1.15. There is no replacement for these
+  values as enabling them causes scalability and performance issues even in small clusters.
 * Values ``encryption.keyFile``, ``encryption.mountPath``,
   ``encryption.secretName`` and ``encryption.interface`` are deprecated in
   favor of their ``encryption.ipsec.*`` counterparts and will be removed in
@@ -413,6 +509,26 @@ Helm Options
   will be removed in v1.15.
 * Values ``proxy.prometheus.enabled`` and ``proxy.prometheus.port`` are deprecated in favor of
   their ``envoy.prometheus.*`` counterparts.
+* Value ``disableEndpointCRD`` is now a boolean type instead of a string. Instead of using "true"
+  or "false" as values, you should remove the quotes. For example in helm command, instead of
+  ``--set-string disableEndpointCRD="true"``, it should be replaced by ``--set disableEndpointCRD=true``.
+
+.. _upgrade_cilium_cli_helm_mode:
+
+Cilium CLI
+~~~~~~~~~~
+
+Upgrade Cilium CLI to `v0.15.0 <https://github.com/cilium/cilium-cli/releases/tag/v0.15.0>`_
+or later to switch to `Helm installation mode <https://github.com/cilium/cilium-cli#helm-installation-mode>`_
+to install and manage Cilium v1.14. Classic installation mode is **not**
+supported with Cilium v1.14.
+
+Helm and classic mode installations are not compatible with each other. Do not
+use Cilium CLI in Helm mode to manage classic mode installations, and vice versa.
+
+To migrate a classic mode Cilium installation to Helm mode, you need to
+uninstall Cilium using classic mode Cilium CLI, and then re-install Cilium
+using Helm mode Cilium CLI.
 
 .. _earlier_upgrade_notes:
 
@@ -433,10 +549,9 @@ Networking connectivity, policy enforcement and load balancing will remain
 functional in general. The following is a list of operations that will not be
 available during the upgrade:
 
-* API aware policy rules are enforced in user space proxies and are currently
-  running as part of the Cilium pod unless Cilium is configured to run in Istio
-  mode. Upgrading Cilium will cause the proxy to restart which will result in
-  a connectivity outage and connection to be reset.
+* API-aware policy rules are enforced in user space proxies and are
+  running as part of the Cilium pod. Upgrading Cilium causes the proxy to 
+  restart, which results in a connectivity outage and causes the connection to reset.
 
 * Existing policy will remain effective but implementation of new policy rules
   will be postponed to after the upgrade has been completed on a particular

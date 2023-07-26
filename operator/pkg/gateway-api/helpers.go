@@ -25,18 +25,6 @@ const (
 	kindSecret    = "Secret"
 )
 
-func IsGateway(parent gatewayv1beta1.ParentReference) bool {
-	return (parent.Kind == nil || *parent.Kind == kindGateway) && (parent.Group == nil || *parent.Group == gatewayv1beta1.GroupName)
-}
-
-func IsService(be gatewayv1beta1.BackendObjectReference) bool {
-	return (be.Kind == nil || *be.Kind == kindService) && (be.Group == nil || *be.Group == corev1.GroupName)
-}
-
-func IsSecret(secret gatewayv1beta1.SecretObjectReference) bool {
-	return (secret.Kind == nil || *secret.Kind == kindSecret) && (secret.Group == nil || *secret.Group == corev1.GroupName)
-}
-
 func GatewayAddressTypePtr(addr gatewayv1beta1.AddressType) *gatewayv1beta1.AddressType {
 	return &addr
 }
@@ -51,11 +39,9 @@ func KindPtr(name string) *gatewayv1beta1.Kind {
 	return &kind
 }
 
-func namespaceDerefOr(namespace *gatewayv1beta1.Namespace, defaultNamespace string) string {
-	if namespace != nil && *namespace != "" {
-		return string(*namespace)
-	}
-	return defaultNamespace
+func ObjectNamePtr(name string) *gatewayv1beta1.ObjectName {
+	objectName := gatewayv1beta1.ObjectName(name)
+	return &objectName
 }
 
 func groupDerefOr(group *gatewayv1beta1.Group, defaultGroup string) string {
@@ -126,10 +112,14 @@ func isKindAllowed(listener gatewayv1beta1.Listener, route metav1.Object) bool {
 func computeHosts[T ~string](gw *gatewayv1beta1.Gateway, hostnames []T) []string {
 	hosts := make([]string, 0, len(hostnames))
 	for _, listener := range gw.Spec.Listeners {
-		hosts = append(hosts, model.ComputeHosts(toStringSlice(hostnames), (*string)(listener.Hostname))...)
+		hosts = append(hosts, computeHostsForListener(&listener, hostnames)...)
 	}
 
 	return hosts
+}
+
+func computeHostsForListener[T ~string](listener *gatewayv1beta1.Listener, hostnames []T) []string {
+	return model.ComputeHosts(toStringSlice(hostnames), (*string)(listener.Hostname))
 }
 
 func toStringSlice[T ~string](s []T) []string {

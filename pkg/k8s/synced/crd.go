@@ -45,6 +45,7 @@ func agentCRDResourceNames() []string {
 		CRDResourceName(v2.CIDName),
 		CRDResourceName(v2alpha1.CNCName),
 		CRDResourceName(v2alpha1.CCGName),
+		CRDResourceName(v2alpha1.CPIPName),
 	}
 
 	if !option.Config.DisableCiliumEndpointCRD {
@@ -68,7 +69,10 @@ func agentCRDResourceNames() []string {
 		result = append(result, CRDResourceName(v2alpha1.BGPPName))
 	}
 
-	result = append(result, CRDResourceName(v2alpha1.LBIPPoolName))
+	result = append(result,
+		CRDResourceName(v2alpha1.LBIPPoolName),
+		CRDResourceName(v2alpha1.L2AnnouncementName),
+	)
 
 	return result
 }
@@ -79,8 +83,20 @@ func AgentCRDResourceNames() []string {
 	return agentCRDResourceNames()
 }
 
+// ClusterMeshAPIServerResourceNames returns a list of all CRD resource names the
+// clustermesh-apiserver needs to wait to be registered before initializing any
+// k8s watchers.
+func ClusterMeshAPIServerResourceNames() []string {
+	return []string{
+		CRDResourceName(v2.CNName),
+		CRDResourceName(v2.CIDName),
+		CRDResourceName(v2.CEPName),
+		CRDResourceName(v2.CEWName),
+	}
+}
+
 // AllCiliumCRDResourceNames returns a list of all Cilium CRD resource names
-// that the clustermesh-apiserver or testsuite may register.
+// that the cilium operator or testsuite may register.
 func AllCiliumCRDResourceNames() []string {
 	return append(
 		AgentCRDResourceNames(),
@@ -184,7 +200,7 @@ func SyncCRDs(ctx context.Context, clientset client.Clientset, crdNames []string
 }
 
 func (s *crdState) add(obj interface{}) {
-	if pom := k8s.ObjToV1PartialObjectMetadata(obj); pom != nil {
+	if pom := k8s.CastInformerEvent[slim_metav1.PartialObjectMetadata](obj); pom != nil {
 		s.Lock()
 		s.m[CRDResourceName(pom.GetName())] = true
 		s.Unlock()
@@ -192,7 +208,7 @@ func (s *crdState) add(obj interface{}) {
 }
 
 func (s *crdState) remove(obj interface{}) {
-	if pom := k8s.ObjToV1PartialObjectMetadata(obj); pom != nil {
+	if pom := k8s.CastInformerEvent[slim_metav1.PartialObjectMetadata](obj); pom != nil {
 		s.Lock()
 		s.m[CRDResourceName(pom.GetName())] = false
 		s.Unlock()

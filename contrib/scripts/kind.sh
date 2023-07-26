@@ -15,6 +15,7 @@ default_service_subnet=""
 default_agent_port_prefix="234"
 default_operator_port_prefix="235"
 default_network="kind-cilium"
+secondary_network="${default_network}-secondary"
 
 PROG=${0}
 
@@ -26,6 +27,13 @@ if [ "${1:-}" = "--xdp" ]; then
   shift
 fi
 readonly xdp
+
+secondary_network_flag=false
+if [ "${1:-}" = "--secondary-network" ]; then
+  secondary_network_flag=true
+  shift
+fi
+readonly secondary_network_flag
 
 controlplanes="${1:-${CONTROLPLANES:=${default_controlplanes}}}"
 workers="${2:-${WORKERS:=${default_workers}}}"
@@ -40,11 +48,13 @@ agent_port_prefix="${AGENTPORTPREFIX:=${default_agent_port_prefix}}"
 operator_port_prefix="${OPERATORPORTPREFIX:=${default_operator_port_prefix}}"
 
 bridge_dev="br-${default_network}"
+bridge_dev_secondary="${bridge_dev}2"
 v6_prefix="fc00:c111::/64"
+v6_prefix_secondary="fc00:c112::/64"
 CILIUM_ROOT="$(git rev-parse --show-toplevel)"
 
 usage() {
-  echo "Usage: ${PROG} [--xdp] [control-plane node count] [worker node count] [cluster-name] [node image] [kube-proxy mode] [ip-family]"
+  echo "Usage: ${PROG} [--xdp] [--secondary-network] [control-plane node count] [worker node count] [cluster-name] [node image] [kube-proxy mode] [ip-family]"
 }
 
 have_kind() {
@@ -112,6 +122,8 @@ workers() {
 
 echo "${kind_cmd}"
 
+kind --version
+
 # create a custom network so we can control the name of the bridge device.
 # Inspired by https://github.com/kubernetes-sigs/kind/blob/6b58c9dfcbdb1b3a0d48754d043d59ca7073589b/pkg/cluster/internal/providers/docker/network.go#L149-L161
 # This operation is skipped if the network is already present (most notably in case of "make kind-clustermesh")
@@ -148,15 +160,30 @@ kubeadmConfigPatches:
         "v": "3"
 EOF
 
+if [ "${secondary_network_flag}" = true ]; then
+  if ! docker network inspect "${secondary_network}" >/dev/null 2>&1; then
+    docker network create -d=bridge \
+      -o "com.docker.network.bridge.enable_ip_masquerade=false" \
+      -o "com.docker.network.bridge.name=${bridge_dev_secondary}" \
+      --ipv6 --subnet "${v6_prefix_secondary}" \
+      "${secondary_network}"
+  fi
+
+  nodes=$(docker ps -a --filter label=io.x-k8s.kind.cluster=${cluster_name:-kind} --format {{.Names}})
+  for node in $nodes; do
+    docker network connect ${secondary_network} $node
+  done
+fi
+
 if [ "${xdp}" = true ]; then
   if ! [ -f "${CILIUM_ROOT}/test/l4lb/bpf_xdp_veth_host.o" ]; then
     pushd "${CILIUM_ROOT}/test/l4lb/" > /dev/null
-    clang -O2 -Wall -target bpf -c bpf_xdp_veth_host.c -o bpf_xdp_veth_host.o
+    clang -O2 -Wall --target=bpf -c bpf_xdp_veth_host.c -o bpf_xdp_veth_host.o
     popd > /dev/null
   fi
 
-  for ifc in /sys/class/net/"${bridge_dev}"/brif/*; do
-    ifc="${ifc#"/sys/class/net/${bridge_dev}/brif/"}"
+  for ifc in /sys/class/net/"${bridge_dev}"*/brif/*; do
+    ifc=$(echo $ifc | "${SED}" "s,/sys/class/net/${bridge_dev}.*/brif/,,")
 
     # Attach a dummy XDP prog to the host side of the veth so that XDP_TX in the
     # pod side works.

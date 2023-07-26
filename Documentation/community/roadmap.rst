@@ -123,7 +123,7 @@ following features to graduate to stable:
 * :ref:`bandwidth-manager`
 * :ref:`Local Redirect Policy<local-redirect-policy>`
 * :ref:`CiliumEndpointSlice<gsg_ces>`
-* :ref:`Maglev Consistent Hashing<maglev>`
+* :ref:`Multi-Pool IPAM<ipam_crd_multi_pool>`
 
 .. _rm-hubble-observability:
 

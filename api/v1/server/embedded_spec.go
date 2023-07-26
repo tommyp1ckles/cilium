@@ -162,7 +162,7 @@ func init() {
         "tags": [
           "daemon"
         ],
-        "summary": "Retrieve information about the agent and evironment for debugging",
+        "summary": "Retrieve information about the agent and environment for debugging",
         "responses": {
           "200": {
             "description": "Success",
@@ -704,6 +704,31 @@ func init() {
             "description": "Invalid request (error parsing parameters)",
             "schema": {
               "$ref": "#/definitions/Error"
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "description": "Returns modules health and status information of the Cilium daemon.\n",
+        "tags": [
+          "daemon"
+        ],
+        "summary": "Get modules health of Cilium daemon",
+        "parameters": [
+          {
+            "type": "boolean",
+            "description": "Brief is a brief representation of the Cilium status.\n",
+            "name": "brief",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "schema": {
+              "$ref": "#/definitions/ModulesHealth"
             }
           }
         }
@@ -1601,6 +1626,26 @@ func init() {
           }
         }
       }
+    },
+    "/statedb/dump": {
+      "get": {
+        "produces": [
+          "application/octet-stream"
+        ],
+        "tags": [
+          "statedb"
+        ],
+        "summary": "Dump StateDB contents",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            }
+          }
+        }
+      }
     }
   },
   "definitions": {
@@ -1798,6 +1843,19 @@ func init() {
         }
       }
     },
+    "BgpGracefulRestart": {
+      "description": "BGP graceful restart parameters negotiated with the peer.\n\n+k8s:deepcopy-gen=true",
+      "properties": {
+        "enabled": {
+          "description": "When set, graceful restart capability is negotiated for all AFI/SAFIs of \nthis peer.",
+          "type": "boolean"
+        },
+        "restart-time-seconds": {
+          "description": "This is the time advertised to peer for the BGP session to be re-established \nafter a restart. After this period, peer will remove stale routes. \n(RFC 4724 section 4.2)",
+          "type": "integer"
+        }
+      }
+    },
     "BgpPeer": {
       "description": "State of a BGP Peer\n\n+k8s:deepcopy-gen=true",
       "properties": {
@@ -1821,12 +1879,20 @@ func init() {
           "description": "Initial value for the BGP ConnectRetryTimer (RFC 4271, Section 8) in seconds",
           "type": "integer"
         },
+        "ebgp-multihop-ttl": {
+          "description": "Time To Live (TTL) value used in BGP packets sent to the eBGP neighbor.\n1 implies that eBGP multi-hop feature is disabled (only a single hop is allowed).\n",
+          "type": "integer"
+        },
         "families": {
           "description": "BGP peer address family state",
           "type": "array",
           "items": {
             "$ref": "#/definitions/BgpPeerFamilies"
           }
+        },
+        "graceful-restart": {
+          "description": "Graceful restart capability",
+          "$ref": "#/definitions/BgpGracefulRestart"
         },
         "local-asn": {
           "description": "Local AS Number",
@@ -1839,6 +1905,12 @@ func init() {
         "peer-asn": {
           "description": "Peer AS Number",
           "type": "integer"
+        },
+        "peer-port": {
+          "description": "TCP port number of peer",
+          "type": "integer",
+          "maximum": 65535,
+          "minimum": 1
         },
         "session-state": {
           "description": "BGP peer operational state as described here\nhttps://www.rfc-editor.org/rfc/rfc4271#section-8.2.2\n",
@@ -2227,12 +2299,20 @@ func init() {
       "description": "Response to a daemon configuration request. Contains the addressing\ninformation, k8s, node monitor and immutable and mutable configuration\nsettings.\n",
       "type": "object",
       "properties": {
+        "GROIPv4MaxSize": {
+          "description": "Maximum IPv4 GRO size on workload facing devices",
+          "type": "integer"
+        },
         "GROMaxSize": {
-          "description": "Maximum GRO size on workload facing devices",
+          "description": "Maximum IPv6 GRO size on workload facing devices",
+          "type": "integer"
+        },
+        "GSOIPv4MaxSize": {
+          "description": "Maximum IPv4 GSO size on workload facing devices",
           "type": "integer"
         },
         "GSOMaxSize": {
-          "description": "Maximum GSO size on workload facing devices",
+          "description": "Maximum IPv6 GSO size on workload facing devices",
           "type": "integer"
         },
         "addressing": {
@@ -2330,7 +2410,7 @@ func init() {
           "type": "object",
           "properties": {
             "wireguard": {
-              "description": "Status of the Wireguard agent",
+              "description": "Status of the WireGuard agent",
               "$ref": "#/definitions/WireguardStatus"
             }
           }
@@ -2383,7 +2463,7 @@ func init() {
           "type": "string"
         },
         "wireguard": {
-          "description": "Status of the Wireguard agent",
+          "description": "Status of the WireGuard agent",
           "$ref": "#/definitions/WireguardStatus"
         }
       }
@@ -3112,6 +3192,24 @@ func init() {
         }
       }
     },
+    "IPV4BigTCP": {
+      "description": "Status of IPv4 BIG TCP\n\n+k8s:deepcopy-gen=true",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Is IPv4 BIG TCP enabled",
+          "type": "boolean"
+        },
+        "maxGRO": {
+          "description": "Maximum IPv4 GRO size",
+          "type": "integer"
+        },
+        "maxGSO": {
+          "description": "Maximum IPv4 GSO size",
+          "type": "integer"
+        }
+      }
+    },
     "IPV6BigTCP": {
       "description": "Status of IPv6 BIG TCP\n\n+k8s:deepcopy-gen=true",
       "type": "object",
@@ -3119,6 +3217,14 @@ func init() {
         "enabled": {
           "description": "Is IPv6 BIG TCP enabled",
           "type": "boolean"
+        },
+        "maxGRO": {
+          "description": "Maximum IPv6 GRO size",
+          "type": "integer"
+        },
+        "maxGSO": {
+          "description": "Maximum IPv6 GSO size",
+          "type": "integer"
         }
       }
     },
@@ -3401,7 +3507,9 @@ func init() {
             "Disabled",
             "Strict",
             "Probe",
-            "Partial"
+            "Partial",
+            "True",
+            "False"
           ]
         }
       }
@@ -3655,6 +3763,43 @@ func init() {
         "value": {
           "description": "Value of the metric",
           "type": "number"
+        }
+      }
+    },
+    "ModuleHealth": {
+      "description": "Report module health status",
+      "properties": {
+        "last-ok": {
+          "description": "Time at which the last OK check occurred",
+          "type": "string"
+        },
+        "last-updated": {
+          "description": "Time of last health update",
+          "type": "string"
+        },
+        "level": {
+          "description": "Describes the health status level",
+          "type": "string"
+        },
+        "message": {
+          "description": "Reports the associated health message",
+          "type": "string"
+        },
+        "module-id": {
+          "description": "Describes the module identitier",
+          "type": "string"
+        }
+      }
+    },
+    "ModulesHealth": {
+      "description": "Reports health status of agent's modules",
+      "properties": {
+        "modules": {
+          "description": "List out modules health status",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ModuleHealth"
+          }
         }
       }
     },
@@ -4132,6 +4277,14 @@ func init() {
     "RemoteCluster": {
       "description": "Status of remote cluster\n\n+k8s:deepcopy-gen=true",
       "properties": {
+        "config": {
+          "description": "Cluster configuration exposed by the remote cluster",
+          "$ref": "#/definitions/RemoteClusterConfig"
+        },
+        "connected": {
+          "description": "Indicates whether the connection to the remote kvstore is established",
+          "type": "boolean"
+        },
         "last-failure": {
           "description": "Time of last failure that occurred while attempting to reach the cluster",
           "type": "string",
@@ -4140,6 +4293,10 @@ func init() {
         "name": {
           "description": "Name of the cluster",
           "type": "string"
+        },
+        "num-endpoints": {
+          "description": "Number of endpoints in the cluster",
+          "type": "integer"
         },
         "num-failures": {
           "description": "Number of failures reaching the cluster",
@@ -4158,12 +4315,62 @@ func init() {
           "type": "integer"
         },
         "ready": {
-          "description": "Indicates readiness of the remote cluser",
+          "description": "Indicates readiness of the remote cluster",
           "type": "boolean"
         },
         "status": {
           "description": "Status of the control plane",
           "type": "string"
+        },
+        "synced": {
+          "description": "Synchronization status about each resource type",
+          "$ref": "#/definitions/RemoteClusterSynced"
+        }
+      }
+    },
+    "RemoteClusterConfig": {
+      "description": "Cluster configuration exposed by the remote cluster\n\n+k8s:deepcopy-gen=true",
+      "properties": {
+        "cluster-id": {
+          "description": "The Cluster ID advertised by the remote cluster",
+          "type": "integer"
+        },
+        "kvstoremesh": {
+          "description": "Whether the remote cluster information is locally cached by kvstoremesh",
+          "type": "boolean"
+        },
+        "required": {
+          "description": "Whether the configuration is required to be present",
+          "type": "boolean"
+        },
+        "retrieved": {
+          "description": "Whether the configuration has been correctly retrieved",
+          "type": "boolean"
+        },
+        "sync-canaries": {
+          "description": "Whether the remote cluster supports per-prefix \"synced\" canaries",
+          "type": "boolean"
+        }
+      }
+    },
+    "RemoteClusterSynced": {
+      "description": "Status of the synchronization with the remote cluster, about each resource\ntype. A given resource is considered to be synchronized if the initial\nlist of entries has been completely received from the remote cluster, and\nnew events are currently being watched.\n\n+k8s:deepcopy-gen=true",
+      "properties": {
+        "endpoints": {
+          "description": "Endpoints synchronization status",
+          "type": "boolean"
+        },
+        "identities": {
+          "description": "Identities synchronization status",
+          "type": "boolean"
+        },
+        "nodes": {
+          "description": "Nodes synchronization status",
+          "type": "boolean"
+        },
+        "services": {
+          "description": "Services synchronization status",
+          "type": "boolean"
         }
       }
     },
@@ -4430,6 +4637,10 @@ func init() {
           "description": "Status of IP address management",
           "$ref": "#/definitions/IPAMStatus"
         },
+        "ipv4-big-tcp": {
+          "description": "Status of IPv4 BIG TCP",
+          "$ref": "#/definitions/IPV4BigTCP"
+        },
         "ipv6-big-tcp": {
           "description": "Status of IPv6 BIG TCP",
           "$ref": "#/definitions/IPV6BigTCP"
@@ -4509,10 +4720,10 @@ func init() {
       }
     },
     "WireguardInterface": {
-      "description": "Status of a Wireguard interface\n\n+k8s:deepcopy-gen=true",
+      "description": "Status of a WireGuard interface\n\n+k8s:deepcopy-gen=true",
       "properties": {
         "listen-port": {
-          "description": "Port on which the Wireguard endpoint is exposed",
+          "description": "Port on which the WireGuard endpoint is exposed",
           "type": "integer"
         },
         "name": {
@@ -4524,7 +4735,7 @@ func init() {
           "type": "integer"
         },
         "peers": {
-          "description": "Optional list of wireguard peers",
+          "description": "Optional list of WireGuard peers",
           "type": "array",
           "items": {
             "$ref": "#/definitions/WireguardPeer"
@@ -4537,7 +4748,7 @@ func init() {
       }
     },
     "WireguardPeer": {
-      "description": "Status of a Wireguard peer\n\n+k8s:deepcopy-gen=true",
+      "description": "Status of a WireGuard peer\n\n+k8s:deepcopy-gen=true",
       "properties": {
         "allowed-ips": {
           "description": "List of IPs which may be routed through this peer",
@@ -4570,10 +4781,10 @@ func init() {
       }
     },
     "WireguardStatus": {
-      "description": "Status of the Wireguard agent\n\n+k8s:deepcopy-gen=true",
+      "description": "Status of the WireGuard agent\n\n+k8s:deepcopy-gen=true",
       "properties": {
         "interfaces": {
-          "description": "Wireguard interfaces managed by this Cilium instance",
+          "description": "WireGuard interfaces managed by this Cilium instance",
           "type": "array",
           "items": {
             "$ref": "#/definitions/WireguardInterface"
@@ -4899,7 +5110,7 @@ func init() {
         "tags": [
           "daemon"
         ],
-        "summary": "Retrieve information about the agent and evironment for debugging",
+        "summary": "Retrieve information about the agent and environment for debugging",
         "responses": {
           "200": {
             "description": "Success",
@@ -5521,6 +5732,31 @@ func init() {
             "description": "Invalid request (error parsing parameters)",
             "schema": {
               "$ref": "#/definitions/Error"
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "description": "Returns modules health and status information of the Cilium daemon.\n",
+        "tags": [
+          "daemon"
+        ],
+        "summary": "Get modules health of Cilium daemon",
+        "parameters": [
+          {
+            "type": "boolean",
+            "description": "Brief is a brief representation of the Cilium status.\n",
+            "name": "brief",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "schema": {
+              "$ref": "#/definitions/ModulesHealth"
             }
           }
         }
@@ -6521,6 +6757,26 @@ func init() {
           }
         }
       }
+    },
+    "/statedb/dump": {
+      "get": {
+        "produces": [
+          "application/octet-stream"
+        ],
+        "tags": [
+          "statedb"
+        ],
+        "summary": "Dump StateDB contents",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            }
+          }
+        }
+      }
     }
   },
   "definitions": {
@@ -6718,6 +6974,19 @@ func init() {
         }
       }
     },
+    "BgpGracefulRestart": {
+      "description": "BGP graceful restart parameters negotiated with the peer.\n\n+k8s:deepcopy-gen=true",
+      "properties": {
+        "enabled": {
+          "description": "When set, graceful restart capability is negotiated for all AFI/SAFIs of \nthis peer.",
+          "type": "boolean"
+        },
+        "restart-time-seconds": {
+          "description": "This is the time advertised to peer for the BGP session to be re-established \nafter a restart. After this period, peer will remove stale routes. \n(RFC 4724 section 4.2)",
+          "type": "integer"
+        }
+      }
+    },
     "BgpPeer": {
       "description": "State of a BGP Peer\n\n+k8s:deepcopy-gen=true",
       "properties": {
@@ -6741,12 +7010,20 @@ func init() {
           "description": "Initial value for the BGP ConnectRetryTimer (RFC 4271, Section 8) in seconds",
           "type": "integer"
         },
+        "ebgp-multihop-ttl": {
+          "description": "Time To Live (TTL) value used in BGP packets sent to the eBGP neighbor.\n1 implies that eBGP multi-hop feature is disabled (only a single hop is allowed).\n",
+          "type": "integer"
+        },
         "families": {
           "description": "BGP peer address family state",
           "type": "array",
           "items": {
             "$ref": "#/definitions/BgpPeerFamilies"
           }
+        },
+        "graceful-restart": {
+          "description": "Graceful restart capability",
+          "$ref": "#/definitions/BgpGracefulRestart"
         },
         "local-asn": {
           "description": "Local AS Number",
@@ -6759,6 +7036,12 @@ func init() {
         "peer-asn": {
           "description": "Peer AS Number",
           "type": "integer"
+        },
+        "peer-port": {
+          "description": "TCP port number of peer",
+          "type": "integer",
+          "maximum": 65535,
+          "minimum": 1
         },
         "session-state": {
           "description": "BGP peer operational state as described here\nhttps://www.rfc-editor.org/rfc/rfc4271#section-8.2.2\n",
@@ -7199,12 +7482,20 @@ func init() {
       "description": "Response to a daemon configuration request. Contains the addressing\ninformation, k8s, node monitor and immutable and mutable configuration\nsettings.\n",
       "type": "object",
       "properties": {
+        "GROIPv4MaxSize": {
+          "description": "Maximum IPv4 GRO size on workload facing devices",
+          "type": "integer"
+        },
         "GROMaxSize": {
-          "description": "Maximum GRO size on workload facing devices",
+          "description": "Maximum IPv6 GRO size on workload facing devices",
+          "type": "integer"
+        },
+        "GSOIPv4MaxSize": {
+          "description": "Maximum IPv4 GSO size on workload facing devices",
           "type": "integer"
         },
         "GSOMaxSize": {
-          "description": "Maximum GSO size on workload facing devices",
+          "description": "Maximum IPv6 GSO size on workload facing devices",
           "type": "integer"
         },
         "addressing": {
@@ -7316,7 +7607,7 @@ func init() {
           "type": "object",
           "properties": {
             "wireguard": {
-              "description": "Status of the Wireguard agent",
+              "description": "Status of the WireGuard agent",
               "$ref": "#/definitions/WireguardStatus"
             }
           }
@@ -7357,7 +7648,7 @@ func init() {
       "type": "object",
       "properties": {
         "wireguard": {
-          "description": "Status of the Wireguard agent",
+          "description": "Status of the WireGuard agent",
           "$ref": "#/definitions/WireguardStatus"
         }
       }
@@ -7378,7 +7669,7 @@ func init() {
           "type": "string"
         },
         "wireguard": {
-          "description": "Status of the Wireguard agent",
+          "description": "Status of the WireGuard agent",
           "$ref": "#/definitions/WireguardStatus"
         }
       }
@@ -8146,6 +8437,24 @@ func init() {
         }
       }
     },
+    "IPV4BigTCP": {
+      "description": "Status of IPv4 BIG TCP\n\n+k8s:deepcopy-gen=true",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Is IPv4 BIG TCP enabled",
+          "type": "boolean"
+        },
+        "maxGRO": {
+          "description": "Maximum IPv4 GRO size",
+          "type": "integer"
+        },
+        "maxGSO": {
+          "description": "Maximum IPv4 GSO size",
+          "type": "integer"
+        }
+      }
+    },
     "IPV6BigTCP": {
       "description": "Status of IPv6 BIG TCP\n\n+k8s:deepcopy-gen=true",
       "type": "object",
@@ -8153,6 +8462,14 @@ func init() {
         "enabled": {
           "description": "Is IPv6 BIG TCP enabled",
           "type": "boolean"
+        },
+        "maxGRO": {
+          "description": "Maximum IPv6 GRO size",
+          "type": "integer"
+        },
+        "maxGSO": {
+          "description": "Maximum IPv6 GSO size",
+          "type": "integer"
         }
       }
     },
@@ -8422,7 +8739,9 @@ func init() {
             "Disabled",
             "Strict",
             "Probe",
-            "Partial"
+            "Partial",
+            "True",
+            "False"
           ]
         }
       }
@@ -9029,6 +9348,43 @@ func init() {
         }
       }
     },
+    "ModuleHealth": {
+      "description": "Report module health status",
+      "properties": {
+        "last-ok": {
+          "description": "Time at which the last OK check occurred",
+          "type": "string"
+        },
+        "last-updated": {
+          "description": "Time of last health update",
+          "type": "string"
+        },
+        "level": {
+          "description": "Describes the health status level",
+          "type": "string"
+        },
+        "message": {
+          "description": "Reports the associated health message",
+          "type": "string"
+        },
+        "module-id": {
+          "description": "Describes the module identitier",
+          "type": "string"
+        }
+      }
+    },
+    "ModulesHealth": {
+      "description": "Reports health status of agent's modules",
+      "properties": {
+        "modules": {
+          "description": "List out modules health status",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ModuleHealth"
+          }
+        }
+      }
+    },
     "MonitorStatus": {
       "description": "Status of the node monitor",
       "properties": {
@@ -9503,6 +9859,14 @@ func init() {
     "RemoteCluster": {
       "description": "Status of remote cluster\n\n+k8s:deepcopy-gen=true",
       "properties": {
+        "config": {
+          "description": "Cluster configuration exposed by the remote cluster",
+          "$ref": "#/definitions/RemoteClusterConfig"
+        },
+        "connected": {
+          "description": "Indicates whether the connection to the remote kvstore is established",
+          "type": "boolean"
+        },
         "last-failure": {
           "description": "Time of last failure that occurred while attempting to reach the cluster",
           "type": "string",
@@ -9511,6 +9875,10 @@ func init() {
         "name": {
           "description": "Name of the cluster",
           "type": "string"
+        },
+        "num-endpoints": {
+          "description": "Number of endpoints in the cluster",
+          "type": "integer"
         },
         "num-failures": {
           "description": "Number of failures reaching the cluster",
@@ -9529,12 +9897,62 @@ func init() {
           "type": "integer"
         },
         "ready": {
-          "description": "Indicates readiness of the remote cluser",
+          "description": "Indicates readiness of the remote cluster",
           "type": "boolean"
         },
         "status": {
           "description": "Status of the control plane",
           "type": "string"
+        },
+        "synced": {
+          "description": "Synchronization status about each resource type",
+          "$ref": "#/definitions/RemoteClusterSynced"
+        }
+      }
+    },
+    "RemoteClusterConfig": {
+      "description": "Cluster configuration exposed by the remote cluster\n\n+k8s:deepcopy-gen=true",
+      "properties": {
+        "cluster-id": {
+          "description": "The Cluster ID advertised by the remote cluster",
+          "type": "integer"
+        },
+        "kvstoremesh": {
+          "description": "Whether the remote cluster information is locally cached by kvstoremesh",
+          "type": "boolean"
+        },
+        "required": {
+          "description": "Whether the configuration is required to be present",
+          "type": "boolean"
+        },
+        "retrieved": {
+          "description": "Whether the configuration has been correctly retrieved",
+          "type": "boolean"
+        },
+        "sync-canaries": {
+          "description": "Whether the remote cluster supports per-prefix \"synced\" canaries",
+          "type": "boolean"
+        }
+      }
+    },
+    "RemoteClusterSynced": {
+      "description": "Status of the synchronization with the remote cluster, about each resource\ntype. A given resource is considered to be synchronized if the initial\nlist of entries has been completely received from the remote cluster, and\nnew events are currently being watched.\n\n+k8s:deepcopy-gen=true",
+      "properties": {
+        "endpoints": {
+          "description": "Endpoints synchronization status",
+          "type": "boolean"
+        },
+        "identities": {
+          "description": "Identities synchronization status",
+          "type": "boolean"
+        },
+        "nodes": {
+          "description": "Nodes synchronization status",
+          "type": "boolean"
+        },
+        "services": {
+          "description": "Services synchronization status",
+          "type": "boolean"
         }
       }
     },
@@ -9869,6 +10287,10 @@ func init() {
           "description": "Status of IP address management",
           "$ref": "#/definitions/IPAMStatus"
         },
+        "ipv4-big-tcp": {
+          "description": "Status of IPv4 BIG TCP",
+          "$ref": "#/definitions/IPV4BigTCP"
+        },
         "ipv6-big-tcp": {
           "description": "Status of IPv6 BIG TCP",
           "$ref": "#/definitions/IPV6BigTCP"
@@ -9948,10 +10370,10 @@ func init() {
       }
     },
     "WireguardInterface": {
-      "description": "Status of a Wireguard interface\n\n+k8s:deepcopy-gen=true",
+      "description": "Status of a WireGuard interface\n\n+k8s:deepcopy-gen=true",
       "properties": {
         "listen-port": {
-          "description": "Port on which the Wireguard endpoint is exposed",
+          "description": "Port on which the WireGuard endpoint is exposed",
           "type": "integer"
         },
         "name": {
@@ -9963,7 +10385,7 @@ func init() {
           "type": "integer"
         },
         "peers": {
-          "description": "Optional list of wireguard peers",
+          "description": "Optional list of WireGuard peers",
           "type": "array",
           "items": {
             "$ref": "#/definitions/WireguardPeer"
@@ -9976,7 +10398,7 @@ func init() {
       }
     },
     "WireguardPeer": {
-      "description": "Status of a Wireguard peer\n\n+k8s:deepcopy-gen=true",
+      "description": "Status of a WireGuard peer\n\n+k8s:deepcopy-gen=true",
       "properties": {
         "allowed-ips": {
           "description": "List of IPs which may be routed through this peer",
@@ -10009,10 +10431,10 @@ func init() {
       }
     },
     "WireguardStatus": {
-      "description": "Status of the Wireguard agent\n\n+k8s:deepcopy-gen=true",
+      "description": "Status of the WireGuard agent\n\n+k8s:deepcopy-gen=true",
       "properties": {
         "interfaces": {
-          "description": "Wireguard interfaces managed by this Cilium instance",
+          "description": "WireGuard interfaces managed by this Cilium instance",
           "type": "array",
           "items": {
             "$ref": "#/definitions/WireguardInterface"

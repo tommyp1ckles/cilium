@@ -5,19 +5,19 @@ package hive
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
 	"reflect"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	"go.uber.org/dig"
-	"go.uber.org/multierr"
-	"golang.org/x/sys/unix"
 
 	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/logging"
@@ -85,6 +85,20 @@ func New(cells ...cell.Cell) *Hive {
 
 	if err := h.provideDefaults(); err != nil {
 		log.WithError(err).Fatal("Failed to provide default objects")
+	}
+
+	// Use a single health provider for all cells, which is used to create
+	// module scoped health reporters.
+	if err := h.container.Provide(func(lc Lifecycle) cell.Health {
+		hp := cell.NewHealthProvider()
+		lc.Append(Hook{
+			OnStop: func(ctx HookContext) error {
+				return hp.Stop(ctx)
+			},
+		})
+		return hp
+	}); err != nil {
+		log.WithError(err).Fatal("Failed to provide health provider")
 	}
 
 	// Apply all cells to the container. This registers all constructors
@@ -173,33 +187,29 @@ func (h *Hive) Run() error {
 	startCtx, cancel := context.WithTimeout(context.Background(), h.startTimeout)
 	defer cancel()
 
-	var errors []error
-
+	var errs error
 	if err := h.Start(startCtx); err != nil {
-		errors = append(errors, fmt.Errorf("failed to start: %w", err))
+		errs = errors.Join(errs, fmt.Errorf("failed to start: %w", err))
 	}
 
 	// If start was successful, wait for Shutdown() or interrupt.
-	if len(errors) == 0 {
-		shutdownErr := h.waitForSignalOrShutdown()
-		if shutdownErr != nil {
-			errors = append(errors, shutdownErr)
-		}
+	if errs == nil {
+		errs = errors.Join(errs, h.waitForSignalOrShutdown())
 	}
 
 	stopCtx, cancel := context.WithTimeout(context.Background(), h.stopTimeout)
 	defer cancel()
 
 	if err := h.Stop(stopCtx); err != nil {
-		errors = append(errors, fmt.Errorf("failed to stop: %w", err))
+		errs = errors.Join(errs, fmt.Errorf("failed to stop: %w", err))
 	}
-	return multierr.Combine(errors...)
+	return errs
 }
 
 func (h *Hive) waitForSignalOrShutdown() error {
 	signals := make(chan os.Signal, 1)
 	defer signal.Stop(signals)
-	signal.Notify(signals, os.Interrupt, unix.SIGINT, unix.SIGTERM)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	select {
 	case sig := <-signals:
 		log.WithField("signal", sig).Info("Signal received")
