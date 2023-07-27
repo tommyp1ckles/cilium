@@ -24,8 +24,21 @@ type localEndpointCache interface {
 	LookupPodName(name string) *endpoint.Endpoint
 }
 
+type localPodCache interface {
+	GetCachedPod(namespace, name string) (*types.Pod, error)
+}
+
+func isLocalPod(k8sWatcher localPodCache, cepName string, cepNamespace string) bool {
+	pod, err := k8sWatcher.GetCachedPod(cepNamespace, cepName)
+	if err != nil {
+		log.WithError(err).Debug("could not get pod from cache, skipping as this will be cleaned up operator")
+		return false
+	}
+	return pod.Status.HostIP == node.GetCiliumEndpointNodeIP()
+}
+
 // This must only be run after K8s Pod and CES/CEP caches are synced and local endpoint restoration is complete.
-func (d *Daemon) cleanStaleCEPs(ctx context.Context, eps localEndpointCache, ciliumClient ciliumv2.CiliumV2Interface, enableCiliumEndpointSlice bool) error {
+func (d *Daemon) cleanStaleCEPs(ctx context.Context, eps localEndpointCache, ciliumClient ciliumv2.CiliumV2Interface, enableCiliumEndpointSlice bool, k8sWatcher localEndpointCache) error {
 	crdType := "ciliumendpoint"
 	if enableCiliumEndpointSlice {
 		crdType = "ciliumendpointslice"
@@ -45,7 +58,7 @@ func (d *Daemon) cleanStaleCEPs(ctx context.Context, eps localEndpointCache, cil
 				return fmt.Errorf("unexpected object type returned from ciliumendpointslice store: %T", cesObj)
 			}
 			for _, cep := range ces.Endpoints {
-				if cep.Networking.NodeIP == node.GetCiliumEndpointNodeIP() && eps.LookupPodName(ces.Namespace+"/"+cep.Name) == nil {
+				if isLocalPod(k8sWatcher, ces.Namespace, cep.Name) && eps.LookupPodName(ces.Namespace+"/"+cep.Name) == nil {
 					d.deleteCiliumEndpoint(ctx, ces.Namespace, cep.Name, nil, ciliumClient, eps,
 						enableCiliumEndpointSlice)
 				}
@@ -58,7 +71,7 @@ func (d *Daemon) cleanStaleCEPs(ctx context.Context, eps localEndpointCache, cil
 				return fmt.Errorf("unexpected object type returned from ciliumendpoint store: %T", cepObj)
 			}
 
-			if cep.Networking.NodeIP == node.GetCiliumEndpointNodeIP() && eps.LookupPodName(cep.Namespace+"/"+cep.Name) == nil {
+			if isLocalPod(k8sWatcher, cep.Name, cep.Namespace) && eps.LookupPodName(cep.Namespace+"/"+cep.Name) == nil {
 				d.deleteCiliumEndpoint(ctx, cep.Namespace, cep.Name, &cep.ObjectMeta.UID, ciliumClient, eps,
 					enableCiliumEndpointSlice)
 			}

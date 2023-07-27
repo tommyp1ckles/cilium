@@ -184,6 +184,7 @@ func Test_cleanStaleCEP(t *testing.T) {
 
 				epm := &fakeEPManager{test.managedEndpoints}
 
+				w := &watchers.K8sWatcher{}
 				err := d.cleanStaleCEPs(context.Background(), epm, fakeClient.CiliumV2(), test.enableCES)
 
 				assert.NoError(err)
