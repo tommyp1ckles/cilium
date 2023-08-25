@@ -211,14 +211,24 @@ Troubleshooting
 
  * All XFRM errors correspond to a packet drop in the kernel. Except for
    ``XfrmFwdHdrError`` and ``XfrmInError``, all XFRM errors indicate a bug in
-   Cilium or an operational mistake. ``XfrmOutStateSeqError`` and
-   ``XfrmInStateProtoError`` may be caused by operational mistakes, as detailed
-   in the following points.
+   Cilium or an operational mistake. ``XfrmOutStateSeqError``,
+   ``XfrmInStateProtoError``, and ``XfrmInNoStates`` may be caused by
+   operational mistakes, as detailed in the following points.
 
  * If the sequence number reaches its maximum value for any XFRM OUT state, it
    will result in packet drops and XFRM errors of type
    ``XfrmOutStateSeqError``. A key rotation resets all sequence numbers.
    Rotate keys frequently to avoid this issue.
+
+ * After a key rotation, if the old key is cleaned up before the
+   configuration of the new key is installed on all nodes, it results in
+   ``XfrmInNoStates`` errors. The old key is removed from nodes after a default
+   interval of 5 minutes by default. By default, all agents watch for key
+   updates and update their configuration within 1 minute after the key is
+   changed, leaving plenty of time before the old key is removed. If you expect
+   the key rotation to take longer for some reason (for example, in the case of
+   Cluster Mesh if several clusters need to be updated), you can increase the
+   delay before cleanup with agent flag ``ipsec-key-rotation-duration``.
 
  * ``XfrmInStateProtoError`` errors can happen if the key is updated without
    incrementing the SPI (also called ``KEYID`` in :ref:`ipsec_key_rotation`
@@ -256,6 +266,16 @@ Troubleshooting
                             packet for a pod that was deleted or (2) failed to
                             allocate memory.
    =======================  ==================================================
+
+ * In addition to the above XFRM errors, packet drops of type ``No node ID
+   found`` (code 197) may also occur under normal operations. These drops can
+   happen if a pod attempts to send traffic to a pod on a new node for which
+   the Cilium agent didn't yet receive the CiliumNode object. It can also
+   happen if the IP address of the destination node changed and the agent
+   didn't receive the updated CiliumNode object yet. In both cases, the IPsec
+   configuration in the kernel isn't ready yet, so Cilium drops the packets at
+   the source. These drops will stop once the CiliumNode information is
+   propagated across the cluster.
 
 Disabling Encryption
 ====================

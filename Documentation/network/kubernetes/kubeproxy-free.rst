@@ -678,9 +678,6 @@ each underlying device's driver must have native XDP support on all Cilium manag
 nodes. In addition, for performance reasons we recommend kernel >= 5.5 for
 the multi-device XDP acceleration.
 
-NodePort acceleration can be used with either direct routing (``routingMode=native``)
-or tunnel mode. Direct routing is recommended to achieve optimal performance.
-
 A list of drivers supporting XDP can be found in :ref:`the XDP documentation<xdp_drivers>`.
 
 The current Cilium kube-proxy XDP acceleration mode can also be introspected through
@@ -1311,7 +1308,7 @@ the check when running on some cloud providers. E.g. `Amazon NLB
 <https://kubernetes.io/docs/concepts/services-networking/service/#aws-nlb-support>`__
 natively implements the check, so the kube-proxy replacement's feature can be disabled.
 Meanwhile `GKE internal TCP/UDP load balancer
-<https://cloud.google.com/kubernetes-engine/docs/how-to/internal-load-balancing#lb_source_ranges>`__
+<https://cloud.google.com/kubernetes-engine/docs/how-to/service-parameters#lb_source_ranges>`__
 does not, so the feature must be kept enabled in order to restrict the access.
 
 Service Proxy Name Configuration
@@ -1593,6 +1590,10 @@ Limitations
       which uses eBPF cgroup hooks to implement the service translation. Using it with libceph
       deployments currently requires support for the getpeername(2) hook address translation in
       eBPF, which is only available for kernels v5.8 and higher.
+    * In order to support nfs in the kernel with the socket-LB feature, ensure that
+      kernel commit ``0bdf399342c5 ("net: Avoid address overwrite in kernel_connect")``
+      is part of your underlying kernel. Linux kernels v6.6 and higher support it. Older
+      stable kernels are TBD. For a more detailed discussion see :gh-issue:`21541`.
     * Cilium's DSR NodePort mode currently does not operate well in environments with
       TCP Fast Open (TFO) enabled. It is recommended to switch to ``snat`` mode in this
       situation.

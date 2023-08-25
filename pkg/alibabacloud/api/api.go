@@ -170,6 +170,7 @@ func (c *Client) GetVPC(ctx context.Context, vpcID string) (*ipamTypes.VirtualNe
 	return &ipamTypes.VirtualNetwork{
 		ID:          resp.Vpcs.Vpc[0].VpcId,
 		PrimaryCIDR: resp.Vpcs.Vpc[0].CidrBlock,
+		CIDRs:       resp.Vpcs.Vpc[0].SecondaryCidrBlocks.SecondaryCidrBlock,
 	}, nil
 }
 
@@ -194,6 +195,7 @@ func (c *Client) GetVPCs(ctx context.Context) (ipamTypes.VirtualNetworkMap, erro
 			result[v.VpcId] = &ipamTypes.VirtualNetwork{
 				ID:          v.VpcId,
 				PrimaryCIDR: v.CidrBlock,
+				CIDRs:       v.SecondaryCidrBlocks.SecondaryCidrBlock,
 			}
 		}
 		if resp.TotalCount < resp.PageNumber*resp.PageSize {
@@ -219,9 +221,7 @@ func (c *Client) GetInstanceTypes(ctx context.Context) ([]ecs.InstanceType, erro
 			return nil, err
 		}
 
-		for _, v := range resp.InstanceTypes.InstanceType {
-			result = append(result, v)
-		}
+		result = append(result, resp.InstanceTypes.InstanceType...)
 
 		if resp.NextToken == "" {
 			break
@@ -412,9 +412,8 @@ func (c *Client) describeNetworkInterfaces(ctx context.Context) ([]ecs.NetworkIn
 			return nil, err
 		}
 
-		for _, v := range resp.NetworkInterfaceSets.NetworkInterfaceSet {
-			result = append(result, v)
-		}
+		result = append(result, resp.NetworkInterfaceSets.NetworkInterfaceSet...)
+
 		if resp.NextToken == "" {
 			break
 		} else {
@@ -442,9 +441,8 @@ func (c *Client) describeNetworkInterfacesByInstance(ctx context.Context, instan
 			break
 		}
 
-		for _, v := range resp.NetworkInterfaceSets.NetworkInterfaceSet {
-			result = append(result, v)
-		}
+		result = append(result, resp.NetworkInterfaceSets.NetworkInterfaceSet...)
+
 		if resp.TotalCount < resp.PageNumber*resp.PageSize {
 			break
 		}
@@ -501,6 +499,7 @@ func parseENI(iface *ecs.NetworkInterfaceSet, vpcs ipamTypes.VirtualNetworkMap, 
 	vpc, ok := vpcs[iface.VpcId]
 	if ok {
 		eni.VPC.CIDRBlock = vpc.PrimaryCIDR
+		eni.VPC.SecondaryCIDRs = vpc.CIDRs
 	}
 
 	subnet, ok := subnets[iface.VSwitchId]

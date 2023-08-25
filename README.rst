@@ -5,7 +5,7 @@
       <img src="https://cdn.jsdelivr.net/gh/cilium/cilium@main/Documentation/images/logo-dark.png" width="350" alt="Cilium Logo">
    </picture>
 
-|cii| |go-report| |clomonitor| |artifacthub| |slack| |go-doc| |rtd| |apache| |bsd| |gpl| |fossa| |codespaces|
+|cii| |go-report| |clomonitor| |artifacthub| |slack| |go-doc| |rtd| |apache| |bsd| |gpl| |fossa| |gateway-api| |codespaces|
 
 Cilium is a networking, observability, and security solution with an eBPF-based
 dataplane. It provides a simple flat Layer 3 network with the ability to span
@@ -41,11 +41,11 @@ Listed below are the actively maintained release branches along with their lates
 patch release, corresponding image pull tags and their release notes:
 
 +---------------------------------------------------------+------------+------------------------------------+----------------------------------------------------------------------------+
-| `v1.13 <https://github.com/cilium/cilium/tree/v1.13>`__ | 2023-06-14 | ``quay.io/cilium/cilium:v1.13.4``  | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.13.4>`__  |
+| `v1.14 <https://github.com/cilium/cilium/tree/v1.14>`__ | 2023-08-11 | ``quay.io/cilium/cilium:v1.14.1``  | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.14.1>`__  |
 +---------------------------------------------------------+------------+------------------------------------+----------------------------------------------------------------------------+
-| `v1.12 <https://github.com/cilium/cilium/tree/v1.12>`__ | 2023-06-14 | ``quay.io/cilium/cilium:v1.12.11`` | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.12.11>`__ |
+| `v1.13 <https://github.com/cilium/cilium/tree/v1.13>`__ | 2023-08-10 | ``quay.io/cilium/cilium:v1.13.6``  | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.13.6>`__  |
 +---------------------------------------------------------+------------+------------------------------------+----------------------------------------------------------------------------+
-| `v1.11 <https://github.com/cilium/cilium/tree/v1.11>`__ | 2023-06-14 | ``quay.io/cilium/cilium:v1.11.18`` | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.11.18>`__ |
+| `v1.12 <https://github.com/cilium/cilium/tree/v1.12>`__ | 2023-08-14 | ``quay.io/cilium/cilium:v1.12.13`` | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.12.13>`__ |
 +---------------------------------------------------------+------------+------------------------------------+----------------------------------------------------------------------------+
 
 Architectures
@@ -384,6 +384,10 @@ and the `2-Clause BSD License <bsd-license_>`__
 .. |fossa| image:: https://app.fossa.com/api/projects/custom%2B162%2Fgit%40github.com%3Acilium%2Fcilium.git.svg?type=shield
     :alt: FOSSA Status
     :target: https://app.fossa.com/projects/custom%2B162%2Fgit%40github.com%3Acilium%2Fcilium.git?ref=badge_shield
+
+.. |gateway-api| image:: https://img.shields.io/badge/Gateway%20API%20Conformance%20v0.7.1-Cilium-green
+    :alt: Gateway API Status
+    :target: https://github.com/kubernetes-sigs/gateway-api/blob/main/conformance/reports/v0.7.1/cilium-cilium.yaml
 
 .. |codespaces| image:: https://img.shields.io/badge/Open_in_GitHub_Codespaces-gray?logo=github
     :alt: Github Codespaces

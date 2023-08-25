@@ -187,16 +187,16 @@ int test_nat4_icmp_error_tcp(__maybe_unused struct __ctx_buff *ctx)
 		.max_port = NODEPORT_PORT_MIN_NAT + 1,
 	};
 	struct ipv4_nat_entry state;
+	struct trace_ctx trace;
 
 	ret = snat_v4_new_mapping(ctx, &tuple, &state, &target,
-				  snat_v4_needs_ct(&tuple, &target),
-				  NULL);
+				  false, NULL);
 	assert(ret == 0);
 
 	/* This is the entry-point of the test, calling
 	 * snat_v4_rev_nat().
 	 */
-	ret = snat_v4_rev_nat(ctx, &target, NULL);
+	ret = snat_v4_rev_nat(ctx, &target, &trace, NULL);
 	assert(ret == 0);
 
 	__u16 proto;
@@ -297,16 +297,16 @@ int test_nat4_icmp_error_udp(__maybe_unused struct __ctx_buff *ctx)
 		.max_port = NODEPORT_PORT_MIN_NAT + 1,
 	};
 	struct ipv4_nat_entry state;
+	struct trace_ctx trace;
 
 	ret = snat_v4_new_mapping(ctx, &tuple, &state, &target,
-				  snat_v4_needs_ct(&tuple, &target),
-				  NULL);
+				  false, NULL);
 	assert(ret == 0);
 
 	/* This is the entry-point of the test, calling
 	 * snat_v4_rev_nat().
 	 */
-	ret = snat_v4_rev_nat(ctx, &target, NULL);
+	ret = snat_v4_rev_nat(ctx, &target, &trace, NULL);
 	assert(ret == 0);
 
 	__u16 proto;
@@ -406,16 +406,16 @@ int test_nat4_icmp_error_icmp(__maybe_unused struct __ctx_buff *ctx)
 		.max_port = NODEPORT_PORT_MIN_NAT + 1,
 	};
 	struct ipv4_nat_entry state;
+	struct trace_ctx trace;
 
 	ret = snat_v4_new_mapping(ctx, &tuple, &state, &target,
-				  snat_v4_needs_ct(&tuple, &target),
-				  NULL);
+				  false, NULL);
 	assert(ret == 0);
 
 	/* This is the entry-point of the test, calling
 	 * snat_v4_rev_nat().
 	 */
-	ret = snat_v4_rev_nat(ctx, &target, NULL);
+	ret = snat_v4_rev_nat(ctx, &target, &trace, NULL);
 	assert(ret == 0);
 
 	__u16 proto;
@@ -504,16 +504,16 @@ int test_nat4_icmp_error_sctp(__maybe_unused struct __ctx_buff *ctx)
 		.max_port = NODEPORT_PORT_MIN_NAT + 1,
 	};
 	struct ipv4_nat_entry state;
+	struct trace_ctx trace;
 
 	ret = snat_v4_new_mapping(ctx, &tuple, &state, &target,
-				  snat_v4_needs_ct(&tuple, &target),
-				  NULL);
+				  false, NULL);
 	assert(ret == 0);
 
 	/* This is the entry-point of the test, calling
 	 * snat_v4_rev_nat().
 	 */
-	ret = snat_v4_rev_nat(ctx, &target, NULL);
+	ret = snat_v4_rev_nat(ctx, &target, &trace, NULL);
 	assert(ret == DROP_CSUM_L4);
 
 	/* nothing really change with udp/tcp */
@@ -568,11 +568,11 @@ int test_nat4_icmp_error_tcp_egress(__maybe_unused struct __ctx_buff *ctx)
 	struct ipv4_nat_entry state;
 
 	ret = snat_v4_new_mapping(ctx, &tuple, &state, &target,
-				  snat_v4_needs_ct(&tuple, &target),
-				  NULL);
+				  false, NULL);
 	assert(ret == 0);
 
 	struct ipv4_ct_tuple icmp_tuple = {};
+	struct trace_ctx trace;
 	void *data, *data_end;
 	struct iphdr *ip4;
 	int l4_off;
@@ -585,7 +585,7 @@ int test_nat4_icmp_error_tcp_egress(__maybe_unused struct __ctx_buff *ctx)
 	 * snat_v4_nat().
 	 */
 	ret = snat_v4_nat(ctx, &icmp_tuple, l4_off, ipv4_has_l4_header(ip4),
-			  &target, NULL);
+			  &target, &trace, NULL);
 	assert(ret == 0);
 
 	__u16 proto;
@@ -683,11 +683,11 @@ int test_nat4_icmp_error_udp_egress(__maybe_unused struct __ctx_buff *ctx)
 	struct ipv4_nat_entry state;
 
 	ret = snat_v4_new_mapping(ctx, &tuple, &state, &target,
-				  snat_v4_needs_ct(&tuple, &target),
-				  NULL);
+				  false, NULL);
 	assert(ret == 0);
 
 	struct ipv4_ct_tuple icmp_tuple = {};
+	struct trace_ctx trace;
 	void *data, *data_end;
 	struct iphdr *ip4;
 	int l4_off;
@@ -700,7 +700,7 @@ int test_nat4_icmp_error_udp_egress(__maybe_unused struct __ctx_buff *ctx)
 	 * snat_v4_nat().
 	 */
 	ret = snat_v4_nat(ctx, &icmp_tuple, l4_off, ipv4_has_l4_header(ip4),
-			  &target, NULL);
+			  &target, &trace, NULL);
 	assert(ret == 0);
 
 	__u16 proto;
@@ -797,11 +797,11 @@ int test_nat4_icmp_error_icmp_egress(__maybe_unused struct __ctx_buff *ctx)
 	struct ipv4_nat_entry state;
 
 	ret = snat_v4_new_mapping(ctx, &tuple, &state, &target,
-				  snat_v4_needs_ct(&tuple, &target),
-				  NULL);
+				  false, NULL);
 	assert(ret == 0);
 
 	struct ipv4_ct_tuple icmp_tuple = {};
+	struct trace_ctx trace;
 	void *data, *data_end;
 	struct iphdr *ip4;
 	int l4_off;
@@ -814,7 +814,7 @@ int test_nat4_icmp_error_icmp_egress(__maybe_unused struct __ctx_buff *ctx)
 	 * snat_v4_nat().
 	 */
 	ret = snat_v4_nat(ctx, &icmp_tuple, l4_off, ipv4_has_l4_header(ip4),
-			  &target, NULL);
+			  &target, &trace, NULL);
 	assert(ret == 0);
 
 	__u16 proto;
@@ -900,11 +900,11 @@ int test_nat4_icmp_error_sctp_egress(__maybe_unused struct __ctx_buff *ctx)
 	struct ipv4_nat_entry state;
 
 	ret = snat_v4_new_mapping(ctx, &tuple, &state, &target,
-				  snat_v4_needs_ct(&tuple, &target),
-				  NULL);
+				  false, NULL);
 	assert(ret == 0);
 
 	struct ipv4_ct_tuple icmp_tuple = {};
+	struct trace_ctx trace;
 	void *data, *data_end;
 	struct iphdr *ip4;
 	int l4_off;
@@ -917,7 +917,7 @@ int test_nat4_icmp_error_sctp_egress(__maybe_unused struct __ctx_buff *ctx)
 	 * snat_v4_nat().
 	 */
 	ret = snat_v4_nat(ctx, &icmp_tuple, l4_off, ipv4_has_l4_header(ip4),
-			  &target, NULL);
+			  &target, &trace, NULL);
 	assert(ret == 0);
 
 	__u16 proto;

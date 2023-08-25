@@ -27,15 +27,15 @@ import (
 )
 
 type AccessLogServer struct {
-	socketPath string
-	xdsServer  XDSServer
-	stopCh     chan struct{}
+	socketPath         string
+	localEndpointStore *LocalEndpointStore
+	stopCh             chan struct{}
 }
 
-func newAccessLogServer(envoySocketDir string, xdsServer XDSServer) *AccessLogServer {
+func newAccessLogServer(envoySocketDir string, localEndpointStore *LocalEndpointStore) *AccessLogServer {
 	return &AccessLogServer{
-		socketPath: getAccessLogSocketPath(envoySocketDir),
-		xdsServer:  xdsServer,
+		socketPath:         getAccessLogSocketPath(envoySocketDir),
+		localEndpointStore: localEndpointStore,
 	}
 }
 
@@ -51,6 +51,7 @@ func (s *AccessLogServer) start() error {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
+		log.Infof("Envoy: Starting access log server listening on %s", socketListener.Addr())
 		for {
 			// Each Envoy listener opens a new connection over the Unix domain socket.
 			// Multiple worker threads serving the listener share that same connection
@@ -152,7 +153,7 @@ func (s *AccessLogServer) handleConn(ctx context.Context, conn *net.UnixConn) {
 		r := logRecord(&pblog)
 
 		// Update proxy stats for the endpoint if it still exists
-		localEndpoint := s.xdsServer.getLocalEndpoint(pblog.PolicyName)
+		localEndpoint := s.localEndpointStore.getLocalEndpoint(pblog.PolicyName)
 		if localEndpoint != nil {
 			// Update stats for the endpoint.
 			ingress := r.ObservationPoint == accesslog.Ingress
@@ -170,7 +171,8 @@ func logRecord(pblog *cilium.LogEntry) *logger.LogRecord {
 	var kafkaRecord *accesslog.LogRecordKafka
 	var kafkaTopics []string
 
-	var l7tags logger.LogTag
+	var l7tags logger.LogTag = func(lr *logger.LogRecord) {}
+
 	if httpLogEntry := pblog.GetHttp(); httpLogEntry != nil {
 		l7tags = logger.LogTags.HTTP(&accesslog.LogRecordHTTP{
 			Method:          httpLogEntry.Method,
@@ -222,7 +224,9 @@ func logRecord(pblog *cilium.LogEntry) *logger.LogRecord {
 	r := logger.NewLogRecord(flowType, pblog.IsIngress,
 		logger.LogTags.Timestamp(time.Unix(int64(pblog.Timestamp/1000000000), int64(pblog.Timestamp%1000000000))),
 		logger.LogTags.Verdict(GetVerdict(pblog), pblog.CiliumRuleRef),
-		logger.LogTags.Addressing(addrInfo), l7tags)
+		logger.LogTags.Addressing(addrInfo),
+		l7tags,
+	)
 	r.Log()
 
 	// Each kafka topic needs to be logged separately, log the rest if any

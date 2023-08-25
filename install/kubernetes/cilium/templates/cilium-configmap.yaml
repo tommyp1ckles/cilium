@@ -201,6 +201,13 @@ data:
     {{ . }}
   {{- end }}
   {{- end }}
+  {{- if .Values.prometheus.controllerGroupMetrics }}
+  # A space-separated list of controller groups for which to enable metrics.
+  # The special values of "all" and "none" are supported.
+  controller-group-metrics: {{- range .Values.prometheus.controllerGroupMetrics }}
+    {{ . }}
+  {{- end }}
+  {{- end }}
 {{- end }}
 
 {{- if not .Values.envoy.enabled }}
@@ -549,6 +556,7 @@ data:
 {{- else if eq $defaultBpfMasquerade "true" }}
   enable-bpf-masquerade: {{ $defaultBpfMasquerade | quote }}
 {{- end }}
+  enable-masquerade-to-route-source: {{ .Values.enableMasqueradeRouteSource | quote }}
 {{- if hasKey .Values "egressMasqueradeInterfaces" }}
   egress-masquerade-interfaces: {{ .Values.egressMasqueradeInterfaces }}
 {{- end }}
@@ -696,6 +704,11 @@ data:
 {{- end }}
 {{- if hasKey .Values.nodePort "enableHealthCheck" }}
   enable-health-check-nodeport: {{ .Values.nodePort.enableHealthCheck | quote}}
+{{- end }}
+{{- if .Values.gke.enabled }}
+  enable-health-check-loadbalancer-ip: "true"
+{{- else if hasKey .Values.nodePort "enableHealthCheckLoadBalancerIP" }}
+  enable-health-check-loadbalancer-ip: {{ .Values.nodePort.enableHealthCheckLoadBalancerIP | quote}}
 {{- end }}
   node-port-bind-protection: {{ .Values.nodePort.bindProtection | quote }}
   enable-auto-protect-node-port-range: {{ .Values.nodePort.autoProtectPortRange | quote }}
@@ -1127,10 +1140,6 @@ data:
   {{- end }}
 {{- end }}
 
-{{- if .Values.extraConfig }}
-  {{ toYaml .Values.extraConfig | nindent 2 }}
-{{- end }}
-
 {{- if hasKey .Values "agentNotReadyTaintKey" }}
   agent-not-ready-taint-key: {{ .Values.agentNotReadyTaintKey | quote }}
 {{- end }}
@@ -1163,6 +1172,12 @@ data:
 
 {{- if .Values.envoy.log.path }}
   envoy-log: {{ .Values.envoy.log.path | quote }}
+{{- end }}
+
+# Extra config allows adding arbitrary properties to the cilium config.
+# By putting it at the end of the ConfigMap, it's also possible to override existing properties.
+{{- if .Values.extraConfig }}
+  {{ toYaml .Values.extraConfig | nindent 2 }}
 {{- end }}
 
 {{- end }}

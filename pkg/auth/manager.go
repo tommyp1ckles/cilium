@@ -6,12 +6,13 @@ package auth
 import (
 	"context"
 	"fmt"
-	"net"
 	"time"
 
 	"github.com/sirupsen/logrus"
 
+	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/auth/certs"
+	"github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/maps/authmap"
@@ -26,21 +27,16 @@ func (key signalAuthKey) String() string {
 	return policy.AuthType(key.AuthType).String()
 }
 
-type authManager struct {
-	logger       logrus.FieldLogger
-	ipCache      ipCache
-	authHandlers map[policy.AuthType]authHandler
-	authmap      authMap
+type AuthManager struct {
+	logger                logrus.FieldLogger
+	nodeIDHandler         types.NodeIDHandler
+	authHandlers          map[policy.AuthType]authHandler
+	authmap               authMapCacher
+	authSignalBackoffTime time.Duration
 
 	mutex                    lock.Mutex
 	pending                  map[authKey]struct{}
-	handleAuthenticationFunc func(a *authManager, k authKey, reAuth bool)
-}
-
-// ipCache is the set of interactions the auth manager performs with the IPCache
-type ipCache interface {
-	GetNodeIP(uint16) string
-	GetNodeID(nodeIP net.IP) (nodeID uint16, exists bool)
+	handleAuthenticationFunc func(a *AuthManager, k authKey, reAuth bool)
 }
 
 // authHandler is responsible to handle authentication for a specific auth type
@@ -48,6 +44,7 @@ type authHandler interface {
 	authenticate(*authRequest) (*authResponse, error)
 	authType() policy.AuthType
 	subscribeToRotatedIdentities() <-chan certs.CertificateRotationEvent
+	certProviderStatus() *models.Status
 }
 
 type authRequest struct {
@@ -60,7 +57,7 @@ type authResponse struct {
 	expirationTime time.Time
 }
 
-func newAuthManager(logger logrus.FieldLogger, authHandlers []authHandler, authmap authMap, ipCache ipCache) (*authManager, error) {
+func newAuthManager(logger logrus.FieldLogger, authHandlers []authHandler, authmap authMapCacher, nodeIDHandler types.NodeIDHandler, authSignalBackoffTime time.Duration) (*AuthManager, error) {
 	ahs := map[policy.AuthType]authHandler{}
 	for _, ah := range authHandlers {
 		if ah == nil {
@@ -72,18 +69,19 @@ func newAuthManager(logger logrus.FieldLogger, authHandlers []authHandler, authm
 		ahs[ah.authType()] = ah
 	}
 
-	return &authManager{
+	return &AuthManager{
 		logger:                   logger,
 		authHandlers:             ahs,
 		authmap:                  authmap,
-		ipCache:                  ipCache,
+		nodeIDHandler:            nodeIDHandler,
 		pending:                  make(map[authKey]struct{}),
 		handleAuthenticationFunc: handleAuthentication,
+		authSignalBackoffTime:    authSignalBackoffTime,
 	}, nil
 }
 
 // handleAuthRequest receives auth required signals and spawns a new go routine for each authentication request.
-func (a *authManager) handleAuthRequest(_ context.Context, key signalAuthKey) error {
+func (a *AuthManager) handleAuthRequest(_ context.Context, key signalAuthKey) error {
 	k := authKey{
 		localIdentity:  identity.NumericIdentity(key.LocalIdentity),
 		remoteIdentity: identity.NumericIdentity(key.RemoteIdentity),
@@ -100,7 +98,7 @@ func (a *authManager) handleAuthRequest(_ context.Context, key signalAuthKey) er
 	return nil
 }
 
-func (a *authManager) handleCertificateRotationEvent(_ context.Context, event certs.CertificateRotationEvent) error {
+func (a *AuthManager) handleCertificateRotationEvent(_ context.Context, event certs.CertificateRotationEvent) error {
 	a.logger.
 		WithField("identity", event.Identity).
 		Debug("Handle certificate rotation event")
@@ -119,7 +117,7 @@ func (a *authManager) handleCertificateRotationEvent(_ context.Context, event ce
 	return nil
 }
 
-func handleAuthentication(a *authManager, k authKey, reAuth bool) {
+func handleAuthentication(a *AuthManager, k authKey, reAuth bool) {
 	if !a.markPendingAuth(k) {
 		a.logger.
 			WithField("key", k).
@@ -134,10 +132,15 @@ func handleAuthentication(a *authManager, k authKey, reAuth bool) {
 			// Check if the auth is actually required, as we might have
 			// updated the authmap since the datapath issued the auth
 			// required signal.
-			if i, err := a.authmap.Get(key); err == nil && i.expiration.After(time.Now()) {
+			// If the entry was cached more than authSignalBackoffTime
+			// it will authenticate again, this is to make sure that
+			// we re-authenticate if the authmap was updated by an
+			// external source.
+			if i, err := a.authmap.GetCacheInfo(key); err == nil && i.expiration.After(time.Now()) && time.Now().Before(i.storedAt.Add(a.authSignalBackoffTime)) {
 				a.logger.
 					WithField("key", key).
-					Debug("Already authenticated, skipping authentication")
+					WithField("storedAt", i.storedAt).
+					Debugf("Already authenticated in the past %s, skipping authentication", a.authSignalBackoffTime.String())
 				return
 			}
 		}
@@ -154,7 +157,7 @@ func handleAuthentication(a *authManager, k authKey, reAuth bool) {
 // markPendingAuth checks if there is a pending authentication for the given key.
 // If an auth is already pending returns false, otherwise marks the key as pending
 // and returns true.
-func (a *authManager) markPendingAuth(key authKey) bool {
+func (a *AuthManager) markPendingAuth(key authKey) bool {
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
 
@@ -167,7 +170,7 @@ func (a *authManager) markPendingAuth(key authKey) bool {
 }
 
 // clearPendingAuth marks the pending authentication as finished.
-func (a *authManager) clearPendingAuth(key authKey) {
+func (a *AuthManager) clearPendingAuth(key authKey) {
 	a.logger.
 		WithField("key", key).
 		Debug("Clearing pending authentication")
@@ -177,7 +180,7 @@ func (a *authManager) clearPendingAuth(key authKey) {
 	delete(a.pending, key)
 }
 
-func (a *authManager) authenticate(key authKey) error {
+func (a *AuthManager) authenticate(key authKey) error {
 	a.logger.
 		WithField("key", key).
 		Debug("Policy is requiring authentication")
@@ -188,7 +191,7 @@ func (a *authManager) authenticate(key authKey) error {
 		return fmt.Errorf("unknown requested auth type: %s", key.authType)
 	}
 
-	nodeIP := a.ipCache.GetNodeIP(key.remoteNodeID)
+	nodeIP := a.nodeIDHandler.GetNodeIP(key.remoteNodeID)
 	if nodeIP == "" {
 		return fmt.Errorf("remote node IP not available for node ID %d", key.remoteNodeID)
 	}
@@ -216,7 +219,7 @@ func (a *authManager) authenticate(key authKey) error {
 	return nil
 }
 
-func (a *authManager) updateAuthMap(key authKey, expirationTime time.Time) error {
+func (a *AuthManager) updateAuthMap(key authKey, expirationTime time.Time) error {
 	val := authInfo{
 		expiration: expirationTime,
 	}
@@ -226,4 +229,20 @@ func (a *authManager) updateAuthMap(key authKey, expirationTime time.Time) error
 	}
 
 	return nil
+}
+
+func (a *AuthManager) CertProviderStatus() *models.Status {
+	for _, h := range a.authHandlers {
+		status := h.certProviderStatus()
+		if status != nil {
+			// for now we only can have one cert provider
+			// once this changes we need to merge the statuses
+			return status
+		}
+	}
+
+	// if none was found auth is disabled
+	return &models.Status{
+		State: models.StatusStateDisabled,
+	}
 }

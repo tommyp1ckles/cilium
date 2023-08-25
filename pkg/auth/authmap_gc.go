@@ -22,10 +22,10 @@ import (
 )
 
 type authMapGarbageCollector struct {
-	logger     logrus.FieldLogger
-	authmap    authMap
-	ipCache    ipCache
-	policyRepo policyRepository
+	logger        logrus.FieldLogger
+	authmap       authMap
+	nodeIDHandler datapathTypes.NodeIDHandler
+	policyRepo    policyRepository
 
 	ciliumNodesMutex      lock.Mutex
 	ciliumNodesDiscovered map[uint16]struct{}
@@ -38,16 +38,20 @@ type authMapGarbageCollector struct {
 	ciliumIdentitiesDeleted    map[identity.NumericIdentity]struct{}
 }
 
+func (r *authMapGarbageCollector) Name() string {
+	return "authmap-gc"
+}
+
 type policyRepository interface {
 	GetAuthTypes(localID, remoteID identity.NumericIdentity) policy.AuthTypes
 }
 
-func newAuthMapGC(logger logrus.FieldLogger, authmap authMap, ipCache ipCache, policyRepo policyRepository) *authMapGarbageCollector {
+func newAuthMapGC(logger logrus.FieldLogger, authmap authMap, nodeIDHandler datapathTypes.NodeIDHandler, policyRepo policyRepository) *authMapGarbageCollector {
 	return &authMapGarbageCollector{
-		logger:     logger,
-		authmap:    authmap,
-		ipCache:    ipCache,
-		policyRepo: policyRepo,
+		logger:        logger,
+		authmap:       authmap,
+		nodeIDHandler: nodeIDHandler,
+		policyRepo:    policyRepo,
 
 		ciliumNodesDiscovered: map[uint16]struct{}{
 			0: {}, // Local node 0 is always available
@@ -125,6 +129,9 @@ func (r *authMapGarbageCollector) NodeDelete(deletedNode nodeTypes.Node) error {
 	}
 
 	return nil
+}
+
+func (r *authMapGarbageCollector) AllNodeValidateImplementation() {
 }
 
 func (r *authMapGarbageCollector) NodeValidateImplementation(node nodeTypes.Node) error {
@@ -210,7 +217,7 @@ func (r *authMapGarbageCollector) remoteNodeIDs(node nodeTypes.Node) []uint16 {
 
 	for _, addr := range node.IPAddresses {
 		if addr.Type == addressing.NodeInternalIP {
-			nodeID, exists := r.ipCache.GetNodeID(addr.IP)
+			nodeID, exists := r.nodeIDHandler.GetNodeID(addr.IP)
 			if !exists {
 				// This might be the case at startup, when new nodes aren't yet known to the nodehandler
 				// and therefore no node id has been assigned to them.

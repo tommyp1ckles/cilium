@@ -12,11 +12,11 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/cilium/cilium/pkg/auth/spire"
+	"github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/hive"
 	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/hive/job"
 	"github.com/cilium/cilium/pkg/identity/cache"
-	"github.com/cilium/cilium/pkg/ipcache"
 	"github.com/cilium/cilium/pkg/maps/authmap"
 	nodeManager "github.com/cilium/cilium/pkg/node/manager"
 	"github.com/cilium/cilium/pkg/policy"
@@ -24,7 +24,7 @@ import (
 	"github.com/cilium/cilium/pkg/stream"
 )
 
-// Cell invokes authManager which is responsible for request authentication.
+// Cell provides AuthManager which is responsible for request authentication.
 // It does this by registering to "auth required" signals from the signal package
 // and reacting upon received signal events.
 // Actual authentication gets performed by an auth handler which is
@@ -37,7 +37,7 @@ var Cell = cell.Module(
 
 	// The auth manager is the main entry point which gets registered to signal map and receives auth requests.
 	// In addition, it handles re-authentication and auth map garbage collection.
-	cell.Invoke(registerAuthManager),
+	cell.Provide(registerAuthManager),
 	cell.ProvidePrivate(
 		// Null auth handler provides support for auth type "null" - which always succeeds.
 		newMutualAuthHandler,
@@ -45,23 +45,27 @@ var Cell = cell.Module(
 		newAlwaysFailAuthHandler,
 	),
 	cell.Config(config{
-		MeshAuthEnabled:    true,
-		MeshAuthQueueSize:  1024,
-		MeshAuthGCInterval: 5 * time.Minute,
+		MeshAuthEnabled:               true,
+		MeshAuthQueueSize:             1024,
+		MeshAuthGCInterval:            5 * time.Minute,
+		MeshAuthSignalBackoffDuration: 1 * time.Second, // this default is based on the default TCP retransmission timeout
 	}),
 	cell.Config(MutualAuthConfig{}),
 )
 
 type config struct {
-	MeshAuthEnabled    bool
-	MeshAuthQueueSize  int
-	MeshAuthGCInterval time.Duration
+	MeshAuthEnabled               bool
+	MeshAuthQueueSize             int
+	MeshAuthGCInterval            time.Duration
+	MeshAuthSignalBackoffDuration time.Duration
 }
 
 func (r config) Flags(flags *pflag.FlagSet) {
 	flags.Bool("mesh-auth-enabled", r.MeshAuthEnabled, "Enable authentication processing & garbage collection (beta)")
 	flags.Int("mesh-auth-queue-size", r.MeshAuthQueueSize, "Queue size for the auth manager")
 	flags.Duration("mesh-auth-gc-interval", r.MeshAuthGCInterval, "Interval in which auth entries are attempted to be garbage collected")
+	flags.Duration("mesh-auth-signal-backoff-duration", r.MeshAuthSignalBackoffDuration, "Time to wait betweeen two authentication required signals in case of a cache mismatch")
+	flags.MarkHidden("mesh-auth-signal-backoff-duration")
 }
 
 type authManagerParams struct {
@@ -76,16 +80,16 @@ type authManagerParams struct {
 	AuthHandlers []authHandler `group:"authHandlers"`
 
 	SignalManager   signal.SignalManager
-	IPCache         *ipcache.IPCache
+	NodeIDHandler   types.NodeIDHandler
 	IdentityChanges stream.Observable[cache.IdentityChange]
 	NodeManager     nodeManager.NodeManager
 	PolicyRepo      *policy.Repository
 }
 
-func registerAuthManager(params authManagerParams) error {
+func registerAuthManager(params authManagerParams) (*AuthManager, error) {
 	if !params.Config.MeshAuthEnabled {
 		params.Logger.Info("Authentication processing is disabled")
-		return nil
+		return nil, nil
 	}
 
 	// Instantiate & wire auth components
@@ -93,12 +97,12 @@ func registerAuthManager(params authManagerParams) error {
 	mapWriter := newAuthMapWriter(params.Logger, params.AuthMap)
 	mapCache := newAuthMapCache(params.Logger, mapWriter)
 
-	mgr, err := newAuthManager(params.Logger, params.AuthHandlers, mapCache, params.IPCache)
+	mgr, err := newAuthManager(params.Logger, params.AuthHandlers, mapCache, params.NodeIDHandler, params.Config.MeshAuthSignalBackoffDuration)
 	if err != nil {
-		return fmt.Errorf("failed to create auth manager: %w", err)
+		return nil, fmt.Errorf("failed to create auth manager: %w", err)
 	}
 
-	mapGC := newAuthMapGC(params.Logger, mapCache, params.IPCache, params.PolicyRepo)
+	mapGC := newAuthMapGC(params.Logger, mapCache, params.NodeIDHandler, params.PolicyRepo)
 
 	// Register auth components to lifecycle hooks & jobs
 
@@ -118,17 +122,17 @@ func registerAuthManager(params authManagerParams) error {
 	)
 
 	if err := registerSignalAuthenticationJob(jobGroup, mgr, params.SignalManager, params.Config); err != nil {
-		return fmt.Errorf("failed to register signal authentication job: %w", err)
+		return nil, fmt.Errorf("failed to register signal authentication job: %w", err)
 	}
 	registerReAuthenticationJob(jobGroup, mgr, params.AuthHandlers)
 	registerGCJobs(jobGroup, params.Lifecycle, mapGC, params.Config, params.NodeManager, params.IdentityChanges)
 
 	params.Lifecycle.Append(jobGroup)
 
-	return nil
+	return mgr, nil
 }
 
-func registerReAuthenticationJob(jobGroup job.Group, mgr *authManager, authHandlers []authHandler) {
+func registerReAuthenticationJob(jobGroup job.Group, mgr *AuthManager, authHandlers []authHandler) {
 	for _, ah := range authHandlers {
 		if ah != nil && ah.subscribeToRotatedIdentities() != nil {
 			jobGroup.Add(job.Observer("auth re-authentication", mgr.handleCertificateRotationEvent, stream.FromChannel(ah.subscribeToRotatedIdentities())))
@@ -136,7 +140,7 @@ func registerReAuthenticationJob(jobGroup job.Group, mgr *authManager, authHandl
 	}
 }
 
-func registerSignalAuthenticationJob(jobGroup job.Group, mgr *authManager, sm signal.SignalManager, config config) error {
+func registerSignalAuthenticationJob(jobGroup job.Group, mgr *AuthManager, sm signal.SignalManager, config config) error {
 	var signalChannel = make(chan signalAuthKey, config.MeshAuthQueueSize)
 
 	// RegisterHandler registers signalChannel with SignalManager, but flow of events

@@ -24,6 +24,7 @@ import (
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
 	"github.com/cilium/cilium/pkg/maps/authmap"
 	fakeauthmap "github.com/cilium/cilium/pkg/maps/authmap/fake"
+	"github.com/cilium/cilium/pkg/maps/ctmap/gc"
 	"github.com/cilium/cilium/pkg/maps/egressmap"
 	"github.com/cilium/cilium/pkg/maps/signalmap"
 	fakesignalmap "github.com/cilium/cilium/pkg/maps/signalmap/fake"
@@ -70,11 +71,13 @@ func (h *agentHandle) setupCiliumAgentHive(clientset k8sClient.Clientset, dp *fa
 		cell.Provide(
 			func() k8sClient.Clientset { return clientset },
 			func() datapath.Datapath { return dp },
+			func() datapath.NodeIDHandler { return dp.NodeIDs() },
 			func() *option.DaemonConfig { return option.Config },
 			func() cnicell.CNIConfigManager { return &fakecni.FakeCNIConfigManager{} },
 			func() signalmap.Map { return fakesignalmap.NewFakeSignalMap([][]byte{}, time.Second) },
 			func() authmap.Map { return fakeauthmap.NewFakeAuthMap() },
 			func() egressmap.PolicyMap { return nil },
+			func() gc.Enabler { return gc.NewFake() },
 		),
 		monitorAgent.Cell,
 		tables.Cell,

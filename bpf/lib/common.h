@@ -47,7 +47,11 @@
 #define CONDITIONAL_PREALLOC BPF_F_NO_PREALLOC
 #endif
 
-#if defined(ENCAP_IFINDEX) || defined(ENABLE_EGRESS_GATEWAY) || \
+#if defined(ENABLE_EGRESS_GATEWAY)
+#define ENABLE_EGRESS_GATEWAY_COMMON
+#endif
+
+#if defined(ENCAP_IFINDEX) || defined(ENABLE_EGRESS_GATEWAY_COMMON) || \
     (defined(ENABLE_DSR) && DSR_ENCAP_MODE == DSR_ENCAP_GENEVE)
 #define HAVE_ENCAP
 
@@ -67,11 +71,6 @@ enum {
 /* For use in ctx_get_xfer(), after XDP called ctx_move_xfer(). */
 enum {
 	XFER_FLAGS = 0,		/* XFER_PKT_* */
-	XFER_ENCAP_NODEID = 1,
-	XFER_ENCAP_SECLABEL = 2,
-	XFER_ENCAP_DSTID = 3,
-	XFER_ENCAP_PORT = 4,
-	XFER_ENCAP_ADDR = 5,
 };
 
 /* FIB errors from BPF neighbor map. */
@@ -126,8 +125,9 @@ enum {
 #define CILIUM_CALL_IPV6_NODEPORT_NAT_INGRESS	37
 #define CILIUM_CALL_IPV4_NODEPORT_SNAT_FWD	38
 #define CILIUM_CALL_IPV6_NODEPORT_SNAT_FWD	39
-#define CILIUM_CALL_IPV4_NODEPORT_DSR_INGRESS	40
-#define CILIUM_CALL_IPV6_NODEPORT_DSR_INGRESS	41
+/* Unused CILIUM_CALL_IPV4_NODEPORT_DSR_INGRESS	40
+ * Unused CILIUM_CALL_IPV6_NODEPORT_DSR_INGRESS	41
+ */
 #define CILIUM_CALL_IPV4_INTER_CLUSTER_REVSNAT	42
 #define CILIUM_CALL_IPV4_CONT_FROM_HOST		43
 #define CILIUM_CALL_IPV4_CONT_FROM_NETDEV	44
@@ -219,6 +219,30 @@ __revalidate_data_pull(struct __ctx_buff *ctx, void **data, void **data_end,
 					l3_off);
 }
 
+static __always_inline __u32 get_tunnel_id(__u32 identity)
+{
+#if defined ENABLE_IPV4 && defined ENABLE_IPV6
+	if (identity == WORLD_IPV4_ID || identity == WORLD_IPV6_ID)
+		return WORLD_ID;
+#endif
+	return identity;
+}
+
+static __always_inline __u32 get_id_from_tunnel_id(__u32 tunnel_id, __u16 proto  __maybe_unused)
+{
+#if defined ENABLE_IPV4 && defined ENABLE_IPV6
+	if (tunnel_id == WORLD_ID) {
+		switch (proto) {
+		case bpf_htons(ETH_P_IP):
+			return WORLD_IPV4_ID;
+		case bpf_htons(ETH_P_IPV6):
+			return WORLD_IPV6_ID;
+		}
+	}
+#endif
+	return tunnel_id;
+}
+
 /* revalidate_data_pull() initializes the provided pointers from the ctx and
  * ensures that the data is pulled in for access. Should be used the first
  * time that the ctx data is accessed, subsequent calls can be made to
@@ -297,7 +321,7 @@ struct tunnel_value {
 	};
 	__u8 family;
 	__u8 key;
-	__u16 node_id;
+	__u16 pad;
 } __packed;
 
 #define ENDPOINT_F_HOST		1 /* Special endpoint representing local host */
@@ -328,7 +352,7 @@ struct edt_info {
 struct remote_endpoint_info {
 	__u32		sec_identity;
 	__u32		tunnel_endpoint;
-	__u16		node_id;
+	__u16		pad;
 	__u8		key;
 };
 
@@ -610,8 +634,9 @@ enum {
 #define DROP_INVALID_CLUSTER_ID	-192
 #define DROP_DSR_ENCAP_UNSUPP_PROTO	-193
 #define DROP_NO_EGRESS_GATEWAY	-194
-#define DROP_UNENCRYPTED_TRAFFIC -195
+#define DROP_UNENCRYPTED_TRAFFIC	-195
 #define DROP_TTL_EXCEEDED	-196
+#define DROP_NO_NODE_ID		-197
 
 #define NAT_PUNT_TO_STACK	DROP_NAT_NOT_NEEDED
 #define NAT_NEEDED		CTX_ACT_OK
@@ -1117,7 +1142,9 @@ struct ct_state {
 	__be32 svc_addr;
 #endif
 	__u32 src_sec_id;
+#ifndef HAVE_FIB_IFINDEX
 	__u16 ifindex;
+#endif
 	__u32 backend_id;	/* Backend ID in lb4_backends */
 };
 

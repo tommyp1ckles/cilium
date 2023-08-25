@@ -1,4 +1,4 @@
-name: build-commits
+name: Build Commits
 
 # Any change in triggers needs to be reflected in the concurrency group.
 on: [pull_request]
@@ -24,7 +24,7 @@ jobs:
         uses: actions/setup-go@fac708d6674e30b6ba41289acaab6d4b75aa0753 # v4.0.1
         with:
           # renovate: datasource=golang-version depName=go
-          go-version: 1.20.6
+          go-version: 1.21.0
 
       - name: Set clang directory
         id: set_clang_dir
@@ -96,6 +96,7 @@ jobs:
         with:
           filters: |
             src:
+              - 'pkg/**'
               - 'test/**'
 
       # Runs only if code under test/ is changed.

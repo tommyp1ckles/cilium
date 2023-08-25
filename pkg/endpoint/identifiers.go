@@ -11,9 +11,11 @@ import (
 
 // GetContainerName returns the name of the container for the endpoint.
 func (e *Endpoint) GetContainerName() string {
-	e.unconditionalRLock()
-	defer e.runlock()
-	return e.containerName
+	cn := e.containerName.Load()
+	if cn == nil {
+		return ""
+	}
+	return *cn
 }
 
 // GetK8sPodName returns the name of the pod if the endpoint represents a
@@ -27,8 +29,8 @@ func (e *Endpoint) GetK8sPodName() string {
 
 // HumanString returns the endpoint's most human readable identifier as string
 func (e *Endpoint) HumanString() string {
-	if pod := e.GetK8sNamespaceAndPodName(); pod != "" {
-		return pod
+	if cep := e.GetK8sNamespaceAndCEPName(); cep != "" {
+		return cep
 	}
 
 	return e.StringID()
@@ -41,27 +43,52 @@ func (e *Endpoint) GetK8sNamespaceAndPodName() string {
 	return e.K8sNamespace + "/" + e.K8sPodName
 }
 
+// GetK8sCEPName returns the corresponding K8s CiliumEndpoint resource name
+// for this endpoint (without the namespace)
+// Returns an empty string if the endpoint does not belong to a pod.
+func (e *Endpoint) GetK8sCEPName() string {
+	// all fields are const after creation
+
+	// Endpoints which have not opted out of legacy identifiers will continue
+	// to use just the pod name as the cep name for backwards compatibility reasons.
+	if e.disableLegacyIdentifiers && e.K8sPodName != "" && e.containerIfName != "" {
+		return e.K8sPodName + "-" + e.containerIfName
+	}
+	return e.K8sPodName
+}
+
+// GetK8sNamespaceAndCEPName returns the corresponding namespace and
+// K8s CiliumEndpoint resource name for this endpoint.
+func (e *Endpoint) GetK8sNamespaceAndCEPName() string {
+	// all fields are const after creation
+	return e.K8sNamespace + "/" + e.GetK8sCEPName()
+}
+
+// GetCNIAttachmentID returns the endpoint's unique CNI attachment ID
+func (e *Endpoint) GetCNIAttachmentID() string {
+	if e.containerIfName != "" {
+		return e.GetContainerID() + ":" + e.containerIfName
+	}
+	return e.GetContainerID()
+}
+
 // GetContainerID returns the endpoint's container ID
 func (e *Endpoint) GetContainerID() string {
-	e.unconditionalRLock()
-	cID := e.containerID
-	e.runlock()
-	return cID
+	cid := e.containerID.Load()
+	if cid == nil {
+		return ""
+	}
+	return *cid
 }
 
 // GetShortContainerID returns the endpoint's shortened container ID
 func (e *Endpoint) GetShortContainerID() string {
-	e.unconditionalRLock()
-	defer e.runlock()
-	return e.getShortContainerIDLocked()
-}
-
-func (e *Endpoint) getShortContainerIDLocked() string {
 	if e == nil {
 		return ""
 	}
 
-	cid := e.containerID
+	// const after creation
+	cid := e.GetContainerID()
 
 	caplen := 10
 	if len(cid) <= caplen {
@@ -77,12 +104,15 @@ func (e *Endpoint) GetDockerEndpointID() string {
 	return e.dockerEndpointID
 }
 
-// IdentifiersLocked fetches the set of attributes that uniquely identify the
-// endpoint. The caller must hold exclusive control over the endpoint.
-func (e *Endpoint) IdentifiersLocked() id.Identifiers {
-	refs := make(id.Identifiers, 6)
-	if e.containerID != "" {
-		refs[id.ContainerIdPrefix] = e.containerID
+// Identifiers fetches the set of attributes that uniquely identify the endpoint.
+func (e *Endpoint) Identifiers() id.Identifiers {
+	refs := make(id.Identifiers, 8)
+	if cniID := e.GetCNIAttachmentID(); cniID != "" {
+		refs[id.CNIAttachmentIdPrefix] = cniID
+	}
+
+	if !e.disableLegacyIdentifiers && e.GetContainerID() != "" {
+		refs[id.ContainerIdPrefix] = e.GetContainerID()
 	}
 
 	if e.dockerEndpointID != "" {
@@ -97,24 +127,19 @@ func (e *Endpoint) IdentifiersLocked() id.Identifiers {
 		refs[id.IPv6Prefix] = e.IPv6.String()
 	}
 
-	if e.containerName != "" {
-		refs[id.ContainerNamePrefix] = e.containerName
+	if !e.disableLegacyIdentifiers && e.GetContainerName() != "" {
+		refs[id.ContainerNamePrefix] = e.GetContainerName()
 	}
 
-	if podName := e.GetK8sNamespaceAndPodName(); podName != "" {
+	if podName := e.GetK8sNamespaceAndPodName(); !e.disableLegacyIdentifiers && podName != "" {
 		refs[id.PodNamePrefix] = podName
 	}
-	return refs
-}
 
-// Identifiers fetches the set of attributes that uniquely identify the endpoint.
-func (e *Endpoint) Identifiers() (id.Identifiers, error) {
-	if err := e.rlockAlive(); err != nil {
-		return nil, err
+	if cepName := e.GetK8sNamespaceAndCEPName(); cepName != "" {
+		refs[id.CEPNamePrefix] = cepName
 	}
-	defer e.runlock()
 
-	return e.IdentifiersLocked(), nil
+	return refs
 }
 
 // GetCiliumEndpointUID returns the UID of the CiliumEndpoint.

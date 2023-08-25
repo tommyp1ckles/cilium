@@ -28,6 +28,7 @@ import (
 	"github.com/cilium/cilium/pkg/ipcache"
 	k8sConst "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 	"github.com/cilium/cilium/pkg/labels"
+	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	monitorAPI "github.com/cilium/cilium/pkg/monitor/api"
 	"github.com/cilium/cilium/pkg/node"
@@ -37,6 +38,11 @@ import (
 	"github.com/cilium/cilium/pkg/revert"
 	"github.com/cilium/cilium/pkg/types"
 	"github.com/cilium/cilium/pkg/u8proto"
+)
+
+var (
+	endpointRegenerationRecoveryControllerGroup = controller.NewGroup("endpoint-regeneration-recovery")
+	syncAddressIdentityMappingControllerGroup   = controller.NewGroup("sync-address-identity-mapping")
 )
 
 // GetNamedPort returns the port for the given name.
@@ -115,7 +121,7 @@ func (e *Endpoint) updateNetworkPolicy(proxyWaitGroup *completion.WaitGroup) (re
 		return nil, nil
 	}
 
-	if e.isProxyDisabled() {
+	if e.IsProxyDisabled() {
 		return nil, nil
 	}
 
@@ -225,11 +231,13 @@ func (e *Endpoint) regeneratePolicy() (*policyGenerateResult, error) {
 		e.desiredPolicy != nil && result.selectorPolicy != nil {
 
 		if !forcePolicyCompute {
-			e.getLogger().WithFields(logrus.Fields{
-				"policyRevision.next": e.nextPolicyRevision,
-				"policyRevision.repo": result.policyRevision,
-				"policyChanged":       e.nextPolicyRevision > e.policyRevision,
-			}).Debug("Skipping unnecessary endpoint policy recalculation")
+			if logger := e.getLogger(); logging.CanLogAt(logger.Logger, logrus.DebugLevel) {
+				e.getLogger().WithFields(logrus.Fields{
+					"policyRevision.next": e.nextPolicyRevision,
+					"policyRevision.repo": result.policyRevision,
+					"policyChanged":       e.nextPolicyRevision > e.policyRevision,
+				}).Debug("Skipping unnecessary endpoint policy recalculation")
+			}
 			repo.Mutex.RUnlock()
 			return result, nil
 		} else {
@@ -326,14 +334,15 @@ func (e *Endpoint) updatePolicyRegenerationStatistics(stats *policyRegenerationS
 		"policyCalculation":          &stats.policyCalculation,
 		"forcedRegeneration":         forceRegeneration,
 	}
-	scopedLog := e.getLogger().WithFields(fields)
 
 	if err != nil {
-		scopedLog.WithError(err).Warn("Regeneration of policy failed")
+		e.getLogger().WithFields(fields).WithError(err).Warn("Regeneration of policy failed")
 		return
 	}
 
-	scopedLog.Debug("Completed endpoint policy recalculation")
+	if logger := e.getLogger(); logging.CanLogAt(logger.Logger, logrus.DebugLevel) {
+		logger.WithFields(fields).Debug("Completed endpoint policy recalculation")
+	}
 }
 
 // updateAndOverrideEndpointOptions updates the boolean configuration options for the endpoint
@@ -361,10 +370,14 @@ func (e *Endpoint) regenerate(ctx *regenerationContext) (retErr error) {
 	ctx.Stats = regenerationStatistics{}
 	stats := &ctx.Stats
 	stats.totalTime.Start()
-	e.getLogger().WithFields(logrus.Fields{
-		logfields.StartTime: time.Now(),
-		logfields.Reason:    ctx.Reason,
-	}).Debug("Regenerating endpoint")
+	debugLogsEnabled := logging.CanLogAt(e.getLogger().Logger, logrus.DebugLevel)
+
+	if debugLogsEnabled {
+		e.getLogger().WithFields(logrus.Fields{
+			logfields.StartTime: time.Now(),
+			logfields.Reason:    ctx.Reason,
+		}).Debug("Regenerating endpoint")
+	}
 
 	defer func() {
 		// This has to be within a func(), not deferred directly, so that the
@@ -389,7 +402,9 @@ func (e *Endpoint) regenerate(ctx *regenerationContext) (retErr error) {
 	// GH-5350: Remove this special case to require checking for StateWaitingForIdentity
 	if e.getState() != StateWaitingForIdentity &&
 		!e.BuilderSetStateLocked(StateRegenerating, "Regenerating endpoint: "+ctx.Reason) {
-		e.getLogger().WithField(logfields.EndpointState, e.state).Debug("Skipping build due to invalid state")
+		if debugLogsEnabled {
+			e.getLogger().WithField(logfields.EndpointState, e.state).Debug("Skipping build due to invalid state")
+		}
 		e.unlock()
 
 		return fmt.Errorf("Skipping build due to invalid state: %s", e.state)
@@ -546,16 +561,21 @@ func (e *Endpoint) updateRegenerationStatistics(ctx *regenerationContext, err er
 	e.runlock()
 	stats.SendMetrics()
 
-	fields := logrus.Fields{
-		logfields.Reason: ctx.Reason,
+	// Only add fields to the scoped logger if the criteria for logging a message is met, to avoid
+	// the expensive call to 'WithFields'.
+	scopedLog := e.getLogger()
+	if err != nil || logging.CanLogAt(scopedLog.Logger, logrus.DebugLevel) {
+		fields := logrus.Fields{
+			logfields.Reason: ctx.Reason,
+		}
+		for field, stat := range stats.GetMap() {
+			fields[field] = stat.Total()
+		}
+		for field, stat := range stats.datapathRealization.GetMap() {
+			fields[field] = stat.Total()
+		}
+		scopedLog = scopedLog.WithFields(fields)
 	}
-	for field, stat := range stats.GetMap() {
-		fields[field] = stat.Total()
-	}
-	for field, stat := range stats.datapathRealization.GetMap() {
-		fields[field] = stat.Total()
-	}
-	scopedLog := e.getLogger().WithFields(fields)
 
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
@@ -673,22 +693,20 @@ func (e *Endpoint) Regenerate(regenMetadata *regeneration.ExternalRegenerationMe
 			canceled     bool
 		)
 
-		select {
-		case result, ok := <-resChan:
-			if ok {
-				regenResult := result.(*EndpointRegenerationResult)
-				regenError = regenResult.err
-				buildSuccess = regenError == nil
+		result, ok := <-resChan
+		if ok {
+			regenResult := result.(*EndpointRegenerationResult)
+			regenError = regenResult.err
+			buildSuccess = regenError == nil
 
-				if regenError != nil && !errors.Is(regenError, context.Canceled) {
-					e.getLogger().WithError(regenError).Error("endpoint regeneration failed")
-				}
-			} else {
-				// This may be unnecessary(?) since 'closing' of the results
-				// channel means that event has been cancelled?
-				e.getLogger().Debug("regeneration was cancelled")
-				canceled = true
+			if regenError != nil && !errors.Is(regenError, context.Canceled) {
+				e.getLogger().WithError(regenError).Error("endpoint regeneration failed")
 			}
+		} else {
+			// This may be unnecessary(?) since 'closing' of the results
+			// channel means that event has been cancelled?
+			e.getLogger().Debug("regeneration was cancelled")
+			canceled = true
 		}
 
 		// If a build is canceled, that means that the Endpoint is being deleted
@@ -719,6 +737,7 @@ var reasonRegenRetry = "retrying regeneration"
 // fails inside of the controller,
 func (e *Endpoint) startRegenerationFailureHandler() {
 	e.controllers.UpdateController(fmt.Sprintf("endpoint-%s-regeneration-recovery", e.StringID()), controller.ControllerParams{
+		Group: endpointRegenerationRecoveryControllerGroup,
 		DoFunc: func(ctx context.Context) error {
 			select {
 			case <-e.regenFailedChan:
@@ -782,8 +801,10 @@ func (e *Endpoint) runIPIdentitySync(endpointIP netip.Addr) {
 		addressFamily = "IPv6"
 	}
 
-	e.controllers.UpdateController(fmt.Sprintf("sync-%s-identity-mapping (%d)", addressFamily, e.ID),
+	e.controllers.UpdateController(
+		fmt.Sprintf("sync-%s-identity-mapping (%d)", addressFamily, e.ID),
 		controller.ControllerParams{
+			Group: syncAddressIdentityMappingControllerGroup,
 			DoFunc: func(ctx context.Context) error {
 				if err := e.rlockAlive(); err != nil {
 					return controller.NewExitReason("Endpoint disappeared")

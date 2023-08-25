@@ -199,9 +199,20 @@ func (e *MapStateEntry) getNets(identities Identities, ident uint32) []*net.IPNe
 		return e.cachedNets
 	}
 	id := identity.NumericIdentity(ident)
-	if id == identity.ReservedIdentityWorld {
+	switch id {
+	case identity.ReservedIdentityWorld:
 		e.cachedNets = []*net.IPNet{
 			{IP: net.IPv4zero, Mask: net.CIDRMask(0, net.IPv4len*8)},
+			{IP: net.IPv6zero, Mask: net.CIDRMask(0, net.IPv6len*8)},
+		}
+		return e.cachedNets
+	case identity.ReservedIdentityWorldIPv4:
+		e.cachedNets = []*net.IPNet{
+			{IP: net.IPv4zero, Mask: net.CIDRMask(0, net.IPv4len*8)},
+		}
+		return e.cachedNets
+	case identity.ReservedIdentityWorldIPv6:
+		e.cachedNets = []*net.IPNet{
 			{IP: net.IPv6zero, Mask: net.CIDRMask(0, net.IPv6len*8)},
 		}
 		return e.cachedNets
@@ -991,7 +1002,7 @@ func (keys MapState) AddVisibilityKeys(e PolicyOwner, redirectPort uint16, visMe
 		e.PolicyDebug(logrus.Fields{
 			logfields.BPFMapKey:   key,
 			logfields.BPFMapValue: entry,
-		}, "AddVisibilityKeys: Adding L4-only ALLOW key for visibilty redirect")
+		}, "AddVisibilityKeys: Adding L4-only ALLOW key for visibility redirect")
 		addL4OnlyKey = true
 		keys.addKeyWithChanges(key, entry, changes)
 	}
@@ -1036,7 +1047,7 @@ func (keys MapState) AddVisibilityKeys(e PolicyOwner, redirectPort uint16, visMe
 					e.PolicyDebug(logrus.Fields{
 						logfields.BPFMapKey:   k2,
 						logfields.BPFMapValue: v2,
-					}, "AddVisibilityKeys: Extending L3-only ALLOW key to L3/L4 key for visibilty redirect")
+					}, "AddVisibilityKeys: Extending L3-only ALLOW key to L3/L4 key for visibility redirect")
 					keys.addKeyWithChanges(k2, v2, changes)
 
 					// Mark the new entry as a dependent of 'v'

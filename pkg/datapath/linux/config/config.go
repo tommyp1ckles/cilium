@@ -24,6 +24,7 @@ import (
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/byteorder"
 	"github.com/cilium/cilium/pkg/datapath/link"
+	dpdef "github.com/cilium/cilium/pkg/datapath/linux/config/defines"
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/identity"
@@ -37,7 +38,6 @@ import (
 	"github.com/cilium/cilium/pkg/maps/callsmap"
 	"github.com/cilium/cilium/pkg/maps/configmap"
 	"github.com/cilium/cilium/pkg/maps/ctmap"
-	"github.com/cilium/cilium/pkg/maps/egressmap"
 	"github.com/cilium/cilium/pkg/maps/encrypt"
 	"github.com/cilium/cilium/pkg/maps/eventsmap"
 	"github.com/cilium/cilium/pkg/maps/fragmap"
@@ -75,7 +75,23 @@ var (
 
 // HeaderfileWriter is a wrapper type which implements datapath.ConfigWriter.
 // It manages writing of configuration of datapath program headerfiles.
-type HeaderfileWriter struct{}
+type HeaderfileWriter struct {
+	nodeExtraDefines   dpdef.Map
+	nodeExtraDefineFns []dpdef.Fn
+}
+
+func NewHeaderfileWriter(nodeExtraDefines []dpdef.Map, nodeExtraDefineFns []dpdef.Fn) (*HeaderfileWriter, error) {
+	merged := make(dpdef.Map)
+	for _, defines := range nodeExtraDefines {
+		if err := merged.Merge(defines); err != nil {
+			return nil, err
+		}
+	}
+	return &HeaderfileWriter{
+		nodeExtraDefines:   merged,
+		nodeExtraDefineFns: nodeExtraDefineFns,
+	}, nil
+}
 
 func writeIncludes(w io.Writer) (int, error) {
 	return fmt.Fprintf(w, "#include \"lib/utils.h\"\n\n")
@@ -83,8 +99,8 @@ func writeIncludes(w io.Writer) (int, error) {
 
 // WriteNodeConfig writes the local node configuration to the specified writer.
 func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeConfiguration) error {
-	extraMacrosMap := make(map[string]string)
-	cDefinesMap := make(map[string]string)
+	extraMacrosMap := make(dpdef.Map)
+	cDefinesMap := make(dpdef.Map)
 
 	fw := bufio.NewWriter(w)
 
@@ -153,8 +169,20 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 	cDefinesMap["TUNNEL_PROTOCOL"] = fmt.Sprintf("%d", tunnelProtocols[encapProto])
 	cDefinesMap["TUNNEL_PORT"] = fmt.Sprintf("%d", option.Config.TunnelPort)
 
+	if tunnelDev, err := netlink.LinkByName(fmt.Sprintf("cilium_%s", encapProto)); err == nil {
+		cDefinesMap["ENCAP_IFINDEX"] = fmt.Sprintf("%d", tunnelDev.Attrs().Index)
+	}
+
 	cDefinesMap["HOST_ID"] = fmt.Sprintf("%d", identity.GetReservedID(labels.IDNameHost))
 	cDefinesMap["WORLD_ID"] = fmt.Sprintf("%d", identity.GetReservedID(labels.IDNameWorld))
+	if option.Config.IsDualStack() {
+		cDefinesMap["WORLD_IPV4_ID"] = fmt.Sprintf("%d", identity.GetReservedID(labels.IDNameWorldIPv4))
+		cDefinesMap["WORLD_IPV6_ID"] = fmt.Sprintf("%d", identity.GetReservedID(labels.IDNameWorldIPv6))
+	} else {
+		worldID := identity.GetReservedID(labels.IDNameWorld)
+		cDefinesMap["WORLD_IPV4_ID"] = fmt.Sprintf("%d", worldID)
+		cDefinesMap["WORLD_IPV6_ID"] = fmt.Sprintf("%d", worldID)
+	}
 	cDefinesMap["HEALTH_ID"] = fmt.Sprintf("%d", identity.GetReservedID(labels.IDNameHealth))
 	cDefinesMap["UNMANAGED_ID"] = fmt.Sprintf("%d", identity.GetReservedID(labels.IDNameUnmanaged))
 	cDefinesMap["INIT_ID"] = fmt.Sprintf("%d", identity.GetReservedID(labels.IDNameInit))
@@ -183,7 +211,6 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 	cDefinesMap["IPCACHE_MAP_SIZE"] = fmt.Sprintf("%d", ipcachemap.MaxEntries)
 	cDefinesMap["NODE_MAP"] = nodemap.MapName
 	cDefinesMap["NODE_MAP_SIZE"] = fmt.Sprintf("%d", nodemap.MaxEntries)
-	cDefinesMap["EGRESS_POLICY_MAP"] = egressmap.PolicyMapName
 	cDefinesMap["SRV6_VRF_MAP4"] = srv6map.VRFMapName4
 	cDefinesMap["SRV6_VRF_MAP6"] = srv6map.VRFMapName6
 	cDefinesMap["SRV6_POLICY_MAP4"] = srv6map.PolicyMapName4
@@ -326,10 +353,6 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 
 	if option.Config.EnableXDPPrefilter {
 		cDefinesMap["ENABLE_PREFILTER"] = "1"
-	}
-
-	if option.Config.EnableIPv4EgressGateway {
-		cDefinesMap["ENABLE_EGRESS_GATEWAY"] = "1"
 	}
 
 	if option.Config.EnableEndpointRoutes {
@@ -720,6 +743,38 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 	}
 	cDefinesMap["EPHEMERAL_MIN"] = fmt.Sprintf("%d", ephemeralMin)
 
+	if err := cDefinesMap.Merge(h.nodeExtraDefines); err != nil {
+		return err
+	}
+
+	for _, fn := range h.nodeExtraDefineFns {
+		defines, err := fn()
+		if err != nil {
+			return err
+		}
+
+		if err := cDefinesMap.Merge(defines); err != nil {
+			return err
+		}
+	}
+
+	if option.Config.EnableHealthDatapath {
+		if option.Config.IPv4Enabled() {
+			ipip4, err := netlink.LinkByName(defaults.IPIPv4Device)
+			if err != nil {
+				return err
+			}
+			cDefinesMap["ENCAP4_IFINDEX"] = fmt.Sprintf("%d", ipip4.Attrs().Index)
+		}
+		if option.Config.IPv6Enabled() {
+			ipip6, err := netlink.LinkByName(defaults.IPIPv6Device)
+			if err != nil {
+				return err
+			}
+			cDefinesMap["ENCAP6_IFINDEX"] = fmt.Sprintf("%d", ipip6.Attrs().Index)
+		}
+	}
+
 	// Since golang maps are unordered, we sort the keys in the map
 	// to get a consistent written format to the writer. This maintains
 	// the consistency when we try to calculate hash for a datapath after
@@ -975,6 +1030,8 @@ func (h *HeaderfileWriter) writeStaticData(fw io.Writer, e datapath.EndpointConf
 
 	secID := e.GetIdentityLocked().Uint32()
 	fmt.Fprint(fw, defineUint32("SECLABEL", secID))
+	fmt.Fprint(fw, defineUint32("SECLABEL_IPV4", secID))
+	fmt.Fprint(fw, defineUint32("SECLABEL_IPV6", secID))
 	fmt.Fprint(fw, defineUint32("SECLABEL_NB", byteorder.HostToNetwork32(secID)))
 	fmt.Fprint(fw, defineUint32("POLICY_VERDICT_LOG_FILTER", e.GetPolicyVerdictLogFilter()))
 

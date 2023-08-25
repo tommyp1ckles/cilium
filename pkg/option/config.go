@@ -372,6 +372,9 @@ const (
 	// EnableBPFMasquerade masquerades packets from endpoints leaving the host with BPF instead of iptables
 	EnableBPFMasquerade = "enable-bpf-masquerade"
 
+	// EnableMasqueradeRouteSource masquerades to the source route IP address instead of the interface one
+	EnableMasqueradeRouteSource = "enable-masquerade-to-route-source"
+
 	// DeriveMasqIPAddrFromDevice is device name which IP addr is used for BPF masquerades
 	DeriveMasqIPAddrFromDevice = "derive-masquerade-ip-addr-from-device"
 
@@ -825,6 +828,9 @@ const (
 	// EnableHealthCheckNodePort is the name of the EnableHealthCheckNodePort option
 	EnableHealthCheckNodePort = "enable-health-check-nodeport"
 
+	// EnableHealthCheckLoadBalancerIP is the name of the EnableHealthCheckLoadBalancerIP option
+	EnableHealthCheckLoadBalancerIP = "enable-health-check-loadbalancer-ip"
+
 	// PolicyQueueSize is the size of the queues utilized by the policy
 	// repository.
 	PolicyQueueSize = "policy-queue-size"
@@ -905,9 +911,9 @@ const (
 	// IPv6NativeRoutingCIDR describes a v6 CIDR in which pod IPs are routable
 	IPv6NativeRoutingCIDR = "ipv6-native-routing-cidr"
 
-	// EgressMasqueradeInterfaces is the selector used to select interfaces
-	// subject to egress masquerading
-	EgressMasqueradeInterfaces = "egress-masquerade-interfaces"
+	// MasqueradeInterfaces is the selector used to select interfaces subject to
+	// egress masquerading
+	MasqueradeInterfaces = "egress-masquerade-interfaces"
 
 	// PolicyTriggerInterval is the amount of time between triggers of policy
 	// updates are invoked.
@@ -1794,29 +1800,31 @@ type DaemonConfig struct {
 
 	// Masquerade specifies whether or not to masquerade packets from endpoints
 	// leaving the host.
-	EnableIPv4Masquerade       bool
-	EnableIPv6Masquerade       bool
-	EnableBPFMasquerade        bool
-	DeriveMasqIPAddrFromDevice string
-	EnableBPFClockProbe        bool
-	EnableIPMasqAgent          bool
-	EnableIPv4EgressGateway    bool
-	EnableEnvoyConfig          bool
-	EnableIngressController    bool
-	EnableGatewayAPI           bool
-	EnvoyConfigTimeout         time.Duration
-	IPMasqAgentConfigPath      string
-	InstallIptRules            bool
-	MonitorAggregation         string
-	PreAllocateMaps            bool
-	IPv6NodeAddr               string
-	IPv4NodeAddr               string
-	SidecarIstioProxyImage     string
-	SocketPath                 string
-	TracePayloadlen            int
-	Version                    string
-	PrometheusServeAddr        string
-	ToFQDNsMinTTL              int
+	EnableIPv4Masquerade        bool
+	EnableIPv6Masquerade        bool
+	EnableBPFMasquerade         bool
+	EnableMasqueradeRouteSource bool
+	EnableIPMasqAgent           bool
+	DeriveMasqIPAddrFromDevice  string
+	IPMasqAgentConfigPath       string
+
+	EnableBPFClockProbe     bool
+	EnableIPv4EgressGateway bool
+	EnableEnvoyConfig       bool
+	EnableIngressController bool
+	EnableGatewayAPI        bool
+	EnvoyConfigTimeout      time.Duration
+	InstallIptRules         bool
+	MonitorAggregation      string
+	PreAllocateMaps         bool
+	IPv6NodeAddr            string
+	IPv4NodeAddr            string
+	SidecarIstioProxyImage  string
+	SocketPath              string
+	TracePayloadlen         int
+	Version                 string
+	PrometheusServeAddr     string
+	ToFQDNsMinTTL           int
 
 	// DNSMaxIPsPerRestoredRule defines the maximum number of IPs to maintain
 	// for each FQDN selector in endpoint's restored DNS rules
@@ -1908,6 +1916,10 @@ type DaemonConfig struct {
 	// EnableHealthCheckNodePort enables health checking of NodePort by
 	// cilium
 	EnableHealthCheckNodePort bool
+
+	// EnableHealthCheckLoadBalancerIP enables health checking of LoadBalancerIP
+	// by cilium
+	EnableHealthCheckLoadBalancerIP bool
 
 	// KVstoreKeepAliveInterval is the interval in which the lease is being
 	// renewed. This must be set to a value lesser than the LeaseTTL ideally
@@ -2140,8 +2152,11 @@ type DaemonConfig struct {
 	// IPv6NativeRoutingCIDR describes a CIDR in which pod IPs are routable
 	IPv6NativeRoutingCIDR *cidr.CIDR
 
-	// EgressMasqueradeInterfaces is the selector used to select interfaces
-	// subject to egress masquerading
+	// MasqueradeInterfaces is the selector used to select interfaces subject
+	// to egress masquerading. EgressMasqueradeInterfaces is the same but as
+	// a string representation. It's deprecated and can be removed once the GH
+	// issue https://github.com/cilium/cilium-cli/issues/1896 is fixed.
+	MasqueradeInterfaces       []string
 	EgressMasqueradeInterfaces string
 
 	// PolicyTriggerInterval is the amount of time between when policy updates
@@ -2438,43 +2453,44 @@ type DaemonConfig struct {
 var (
 	// Config represents the daemon configuration
 	Config = &DaemonConfig{
-		CreationTime:                 time.Now(),
-		Opts:                         NewIntOptions(&DaemonOptionLibrary),
-		Monitor:                      &models.MonitorStatus{Cpus: int64(runtime.NumCPU()), Npages: 64, Pagesize: int64(os.Getpagesize()), Lost: 0, Unknown: 0},
-		IPv6ClusterAllocCIDR:         defaults.IPv6ClusterAllocCIDR,
-		IPv6ClusterAllocCIDRBase:     defaults.IPv6ClusterAllocCIDRBase,
-		EnableHostIPRestore:          defaults.EnableHostIPRestore,
-		EnableHealthChecking:         defaults.EnableHealthChecking,
-		EnableEndpointHealthChecking: defaults.EnableEndpointHealthChecking,
-		EnableHealthCheckNodePort:    defaults.EnableHealthCheckNodePort,
-		EnableIPv4:                   defaults.EnableIPv4,
-		EnableIPv6:                   defaults.EnableIPv6,
-		EnableIPv6NDP:                defaults.EnableIPv6NDP,
-		EnableSCTP:                   defaults.EnableSCTP,
-		EnableL7Proxy:                defaults.EnableL7Proxy,
-		EndpointStatus:               make(map[string]struct{}),
-		DNSMaxIPsPerRestoredRule:     defaults.DNSMaxIPsPerRestoredRule,
-		ToFQDNsMaxIPsPerHost:         defaults.ToFQDNsMaxIPsPerHost,
-		KVstorePeriodicSync:          defaults.KVstorePeriodicSync,
-		KVstoreConnectivityTimeout:   defaults.KVstoreConnectivityTimeout,
-		IPAllocationTimeout:          defaults.IPAllocationTimeout,
-		IdentityChangeGracePeriod:    defaults.IdentityChangeGracePeriod,
-		IdentityRestoreGracePeriod:   defaults.IdentityRestoreGracePeriod,
-		FixedIdentityMapping:         make(map[string]string),
-		KVStoreOpt:                   make(map[string]string),
-		LogOpt:                       make(map[string]string),
-		LoopbackIPv4:                 defaults.LoopbackIPv4,
-		EnableEndpointRoutes:         defaults.EnableEndpointRoutes,
-		AnnotateK8sNode:              defaults.AnnotateK8sNode,
-		K8sServiceCacheSize:          defaults.K8sServiceCacheSize,
-		AutoCreateCiliumNodeResource: defaults.AutoCreateCiliumNodeResource,
-		IdentityAllocationMode:       IdentityAllocationModeKVstore,
-		AllowICMPFragNeeded:          defaults.AllowICMPFragNeeded,
-		EnableWellKnownIdentities:    defaults.EnableWellKnownIdentities,
-		K8sEnableK8sEndpointSlice:    defaults.K8sEnableEndpointSlice,
-		AllocatorListTimeout:         defaults.AllocatorListTimeout,
-		EnableICMPRules:              defaults.EnableICMPRules,
-		UseCiliumInternalIPForIPsec:  defaults.UseCiliumInternalIPForIPsec,
+		CreationTime:                    time.Now(),
+		Opts:                            NewIntOptions(&DaemonOptionLibrary),
+		Monitor:                         &models.MonitorStatus{Cpus: int64(runtime.NumCPU()), Npages: 64, Pagesize: int64(os.Getpagesize()), Lost: 0, Unknown: 0},
+		IPv6ClusterAllocCIDR:            defaults.IPv6ClusterAllocCIDR,
+		IPv6ClusterAllocCIDRBase:        defaults.IPv6ClusterAllocCIDRBase,
+		EnableHostIPRestore:             defaults.EnableHostIPRestore,
+		EnableHealthChecking:            defaults.EnableHealthChecking,
+		EnableEndpointHealthChecking:    defaults.EnableEndpointHealthChecking,
+		EnableHealthCheckLoadBalancerIP: defaults.EnableHealthCheckLoadBalancerIP,
+		EnableHealthCheckNodePort:       defaults.EnableHealthCheckNodePort,
+		EnableIPv4:                      defaults.EnableIPv4,
+		EnableIPv6:                      defaults.EnableIPv6,
+		EnableIPv6NDP:                   defaults.EnableIPv6NDP,
+		EnableSCTP:                      defaults.EnableSCTP,
+		EnableL7Proxy:                   defaults.EnableL7Proxy,
+		EndpointStatus:                  make(map[string]struct{}),
+		DNSMaxIPsPerRestoredRule:        defaults.DNSMaxIPsPerRestoredRule,
+		ToFQDNsMaxIPsPerHost:            defaults.ToFQDNsMaxIPsPerHost,
+		KVstorePeriodicSync:             defaults.KVstorePeriodicSync,
+		KVstoreConnectivityTimeout:      defaults.KVstoreConnectivityTimeout,
+		IPAllocationTimeout:             defaults.IPAllocationTimeout,
+		IdentityChangeGracePeriod:       defaults.IdentityChangeGracePeriod,
+		IdentityRestoreGracePeriod:      defaults.IdentityRestoreGracePeriod,
+		FixedIdentityMapping:            make(map[string]string),
+		KVStoreOpt:                      make(map[string]string),
+		LogOpt:                          make(map[string]string),
+		LoopbackIPv4:                    defaults.LoopbackIPv4,
+		EnableEndpointRoutes:            defaults.EnableEndpointRoutes,
+		AnnotateK8sNode:                 defaults.AnnotateK8sNode,
+		K8sServiceCacheSize:             defaults.K8sServiceCacheSize,
+		AutoCreateCiliumNodeResource:    defaults.AutoCreateCiliumNodeResource,
+		IdentityAllocationMode:          IdentityAllocationModeKVstore,
+		AllowICMPFragNeeded:             defaults.AllowICMPFragNeeded,
+		EnableWellKnownIdentities:       defaults.EnableWellKnownIdentities,
+		K8sEnableK8sEndpointSlice:       defaults.K8sEnableEndpointSlice,
+		AllocatorListTimeout:            defaults.AllocatorListTimeout,
+		EnableICMPRules:                 defaults.EnableICMPRules,
+		UseCiliumInternalIPForIPsec:     defaults.UseCiliumInternalIPForIPsec,
 
 		K8sEnableLeasesFallbackDiscovery: defaults.K8sEnableLeasesFallbackDiscovery,
 
@@ -2603,7 +2619,7 @@ func (c *DaemonConfig) TunnelDevice() string {
 // takes care of the MTU overhead. So no need to take it into account here.
 // See encap_geneve_dsr_opt[4,6] in nodeport.h
 func (c *DaemonConfig) TunnelExists() bool {
-	return c.TunnelingEnabled() || c.EnableIPv4EgressGateway || c.EnableHighScaleIPcache
+	return c.TunnelingEnabled() || c.EgressGatewayCommonEnabled() || c.EnableHighScaleIPcache
 }
 
 // AreDevicesRequired returns true if the agent needs to attach to the native
@@ -2752,6 +2768,12 @@ func (c *DaemonConfig) K8sIngressControllerEnabled() bool {
 // K8sGatewayAPIEnabled returns true if Gateway API feature is enabled in Cilium
 func (c *DaemonConfig) K8sGatewayAPIEnabled() bool {
 	return c.EnableGatewayAPI
+}
+
+// EgressGatewayCommonEnabled returns true if at least one egress gateway implementation
+// is enabled.
+func (c *DaemonConfig) EgressGatewayCommonEnabled() bool {
+	return c.EnableIPv4EgressGateway
 }
 
 // DirectRoutingDeviceRequired return whether the Direct Routing Device is needed under
@@ -3030,7 +3052,8 @@ func (c *DaemonConfig) Populate(vp *viper.Viper) {
 	c.EnableWellKnownIdentities = vp.GetBool(EnableWellKnownIdentities)
 	c.EnableXDPPrefilter = vp.GetBool(EnableXDPPrefilter)
 	c.DisableCiliumEndpointCRD = vp.GetBool(DisableCiliumEndpointCRDName)
-	c.EgressMasqueradeInterfaces = vp.GetString(EgressMasqueradeInterfaces)
+	c.MasqueradeInterfaces = vp.GetStringSlice(MasqueradeInterfaces)
+	c.EgressMasqueradeInterfaces = strings.Join(c.MasqueradeInterfaces, ",")
 	c.BPFSocketLBHostnsOnly = vp.GetBool(BPFSocketLBHostnsOnly)
 	c.EnableSocketLB = vp.GetBool(EnableSocketLB)
 	c.EnableSocketLBTracing = vp.GetBool(EnableSocketLBTracing)
@@ -3042,6 +3065,7 @@ func (c *DaemonConfig) Populate(vp *viper.Viper) {
 	c.EnableHealthChecking = vp.GetBool(EnableHealthChecking)
 	c.EnableEndpointHealthChecking = vp.GetBool(EnableEndpointHealthChecking)
 	c.EnableHealthCheckNodePort = vp.GetBool(EnableHealthCheckNodePort)
+	c.EnableHealthCheckLoadBalancerIP = vp.GetBool(EnableHealthCheckLoadBalancerIP)
 	c.EnableLocalNodeRoute = vp.GetBool(EnableLocalNodeRoute)
 	c.EnablePolicy = strings.ToLower(vp.GetString(EnablePolicy))
 	c.EnableExternalIPs = vp.GetBool(EnableExternalIPs)
@@ -3174,6 +3198,7 @@ func (c *DaemonConfig) Populate(vp *viper.Viper) {
 	c.EnableIPv4Masquerade = vp.GetBool(EnableIPv4Masquerade) && c.EnableIPv4
 	c.EnableIPv6Masquerade = vp.GetBool(EnableIPv6Masquerade) && c.EnableIPv6
 	c.EnableBPFMasquerade = vp.GetBool(EnableBPFMasquerade)
+	c.EnableMasqueradeRouteSource = vp.GetBool(EnableMasqueradeRouteSource)
 	c.DeriveMasqIPAddrFromDevice = vp.GetString(DeriveMasqIPAddrFromDevice)
 	c.EnablePMTUDiscovery = vp.GetBool(EnablePMTUDiscovery)
 	c.IPv6NAT46x64CIDR = defaults.IPv6NAT46x64CIDR
@@ -3338,6 +3363,7 @@ func (c *DaemonConfig) Populate(vp *viper.Viper) {
 	c.DNSProxyConcurrencyProcessingGracePeriod = vp.GetDuration(DNSProxyConcurrencyProcessingGracePeriod)
 	c.DNSProxyLockCount = vp.GetInt(DNSProxyLockCount)
 	c.DNSProxyLockTimeout = vp.GetDuration(DNSProxyLockTimeout)
+	c.FQDNRejectResponse = vp.GetString(FQDNRejectResponseCode)
 
 	// Convert IP strings into net.IPNet types
 	subnets, invalid := ip.ParseCIDRs(vp.GetStringSlice(IPv4PodSubnets))
@@ -3785,6 +3811,15 @@ func (c *DaemonConfig) checkIPAMDelegatedPlugin() error {
 		if c.EnableEndpointHealthChecking {
 			return fmt.Errorf("--%s must be disabled with --%s=%s", EnableEndpointHealthChecking, IPAM, ipamOption.IPAMDelegatedPlugin)
 		}
+		// Ingress controller and envoy config require cilium-agent to create an IP address
+		// specifically for differentiating ingress and envoy traffic, which is not possible
+		// with delegated IPAM.
+		if c.EnableIngressController {
+			return fmt.Errorf("--%s must be disabled with --%s=%s", EnableIngressController, IPAM, ipamOption.IPAMDelegatedPlugin)
+		}
+		if c.EnableEnvoyConfig {
+			return fmt.Errorf("--%s must be disabled with --%s=%s", EnableEnvoyConfig, IPAM, ipamOption.IPAMDelegatedPlugin)
+		}
 	}
 	return nil
 }
@@ -4024,6 +4059,10 @@ func (c *DaemonConfig) StoreInFile(dir string) error {
 
 func (c *DaemonConfig) BGPControlPlaneEnabled() bool {
 	return c.EnableBGPControlPlane
+}
+
+func (c *DaemonConfig) IsDualStack() bool {
+	return c.EnableIPv4 && c.EnableIPv6
 }
 
 // StoreViperInFile stores viper's configuration in a the given directory under

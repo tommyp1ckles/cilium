@@ -125,6 +125,28 @@ func (d *Daemon) getEndpointList(params GetEndpointParams) []*models.Endpoint {
 	return resEPs
 }
 
+func deleteEndpointHandler(d *Daemon, params DeleteEndpointParams) middleware.Responder {
+	log.WithField(logfields.Params, logfields.Repr(params)).Debug("DELETE /endpoint/ request")
+
+	r, err := d.apiLimiterSet.Wait(params.HTTPRequest.Context(), restapi.APIRequestEndpointDelete)
+	if err != nil {
+		return api.Error(http.StatusTooManyRequests, err)
+	}
+	defer r.Done()
+
+	if nerr, err := d.deleteEndpointByContainerID(params.Endpoint.ContainerID); err != nil {
+		r.Error(err)
+		if apierr, ok := err.(*api.APIError); ok {
+			return apierr
+		}
+		return api.Error(DeleteEndpointInvalidCode, err)
+	} else if nerr > 0 {
+		return NewDeleteEndpointErrors().WithPayload(int64(nerr))
+	} else {
+		return NewDeleteEndpointOK()
+	}
+}
+
 func getEndpointIDHandler(d *Daemon, params GetEndpointIDParams) middleware.Responder {
 	log.WithField(logfields.EndpointID, params.ID).Debug("GET /endpoint/{id} request")
 
@@ -244,25 +266,25 @@ func newEndpointCreationManager(cs client.Clientset) *endpointCreationManager {
 
 func (m *endpointCreationManager) NewCreateRequest(ep *endpoint.Endpoint, cancel context.CancelFunc) {
 	// Tracking is only performed if Kubernetes pod names are available.
-	// The endpoint create logic already ensures that IPs and containerID
+	// The endpoint create logic already ensures that IPs and CNI attachment ID
 	// are unique and thus tracking is not required outside of the
 	// Kubernetes context
 	if !ep.K8sNamespaceAndPodNameIsSet() || !m.clientset.IsEnabled() {
 		return
 	}
 
-	podName := ep.GetK8sNamespaceAndPodName()
+	cepName := ep.GetK8sNamespaceAndCEPName()
 
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
-	if req, ok := m.requests[podName]; ok {
-		ep.Logger(daemonSubsys).Warning("Cancelling obsolete endpoint creating due to new create for same pod")
+	if req, ok := m.requests[cepName]; ok {
+		ep.Logger(daemonSubsys).Warning("Cancelling obsolete endpoint creating due to new create for same cep name")
 		req.cancel()
 	}
 
 	ep.Logger(daemonSubsys).Debug("New create request")
-	m.requests[podName] = &endpointCreationRequest{
+	m.requests[cepName] = &endpointCreationRequest{
 		cancel:   cancel,
 		endpoint: ep,
 		started:  time.Now(),
@@ -274,15 +296,15 @@ func (m *endpointCreationManager) EndCreateRequest(ep *endpoint.Endpoint) bool {
 		return false
 	}
 
-	podName := ep.GetK8sNamespaceAndPodName()
+	cepName := ep.GetK8sNamespaceAndCEPName()
 
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
-	if req, ok := m.requests[podName]; ok {
+	if req, ok := m.requests[cepName]; ok {
 		if req.endpoint == ep {
 			ep.Logger(daemonSubsys).Debug("End of create request")
-			delete(m.requests, podName)
+			delete(m.requests, cepName)
 			return true
 		}
 	}
@@ -330,13 +352,14 @@ func (d *Daemon) createEndpoint(ctx context.Context, owner regeneration.Owner, e
 	}
 
 	log.WithFields(logrus.Fields{
-		"addressing":            epTemplate.Addressing,
-		logfields.ContainerID:   epTemplate.ContainerID,
-		"datapathConfiguration": epTemplate.DatapathConfiguration,
-		logfields.Interface:     epTemplate.InterfaceName,
-		logfields.K8sPodName:    epTemplate.K8sNamespace + "/" + epTemplate.K8sPodName,
-		logfields.Labels:        epTemplate.Labels,
-		"sync-build":            epTemplate.SyncBuildEndpoint,
+		"addressing":                 epTemplate.Addressing,
+		logfields.ContainerID:        epTemplate.ContainerID,
+		logfields.ContainerInterface: epTemplate.ContainerInterfaceName,
+		"datapathConfiguration":      epTemplate.DatapathConfiguration,
+		logfields.Interface:          epTemplate.InterfaceName,
+		logfields.K8sPodName:         epTemplate.K8sNamespace + "/" + epTemplate.K8sPodName,
+		logfields.Labels:             epTemplate.Labels,
+		"sync-build":                 epTemplate.SyncBuildEndpoint,
 	}).Info("Create endpoint request")
 
 	ep, err := endpoint.NewEndpointFromChangeModel(d.ctx, owner, d, d.ipcache, d.l7Proxy, d.identityAllocator, epTemplate)
@@ -349,9 +372,9 @@ func (d *Daemon) createEndpoint(ctx context.Context, owner regeneration.Owner, e
 		return invalidDataError(ep, fmt.Errorf("endpoint ID %d already exists", ep.ID))
 	}
 
-	oldEp = d.endpointManager.LookupContainerID(ep.GetContainerID())
+	oldEp = d.endpointManager.LookupCNIAttachmentID(ep.GetCNIAttachmentID())
 	if oldEp != nil {
-		return invalidDataError(ep, fmt.Errorf("endpoint for container %s already exists", ep.GetContainerID()))
+		return invalidDataError(ep, fmt.Errorf("endpoint for CNI attachment ID %s already exists", ep.GetCNIAttachmentID()))
 	}
 
 	var checkIDs []string
@@ -452,7 +475,7 @@ func (d *Daemon) createEndpoint(ctx context.Context, owner regeneration.Owner, e
 		return d.errorDuringCreation(ep, fmt.Errorf("unable to insert endpoint into manager: %s", err))
 	}
 
-	// We need to update the the visibility policy after adding the endpoint in
+	// We need to update the visibility policy after adding the endpoint in
 	// the endpoint manager because the endpoint manager create the endpoint
 	// queue of the endpoint. If we execute this function before the endpoint
 	// manager creates the endpoint queue the operation will fail.
@@ -465,6 +488,7 @@ func (d *Daemon) createEndpoint(ctx context.Context, owner regeneration.Owner, e
 			value, _ := annotation.Get(p, annotation.ProxyVisibility, annotation.ProxyVisibilityAlias)
 			return value, nil
 		})
+
 		ep.UpdateBandwidthPolicy(func(ns, podName string) (bandwidthEgress string, err error) {
 			_, p, err := d.endpointMetadataFetcher.Fetch(ns, podName)
 			if err != nil {
@@ -589,13 +613,14 @@ func patchEndpointIDHandler(d *Daemon, params PatchEndpointIDParams) middleware.
 	epTemplate := params.Endpoint
 
 	log.WithFields(logrus.Fields{
-		logfields.EndpointID:    params.ID,
-		"addressing":            epTemplate.Addressing,
-		logfields.ContainerID:   epTemplate.ContainerID,
-		"datapathConfiguration": epTemplate.DatapathConfiguration,
-		logfields.Interface:     epTemplate.InterfaceName,
-		logfields.K8sPodName:    epTemplate.K8sNamespace + "/" + epTemplate.K8sPodName,
-		logfields.Labels:        epTemplate.Labels,
+		logfields.EndpointID:         params.ID,
+		"addressing":                 epTemplate.Addressing,
+		logfields.ContainerID:        epTemplate.ContainerID,
+		logfields.ContainerInterface: epTemplate.ContainerInterfaceName,
+		"datapathConfiguration":      epTemplate.DatapathConfiguration,
+		logfields.Interface:          epTemplate.InterfaceName,
+		logfields.K8sPodName:         epTemplate.K8sNamespace + "/" + epTemplate.K8sPodName,
+		logfields.Labels:             epTemplate.Labels,
 	}).Info("Patch endpoint request")
 
 	// Validate the template. Assignment afterwards is atomic.
@@ -714,6 +739,37 @@ func (d *Daemon) DeleteEndpoint(id string) (int, error) {
 		}
 		return d.deleteEndpoint(ep), nil
 	}
+}
+
+func (d *Daemon) deleteEndpointByContainerID(containerID string) (nErrors int, err error) {
+	if containerID == "" {
+		return 0, api.New(DeleteEndpointInvalidCode, "invalid container id")
+	}
+
+	eps := d.endpointManager.GetEndpointsByContainerID(containerID)
+	if len(eps) == 0 {
+		return 0, api.New(DeleteEndpointNotFoundCode, "endpoints not found")
+	}
+
+	for _, ep := range eps {
+		scopedLog := log.WithFields(logrus.Fields{
+			logfields.ContainerID:  containerID,
+			logfields.EndpointID:   ep.ID,
+			logfields.K8sPodName:   ep.GetK8sPodName(),
+			logfields.K8sNamespace: ep.GetK8sNamespace(),
+		})
+
+		if err = endpoint.APICanModify(ep); err != nil {
+			scopedLog.WithError(err).Warn("Skipped endpoint in batch delete request")
+			nErrors++
+			continue
+		}
+
+		scopedLog.Info("Delete endpoint by containerID request")
+		nErrors += d.deleteEndpoint(ep)
+	}
+
+	return nErrors, nil
 }
 
 // EndpointDeleted is a callback to satisfy EndpointManager.Subscriber,

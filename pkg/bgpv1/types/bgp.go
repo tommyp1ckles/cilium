@@ -10,7 +10,6 @@ import (
 	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
 
 	"github.com/cilium/cilium/api/v1/models"
-	"github.com/cilium/cilium/pkg/bgpv1/agent"
 	v2alpha1api "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 )
 
@@ -28,18 +27,6 @@ type RouteSelectionOptions struct {
 	AdvertiseInactiveRoutes bool
 }
 
-// Advertisement is a container object which associates a netip.Prefix
-//
-// The `Prefix` field makes comparing this Advertisement with another Prefix encoded
-// prefixes simple.
-//
-// The `GoBGPPathUUID` field is a gobgp.AddPathResponse.Uuid object which can be forwarded to gobgp's
-// WithdrawPath method, making withdrawing an advertised route simple.
-type Advertisement struct {
-	Prefix        netip.Prefix
-	GoBGPPathUUID []byte // path identifier in underlying implementation
-}
-
 // Path is an object representing a single routing Path. It is an analogue of GoBGP's Path object,
 // but only contains minimal fields required for Cilium usecases.
 type Path struct {
@@ -50,7 +37,7 @@ type Path struct {
 	// readonly
 	AgeNanoseconds int64 // time duration in nanoseconds since the Path was created
 	Best           bool
-	GoBGPPathUUID  []byte // path identifier in underlying implementation
+	UUID           []byte // path identifier in underlying implementation
 }
 
 // NeighborRequest contains neighbor parameters used when enabling or disabling peer
@@ -59,14 +46,15 @@ type NeighborRequest struct {
 	VR       *v2alpha1api.CiliumBGPVirtualRouter
 }
 
-// PathRequest contains parameters for advertising or withdrawing routes
+// PathRequest contains parameters for advertising or withdrawing a Path
 type PathRequest struct {
-	Advert Advertisement
+	Path *Path
 }
 
-// PathResponse contains response after advertising the route, underlying implementation will set UUID
+// PathResponse contains response after advertising the Path, the returned Path can be used
+// for withdrawing the Path (based on UUID set by the underlying implementation)
 type PathResponse struct {
-	Advert Advertisement
+	Path *Path
 }
 
 // GetPeerStateResponse contains state of peers configured in given instance
@@ -82,7 +70,6 @@ type GetBGPResponse struct {
 // ServerParameters contains information for underlying bgp implementation layer to initializing BGP process.
 type ServerParameters struct {
 	Global BGPGlobal
-	CState *agent.ControlPlaneState
 }
 
 // Family holds Address Family Indicator (AFI) and Subsequent Address Family Indicator for Multi-Protocol BGP
@@ -139,10 +126,10 @@ type Router interface {
 	// RemoveNeighbor removes BGP peer
 	RemoveNeighbor(ctx context.Context, n NeighborRequest) error
 
-	// AdvertisePath advertises BGP route to all configured peers
+	// AdvertisePath advertises BGP Path to all configured peers
 	AdvertisePath(ctx context.Context, p PathRequest) (PathResponse, error)
 
-	// WithdrawPath  removes BGP route from all peers
+	// WithdrawPath  removes BGP Path from all peers
 	WithdrawPath(ctx context.Context, p PathRequest) error
 
 	// GetPeerState returns status of BGP peers

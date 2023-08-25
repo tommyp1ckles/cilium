@@ -30,6 +30,7 @@ import (
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/loadinfo"
+	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/maps/bwmap"
 	"github.com/cilium/cilium/pkg/maps/ctmap"
@@ -53,6 +54,8 @@ const (
 
 var (
 	handleNoHostInterfaceOnce sync.Once
+
+	syncPolicymapControllerGroup = controller.NewGroup("sync-policymap")
 )
 
 // policyMapPath returns the path to the policy map of endpoint.
@@ -96,11 +99,12 @@ func (e *Endpoint) writeInformationalComments(w io.Writer) error {
 		e.logStatusLocked(BPF, Warning, fmt.Sprintf("Unable to create a base64: %s", err))
 	}
 
-	if e.containerID == "" {
+	if cid := e.GetContainerID(); cid == "" {
 		fmt.Fprintf(fw, " * Docker Network ID: %s\n", e.dockerNetworkID)
 		fmt.Fprintf(fw, " * Docker Endpoint ID: %s\n", e.dockerEndpointID)
 	} else {
-		fmt.Fprintf(fw, " * Container ID: %s\n", e.containerID)
+		fmt.Fprintf(fw, " * Container ID: %s\n", cid)
+		fmt.Fprintf(fw, " * Container Interface: %s\n", e.containerIfName)
 	}
 
 	if option.Config.EnableIPv6 {
@@ -198,7 +202,7 @@ func (e *Endpoint) GetLabelsLocked(id identity.NumericIdentity) labels.LabelArra
 // problem that occurred while adding an l7 redirect for the specified policy.
 // Must be called with endpoint.mutex Lock()ed.
 func (e *Endpoint) addNewRedirectsFromDesiredPolicy(ingress bool, desiredRedirects map[string]bool, proxyWaitGroup *completion.WaitGroup) (error, revert.FinalizeFunc, revert.RevertFunc) {
-	if option.Config.DryMode || e.isProxyDisabled() {
+	if option.Config.DryMode || e.IsProxyDisabled() {
 		return nil, nil, nil
 	}
 
@@ -306,7 +310,7 @@ func (e *Endpoint) addVisibilityRedirects(ingress bool, desiredRedirects map[str
 		}
 	)
 
-	if e.visibilityPolicy == nil {
+	if e.visibilityPolicy == nil || e.IsProxyDisabled() {
 		return nil, finalizeList.Finalize, revertStack.Revert
 	}
 
@@ -630,11 +634,14 @@ func (e *Endpoint) regenerateBPF(regenContext *regenerationContext) (revnum uint
 func (e *Endpoint) realizeBPFState(regenContext *regenerationContext) (compilationExecuted bool, err error) {
 	stats := &regenContext.Stats
 	datapathRegenCtxt := regenContext.datapathRegenerationContext
+	debugEnabled := logging.CanLogAt(e.getLogger().Logger, logrus.DebugLevel)
 
-	e.getLogger().WithField(fieldRegenLevel, datapathRegenCtxt.regenerationLevel).Debug("Preparing to compile BPF")
+	if debugEnabled {
+		e.getLogger().WithFields(logrus.Fields{fieldRegenLevel: datapathRegenCtxt.regenerationLevel}).Debug("Preparing to compile BPF")
+	}
 
 	if datapathRegenCtxt.regenerationLevel > regeneration.RegenerateWithoutDatapath {
-		if e.Options.IsEnabled(option.Debug) {
+		if debugEnabled {
 			debugFunc := log.WithFields(logrus.Fields{logfields.EndpointID: e.StringID()}).Debugf
 			ctx, cancel := context.WithCancel(regenContext.parentContext)
 			defer cancel()
@@ -667,7 +674,7 @@ func (e *Endpoint) realizeBPFState(regenContext *regenerationContext) (compilati
 			return compilationExecuted, err
 		}
 		e.bpfHeaderfileHash = datapathRegenCtxt.bpfHeaderfilesHash
-	} else {
+	} else if debugEnabled {
 		e.getLogger().WithField(logfields.BPFHeaderfileHash, datapathRegenCtxt.bpfHeaderfilesHash).
 			Debug("BPF header file unchanged, skipping BPF compilation and installation")
 	}
@@ -754,7 +761,9 @@ func (e *Endpoint) runPreCompilationSteps(regenContext *regenerationContext, rul
 			return false, fmt.Errorf("Unable to write header file: %s", err)
 		}
 
-		log.WithField(logfields.EndpointID, e.ID).Debug("Skipping bpf updates due to dry mode")
+		if logging.CanLogAt(log.Logger, logrus.DebugLevel) {
+			log.WithField(logfields.EndpointID, e.ID).Debug("Skipping bpf updates due to dry mode")
+		}
 		return false, nil
 	}
 
@@ -854,8 +863,10 @@ func (e *Endpoint) runPreCompilationSteps(regenContext *regenerationContext, rul
 		headerfileChanged = true
 	} else {
 		headerfileChanged = (datapathRegenCtxt.bpfHeaderfilesHash != e.bpfHeaderfileHash)
-		e.getLogger().WithField(logfields.BPFHeaderfileHash, datapathRegenCtxt.bpfHeaderfilesHash).
-			Debugf("BPF header file hashed (was: %q)", e.bpfHeaderfileHash)
+		if logger := e.getLogger(); logging.CanLogAt(logger.Logger, logrus.DebugLevel) {
+			logger.WithField(logfields.BPFHeaderfileHash, datapathRegenCtxt.bpfHeaderfilesHash).
+				Debugf("BPF header file hashed (was: %q)", e.bpfHeaderfileHash)
+		}
 	}
 
 	if headerfileChanged {
@@ -1367,6 +1378,7 @@ func (e *Endpoint) syncPolicyMapController() {
 	ctrlName := fmt.Sprintf("sync-policymap-%d", e.ID)
 	e.controllers.UpdateController(ctrlName,
 		controller.ControllerParams{
+			Group: syncPolicymapControllerGroup,
 			DoFunc: func(ctx context.Context) (reterr error) {
 				// Failure to lock is not an error, it means
 				// that the endpoint was disconnected and we

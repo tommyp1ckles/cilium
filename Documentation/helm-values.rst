@@ -92,6 +92,10 @@
      - SPIRE Workload Attestor kubelet verification.
      - bool
      - ``true``
+   * - :spelling:ignore:`authentication.mutual.spire.install.agent.tolerations`
+     - SPIRE agent tolerations configuration ref: https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/
+     - list
+     - ``[]``
    * - :spelling:ignore:`authentication.mutual.spire.install.enabled`
      - Enable SPIRE installation. This will only take effect only if authentication.mutual.spire.enabled is true
      - bool
@@ -100,6 +104,10 @@
      - SPIRE namespace to install into
      - string
      - ``"cilium-spire"``
+   * - :spelling:ignore:`authentication.mutual.spire.install.server.affinity`
+     - SPIRE server affinity configuration
+     - object
+     - ``{}``
    * - :spelling:ignore:`authentication.mutual.spire.install.server.annotations`
      - SPIRE server annotations
      - object
@@ -140,6 +148,18 @@
      - SPIRE server labels
      - object
      - ``{}``
+   * - :spelling:ignore:`authentication.mutual.spire.install.server.nodeSelector`
+     - SPIRE server nodeSelector configuration ref: ref: https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#nodeselector
+     - object
+     - ``{}``
+   * - :spelling:ignore:`authentication.mutual.spire.install.server.podSecurityContext`
+     - Security context to be added to spire server pods. SecurityContext holds pod-level security attributes and common container settings. ref: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-the-security-context-for-a-pod
+     - object
+     - ``{}``
+   * - :spelling:ignore:`authentication.mutual.spire.install.server.securityContext`
+     - Security context to be added to spire server containers. SecurityContext holds pod-level security attributes and common container settings. ref: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-the-security-context-for-a-container
+     - object
+     - ``{}``
    * - :spelling:ignore:`authentication.mutual.spire.install.server.service.annotations`
      - Annotations to be added to the SPIRE server service
      - object
@@ -156,6 +176,10 @@
      - SPIRE server service account
      - object
      - ``{"create":true,"name":"spire-server"}``
+   * - :spelling:ignore:`authentication.mutual.spire.install.server.tolerations`
+     - SPIRE server tolerations configuration ref: https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/
+     - list
+     - ``[]``
    * - :spelling:ignore:`authentication.mutual.spire.serverAddress`
      - SPIRE server address used by Cilium Operator  If k8s Service DNS along with port number is used (e.g. :raw-html-m2r:`<service-name>`.\ :raw-html-m2r:`<namespace>`.svc(.*):\ :raw-html-m2r:`<port-number>` format), Cilium Operator will resolve its address by looking up the clusterIP from Service resource.  Example values: 10.0.0.1:8081, spire-server.cilium-spire.svc:8081
      - string
@@ -299,7 +323,7 @@
    * - :spelling:ignore:`certgen`
      - Configure certificate generation for Hubble integration. If hubble.tls.auto.method=cronJob, these values are used for the Kubernetes CronJob which will be scheduled regularly to (re)generate any certificates not provided manually.
      - object
-     - ``{"annotations":{"cronJob":{},"job":{}},"extraVolumeMounts":[],"extraVolumes":[],"image":{"digest":"sha256:4a456552a5f192992a6edcec2febb1c54870d665173a33dc7d876129b199ddbd","override":null,"pullPolicy":"Always","repository":"quay.io/cilium/certgen","tag":"v0.1.8","useDigest":true},"podLabels":{},"tolerations":[],"ttlSecondsAfterFinished":1800}``
+     - ``{"annotations":{"cronJob":{},"job":{}},"extraVolumeMounts":[],"extraVolumes":[],"image":{"digest":"sha256:89a0847753686444daabde9474b48340993bd19c7bea66a46e45b2974b82041f","override":null,"pullPolicy":"Always","repository":"quay.io/cilium/certgen","tag":"v0.1.9","useDigest":true},"podLabels":{},"tolerations":[],"ttlSecondsAfterFinished":1800}``
    * - :spelling:ignore:`certgen.annotations`
      - Annotations to be added to the hubble-certgen initial Job and CronJob
      - object
@@ -368,6 +392,10 @@
      - Specifies the resources for etcd init container in the apiserver
      - object
      - ``{}``
+   * - :spelling:ignore:`clustermesh.apiserver.etcd.lifecycle`
+     - lifecycle setting for the etcd container
+     - object
+     - ``{}``
    * - :spelling:ignore:`clustermesh.apiserver.etcd.resources`
      - Specifies the resources for etcd container in the apiserver
      - object
@@ -416,6 +444,10 @@
      - KVStoreMesh image.
      - object
      - ``{"digest":"","override":null,"pullPolicy":"Always","repository":"quay.io/cilium/kvstoremesh-ci","tag":"latest","useDigest":false}``
+   * - :spelling:ignore:`clustermesh.apiserver.kvstoremesh.lifecycle`
+     - lifecycle setting for the KVStoreMesh container
+     - object
+     - ``{}``
    * - :spelling:ignore:`clustermesh.apiserver.kvstoremesh.resources`
      - Resource requests and limits for the KVStoreMesh container
      - object
@@ -424,6 +456,10 @@
      - KVStoreMesh Security context
      - object
      - ``{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}``
+   * - :spelling:ignore:`clustermesh.apiserver.lifecycle`
+     - lifecycle setting for the apiserver container
+     - object
+     - ``{}``
    * - :spelling:ignore:`clustermesh.apiserver.metrics.enabled`
      - Enables exporting apiserver metrics in OpenMetrics format.
      - bool
@@ -564,6 +600,10 @@
      - The type of service used for apiserver access.
      - string
      - ``"NodePort"``
+   * - :spelling:ignore:`clustermesh.apiserver.terminationGracePeriodSeconds`
+     - terminationGracePeriodSeconds for the clustermesh-apiserver deployment
+     - int
+     - ``30``
    * - :spelling:ignore:`clustermesh.apiserver.tls.admin`
      - base64 encoded PEM values for the clustermesh-apiserver admin certificate and private key. Used if 'auto' is not enabled.
      - object
@@ -588,18 +628,6 @@
      - When set to true, automatically generate a CA and certificates to enable mTLS between clustermesh-apiserver and external workload instances. If set to false, the certs to be provided by setting appropriate values below.
      - bool
      - ``true``
-   * - :spelling:ignore:`clustermesh.apiserver.tls.ca`
-     - Deprecated in favor of tls.ca. To be removed in 1.15. base64 encoded PEM values for the ExternalWorkload CA certificate and private key.
-     - object
-     - ``{"cert":"","key":""}``
-   * - :spelling:ignore:`clustermesh.apiserver.tls.ca.cert`
-     - Deprecated in favor of tls.ca.cert. To be removed in 1.15. Optional CA cert. If it is provided, it will be used by the 'cronJob' method to generate all other certificates. Otherwise, an ephemeral CA is generated.
-     - string
-     - ``""``
-   * - :spelling:ignore:`clustermesh.apiserver.tls.ca.key`
-     - Deprecated in favor of tls.ca.key. To be removed in 1.15. Optional CA private key. If it is provided, it will be used by the 'cronJob' method to generate all other certificates. Otherwise, an ephemeral CA is generated.
-     - string
-     - ``""``
    * - :spelling:ignore:`clustermesh.apiserver.tls.client`
      - base64 encoded PEM values for the clustermesh-apiserver client certificate and private key. Used if 'auto' is not enabled.
      - object
@@ -844,6 +872,10 @@
      - Configure whether to enable auto detect of terminating state for endpoints in order to support graceful termination.
      - bool
      - ``true``
+   * - :spelling:ignore:`enableMasqueradeRouteSource`
+     - Enables masquerading to the source of the route for traffic leaving the node from endpoints.
+     - bool
+     - ``false``
    * - :spelling:ignore:`enableRuntimeDeviceDetection`
      - Enables experimental support for the detection of new and removed datapath devices. When devices change the eBPF datapath is reloaded and services updated. If "devices" is set then only those devices, or devices matching a wildcard will be considered.
      - bool
@@ -1035,7 +1067,7 @@
    * - :spelling:ignore:`envoy.image`
      - Envoy container image.
      - object
-     - ``{"digest":"sha256:5fd7b2af56c6c645c976323dc43f4d042628e40be172d263c6d51345556f58f3","override":null,"pullPolicy":"Always","repository":"quay.io/cilium/cilium-envoy","tag":"v1.26.2-46b594d97d198be594f80a83efc701de57ac5724","useDigest":true}``
+     - ``{"digest":"sha256:ec4f5a3b9504288b4de1db00893bd0ef79187c501a63e08bce11e2fb3de88920","override":null,"pullPolicy":"Always","repository":"quay.io/cilium/cilium-envoy","tag":"v1.26.4-bad30dbe3f4c33c4a6e6747236f7c6d84b380d0d","useDigest":true}``
    * - :spelling:ignore:`envoy.livenessProbe.failureThreshold`
      - failure threshold of liveness probe
      - int
@@ -1684,6 +1716,14 @@
      - Hubble-ui backend image.
      - object
      - ``{"digest":"sha256:8a79a1aad4fc9c2aa2b3e4379af0af872a89fcec9d99e117188190671c66fc2e","override":null,"pullPolicy":"Always","repository":"quay.io/cilium/hubble-ui-backend","tag":"v0.12.0","useDigest":true}``
+   * - :spelling:ignore:`hubble.ui.backend.livenessProbe.enabled`
+     - Enable liveness probe for Hubble-ui backend (requires Hubble-ui 0.12+)
+     - bool
+     - ``false``
+   * - :spelling:ignore:`hubble.ui.backend.readinessProbe.enabled`
+     - Enable readiness probe for Hubble-ui backend (requires Hubble-ui 0.12+)
+     - bool
+     - ``false``
    * - :spelling:ignore:`hubble.ui.backend.resources`
      - Resource requests and limits for the 'backend' container of the 'hubble-ui' deployment.
      - object
@@ -2111,7 +2151,7 @@
    * - :spelling:ignore:`nodePort`
      - Configure N-S k8s service loadbalancing
      - object
-     - ``{"autoProtectPortRange":true,"bindProtection":true,"enableHealthCheck":true,"enabled":false}``
+     - ``{"autoProtectPortRange":true,"bindProtection":true,"enableHealthCheck":true,"enableHealthCheckLoadBalancerIP":false,"enabled":false}``
    * - :spelling:ignore:`nodePort.autoProtectPortRange`
      - Append NodePort range to ip_local_reserved_ports if clash with ephemeral ports is detected.
      - bool
@@ -2124,6 +2164,10 @@
      - Enable healthcheck nodePort server for NodePort services
      - bool
      - ``true``
+   * - :spelling:ignore:`nodePort.enableHealthCheckLoadBalancerIP`
+     - Enable access of the healthcheck nodePort on the LoadBalancerIP. Needs EnableHealthCheck to be enabled
+     - bool
+     - ``false``
    * - :spelling:ignore:`nodePort.enabled`
      - Enable the Cilium NodePort service implementation.
      - bool
@@ -2507,7 +2551,11 @@
    * - :spelling:ignore:`prometheus`
      - Configure prometheus metrics on the configured port at /metrics
      - object
-     - ``{"enabled":false,"metrics":null,"port":9962,"serviceMonitor":{"annotations":{},"enabled":false,"interval":"10s","labels":{},"metricRelabelings":null,"relabelings":[{"replacement":"${1}","sourceLabels":["__meta_kubernetes_pod_node_name"],"targetLabel":"node"}],"trustCRDsExist":false}}``
+     - ``{"controllerGroupMetrics":["write-cni-file","sync-host-ips","sync-lb-maps-with-k8s-services"],"enabled":false,"metrics":null,"port":9962,"serviceMonitor":{"annotations":{},"enabled":false,"interval":"10s","labels":{},"metricRelabelings":null,"relabelings":[{"replacement":"${1}","sourceLabels":["__meta_kubernetes_pod_node_name"],"targetLabel":"node"}],"trustCRDsExist":false}}``
+   * - :spelling:ignore:`prometheus.controllerGroupMetrics`
+     - - Enable controller group metrics for monitoring specific Cilium subsystems. The list is a list of controller group names. The special values of "all" and "none" are supported. The set of controller group names is not guaranteed to be stable between Cilium versions.
+     - list
+     - ``["write-cni-file","sync-host-ips","sync-lb-maps-with-k8s-services"]``
    * - :spelling:ignore:`prometheus.metrics`
      - Metrics that should be enabled or disabled from the default metric list. The list is expected to be separated by a space. (+metric_foo to enable metric_foo , -metric_bar to disable metric_bar). ref: https://docs.cilium.io/en/stable/observability/metrics/
      - string

@@ -4,7 +4,9 @@
 package egressgateway
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -19,12 +21,14 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/workqueue"
 
+	"github.com/cilium/cilium/pkg/datapath/linux/config/defines"
 	"github.com/cilium/cilium/pkg/datapath/linux/probes"
 	"github.com/cilium/cilium/pkg/hive"
 	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/identity"
 	identityCache "github.com/cilium/cilium/pkg/identity/cache"
 	"github.com/cilium/cilium/pkg/k8s"
+	"github.com/cilium/cilium/pkg/k8s/resource"
 	k8sTypes "github.com/cilium/cilium/pkg/k8s/types"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/lock"
@@ -52,6 +56,7 @@ var Cell = cell.Module(
 	"Egress Gateway allows originating traffic from specific IPv4 addresses",
 	cell.Config(defaultConfig),
 	cell.Provide(NewEgressGatewayManager),
+	cell.Provide(newPolicyResource),
 )
 
 type eventType int
@@ -93,15 +98,18 @@ func (def Config) Flags(flags *pflag.FlagSet) {
 type Manager struct {
 	lock.Mutex
 
-	// cacheStatus is used to check if the agent has synced its
-	// cache with the k8s API server
-	cacheStatus k8s.CacheStatus
+	// allCachesSynced is true when all k8s objects we depend on have had
+	// their initial state synced.
+	allCachesSynced bool
 
 	// nodeDataStore stores node name to node mapping
 	nodeDataStore map[string]nodeTypes.Node
 
 	// nodes stores nodes sorted by their name
 	nodes []nodeTypes.Node
+
+	// policies allows reading policy CRD from k8s.
+	policies resource.Resource[*Policy]
 
 	// policyConfigs stores policy configs indexed by policyID
 	policyConfigs map[policyID]*PolicyConfig
@@ -162,15 +170,60 @@ type Params struct {
 	CacheStatus       k8s.CacheStatus
 	IdentityAllocator identityCache.IdentityAllocator
 	PolicyMap         egressmap.PolicyMap
+	Policies          resource.Resource[*Policy]
 
 	Lifecycle hive.Lifecycle
 }
 
-func NewEgressGatewayManager(p Params) (*Manager, error) {
-	if !p.DaemonConfig.EnableIPv4EgressGateway {
-		return nil, nil
+func NewEgressGatewayManager(p Params) (out struct {
+	cell.Out
+
+	*Manager
+	defines.NodeOut
+}, err error) {
+	dcfg := p.DaemonConfig
+
+	if !dcfg.EnableIPv4EgressGateway {
+		return out, nil
 	}
 
+	if dcfg.IdentityAllocationMode == option.IdentityAllocationModeKVstore {
+		return out, errors.New("egress gateway is not supported in KV store identity allocation mode")
+	}
+
+	if dcfg.EnableHighScaleIPcache {
+		return out, errors.New("egress gateway is not supported in high scale IPcache mode")
+	}
+
+	if !dcfg.MasqueradingEnabled() || !dcfg.EnableBPFMasquerade {
+		return out, fmt.Errorf("egress gateway requires --%s=\"true\" and --%s=\"true\"", option.EnableIPv4Masquerade, option.EnableBPFMasquerade)
+	}
+
+	if !dcfg.EnableRemoteNodeIdentity {
+		// datapath code depends on remote node identities to distinguish between
+		// cluster-local and cluster-egress traffic.
+		return out, fmt.Errorf("egress gateway requires remote node identities (--%s=\"true\")", option.EnableRemoteNodeIdentity)
+	}
+
+	if dcfg.EnableL7Proxy {
+		log.WithField(logfields.URL, "https://github.com/cilium/cilium/issues/19642").
+			Warningf("both egress gateway and L7 proxy (--%s) are enabled. This is currently not fully supported: "+
+				"if the same endpoint is selected both by an egress gateway and a L7 policy, endpoint traffic will not go through egress gateway.", option.EnableL7Proxy)
+	}
+
+	out.Manager, err = newEgressGatewayManager(p)
+	if err != nil {
+		return out, err
+	}
+
+	out.NodeDefines = map[string]string{
+		"ENABLE_EGRESS_GATEWAY": "1",
+	}
+
+	return out, nil
+}
+
+func newEgressGatewayManager(p Params) (*Manager, error) {
 	// here we try to mimic the same exponential backoff retry logic used by
 	// the identity allocator, where the minimum retry timeout is set to 20
 	// milliseconds and the max number of attempts is 16 (so 20ms * 2^16 ==
@@ -179,7 +232,6 @@ func NewEgressGatewayManager(p Params) (*Manager, error) {
 	endpointEventRetryQueue := workqueue.NewRateLimitingQueueWithConfig(rateLimiter, workqueue.RateLimitingQueueConfig{})
 
 	manager := &Manager{
-		cacheStatus:                   p.CacheStatus,
 		nodeDataStore:                 make(map[string]nodeTypes.Node),
 		policyConfigs:                 make(map[policyID]*PolicyConfig),
 		policyConfigsBySourceIP:       make(map[string][]*PolicyConfig),
@@ -190,6 +242,7 @@ func NewEgressGatewayManager(p Params) (*Manager, error) {
 		installRoutes:                 p.Config.InstallEgressGatewayRoutes,
 		reconciliationTriggerInterval: p.Config.EgressGatewayReconciliationTriggerInterval,
 		policyMap:                     p.PolicyMap,
+		policies:                      p.Policies,
 	}
 
 	t, err := trigger.NewTrigger(trigger.Parameters{
@@ -220,7 +273,7 @@ func NewEgressGatewayManager(p Params) (*Manager, error) {
 				return fmt.Errorf("egress gateway needs kernel 5.2 or newer")
 			}
 
-			manager.runReconciliationAfterK8sSync(ctx)
+			go manager.processEvents(ctx, p.CacheStatus)
 			manager.processCiliumEndpoints(ctx, &wg)
 			return nil
 		},
@@ -267,20 +320,59 @@ func (manager *Manager) getIdentityLabels(securityIdentity uint32) (labels.Label
 	return identity.Labels, nil
 }
 
-// runReconciliationAfterK8sSync spawns a goroutine that waits for the agent to
+// processEvents spawns a goroutine that waits for the agent to
 // sync with k8s and then runs the first reconciliation.
-func (manager *Manager) runReconciliationAfterK8sSync(ctx context.Context) {
-	go func() {
-		select {
-		case <-manager.cacheStatus:
-			manager.Lock()
-			manager.setEventBitmap(eventK8sSyncDone)
-			manager.Unlock()
-
-			manager.reconciliationTrigger.TriggerWithReason("k8s sync done")
-		case <-ctx.Done():
+func (manager *Manager) processEvents(ctx context.Context, cacheStatus k8s.CacheStatus) {
+	var globalSync, policySync bool
+	maybeTriggerReconcile := func() {
+		if !globalSync || !policySync {
+			return
 		}
-	}()
+
+		manager.Lock()
+		defer manager.Unlock()
+
+		if manager.allCachesSynced {
+			return
+		}
+
+		manager.allCachesSynced = true
+		manager.setEventBitmap(eventK8sSyncDone)
+		manager.reconciliationTrigger.TriggerWithReason("k8s sync done")
+	}
+
+	policyEvents := manager.policies.Events(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case <-cacheStatus:
+			globalSync = true
+			maybeTriggerReconcile()
+			cacheStatus = nil
+
+		case event := <-policyEvents:
+			if event.Kind == resource.Sync {
+				policySync = true
+				maybeTriggerReconcile()
+				event.Done(nil)
+			} else {
+				manager.handlePolicyEvent(event)
+			}
+		}
+	}
+}
+
+func (manager *Manager) handlePolicyEvent(event resource.Event[*Policy]) {
+	switch event.Kind {
+	case resource.Upsert:
+		err := manager.onAddEgressPolicy(event.Object)
+		event.Done(err)
+	case resource.Delete:
+		manager.onDeleteEgressPolicy(event.Object)
+		event.Done(nil)
+	}
 }
 
 // processCiliumEndpoints spawns a goroutine that:
@@ -298,10 +390,8 @@ func (manager *Manager) processCiliumEndpoints(ctx context.Context, wg *sync.Wai
 
 		retryQueue := manager.endpointEventsQueue
 		go func() {
-			select {
-			case <-ctx.Done():
-				retryQueue.ShutDown()
-			}
+			<-ctx.Done()
+			retryQueue.ShutDown()
 		}()
 
 		for {
@@ -339,9 +429,14 @@ func (manager *Manager) processCiliumEndpoints(ctx context.Context, wg *sync.Wai
 
 // Event handlers
 
-// OnAddEgressPolicy parses the given policy config, and updates internal state
+// onAddEgressPolicy parses the given policy config, and updates internal state
 // with the config fields.
-func (manager *Manager) OnAddEgressPolicy(config PolicyConfig) {
+func (manager *Manager) onAddEgressPolicy(policy *Policy) error {
+	config, err := ParseCEGP(policy)
+	if err != nil {
+		return err
+	}
+
 	manager.Lock()
 	defer manager.Unlock()
 
@@ -355,15 +450,18 @@ func (manager *Manager) OnAddEgressPolicy(config PolicyConfig) {
 
 	config.updateMatchedEndpointIDs(manager.epDataStore)
 
-	manager.policyConfigs[config.id] = &config
+	manager.policyConfigs[config.id] = config
 
 	manager.setEventBitmap(eventAddPolicy)
 	manager.reconciliationTrigger.TriggerWithReason("policy added")
+	return nil
 }
 
-// OnDeleteEgressPolicy deletes the internal state associated with the given
+// onDeleteEgressPolicy deletes the internal state associated with the given
 // policy, including egress eBPF map entries.
-func (manager *Manager) OnDeleteEgressPolicy(configID policyID) {
+func (manager *Manager) onDeleteEgressPolicy(policy *Policy) {
+	configID := ParseCEGPConfigID(policy)
+
 	manager.Lock()
 	defer manager.Unlock()
 
@@ -371,7 +469,6 @@ func (manager *Manager) OnDeleteEgressPolicy(configID policyID) {
 
 	if manager.policyConfigs[configID] == nil {
 		logger.Warn("Can't delete CiliumEgressGatewayPolicy: policy not found")
-		return
 	}
 
 	logger.Debug("Deleted CiliumEgressGatewayPolicy")
@@ -609,6 +706,38 @@ func (manager *Manager) regenerateGatewayConfigs() {
 	for _, policyConfig := range manager.policyConfigs {
 		policyConfig.regenerateGatewayConfig(manager)
 	}
+
+	if !manager.installRoutes {
+		return
+	}
+
+	// We can only have one default route per interface. Warn if there are
+	// conflicts on the desired egress IP per interface.
+	policyByInterfaceIndex := make(map[int]*PolicyConfig)
+	for _, policyConfig := range manager.policyConfigs {
+		gwc := policyConfig.gatewayConfig
+
+		if !gwc.localNodeConfiguredAsGateway {
+			continue
+		}
+
+		currentPolicy := policyByInterfaceIndex[gwc.ifaceIndex]
+		if currentPolicy == nil {
+			policyByInterfaceIndex[gwc.ifaceIndex] = policyConfig
+			continue
+		}
+
+		currentEgressIP := currentPolicy.gatewayConfig.egressIP
+		if gwc.egressIP.IP.Equal(currentEgressIP.IP) && bytes.Equal(gwc.egressIP.Mask, currentEgressIP.Mask) {
+			continue
+		}
+
+		log.WithFields(logrus.Fields{
+			logfields.CiliumEgressGatewayPolicyName: policyConfig.id,
+			logfields.Interface:                     policyConfig.policyGwConfig.iface,
+			logfields.EgressIP:                      policyConfig.policyGwConfig.egressIP,
+		}).Errorf("Conflict with policy %s: Selects the same egress interface but uses a different egress IP (%s).", currentPolicy.id, currentEgressIP.String())
+	}
 }
 
 func (manager *Manager) addMissingIpRulesAndRoutes(isRetry bool) (shouldRetry bool) {
@@ -627,6 +756,12 @@ func (manager *Manager) addMissingIpRulesAndRoutes(isRetry bool) (shouldRetry bo
 			logfields.EgressIP:  gwc.egressIP.IP,
 			logfields.LinkIndex: gwc.ifaceIndex,
 		})
+
+		if err := addEgressIpRoutes(gwc); err != nil {
+			logger.WithError(err).Warn("Can't add IP routes")
+		} else {
+			logger.Debug("Added IP routes")
+		}
 
 		routingTableIdx := egressGatewayRoutingTableIdx(gwc.ifaceIndex)
 
@@ -667,12 +802,6 @@ func (manager *Manager) addMissingIpRulesAndRoutes(isRetry bool) (shouldRetry bo
 		}
 
 		policyConfig.forEachEndpointAndDestination(addIPRulesForConfig)
-
-		if err := addEgressIpRoutes(gwc.egressIP, gwc.ifaceIndex); err != nil {
-			logger.WithError(err).Warn("Can't add IP routes")
-		} else {
-			logger.Debug("Added IP routes")
-		}
 	}
 
 	return
@@ -716,15 +845,22 @@ nextIpRule:
 		deleteIpRule(ipRule)
 	}
 
-	// Build a list of all the network interfaces that are being actively used by egress gateway
-	activeEgressGwIfaceIndexes := map[int]struct{}{}
+	// Build a list of all the network interfaces that are being actively used by egress gateway,
+	// and by which policy they are selected.
+	activeEgressGwIfaceIndexes := make(map[int]*PolicyConfig)
 	for _, policyConfig := range manager.policyConfigs {
-		// check if the policy selects at least one endpoint
-		if len(policyConfig.matchedEndpoints) != 0 {
-			if policyConfig.gatewayConfig.localNodeConfiguredAsGateway {
-				activeEgressGwIfaceIndexes[policyConfig.gatewayConfig.ifaceIndex] = struct{}{}
-			}
+		gwc := &policyConfig.gatewayConfig
+
+		if !gwc.localNodeConfiguredAsGateway {
+			continue
 		}
+
+		// check if the policy selects at least one endpoint
+		if len(policyConfig.matchedEndpoints) == 0 {
+			continue
+		}
+
+		activeEgressGwIfaceIndexes[gwc.ifaceIndex] = policyConfig
 	}
 
 	// Fetch all IP routes, and delete the unused EgressGW-specific routes:
@@ -745,9 +881,22 @@ nextIpRule:
 			continue
 		}
 
-		// Keep the route if EgressGW still uses this interface.
-		if _, ok := activeEgressGwIfaceIndexes[linkIndex]; ok {
-			continue
+		policyConfig := activeEgressGwIfaceIndexes[linkIndex]
+
+		// Keep the route if it still matches the policy on this interface.
+		if policyConfig != nil {
+			/* Only take a closer look at next-hop routes for now: */
+			if route.Scope != netlink.SCOPE_LINK {
+				continue
+			}
+
+			eniGatewayIP := getFirstIPInHostRange(policyConfig.gatewayConfig.egressIP)
+			routeMaskSize, routeMaskTotal := route.Dst.Mask.Size()
+
+			if route.Dst.IP.Equal(eniGatewayIP) &&
+				routeMaskSize == 32 && routeMaskTotal == 32 {
+				continue
+			}
 		}
 
 		deleteIpRoute(route)
@@ -838,7 +987,7 @@ nextPolicyKey:
 // Whenever it encounters an error, it will just log it and move to the next
 // item, in order to reconcile as many states as possible.
 func (manager *Manager) reconcileLocked() {
-	if !manager.cacheStatus.Synchronized() {
+	if !manager.allCachesSynced {
 		return
 	}
 

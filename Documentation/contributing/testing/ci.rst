@@ -24,7 +24,7 @@ Several short-running tests are automatically triggered for all contributor
 submissions, subject to GitHub's limitations around first-time contributors.
 If no GitHub workflows are triggering on your PR, a committer for the project
 should trigger these within a few days. Reach out in the ``#testing``
-channel on Slack for assistance in running these tests.
+channel on `Cilium Slack`_ for assistance in running these tests.
 
 .. _trigger_phrases:
 
@@ -37,7 +37,7 @@ infrastructure, such as allocating clusters or VMs in AKS, EKS or GKE. In
 order to trigger these jobs, a member of the GitHub organization must post a
 comment on the Pull Request with a "trigger phrase".
 
-If you'd like to trigger these jobs, ask in Slack in the ``#testing``
+If you'd like to trigger these jobs, ask in `Cilium Slack`_ in the ``#testing``
 channel. If you're regularly contributing to Cilium, you can also `become a
 member <https://github.com/cilium/community/blob/main/CONTRIBUTOR-LADDER.md#organization-member>`__
 of the Cilium organization.
@@ -57,8 +57,6 @@ them all at once:
 | v1.13            | /test-backport-1.13      |
 +------------------+--------------------------+
 | v1.12            | /test-backport-1.12      |
-+------------------+--------------------------+
-| v1.11            | /test-backport-1.11      |
 +------------------+--------------------------+
 
 Pull requests submitted against older stable branches such as v1.13 may also be

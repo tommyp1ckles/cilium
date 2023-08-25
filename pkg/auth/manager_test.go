@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"golang.org/x/exp/maps"
 
+	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/auth/certs"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/policy"
@@ -26,7 +27,7 @@ func Test_newAuthManager_clashingAuthHandlers(t *testing.T) {
 		&alwaysFailAuthHandler{},
 	}
 
-	am, err := newAuthManager(logrus.New(), authHandlers, nil, nil)
+	am, err := newAuthManager(logrus.New(), authHandlers, nil, nil, time.Second)
 	assert.ErrorContains(t, err, "multiple handlers for auth type: test-always-fail")
 	assert.Nil(t, am)
 }
@@ -37,7 +38,7 @@ func Test_newAuthManager(t *testing.T) {
 		&fakeAuthHandler{},
 	}
 
-	am, err := newAuthManager(logrus.New(), authHandlers, nil, nil)
+	am, err := newAuthManager(logrus.New(), authHandlers, nil, nil, time.Second)
 	assert.NoError(t, err)
 	assert.NotNil(t, am)
 
@@ -95,10 +96,11 @@ func Test_authManager_authenticate(t *testing.T) {
 				logrus.New(),
 				[]authHandler{&alwaysFailAuthHandler{}, newAlwaysPassAuthHandler(logrus.New())},
 				authMap,
-				newFakeIPCache(map[uint16]string{
+				newFakeNodeIDHandler(map[uint16]string{
 					2: "172.18.0.2",
 					3: "172.18.0.3",
 				}),
+				time.Second,
 			)
 
 			assert.NoError(t, err)
@@ -114,12 +116,12 @@ func Test_authManager_authenticate(t *testing.T) {
 func Test_authManager_handleAuthRequest(t *testing.T) {
 	authHandlers := []authHandler{newAlwaysPassAuthHandler(logrus.New())}
 
-	am, err := newAuthManager(logrus.New(), authHandlers, nil, nil)
+	am, err := newAuthManager(logrus.New(), authHandlers, nil, nil, time.Second)
 	assert.NoError(t, err)
 	assert.NotNil(t, am)
 
 	handleAuthCalled := false
-	am.handleAuthenticationFunc = func(_ *authManager, k authKey, reAuth bool) {
+	am.handleAuthenticationFunc = func(_ *AuthManager, k authKey, reAuth bool) {
 		handleAuthCalled = true
 		assert.False(t, reAuth)
 		assert.Equal(t, authKey{localIdentity: 1, remoteIdentity: 2, remoteNodeID: 0, authType: 100}, k)
@@ -136,7 +138,7 @@ func Test_authManager_handleCertificateRotationEvent_Error(t *testing.T) {
 		failGet: true,
 	}
 
-	am, err := newAuthManager(logrus.New(), authHandlers, aMap, nil)
+	am, err := newAuthManager(logrus.New(), authHandlers, aMap, nil, time.Second)
 	assert.NoError(t, err)
 	assert.NotNil(t, am)
 
@@ -154,12 +156,12 @@ func Test_authManager_handleCertificateRotationEvent(t *testing.T) {
 		},
 	}
 
-	am, err := newAuthManager(logrus.New(), authHandlers, aMap, nil)
+	am, err := newAuthManager(logrus.New(), authHandlers, aMap, nil, time.Second)
 	assert.NoError(t, err)
 	assert.NotNil(t, am)
 
 	handleAuthCalled := false
-	am.handleAuthenticationFunc = func(_ *authManager, k authKey, reAuth bool) {
+	am.handleAuthenticationFunc = func(_ *AuthManager, k authKey, reAuth bool) {
 		handleAuthCalled = true
 		assert.True(t, reAuth)
 		assert.True(t, k.localIdentity == 2 || k.remoteIdentity == 2)
@@ -170,22 +172,29 @@ func Test_authManager_handleCertificateRotationEvent(t *testing.T) {
 	assert.True(t, handleAuthCalled)
 }
 
-// Fake IPCache
-type fakeIPCache struct {
+// Fake NodeIDHandler
+type fakeNodeIDHandler struct {
 	nodeIdMappings map[uint16]string
 }
 
-func newFakeIPCache(mappings map[uint16]string) *fakeIPCache {
-	return &fakeIPCache{
+func (r *fakeNodeIDHandler) DumpNodeIDs() []*models.NodeID {
+	return []*models.NodeID{}
+}
+
+func (r *fakeNodeIDHandler) RestoreNodeIDs() {
+}
+
+func newFakeNodeIDHandler(mappings map[uint16]string) *fakeNodeIDHandler {
+	return &fakeNodeIDHandler{
 		nodeIdMappings: mappings,
 	}
 }
 
-func (r *fakeIPCache) GetNodeIP(id uint16) string {
+func (r *fakeNodeIDHandler) GetNodeIP(id uint16) string {
 	return r.nodeIdMappings[id]
 }
 
-func (r *fakeIPCache) GetNodeID(nodeIP net.IP) (uint16, bool) {
+func (r *fakeNodeIDHandler) GetNodeID(nodeIP net.IP) (uint16, bool) {
 	for id, ip := range r.nodeIdMappings {
 		if ip == nodeIP.String() {
 			return id, true
@@ -209,6 +218,10 @@ func (r *fakeAuthHandler) authType() policy.AuthType {
 }
 
 func (r *fakeAuthHandler) subscribeToRotatedIdentities() <-chan certs.CertificateRotationEvent {
+	return nil
+}
+
+func (r *fakeAuthHandler) certProviderStatus() *models.Status {
 	return nil
 }
 
@@ -248,6 +261,14 @@ func (r *fakeAuthMap) All() (map[authKey]authInfo, error) {
 	}
 
 	return r.entries, nil
+}
+
+func (r *fakeAuthMap) GetCacheInfo(key authKey) (authInfoCache, error) {
+	v, err := r.Get(key)
+
+	return authInfoCache{
+		authInfo: v,
+	}, err
 }
 
 func (r *fakeAuthMap) Get(key authKey) (authInfo, error) {

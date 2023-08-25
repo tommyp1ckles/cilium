@@ -43,6 +43,7 @@ func ToGoBGPPath(p *types.Path) (*gobgp.Path, error) {
 		Age:    ageTimestamp,
 		Best:   p.Best,
 		Family: family,
+		Uuid:   p.UUID,
 	}, nil
 }
 
@@ -62,13 +63,14 @@ func ToAgentPath(p *gobgp.Path) (*types.Path, error) {
 
 	// ageNano is time since the Path was created in nanoseconds.
 	// It is calculated by difference in time from age timestamp till now.
-	ageNano := int64(time.Now().Sub(p.Age.AsTime()))
+	ageNano := int64(time.Since(p.Age.AsTime()))
 
 	return &types.Path{
 		NLRI:           nlri,
 		PathAttributes: pattrs,
 		AgeNanoseconds: ageNano,
 		Best:           p.Best,
+		UUID:           p.Uuid,
 	}, nil
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/cilium/cilium/pkg/auth"
 	"github.com/cilium/cilium/pkg/bgpv1"
 	"github.com/cilium/cilium/pkg/clustermesh"
+	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/crypto/certificatemanager"
 	"github.com/cilium/cilium/pkg/datapath"
 	dptypes "github.com/cilium/cilium/pkg/datapath/types"
@@ -78,9 +79,6 @@ var (
 		// Provide option.Config via hive so cells can depend on the agent config.
 		cell.Provide(func() *option.DaemonConfig { return option.Config }),
 
-		// Provides an in-memory transactional database for internal state
-		statedb.Cell,
-
 		// Provides a global job registry which cells can use to spawn job groups.
 		job.Cell,
 
@@ -95,6 +93,10 @@ var (
 		// This starts before the API server as ciliumAPIHandlers() depends on
 		// the 'deletionQueue' provided by this cell.
 		deletionQueueCell,
+
+		// DB provides an extendable in-memory database with rich transactions
+		// and multi-version concurrency control through immutable radix trees.
+		statedb.Cell,
 	)
 
 	// ControlPlane implement the per-node control functions. These are pure
@@ -112,6 +114,11 @@ var (
 		// Provide a LocalNodeInitializer that is invoked when LocalNodeStore is started.
 		// This fills in the initial state before it is accessed by other sub-systems.
 		cell.Provide(newLocalNodeInitializer),
+
+		// Controller provides flags and configuration related
+		// to Controller management, concurrent control loops
+		// which run throughout the system on specified intervals
+		controller.Cell,
 
 		// Shared resources provide access to k8s resources as event streams or as
 		// read-only stores.

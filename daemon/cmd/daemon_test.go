@@ -34,6 +34,7 @@ import (
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/maps/authmap"
 	fakeauthmap "github.com/cilium/cilium/pkg/maps/authmap/fake"
+	ctmapgc "github.com/cilium/cilium/pkg/maps/ctmap/gc"
 	"github.com/cilium/cilium/pkg/maps/egressmap"
 	"github.com/cilium/cilium/pkg/maps/signalmap"
 	fakesignalmap "github.com/cilium/cilium/pkg/maps/signalmap/fake"
@@ -157,11 +158,13 @@ func (ds *DaemonSuite) SetUpTest(c *C) {
 				return cs
 			},
 			func() datapath.Datapath { return fakeDatapath.NewDatapath() },
+			func(dp datapath.Datapath) datapath.NodeIDHandler { return dp.NodeIDs() },
 			func() *option.DaemonConfig { return option.Config },
 			func() cnicell.CNIConfigManager { return &fakecni.FakeCNIConfigManager{} },
 			func() signalmap.Map { return fakesignalmap.NewFakeSignalMap([][]byte{}, time.Second) },
 			func() authmap.Map { return fakeauthmap.NewFakeAuthMap() },
 			func() egressmap.PolicyMap { return nil },
+			func() ctmapgc.Enabler { return ctmapgc.NewFake() },
 		),
 		monitorAgent.Cell,
 		ControlPlane,

@@ -40541,6 +40541,11 @@ func awsEc2query_serializeDocumentInstanceIpv6Address(v *types.InstanceIpv6Addre
 		objectKey.String(*v.Ipv6Address)
 	}
 
+	if v.IsPrimaryIpv6 != nil {
+		objectKey := object.Key("IsPrimaryIpv6")
+		objectKey.Boolean(*v.IsPrimaryIpv6)
+	}
+
 	return nil
 }
 
@@ -40728,6 +40733,11 @@ func awsEc2query_serializeDocumentInstanceNetworkInterfaceSpecification(v *types
 	if v.NetworkInterfaceId != nil {
 		objectKey := object.Key("NetworkInterfaceId")
 		objectKey.String(*v.NetworkInterfaceId)
+	}
+
+	if v.PrimaryIpv6 != nil {
+		objectKey := object.Key("PrimaryIpv6")
+		objectKey.Boolean(*v.PrimaryIpv6)
 	}
 
 	if v.PrivateIpAddress != nil {
@@ -41902,6 +41912,11 @@ func awsEc2query_serializeDocumentLaunchTemplateInstanceNetworkInterfaceSpecific
 	if v.NetworkInterfaceId != nil {
 		objectKey := object.Key("NetworkInterfaceId")
 		objectKey.String(*v.NetworkInterfaceId)
+	}
+
+	if v.PrimaryIpv6 != nil {
+		objectKey := object.Key("PrimaryIpv6")
+		objectKey.Boolean(*v.PrimaryIpv6)
 	}
 
 	if v.PrivateIpAddress != nil {
@@ -45715,6 +45730,40 @@ func awsEc2query_serializeDocumentStorageLocation(v *types.StorageLocation, valu
 		objectKey.String(*v.Key)
 	}
 
+	return nil
+}
+
+func awsEc2query_serializeDocumentSubnetConfiguration(v *types.SubnetConfiguration, value query.Value) error {
+	object := value.Object()
+	_ = object
+
+	if v.Ipv4 != nil {
+		objectKey := object.Key("Ipv4")
+		objectKey.String(*v.Ipv4)
+	}
+
+	if v.Ipv6 != nil {
+		objectKey := object.Key("Ipv6")
+		objectKey.String(*v.Ipv6)
+	}
+
+	if v.SubnetId != nil {
+		objectKey := object.Key("SubnetId")
+		objectKey.String(*v.SubnetId)
+	}
+
+	return nil
+}
+
+func awsEc2query_serializeDocumentSubnetConfigurationsList(v []types.SubnetConfiguration, value query.Value) error {
+	array := value.Array("Item")
+
+	for i := range v {
+		av := array.Value()
+		if err := awsEc2query_serializeDocumentSubnetConfiguration(&v[i], av); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -50181,6 +50230,11 @@ func awsEc2query_serializeOpDocumentCreateNetworkInterfaceInput(v *CreateNetwork
 		objectKey.Boolean(*v.DryRun)
 	}
 
+	if v.EnablePrimaryIpv6 != nil {
+		objectKey := object.Key("EnablePrimaryIpv6")
+		objectKey.Boolean(*v.EnablePrimaryIpv6)
+	}
+
 	if v.Groups != nil {
 		objectKey := object.FlatKey("SecurityGroupId")
 		if err := awsEc2query_serializeDocumentSecurityGroupIdStringList(v.Groups, objectKey); err != nil {
@@ -51804,6 +51858,13 @@ func awsEc2query_serializeOpDocumentCreateVpcEndpointInput(v *CreateVpcEndpointI
 	if v.ServiceName != nil {
 		objectKey := object.Key("ServiceName")
 		objectKey.String(*v.ServiceName)
+	}
+
+	if v.SubnetConfigurations != nil {
+		objectKey := object.FlatKey("SubnetConfiguration")
+		if err := awsEc2query_serializeDocumentSubnetConfigurationsList(v.SubnetConfigurations, objectKey); err != nil {
+			return err
+		}
 	}
 
 	if v.SubnetIds != nil {
@@ -62430,6 +62491,11 @@ func awsEc2query_serializeOpDocumentModifyNetworkInterfaceAttributeInput(v *Modi
 		objectKey.Boolean(*v.DryRun)
 	}
 
+	if v.EnablePrimaryIpv6 != nil {
+		objectKey := object.Key("EnablePrimaryIpv6")
+		objectKey.Boolean(*v.EnablePrimaryIpv6)
+	}
+
 	if v.EnaSrdSpecification != nil {
 		objectKey := object.Key("EnaSrdSpecification")
 		if err := awsEc2query_serializeDocumentEnaSrdSpecification(v.EnaSrdSpecification, objectKey); err != nil {
@@ -63419,6 +63485,13 @@ func awsEc2query_serializeOpDocumentModifyVpcEndpointInput(v *ModifyVpcEndpointI
 	if v.ResetPolicy != nil {
 		objectKey := object.Key("ResetPolicy")
 		objectKey.Boolean(*v.ResetPolicy)
+	}
+
+	if v.SubnetConfigurations != nil {
+		objectKey := object.FlatKey("SubnetConfiguration")
+		if err := awsEc2query_serializeDocumentSubnetConfigurationsList(v.SubnetConfigurations, objectKey); err != nil {
+			return err
+		}
 	}
 
 	if v.VpcEndpointId != nil {
@@ -65270,6 +65343,11 @@ func awsEc2query_serializeOpDocumentRunInstancesInput(v *RunInstancesInput, valu
 		if err := awsEc2query_serializeDocumentElasticInferenceAccelerators(v.ElasticInferenceAccelerators, objectKey); err != nil {
 			return err
 		}
+	}
+
+	if v.EnablePrimaryIpv6 != nil {
+		objectKey := object.Key("EnablePrimaryIpv6")
+		objectKey.Boolean(*v.EnablePrimaryIpv6)
 	}
 
 	if v.EnclaveOptions != nil {

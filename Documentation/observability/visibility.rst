@@ -10,6 +10,10 @@
 Layer 7 Protocol Visibility
 ***************************
 
+.. note::
+
+    This feature requires enabling L7 Proxy support. Without it, the visibility annotation is ignored.
+
 While :ref:`monitor` provides introspection into datapath state, by default it
 will only provide visibility into L3/L4 packet events. If :ref:`l7_policy` are
 configured, one can get visibility into L7 protocols, but this requires the full
@@ -119,8 +123,3 @@ Limitations
 * Visibility annotations do not apply if rules are imported which select the pod
   which is annotated.
 * DNS visibility is available on egress only.
-* Proxylib parsers are not supported, including Kafka. To gain visibility on
-  these protocols, you must create a network policy that allows all of the
-  traffic at L7, either by following :ref:`l7_policy`
-  (:ref:`Kafka <kafka_policy>`) or the :ref:`envoy` proxylib extensions guide.
-  This limitation is tracked by :gh-issue:`14072`.

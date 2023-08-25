@@ -438,7 +438,7 @@ func finishKubeProxyReplacementInit() error {
 		default:
 			if probes.HaveProgramHelper(ebpf.SchedCLS, asm.FnRedirectNeigh) != nil ||
 				probes.HaveProgramHelper(ebpf.SchedCLS, asm.FnRedirectPeer) != nil {
-				msg = fmt.Sprintf("BPF host routing requires kernel 5.10 or newer.")
+				msg = "BPF host routing requires kernel 5.10 or newer."
 			}
 		}
 		if msg != "" {
@@ -453,25 +453,22 @@ func finishKubeProxyReplacementInit() error {
 		}
 	}
 
-	option.Config.NodePortNat46X64 = option.Config.EnableIPv4 && option.Config.EnableIPv6 &&
+	option.Config.NodePortNat46X64 = option.Config.IsDualStack() &&
 		option.Config.NodePortMode == option.NodePortModeSNAT &&
 		probes.HaveLargeInstructionLimit() == nil
 
-	for _, iface := range option.Config.GetDevices() {
-		link, err := netlink.LinkByName(iface)
-		if err != nil {
-			return fmt.Errorf("Cannot retrieve %s link: %w", iface, err)
-		}
-		if strings.ContainsAny(iface, "=;") {
-			// Because we pass IPV{4,6}_NODEPORT addresses to bpf/init.sh
-			// in a form "$IFACE_NAME1=$IPV{4,6}_ADDR1;$IFACE_NAME2=...",
-			// we need to restrict the iface names. Otherwise, bpf/init.sh
-			// won't properly parse the mappings.
-			return fmt.Errorf("%s link name contains '=' or ';' character which is not allowed",
-				iface)
-		}
-		if idx := link.Attrs().Index; idx > math.MaxUint16 {
-			return fmt.Errorf("%s link ifindex %d exceeds max(uint16)", iface, idx)
+	// In the case where the fib lookup does not return the outgoing ifindex
+	// the datapath needs to store it in our CT map, and the map's field is
+	// limited to 16 bit.
+	if probes.HaveFibIfindex() != nil {
+		for _, iface := range option.Config.GetDevices() {
+			link, err := netlink.LinkByName(iface)
+			if err != nil {
+				return fmt.Errorf("Cannot retrieve %s link: %w", iface, err)
+			}
+			if idx := link.Attrs().Index; idx > math.MaxUint16 {
+				return fmt.Errorf("%s link ifindex %d exceeds max(uint16)", iface, idx)
+			}
 		}
 	}
 

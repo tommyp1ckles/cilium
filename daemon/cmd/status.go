@@ -6,7 +6,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"net"
 	"strings"
 	"time"
 
@@ -465,6 +464,10 @@ type clusterNodesClient struct {
 	*models.ClusterNodeStatus
 }
 
+func (c *clusterNodesClient) Name() string {
+	return "cluster-node"
+}
+
 func (c *clusterNodesClient) NodeAdd(newNode nodeTypes.Node) error {
 	c.Lock()
 	c.NodesAdded = append(c.NodesAdded, newNode.GetModel())
@@ -510,6 +513,9 @@ func (c *clusterNodesClient) NodeDelete(node nodeTypes.Node) error {
 	return nil
 }
 
+func (c *clusterNodesClient) AllNodeValidateImplementation() {
+}
+
 func (c *clusterNodesClient) NodeValidateImplementation(node nodeTypes.Node) error {
 	// no-op
 	return nil
@@ -527,17 +533,10 @@ func (c *clusterNodesClient) NodeNeighDiscoveryEnabled() bool {
 
 func (c *clusterNodesClient) NodeNeighborRefresh(ctx context.Context, node nodeTypes.Node) {
 	// no-op
-	return
 }
 
 func (c *clusterNodesClient) NodeCleanNeighbors(migrateOnly bool) {
 	// no-op
-	return
-}
-
-func (c *clusterNodesClient) AllocateNodeID(_ net.IP) uint16 {
-	// no-op
-	return 0
 }
 
 func (c *clusterNodesClient) GetNodeIP(_ uint16) string {
@@ -552,7 +551,6 @@ func (c *clusterNodesClient) DumpNodeIDs() []*models.NodeID {
 
 func (c *clusterNodesClient) RestoreNodeIDs() {
 	// no-op
-	return
 }
 
 func (h *getNodes) cleanupClients(d *Daemon) {
@@ -772,7 +770,7 @@ func (d *Daemon) startStatusCollector(cleaner *daemonCleanup) {
 					state = models.StatusStateFailure
 					msg = fmt.Sprintf("Err: %s", status.Err)
 				case ok:
-					msg = fmt.Sprintf("%s", info)
+					msg = info
 				}
 
 				d.statusCollectMutex.Lock()
@@ -1050,6 +1048,26 @@ func (d *Daemon) startStatusCollector(cleaner *daemonCleanup) {
 				}
 			},
 		},
+		{
+			Name: "auth-cert-provider",
+			Probe: func(ctx context.Context) (interface{}, error) {
+				if d.authManager == nil {
+					return &models.Status{State: models.StatusStateDisabled}, nil
+				}
+
+				return d.authManager.CertProviderStatus(), nil
+			},
+			OnStatusUpdate: func(status status.Status) {
+				d.statusCollectMutex.Lock()
+				defer d.statusCollectMutex.Unlock()
+
+				if status.Err == nil {
+					if s, ok := status.Data.(*models.Status); ok {
+						d.statusResponse.AuthCertificateProvider = s
+					}
+				}
+			},
+		},
 	}
 
 	d.statusResponse.Masquerading = d.getMasqueradingStatus()
@@ -1080,5 +1098,4 @@ func (d *Daemon) startStatusCollector(cleaner *daemonCleanup) {
 
 		}
 	})
-	return
 }

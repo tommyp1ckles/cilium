@@ -26,6 +26,7 @@ import (
 	"github.com/cilium/cilium/api/v1/server"
 	"github.com/cilium/cilium/daemon/cmd/cni"
 	agentK8s "github.com/cilium/cilium/daemon/k8s"
+	"github.com/cilium/cilium/pkg/auth"
 	"github.com/cilium/cilium/pkg/aws/eni"
 	bgpv1 "github.com/cilium/cilium/pkg/bgpv1/agent"
 	"github.com/cilium/cilium/pkg/bpf"
@@ -237,6 +238,9 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 	flags.Bool(option.EnableHealthCheckNodePort, defaults.EnableHealthCheckNodePort, "Enables a healthcheck nodePort server for NodePort services with 'healthCheckNodePort' being set")
 	option.BindEnv(vp, option.EnableHealthCheckNodePort)
 
+	flags.Bool(option.EnableHealthCheckLoadBalancerIP, defaults.EnableHealthCheckLoadBalancerIP, "Enable access of the healthcheck nodePort on the LoadBalancerIP. Needs --enable-health-check-nodeport to be enabled")
+	option.BindEnv(vp, option.EnableHealthCheckLoadBalancerIP)
+
 	flags.StringSlice(option.EndpointStatus, []string{},
 		"Enable additional CiliumEndpoint status features ("+strings.Join(option.EndpointStatusValues(), ",")+")")
 	option.BindEnv(vp, option.EndpointStatus)
@@ -300,8 +304,8 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 	flags.Bool(option.DisableCiliumEndpointCRDName, false, "Disable use of CiliumEndpoint CRD")
 	option.BindEnv(vp, option.DisableCiliumEndpointCRDName)
 
-	flags.String(option.EgressMasqueradeInterfaces, "", "Limit iptables-based egress masquerading to interface selector")
-	option.BindEnv(vp, option.EgressMasqueradeInterfaces)
+	flags.StringSlice(option.MasqueradeInterfaces, []string{}, "Limit iptables-based egress masquerading to interface selector")
+	option.BindEnv(vp, option.MasqueradeInterfaces)
 
 	flags.Bool(option.BPFSocketLBHostnsOnly, false, "Skip socket LB for services when inside a pod namespace, in favor of service LB at the pod interface. Socket LB is still used when in the host namespace. Required by service mesh (e.g., Istio, Linkerd).")
 	option.BindEnv(vp, option.BPFSocketLBHostnsOnly)
@@ -679,6 +683,9 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 	flags.Bool(option.EnableBPFMasquerade, false, "Masquerade packets from endpoints leaving the host with BPF instead of iptables")
 	option.BindEnv(vp, option.EnableBPFMasquerade)
 
+	flags.Bool(option.EnableMasqueradeRouteSource, false, "Masquerade packets to the source IP provided from the routing layer rather than interface address")
+	option.BindEnv(vp, option.EnableMasqueradeRouteSource)
+
 	flags.String(option.DeriveMasqIPAddrFromDevice, "", "Device name from which Cilium derives the IP addr for BPF masquerade")
 	flags.MarkHidden(option.DeriveMasqIPAddrFromDevice)
 	option.BindEnv(vp, option.DeriveMasqIPAddrFromDevice)
@@ -795,13 +802,13 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 	flags.Int(option.CTMapEntriesGlobalAnyName, option.CTMapEntriesGlobalAnyDefault, "Maximum number of entries in non-TCP CT table")
 	option.BindEnvWithLegacyEnvFallback(vp, option.CTMapEntriesGlobalAnyName, "CILIUM_GLOBAL_CT_MAX_ANY")
 
-	flags.Duration(option.CTMapEntriesTimeoutTCPName, 21600*time.Second, "Timeout for established entries in TCP CT table")
+	flags.Duration(option.CTMapEntriesTimeoutTCPName, 8000*time.Second, "Timeout for established entries in TCP CT table")
 	option.BindEnv(vp, option.CTMapEntriesTimeoutTCPName)
 
 	flags.Duration(option.CTMapEntriesTimeoutAnyName, 60*time.Second, "Timeout for entries in non-TCP CT table")
 	option.BindEnv(vp, option.CTMapEntriesTimeoutAnyName)
 
-	flags.Duration(option.CTMapEntriesTimeoutSVCTCPName, 21600*time.Second, "Timeout for established service entries in TCP CT table")
+	flags.Duration(option.CTMapEntriesTimeoutSVCTCPName, 8000*time.Second, "Timeout for established service entries in TCP CT table")
 	option.BindEnv(vp, option.CTMapEntriesTimeoutSVCTCPName)
 
 	flags.Duration(option.CTMapEntriesTimeoutSVCTCPGraceName, 60*time.Second, "Timeout for graceful shutdown of service entries in TCP CT table")
@@ -884,7 +891,7 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 	flags.Duration(option.DNSProxyConcurrencyProcessingGracePeriod, 0, "Grace time to wait when DNS proxy concurrent limit has been reached during DNS message processing")
 	option.BindEnv(vp, option.DNSProxyConcurrencyProcessingGracePeriod)
 
-	flags.Int(option.DNSProxyLockCount, 128, "Array size containing mutexes which protect against parallel handling of DNS response IPs")
+	flags.Int(option.DNSProxyLockCount, 131, "Array size containing mutexes which protect against parallel handling of DNS response IPs. Preferably use prime numbers")
 	flags.MarkHidden(option.DNSProxyLockCount)
 	option.BindEnv(vp, option.DNSProxyLockCount)
 
@@ -1421,9 +1428,6 @@ func initEnv(vp *viper.Viper) {
 		if option.Config.TunnelingEnabled() {
 			log.Fatal("The high-scale IPcache mode requires native routing.")
 		}
-		if option.Config.EnableIPv4EgressGateway {
-			log.Fatal("The egress gateway is not supported in high scale IPcache mode.")
-		}
 		if option.Config.EnableIPSec {
 			log.Fatal("IPsec is not supported in high scale IPcache mode.")
 		}
@@ -1539,12 +1543,6 @@ func initEnv(vp *viper.Viper) {
 			)
 		}
 	}
-
-	if option.Config.IdentityAllocationMode == option.IdentityAllocationModeKVstore {
-		if option.Config.EnableIPv4EgressGateway {
-			log.Fatal("The egress gateway is not supported in KV store identity allocation mode.")
-		}
-	}
 }
 
 func (d *Daemon) initKVStore() {
@@ -1552,8 +1550,10 @@ func (d *Daemon) initKVStore() {
 		ClusterSizeDependantInterval: d.nodeDiscovery.Manager.ClusterSizeDependantInterval,
 	}
 
+	var cg = controller.NewGroup("kvstore-locks-gc")
 	controller.NewManager().UpdateController("kvstore-locks-gc",
 		controller.ControllerParams{
+			Group: cg,
 			DoFunc: func(ctx context.Context) error {
 				kvstore.RunLockGC()
 				return nil
@@ -1638,11 +1638,18 @@ type daemonParams struct {
 	MonitorAgent         monitorAgent.Agent
 	L2Announcer          *l2announcer.L2Announcer
 	L7Proxy              *proxy.Proxy
-	DB                   statedb.DB
+	DB                   *statedb.DB
 	APILimiterSet        *rate.APILimiterSet
+	AuthManager          *auth.AuthManager
 	Settings             cellSettings
 	HealthProvider       cell.Health
 	HealthReporter       cell.HealthReporter
+	DeviceManager        *linuxdatapath.DeviceManager `optional:"true"`
+
+	// Grab the GC object so that we can start the CT/NAT map garbage collection.
+	// This is currently necessary because these maps have not yet been modularized,
+	// and because it depends on parameters which are not provided through hive.
+	CTNATMapGC gc.Enabler
 }
 
 func newDaemonPromise(params daemonParams) promise.Promise[*Daemon] {
@@ -1699,9 +1706,7 @@ func startDaemon(d *Daemon, restoredEndpoints *endpointRestoreState, cleaner *da
 
 	bootstrapStats.enableConntrack.Start()
 	log.Info("Starting connection tracking garbage collector")
-	gc.Enable(option.Config.EnableIPv4, option.Config.EnableIPv6,
-		restoredEndpoints.restored, d.endpointManager,
-		d.datapath.LocalNodeAddressing())
+	params.CTNATMapGC.Enable(restoredEndpoints.restored)
 	bootstrapStats.enableConntrack.End(true)
 
 	bootstrapStats.k8sInit.Start()

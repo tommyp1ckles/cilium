@@ -3453,6 +3453,21 @@ const (
 	InstanceTypeC7gn8xlarge     InstanceType = "c7gn.8xlarge"
 	InstanceTypeC7gn12xlarge    InstanceType = "c7gn.12xlarge"
 	InstanceTypeC7gn16xlarge    InstanceType = "c7gn.16xlarge"
+	InstanceTypeP548xlarge      InstanceType = "p5.48xlarge"
+	InstanceTypeM7iLarge        InstanceType = "m7i.large"
+	InstanceTypeM7iXlarge       InstanceType = "m7i.xlarge"
+	InstanceTypeM7i2xlarge      InstanceType = "m7i.2xlarge"
+	InstanceTypeM7i4xlarge      InstanceType = "m7i.4xlarge"
+	InstanceTypeM7i8xlarge      InstanceType = "m7i.8xlarge"
+	InstanceTypeM7i12xlarge     InstanceType = "m7i.12xlarge"
+	InstanceTypeM7i16xlarge     InstanceType = "m7i.16xlarge"
+	InstanceTypeM7i24xlarge     InstanceType = "m7i.24xlarge"
+	InstanceTypeM7i48xlarge     InstanceType = "m7i.48xlarge"
+	InstanceTypeM7iFlexLarge    InstanceType = "m7i-flex.large"
+	InstanceTypeM7iFlexXlarge   InstanceType = "m7i-flex.xlarge"
+	InstanceTypeM7iFlex2xlarge  InstanceType = "m7i-flex.2xlarge"
+	InstanceTypeM7iFlex4xlarge  InstanceType = "m7i-flex.4xlarge"
+	InstanceTypeM7iFlex8xlarge  InstanceType = "m7i-flex.8xlarge"
 )
 
 // Values returns all known values for InstanceType. Note that this can be
@@ -4125,6 +4140,21 @@ func (InstanceType) Values() []InstanceType {
 		"c7gn.8xlarge",
 		"c7gn.12xlarge",
 		"c7gn.16xlarge",
+		"p5.48xlarge",
+		"m7i.large",
+		"m7i.xlarge",
+		"m7i.2xlarge",
+		"m7i.4xlarge",
+		"m7i.8xlarge",
+		"m7i.12xlarge",
+		"m7i.16xlarge",
+		"m7i.24xlarge",
+		"m7i.48xlarge",
+		"m7i-flex.large",
+		"m7i-flex.xlarge",
+		"m7i-flex.2xlarge",
+		"m7i-flex.4xlarge",
+		"m7i-flex.8xlarge",
 	}
 }
 
@@ -5369,6 +5399,24 @@ func (NitroEnclavesSupport) Values() []NitroEnclavesSupport {
 	}
 }
 
+type NitroTpmSupport string
+
+// Enum values for NitroTpmSupport
+const (
+	NitroTpmSupportUnsupported NitroTpmSupport = "unsupported"
+	NitroTpmSupportSupported   NitroTpmSupport = "supported"
+)
+
+// Values returns all known values for NitroTpmSupport. Note that this can be
+// expanded in the future, and so it is only as up to date as the client. The
+// ordering of this slice is not guaranteed to be stable across updates.
+func (NitroTpmSupport) Values() []NitroTpmSupport {
+	return []NitroTpmSupport{
+		"unsupported",
+		"supported",
+	}
+}
+
 type OfferingClassType string
 
 // Enum values for OfferingClassType
@@ -6452,6 +6500,7 @@ const (
 	SpotInstanceStateClosed    SpotInstanceState = "closed"
 	SpotInstanceStateCancelled SpotInstanceState = "cancelled"
 	SpotInstanceStateFailed    SpotInstanceState = "failed"
+	SpotInstanceStateDisabled  SpotInstanceState = "disabled"
 )
 
 // Values returns all known values for SpotInstanceState. Note that this can be
@@ -6464,6 +6513,7 @@ func (SpotInstanceState) Values() []SpotInstanceState {
 		"closed",
 		"cancelled",
 		"failed",
+		"disabled",
 	}
 }
 
@@ -6500,6 +6550,26 @@ func (SpreadLevel) Values() []SpreadLevel {
 	return []SpreadLevel{
 		"host",
 		"rack",
+	}
+}
+
+type SSEType string
+
+// Enum values for SSEType
+const (
+	SSETypeSseEbs SSEType = "sse-ebs"
+	SSETypeSseKms SSEType = "sse-kms"
+	SSETypeNone   SSEType = "none"
+)
+
+// Values returns all known values for SSEType. Note that this can be expanded in
+// the future, and so it is only as up to date as the client. The ordering of this
+// slice is not guaranteed to be stable across updates.
+func (SSEType) Values() []SSEType {
+	return []SSEType{
+		"sse-ebs",
+		"sse-kms",
+		"none",
 	}
 }
 

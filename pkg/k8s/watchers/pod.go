@@ -64,6 +64,8 @@ import (
 
 const podApiGroup = resources.K8sAPIGroupPodV1Core
 
+var ciliumEndpointSyncPodLabelsControllerGroup = controller.NewGroup("sync-pod-labels-with-cilium-endpoint")
+
 // createAllPodsController is used in the rare configurations where CiliumEndpointCRD is disabled.
 // If kvstore and K8sEventHandover is enabled then we fall back to watching only local pods when
 // kvstore connects.
@@ -239,9 +241,15 @@ func (k *K8sWatcher) addK8sPodV1(pod *slim_corev1.Pod) error {
 	// first and the k8s event afterwards, if this happens it's
 	// likely the Kube API Server is getting behind the event
 	// handling.
-	if ep := k.endpointManager.LookupPodName(podNSName); ep != nil {
-		epCreatedAt := ep.GetCreatedAt()
-		timeSinceEpCreated := time.Since(epCreatedAt)
+	if eps := k.endpointManager.GetEndpointsByPodName(podNSName); len(eps) != 0 {
+		var earliestEP time.Time
+		for _, ep := range eps {
+			createdAt := ep.GetCreatedAt()
+			if earliestEP.IsZero() || createdAt.Before(earliestEP) {
+				earliestEP = createdAt
+			}
+		}
+		timeSinceEpCreated := time.Since(earliestEP)
 		if timeSinceEpCreated <= 0 {
 			metrics.EventLagK8s.Set(0)
 		} else {
@@ -379,53 +387,55 @@ func (k *K8sWatcher) updateK8sPodV1(oldK8sPod, newK8sPod *slim_corev1.Pod) error
 
 	podNSName := k8sUtils.GetObjNamespaceName(&newK8sPod.ObjectMeta)
 
-	podEP := k.endpointManager.LookupPodName(podNSName)
-	if podEP == nil {
+	podEPs := k.endpointManager.GetEndpointsByPodName(podNSName)
+	if len(podEPs) == 0 {
 		log.WithField("pod", podNSName).Debugf("Endpoint not found running for the given pod")
 		return err
 	}
 
-	if labelsChanged {
-		err := updateEndpointLabels(podEP, oldPodLabels, newPodLabels)
-		if err != nil {
-			return err
+	for _, podEP := range podEPs {
+		if labelsChanged {
+			err := updateEndpointLabels(podEP, oldPodLabels, newPodLabels)
+			if err != nil {
+				return err
+			}
+
+			// Synchronize Pod labels with CiliumEndpoint labels if there is a change.
+			updateCiliumEndpointLabels(k.clientset, podEP, newPodLabels)
 		}
 
-		// Synchronize Pod labels with CiliumEndpoint labels if there is a change.
-		updateCiliumEndpointLabels(k.clientset, podEP, newPodLabels)
-	}
-
-	if annotationsChanged {
-		if annoChangedProxy {
-			podEP.UpdateVisibilityPolicy(func(ns, podName string) (proxyVisibility string, err error) {
-				p, err := k.GetCachedPod(ns, podName)
-				if err != nil {
-					return "", nil
-				}
-				value, _ := annotation.Get(p, annotation.ProxyVisibility, annotation.ProxyVisibilityAlias)
-				return value, nil
-			})
+		if annotationsChanged {
+			if annoChangedProxy {
+				podEP.UpdateVisibilityPolicy(func(ns, podName string) (proxyVisibility string, err error) {
+					p, err := k.GetCachedPod(ns, podName)
+					if err != nil {
+						return "", nil
+					}
+					value, _ := annotation.Get(p, annotation.ProxyVisibility, annotation.ProxyVisibilityAlias)
+					return value, nil
+				})
+			}
+			if annoChangedBandwidth {
+				podEP.UpdateBandwidthPolicy(func(ns, podName string) (bandwidthEgress string, err error) {
+					p, err := k.GetCachedPod(ns, podName)
+					if err != nil {
+						return "", nil
+					}
+					return p.ObjectMeta.Annotations[bandwidth.EgressBandwidth], nil
+				})
+			}
+			if annoChangedNoTrack {
+				podEP.UpdateNoTrackRules(func(ns, podName string) (noTrackPort string, err error) {
+					p, err := k.GetCachedPod(ns, podName)
+					if err != nil {
+						return "", nil
+					}
+					value, _ := annotation.Get(p, annotation.NoTrack, annotation.NoTrackAlias)
+					return value, nil
+				})
+			}
+			realizePodAnnotationUpdate(podEP)
 		}
-		if annoChangedBandwidth {
-			podEP.UpdateBandwidthPolicy(func(ns, podName string) (bandwidthEgress string, err error) {
-				p, err := k.GetCachedPod(ns, podName)
-				if err != nil {
-					return "", nil
-				}
-				return p.ObjectMeta.Annotations[bandwidth.EgressBandwidth], nil
-			})
-		}
-		if annoChangedNoTrack {
-			podEP.UpdateNoTrackRules(func(ns, podName string) (noTrackPort string, err error) {
-				p, err := k.GetCachedPod(ns, podName)
-				if err != nil {
-					return "", nil
-				}
-				value, _ := annotation.Get(p, annotation.NoTrack, annotation.NoTrackAlias)
-				return value, nil
-			})
-		}
-		realizePodAnnotationUpdate(podEP)
 	}
 
 	return err
@@ -457,6 +467,7 @@ func updateCiliumEndpointLabels(clientset client.Clientset, ep *endpoint.Endpoin
 	// This is to make sure that the controller is also deleted once the endpoint is gone.
 	ep.UpdateController(controllerName,
 		controller.ControllerParams{
+			Group: ciliumEndpointSyncPodLabelsControllerGroup,
 			DoFunc: func(ctx context.Context) (err error) {
 				pod := ep.GetPod()
 				if pod == nil {
@@ -484,7 +495,7 @@ func updateCiliumEndpointLabels(clientset client.Clientset, ep *endpoint.Endpoin
 				}
 
 				_, err = ciliumClient.CiliumEndpoints(pod.GetNamespace()).Patch(
-					ctx, pod.GetName(),
+					ctx, ep.GetK8sCEPName(),
 					types.JSONPatchType,
 					labelsPatch,
 					meta_v1.PatchOptions{})

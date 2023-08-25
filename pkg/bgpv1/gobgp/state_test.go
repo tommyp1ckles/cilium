@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/cilium/cilium/api/v1/models"
-	"github.com/cilium/cilium/pkg/bgpv1/agent"
 	"github.com/cilium/cilium/pkg/bgpv1/types"
 	v2alpha1api "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	"github.com/cilium/cilium/pkg/logging"
@@ -377,7 +376,6 @@ func TestGetRoutes(t *testing.T) {
 			RouterID:   "127.0.0.1",
 			ListenPort: -1,
 		},
-		CState: &agent.ControlPlaneState{},
 	})
 	require.NoError(t, err)
 
@@ -392,16 +390,12 @@ func TestGetRoutes(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = testSC.AdvertisePath(context.TODO(), types.PathRequest{
-		Advert: types.Advertisement{
-			Prefix: netip.MustParsePrefix("10.0.0.0/24"),
-		},
+		Path: types.NewPathForPrefix(netip.MustParsePrefix("10.0.0.0/24")),
 	})
 	require.NoError(t, err)
 
 	_, err = testSC.AdvertisePath(context.TODO(), types.PathRequest{
-		Advert: types.Advertisement{
-			Prefix: netip.MustParsePrefix("fd00::/64"),
-		},
+		Path: types.NewPathForPrefix(netip.MustParsePrefix("fd00::/64")),
 	})
 	require.NoError(t, err)
 
