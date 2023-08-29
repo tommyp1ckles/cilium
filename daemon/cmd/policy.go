@@ -74,6 +74,15 @@ func newPolicyMetrics() policy.Metrics {
 			Name:       "selector_factor",
 			Help:       "Factor of endpoints selected by policy rules",
 		}, []string{"type"}),
+		SelectorFactorHist: metric.NewHistogramVec(metric.HistogramOpts{
+			ConfigName: "selector_factor_hist",
+			Namespace:  "cilium",
+			Subsystem:  "policy",
+			Name:       "selector_factor_hist",
+			Help:       "Factor of endpoints selected by policy rules",
+			Buckets:    []float64{1, 2, 8, 16, 32, 128, 256, 512},
+		}, []string{"type"}),
+
 		SelectorIdentityFactor: metric.NewGaugeVec(metric.GaugeOpts{
 			ConfigName: "selector_identity_factor",
 			Namespace:  "cilium",

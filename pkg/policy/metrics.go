@@ -21,6 +21,8 @@ type Metrics struct {
 	// - Many endpoints using the selector.
 	SelectorFactor metric.Vec[metric.Gauge]
 
+	SelectorFactorHist metric.Vec[metric.Observer]
+
 	// SelectorEndpointFactor is the average number of users per selector. This measures
 	// how broad an impact a selector has.
 	// That is, what is the average breadth of selector in terms of endpoints they are

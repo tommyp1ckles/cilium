@@ -1166,6 +1166,9 @@ func (sc *SelectorCache) updateMetrics() {
 
 			medf = weightFactors[stype][len(weightFactors[stype])/2]
 		}
+		for _, wf := range weightFactors[stype] {
+			sc.metrics.SelectorFactorHist.WithLabelValues(stype).Observe(float64(wf))
+		}
 
 		fmt.Println("[tom-debug] stype: ", stype, " med: ", med, "max:", max, "min:", min)
 		sc.metrics.SelectorIdentityFactor.WithLabelValues(stype).Set(float64(med))

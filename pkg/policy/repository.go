@@ -243,6 +243,7 @@ func (state *traceState) trace(rules int, ctx *SearchContext) {
 //
 // Must only be called if using [NewStoppedPolicyRepository]
 func (p *Repository) Start() {
+	p.selectorCache.updateMetrics()
 	p.RepositoryChangeQueue = eventqueue.NewEventQueueBuffered("repository-change-queue", option.Config.PolicyQueueSize)
 	p.RuleReactionQueue = eventqueue.NewEventQueueBuffered("repository-reaction-queue", option.Config.PolicyQueueSize)
 	p.RepositoryChangeQueue.Run()
