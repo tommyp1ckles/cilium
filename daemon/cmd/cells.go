@@ -163,6 +163,9 @@ var (
 		// Auth is responsible for authenticating a request if required by a policy.
 		auth.Cell,
 
+		// PolicyMetrics provides metrics for policy components.
+		cell.Metric(newPolicyMetrics),
+
 		// IPCache, policy.Repository and CachingIdentityAllocator.
 		cell.Provide(newPolicyTrifecta),
 

@@ -34,6 +34,7 @@ import (
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/metrics"
+	"github.com/cilium/cilium/pkg/metrics/metric"
 	monitorAPI "github.com/cilium/cilium/pkg/monitor/api"
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
@@ -64,6 +65,32 @@ func (d *Daemon) initPolicy() error {
 	return nil
 }
 
+func newPolicyMetrics() policy.Metrics {
+	return policy.Metrics{
+		SelectorFactor: metric.NewGaugeVec(metric.GaugeOpts{
+			ConfigName: "selector_factor",
+			Namespace:  "cilium",
+			Subsystem:  "policy",
+			Name:       "selector_factor",
+			Help:       "Factor of endpoints selected by policy rules",
+		}, []string{"type"}),
+		SelectorIdentityFactor: metric.NewGaugeVec(metric.GaugeOpts{
+			ConfigName: "selector_identity_factor",
+			Namespace:  "cilium",
+			Subsystem:  "policy",
+			Name:       "selector_identity_factor",
+			Help:       "Factor of identities selected by policy rules",
+		}, []string{"type"}),
+		SelectorEndpointFactor: metric.NewGaugeVec(metric.GaugeOpts{
+			ConfigName: "selector_endpoint_factor",
+			Namespace:  "cilium",
+			Subsystem:  "policy",
+			Name:       "selector_endpoint_factor",
+			Help:       "Factor of endpoints selected by policy rules",
+		}, []string{"type"}),
+	}
+}
+
 type policyParams struct {
 	cell.In
 
@@ -72,6 +99,7 @@ type policyParams struct {
 	CertManager     certificatemanager.CertificateManager
 	SecretManager   certificatemanager.SecretManager
 	CacheStatus     k8s.CacheStatus
+	Metrics         policy.Metrics
 }
 
 type policyOut struct {
@@ -103,6 +131,7 @@ func newPolicyTrifecta(params policyParams) (policyOut, error) {
 		idAlloc.GetIdentityCache(),
 		params.CertManager,
 		params.SecretManager,
+		params.Metrics,
 	)
 	iao.policy.SetEnvoyRulesFunc(envoy.GetEnvoyHTTPRules)
 

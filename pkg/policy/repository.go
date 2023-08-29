@@ -171,8 +171,9 @@ func NewPolicyRepository(
 	idCache cache.IdentityCache,
 	certManager certificatemanager.CertificateManager,
 	secretManager certificatemanager.SecretManager,
+	metrics Metrics,
 ) *Repository {
-	repo := NewStoppedPolicyRepository(idAllocator, idCache, certManager, secretManager)
+	repo := NewStoppedPolicyRepository(idAllocator, idCache, certManager, secretManager, metrics)
 	repo.Start()
 	return repo
 }
@@ -187,8 +188,9 @@ func NewStoppedPolicyRepository(
 	idCache cache.IdentityCache,
 	certManager certificatemanager.CertificateManager,
 	secretManager certificatemanager.SecretManager,
+	metrics Metrics,
 ) *Repository {
-	selectorCache := NewSelectorCache(idAllocator, idCache)
+	selectorCache := NewSelectorCache(idAllocator, idCache, metrics)
 	repo := &Repository{
 		selectorCache: selectorCache,
 		certManager:   certManager,

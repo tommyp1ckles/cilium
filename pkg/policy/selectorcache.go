@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"sort"
 	"strings"
@@ -155,6 +156,11 @@ type identitySelector interface {
 	notifyUsers(sc *SelectorCache, added, deleted []identity.NumericIdentity, wg *sync.WaitGroup)
 
 	numUsers() int
+
+	// selectorType provides a string representation of the type of selector.
+	// This is used for metrics calculation purposes.
+	// Implementations of identitySelector should return the same static string.
+	selectorType() string
 }
 
 // scIdentity is the information we need about a an identity that rules can select
@@ -224,6 +230,8 @@ type SelectorCache struct {
 
 	// used to lazily start the handler for user notifications.
 	startNotificationsHandlerOnce sync.Once
+
+	metrics Metrics
 }
 
 // GetModel returns the API model of the SelectorCache.
@@ -287,11 +295,12 @@ func (sc *SelectorCache) queueUserNotification(user CachedSelectionUser, selecto
 }
 
 // NewSelectorCache creates a new SelectorCache with the given identities.
-func NewSelectorCache(allocator cache.IdentityAllocator, ids cache.IdentityCache) *SelectorCache {
+func NewSelectorCache(allocator cache.IdentityAllocator, ids cache.IdentityCache, metrics Metrics) *SelectorCache {
 	sc := &SelectorCache{
 		idAllocator: allocator,
 		idCache:     getIdentityCache(ids),
 		selectors:   make(map[string]identitySelector),
+		metrics:     metrics,
 	}
 	sc.userCond = sync.NewCond(&sc.userMutex)
 	return sc
@@ -436,6 +445,8 @@ type fqdnSelector struct {
 	selectorManager
 	selector api.FQDNSelector
 }
+
+func (f *fqdnSelector) selectorType() string { return "fqdn" }
 
 // lock must be held
 //
@@ -603,6 +614,8 @@ type labelIdentitySelector struct {
 	namespaces []string // allowed namespaces, or ""
 }
 
+func (l *labelIdentitySelector) selectorType() string { return "label" }
+
 // lock must be held
 //
 // The caller is responsible for making sure the same identity is not
@@ -663,6 +676,7 @@ func (sc *SelectorCache) UpdateFQDNSelector(fqdnSelec api.FQDNSelector, identiti
 	identitiesToRelease := sc.updateFQDNSelector(fqdnSelec, identities, wg)
 	sc.mutex.Unlock()
 	sc.releaseIdentityMappings(identitiesToRelease)
+	sc.updateMetrics()
 }
 
 func (sc *SelectorCache) updateFQDNSelector(fqdnSelec api.FQDNSelector, identities []identity.NumericIdentity, wg *sync.WaitGroup) (identitiesToRelease []identity.NumericIdentity) {
@@ -990,7 +1004,10 @@ func (sc *SelectorCache) ChangeUser(selector CachedSelector, from, to CachedSele
 // deadlock if the caller is holding any endpoint locks.
 func (sc *SelectorCache) UpdateIdentities(added, deleted cache.IdentityCache, wg *sync.WaitGroup) {
 	sc.mutex.Lock()
-	defer sc.mutex.Unlock()
+	defer func() {
+		sc.mutex.Unlock()
+		sc.updateMetrics()
+	}()
 
 	// Update idCache so that newly added selectors get
 	// prepopulated with all matching numeric identities.
@@ -1091,6 +1108,7 @@ func (sc *SelectorCache) RemoveIdentitiesFQDNSelectors(fqdnSels []api.FQDNSelect
 	}
 	sc.mutex.Unlock()
 	sc.releaseIdentityMappings(identitiesToRelease)
+	sc.updateMetrics()
 }
 
 // GetLabels must be called while holding sc.mutex!
@@ -1100,4 +1118,58 @@ func (sc *SelectorCache) GetLabelsLocked(id identity.NumericIdentity) labels.Lab
 		return labels.LabelArray{}
 	}
 	return ident.lbls
+}
+
+// updateMetrics updates the metrics for the selector cache, namely providing data
+// on factors related to how many identities are selected by each selector.
+func (sc *SelectorCache) updateMetrics() {
+	sc.mutex.RLock()
+	defer sc.mutex.RUnlock()
+	numsSelected := map[string][]int{}
+	weightFactors := map[string][]int{}
+	avgWeightFactors := map[string]int{}
+	// Selectors are not policies, but that's ok?
+	for _, selector := range sc.selectors {
+		numIds := len(selector.GetSelections())
+
+		// weightFactor is the number of extra user (i.e. endpoints) identity references
+		// required for this selector.
+		//
+		// This provides an estimate of how much map space this selector is using.
+		// For example, a selector that selects one identity, but relates to 1000 endpoints
+		fmt.Println("[tom-debug] numUsers:", selector.numUsers(), selector.String())
+		weightFactor := selector.numUsers() * numIds
+
+		avgWeightFactors[selector.selectorType()] += weightFactor
+
+		weightFactors[selector.selectorType()] = append(weightFactors[selector.selectorType()],
+			weightFactor)
+		numsSelected[selector.selectorType()] = append(numsSelected[selector.selectorType()],
+			numIds)
+	}
+	for stype, nums := range numsSelected {
+		sort.Ints(nums)
+		sort.Ints(weightFactors[stype])
+	}
+
+	// for stype, _ := range numsSelected {
+	// 	avgWeightFactors[stype] /= len(numsSelected[stype])
+	// 	sc.metrics.SelectorFactor.WithLabelValues(stype).Set(float64(avgWeightFactors[stype]))
+	// }
+
+	for stype, numSelected := range numsSelected {
+		var med, max, min, medf int
+		if len(numSelected) > 0 {
+			med = numSelected[len(numSelected)/2]
+			min = numSelected[0]
+			max = numSelected[len(numSelected)-1]
+
+			medf = weightFactors[stype][len(weightFactors[stype])/2]
+		}
+
+		fmt.Println("[tom-debug] stype: ", stype, " med: ", med, "max:", max, "min:", min)
+		sc.metrics.SelectorIdentityFactor.WithLabelValues(stype).Set(float64(med))
+		sc.metrics.SelectorFactor.WithLabelValues(stype).Set(float64(medf))
+		// TODO: Do one that multiplies unique endpoint users
+	}
 }
