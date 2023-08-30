@@ -4,7 +4,12 @@
 package metric
 
 import (
+	"fmt"
+
+	"github.com/cilium/cilium/pkg/iterator"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/sirupsen/logrus"
+	"golang.org/x/exp/maps"
 )
 
 // WithMetadata is the interface implemented by any metric defined in this package. These typically embed existing
@@ -20,6 +25,27 @@ type WithMetadata interface {
 type metric struct {
 	enabled bool
 	opts    Opts
+	labels  *labelSet
+}
+
+func (b *metric) forEachLabelVector(fn func(lvls []string)) {
+	if b.labels == nil {
+		return
+	}
+	vecs := []iterator.VecIterator[string]{}
+	for _, label := range b.labels.lbls {
+		vecs = append(vecs, iterator.Vec1[string](maps.Keys(label.Values)))
+	}
+	iterator.CartesianProduct(vecs...).ForEach(fn)
+}
+
+func (b *metric) checkLabelValues(lvs ...string) {
+	if b.labels != nil {
+		if err := b.labels.checkLabelValues(lvs); err != nil {
+			logrus.WithError(err).Error("label constraints violated")
+		}
+	}
+	return
 }
 
 func (b *metric) IsEnabled() bool {
@@ -188,4 +214,67 @@ type Opts struct {
 
 	// If true, the metric has to be explicitly enabled via config or flags
 	Disabled bool
+}
+
+type Label struct {
+	Name string
+	// If defined, only these values are allowed.
+	Values map[string]struct{}
+}
+
+func NewLabel(name string, lvls ...string) Label {
+	values := make(map[string]struct{})
+	for _, lvl := range lvls {
+		values[lvl] = struct{}{}
+	}
+	return Label{
+		Name:   name,
+		Values: values,
+	}
+}
+
+type Labels []Label
+
+type labelSet struct {
+	lbls Labels
+	m    map[string]map[string]struct{}
+}
+
+func (l labelSet) namesToValues() map[string]map[string]struct{} {
+	if l.m != nil {
+		return l.m
+	}
+	m := make(map[string]map[string]struct{})
+	for _, label := range l.lbls {
+		m[label.Name] = label.Values
+	}
+	l.m = m
+	return m
+}
+
+func (l labelSet) checkLabels(labels prometheus.Labels) error {
+	for name, value := range labels {
+		if lvs, ok := l.namesToValues()[name]; ok {
+			if _, ok := lvs[value]; !ok {
+				return fmt.Errorf("value %s not allowed for label %s (should be one of %v)", value, name, lvs)
+			}
+		} else {
+			return fmt.Errorf("invalid label name: %s", name)
+		}
+	}
+	return nil
+}
+
+func (l labelSet) checkLabelValues(lvs []string) error {
+	if len(l.lbls) != len(lvs) {
+		return fmt.Errorf("invalid labels")
+	}
+	for i, label := range l.lbls {
+		if label.Values != nil {
+			if _, ok := label.Values[lvs[i]]; !ok {
+				return fmt.Errorf("invalid label value")
+			}
+		}
+	}
+	return nil
 }

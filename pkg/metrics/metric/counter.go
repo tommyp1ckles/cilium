@@ -70,9 +70,29 @@ func NewCounterVec(opts CounterOpts, labelNames []string) DeletableVec[Counter] 
 	}
 }
 
+func NewCounterVecWithLabels(opts CounterOpts, labels Labels) DeletableVec[Counter] {
+	labelNames := []string{}
+	for _, label := range labels {
+		labelNames = append(labelNames, label.Name)
+	}
+	cv := &counterVec{
+		CounterVec: prometheus.NewCounterVec(opts.toPrometheus(), labelNames),
+		metric: metric{
+			enabled: !opts.Disabled,
+			opts:    Opts(opts),
+			labels:  &labelSet{lbls: labels},
+		},
+	}
+	cv.forEachLabelVector(func(vs []string) {
+		cv.WithLabelValues(vs...)
+	})
+	return cv
+}
+
 type counterVec struct {
 	*prometheus.CounterVec
 	metric
+	labels []Label
 }
 
 func (cv *counterVec) CurryWith(labels prometheus.Labels) (Vec[Counter], error) {
@@ -118,6 +138,7 @@ func (cv *counterVec) GetMetricWithLabelValues(lvs ...string) (Counter, error) {
 }
 
 func (cv *counterVec) With(labels prometheus.Labels) Counter {
+	//cv.checkLabels(labels)
 	if !cv.enabled {
 		return &counter{
 			metric: metric{enabled: false},
@@ -132,6 +153,7 @@ func (cv *counterVec) With(labels prometheus.Labels) Counter {
 }
 
 func (cv *counterVec) WithLabelValues(lvs ...string) Counter {
+	cv.checkLabelValues(lvs...)
 	if !cv.enabled {
 		return &counter{
 			metric: metric{enabled: false},

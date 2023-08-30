@@ -797,13 +797,15 @@ func NewLegacyMetrics() *LegacyMetrics {
 			Help:      "Number of redirects installed for endpoints, labeled by protocol",
 		}, []string{LabelProtocolL7}),
 
-		ProxyPolicyL7Total: metric.NewCounterVec(metric.CounterOpts{
+		ProxyPolicyL7Total: metric.NewCounterVecWithLabels(metric.CounterOpts{
 			ConfigName: Namespace + "_policy_l7_total",
 
 			Namespace: Namespace,
 			Name:      "policy_l7_total",
 			Help:      "Number of total proxy requests handled",
-		}, []string{"rule"}),
+		}, metric.Labels{
+			metric.NewLabel("rule", "received", "forwarded", "denied", "parse_errors"),
+		}),
 
 		ProxyParseErrors: metric.NewCounter(metric.CounterOpts{
 			ConfigName: Namespace + "_policy_l7_parse_errors_total",
@@ -980,19 +982,31 @@ func NewLegacyMetrics() *LegacyMetrics {
 			Help:       "Number of times that Cilium has started a subprocess, labeled by subsystem",
 		}, []string{LabelSubsystem}),
 
-		KubernetesEventProcessed: metric.NewCounterVec(metric.CounterOpts{
+		KubernetesEventProcessed: metric.NewCounterVecWithLabels(metric.CounterOpts{
 			ConfigName: Namespace + "_kubernetes_events_total",
 			Namespace:  Namespace,
 			Name:       "kubernetes_events_total",
 			Help:       "Number of Kubernetes events processed labeled by scope, action and execution result",
-		}, []string{LabelScope, LabelAction, LabelStatus}),
+		},
+			metric.Labels{
+				metric.NewLabel(LabelScope, "CiliumNetworkPolicy", "CiliumClusterwideNetworkPolicy", "NetworkPolicy"),
+				metric.NewLabel(LabelAction, "update", "delete"),
+				metric.NewLabel(LabelStatus, "success", "failed"),
+			},
+		),
 
-		KubernetesEventReceived: metric.NewCounterVec(metric.CounterOpts{
+		KubernetesEventReceived: metric.NewCounterVecWithLabels(metric.CounterOpts{
 			ConfigName: Namespace + "_kubernetes_events_received_total",
 			Namespace:  Namespace,
 			Name:       "kubernetes_events_received_total",
 			Help:       "Number of Kubernetes events received labeled by scope, action, valid data and equalness",
-		}, []string{LabelScope, LabelAction, "valid", "equal"}),
+		}, metric.Labels{
+			//metric.NewLabel(LabelScope, LabelAction, "valid", "equal"),
+			metric.NewLabel(LabelScope, "CiliumNetworkPolicy", "CiliumClusterwideNetworkPolicy", "NetworkPolicy"),
+			metric.NewLabel(LabelAction, "update", "delete"),
+			metric.NewLabel("valid", "true", "false"),
+			metric.NewLabel("equal", "true", "false"),
+		}),
 
 		KubernetesAPIInteractions: metric.NewHistogramVec(metric.HistogramOpts{
 			ConfigName: Namespace + "_" + SubsystemK8sClient + "_api_latency_time_seconds",
