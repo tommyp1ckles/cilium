@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Authors of Cilium
+
 package iterator
 
 // VecIterator is an iterator that returns a vector of elements of type T for
