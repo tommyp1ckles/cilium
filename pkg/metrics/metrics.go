@@ -1160,13 +1160,19 @@ func NewLegacyMetrics() *LegacyMetrics {
 			Help:       "Duration of BPF system calls",
 		}, []string{LabelOperation, LabelOutcome}),
 
-		BPFMapOps: metric.NewCounterVec(metric.CounterOpts{
+		BPFMapOps: metric.NewCounterVecWithLabels(metric.CounterOpts{
 			ConfigName: Namespace + "_" + SubsystemBPF + "_map_ops_total",
 			Namespace:  Namespace,
 			Subsystem:  SubsystemBPF,
 			Name:       "map_ops_total",
 			Help:       "Total operations on map, tagged by map name",
-		}, []string{LabelMapName, LabelOperation, LabelOutcome}),
+		}, metric.Labels{
+			metric.NewLabel(LabelMapName,
+				"ct4_global", "ct_any4_global", "egresscall_policy", "ipcache", "lb4_backends_v3", "l4_services_v2",
+				"lxc", "policy", "runtime_config", "snat_v4_external", "snat_v4_internal", "snat_v6_external"),
+			metric.NewLabel(LabelOperation, "create", "update", "lookup", "delete", "getNextKey"),
+			metric.NewLabel(LabelOutcome, "success", "failure"),
+		}),
 
 		TriggerPolicyUpdateTotal: metric.NewCounterVec(metric.CounterOpts{
 			ConfigName: Namespace + "_" + SubsystemTriggers + "_policy_update_total",
