@@ -724,13 +724,15 @@ func NewLegacyMetrics() *LegacyMetrics {
 			Help:       "Number of times a policy import has failed",
 		}),
 
-		PolicyChangeTotal: metric.NewCounterVec(metric.CounterOpts{
+		PolicyChangeTotal: metric.NewCounterVecWithLabels(metric.CounterOpts{
 			ConfigName: Namespace + "_policy_change_total",
 
 			Namespace: Namespace,
 			Name:      "policy_change_total",
 			Help:      "Number of policy changes by outcome",
-		}, []string{"outcome"}),
+		}, metric.Labels{
+			metric.NewLabel("outcome", "success", "failure"),
+		}),
 
 		PolicyEndpointStatus: metric.NewGaugeVec(metric.GaugeOpts{
 			ConfigName: Namespace + "_policy_endpoint_enforcement_status",
