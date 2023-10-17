@@ -75,6 +75,7 @@ type wqSyncStore struct {
 
 	log          *logrus.Entry
 	queuedMetric prometheus.Gauge
+	errorsMetric prometheus.Counter
 	syncedMetric prometheus.Gauge
 }
 
@@ -113,7 +114,7 @@ func WSSWithSyncedKeyOverride(key string) WSSOpt {
 
 // NewWorkqueueSyncStore returns a SyncStore instance which leverages a workqueue
 // to coalescence update/delete requests and handle retries in case of errors.
-func NewWorkqueueSyncStore(clusterName string, backend SyncStoreBackend, prefix string, opts ...WSSOpt) SyncStore {
+func newWorkqueueSyncStore(clusterName string, backend SyncStoreBackend, prefix string, m *Metrics, opts ...WSSOpt) SyncStore {
 	wss := &wqSyncStore{
 		backend: backend,
 		prefix:  prefix,
@@ -133,8 +134,9 @@ func NewWorkqueueSyncStore(clusterName string, backend SyncStoreBackend, prefix 
 
 	wss.log = wss.log.WithField(logfields.ClusterName, wss.source)
 	wss.workqueue = workqueue.NewRateLimitingQueue(wss.limiter)
-	wss.queuedMetric = metrics.KVStoreSyncQueueSize.WithLabelValues(kvstore.GetScopeFromKey(prefix), wss.source)
-	wss.syncedMetric = metrics.KVStoreInitialSyncCompleted.WithLabelValues(kvstore.GetScopeFromKey(prefix), wss.source, "write")
+	wss.queuedMetric = m.KVStoreSyncQueueSize.WithLabelValues(kvstore.GetScopeFromKey(prefix), wss.source)
+	wss.errorsMetric = m.KVStoreSyncErrors.WithLabelValues(kvstore.GetScopeFromKey(prefix), wss.source)
+	wss.syncedMetric = m.KVStoreInitialSyncCompleted.WithLabelValues(kvstore.GetScopeFromKey(prefix), wss.source, "write")
 	return wss
 }
 
@@ -236,6 +238,7 @@ func (wss *wqSyncStore) processNextItem(ctx context.Context) bool {
 	// Run the handler, passing it the key to be processed as parameter.
 	if err := wss.handle(ctx, key); err != nil {
 		// Put the item back on the workqueue to handle any transient errors.
+		wss.errorsMetric.Inc()
 		wss.workqueue.AddRateLimited(key)
 		return true
 	}

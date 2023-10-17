@@ -37,8 +37,8 @@ Installation
 ------------
 
 You can enable metrics for ``cilium-agent`` (including Envoy) with the Helm value
-``prometheus.enabled=true``. To enable metrics for ``cilium-operator``,
-use ``operator.prometheus.enabled=true``.
+``prometheus.enabled=true``. ``cilium-operator`` metrics are enabled by default,
+if you want to disable them, set Helm value ``operator.prometheus.enabled=false``.
 
 .. parsed-literal::
 
@@ -260,8 +260,8 @@ disable the following two metrics as they generate too much data:
 
 You can then configure the agent with ``--metrics="-cilium_node_connectivity_status -cilium_node_connectivity_latency_seconds"``.
 
-Exported Metrics by Default
-^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Exported Metrics
+^^^^^^^^^^^^^^^^
 
 Endpoint
 ~~~~~~~~
@@ -270,10 +270,19 @@ Endpoint
 Name                                         Labels                                             Default    Description
 ============================================ ================================================== ========== ========================================================
 ``endpoint``                                                                                    Enabled    Number of endpoints managed by this agent
+``endpoint_max_ifindex``                                                                        Disabled   Maximum interface index observed for existing endpoints
 ``endpoint_regenerations_total``             ``outcome``                                        Enabled    Count of all endpoint regenerations that have completed
 ``endpoint_regeneration_time_stats_seconds`` ``scope``                                          Enabled    Endpoint regeneration time stats
 ``endpoint_state``                           ``state``                                          Enabled    Count of all endpoints
 ============================================ ================================================== ========== ========================================================
+
+The default enabled status of ``endpoint_max_ifindex`` is dynamic. On earlier
+kernels (typically with version lower than 5.10), Cilium must store the
+interface index for each endpoint in the conntrack map, which reserves 16 bits
+for this field. If Cilium is running on such a kernel, this metric will be
+enabled by default. It can be used to implement an alert if the ifindex is
+approaching the limit of 65535. This may be the case in instances of
+significant Endpoint churn.
 
 Services
 ~~~~~~~~
@@ -348,7 +357,8 @@ Name                                       Labels                               
 ========================================== ===================================================================== ========== ========================================================
 ``bpf_syscall_duration_seconds``           ``operation``, ``outcome``                                            Disabled   Duration of eBPF system call performed
 ``bpf_map_ops_total``                      ``mapName`` (deprecated), ``map_name``, ``operation``, ``outcome``    Enabled    Number of eBPF map operations performed. ``mapName`` is deprecated and will be removed in 1.10. Use ``map_name`` instead.
-``bpf_map_pressure``                       ``map_name``                                                          Enabled    Map pressure defined as a ratio of the map usage compared to its size. Policy map metrics are only reported when the ratio is over 0.1, ie 10% full.
+``bpf_map_pressure``                       ``map_name``                                                          Enabled    Map pressure defined as a ratio of the map usage compared to its size. The policy map metric is the maximum policy map size on a node and is only reported when the ratio is over 0.1, ie 10% full.
+``bpf_map_capacity``                       ``map_group``                                                         Enabled    Maximum size of eBPF maps by group of maps (type of map that have the same max capacity size). Map types with size of 65536 are not emitted, missing map types can be assumed to be 65536.
 ``bpf_maps_virtual_memory_max_bytes``                                                                            Enabled    Max memory used by eBPF maps installed in the system
 ``bpf_progs_virtual_memory_max_bytes``                                                                           Enabled    Max memory used by eBPF programs installed in the system
 ========================================== ===================================================================== ========== ========================================================
@@ -380,22 +390,21 @@ Name                                       Labels                               
 ``policy_regeneration_total``                                                                 Enabled    Total number of policies regenerated successfully
 ``policy_regeneration_time_stats_seconds`` ``scope``                                          Enabled    Policy regeneration time stats labeled by the scope
 ``policy_max_revision``                                                                       Enabled    Highest policy revision number in the agent
-``policy_import_errors_total``                                                                Enabled    Number of times a policy import has failed
 ``policy_change_total``                                                                       Enabled    Number of policy changes by outcome
 ``policy_endpoint_enforcement_status``                                                        Enabled    Number of endpoints labeled by policy enforcement status
 ``policy_implementation_delay``            ``source``                                         Enabled    Time in seconds between a policy change and it being fully deployed into the datapath, labeled by the policy's source
 ========================================== ================================================== ========== ========================================================
 
-Policy L7 (HTTP/Kafka)
-~~~~~~~~~~~~~~~~~~~~~~
+Policy L7 (HTTP/Kafka/FQDN)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ======================================== ================================================== ========== ========================================================
 Name                                     Labels                                             Default    Description
 ======================================== ================================================== ========== ========================================================
 ``proxy_redirects``                      ``protocol``                                       Enabled    Number of redirects installed for endpoints
-``proxy_upstream_reply_seconds``                                                            Enabled    Seconds waited for upstream server to reply to a request
+``proxy_upstream_reply_seconds``         ``error``, ``protocol_l7``, ``scope``              Enabled    Seconds waited for upstream server to reply to a request
 ``proxy_datapath_update_timeout_total``                                                     Disabled   Number of total datapath update timeouts due to FQDN IP updates
-``policy_l7_total``                      ``type``                                           Enabled    Number of total L7 requests/responses
+``policy_l7_total``                      ``rule``, ``proxy_type``                           Enabled    Number of total L7 requests/responses
 ======================================== ================================================== ========== ========================================================
 
 Identity
@@ -471,12 +480,28 @@ Name                                          Labels                            
 ``k8s_client_api_calls_total``                ``host``, ``method``, ``return_code``         Enabled    Number of API calls made to kube-apiserver labeled by host, method and return code
 ============================================= ============================================= ========== ===========================================================
 
+Kubernetes workqueue
+~~~~~~~~~~~~~~~~~~~~
+
+==================================================== ============================================= ========== ===========================================================
+Name                                                 Labels                                        Default    Description
+==================================================== ============================================= ========== ===========================================================
+``k8s_workqueue_depth``                              ``name``                                      Enabled    Current depth of workqueue
+``k8s_workqueue_adds_total``                         ``name``                                      Enabled    Total number of adds handled by workqueue
+``k8s_workqueue_queue_duration_seconds``             ``name``                                      Enabled    Duration in seconds an item stays in workqueue prior to request
+``k8s_workqueue_work_duration_seconds``              ``name``                                      Enabled    Duration in seconds to process an item from workqueue
+``k8s_workqueue_unfinished_work_seconds``            ``name``                                      Enabled    Duration in seconds of work in progress that hasn't been observed by work_duration. Large values indicate stuck threads. You can deduce the number of stuck threads by observing the rate at which this value increases.
+``k8s_workqueue_longest_running_processor_seconds``  ``name``                                      Enabled    Duration in seconds of the longest running processor for workqueue
+``k8s_workqueue_retries_total``                      ``name``                                      Enabled    Total number of retries handled by workqueue
+==================================================== ============================================= ========== ===========================================================
+
 IPAM
 ~~~~
 
 ======================================== ============================================ ========== ========================================================
 Name                                     Labels                                       Default    Description
 ======================================== ============================================ ========== ========================================================
+``ipam_capacity``                        ``family``                                   Enabled    Total number of IPs in the IPAM pool labeled by family
 ``ipam_events_total``                                                                 Enabled    Number of IPAM events received labeled by action and datapath family type
 ``ip_addresses``                         ``family``                                   Enabled    Number of allocated IP addresses
 ======================================== ============================================ ========== ========================================================
@@ -490,6 +515,7 @@ Name                                     Labels                                 
 ``kvstore_operations_duration_seconds``  ``action``, ``kind``, ``outcome``, ``scope`` Enabled    Duration of kvstore operation
 ``kvstore_events_queue_seconds``         ``action``, ``scope``                        Enabled    Seconds waited before a received event was queued
 ``kvstore_quorum_errors_total``          ``error``                                    Enabled    Number of quorum errors
+``kvstore_sync_errors_total``            ``scope``, ``source_cluster``                Enabled    Number of times synchronization to the kvstore failed
 ``kvstore_sync_queue_size``              ``scope``, ``source_cluster``                Enabled    Number of elements queued for synchronization in the kvstore
 ``kvstore_initial_sync_completed``       ``scope``, ``source_cluster``, ``action``    Enabled    Whether the initial synchronization from/to the kvstore has completed
 ======================================== ============================================ ========== ========================================================
@@ -527,6 +553,16 @@ Name                               Labels                           Default     
 ``jobs_timer_run_seconds``         ``job``                          Enabled      Histogram of timer job run duration
 ``jobs_observer_run_seconds``      ``job``                          Enabled      Histogram of observer job run duration
 ================================== ================================ ============ ========================================================
+
+CIDRGroups
+~~~~~~~~~~
+
+=================================================== ===================== =============================
+Name                                                Labels                Default    Description
+=================================================== ===================== =============================
+``cidrgroups_referenced``                                                 Enabled    Number of CNPs and CCNPs referencing at least one CiliumCIDRGroup. CNPs with empty or non-existing CIDRGroupRefs are not considered
+``cidrgroup_translation_time_stats_seconds``                              Disabled   CIDRGroup translation time stats
+=================================================== ===================== =============================
 
 .. _metrics_api_rate_limiting:
 
@@ -994,6 +1030,7 @@ Name                                     Labels                                 
 ``kvstore_operations_duration_seconds``  ``action``, ``kind``, ``outcome``, ``scope`` Duration of kvstore operation
 ``kvstore_events_queue_seconds``         ``action``, ``scope``                        Seconds waited before a received event was queued
 ``kvstore_quorum_errors_total``          ``error``                                    Number of quorum errors
+``kvstore_sync_errors_total``            ``scope``, ``source_cluster``                Number of times synchronization to the kvstore failed
 ``kvstore_sync_queue_size``              ``scope``, ``source_cluster``                Number of elements queued for synchronization in the kvstore
 ``kvstore_initial_sync_completed``       ``scope``, ``source_cluster``, ``action``    Whether the initial synchronization from/to the kvstore has completed
 ======================================== ============================================ ========================================================
@@ -1068,6 +1105,7 @@ Name                                     Labels                                 
 ``kvstore_operations_duration_seconds``  ``action``, ``kind``, ``outcome``, ``scope`` Duration of kvstore operation
 ``kvstore_events_queue_seconds``         ``action``, ``scope``                        Seconds waited before a received event was queued
 ``kvstore_quorum_errors_total``          ``error``                                    Number of quorum errors
+``kvstore_sync_errors_total``            ``scope``, ``source_cluster``                Number of times synchronization to the kvstore failed
 ``kvstore_sync_queue_size``              ``scope``, ``source_cluster``                Number of elements queued for synchronization in the kvstore
 ``kvstore_initial_sync_completed``       ``scope``, ``source_cluster``, ``action``    Whether the initial synchronization from/to the kvstore has completed
 ======================================== ============================================ ========================================================

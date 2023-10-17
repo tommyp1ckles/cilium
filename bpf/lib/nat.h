@@ -288,7 +288,8 @@ snat_v4_nat_handle_mapping(struct __ctx_buff *ctx,
 
 		ret = ct_lazy_lookup4(get_ct_map4(&tuple_snat), &tuple_snat,
 				      ctx, off, has_l4_header, CT_EGRESS,
-				      SCOPE_FORWARD, &ct_state, &trace->monitor);
+				      SCOPE_FORWARD, CT_ENTRY_ANY,
+				      &ct_state, &trace->monitor);
 		if (ret < 0)
 			return ret;
 
@@ -342,7 +343,8 @@ snat_v4_rev_nat_handle_mapping(struct __ctx_buff *ctx,
 
 		ret = ct_lazy_lookup4(get_ct_map4(&tuple_revsnat), &tuple_revsnat,
 				      ctx, off, has_l4_header, CT_INGRESS,
-				      SCOPE_REVERSE, &ct_state, &trace->monitor);
+				      SCOPE_REVERSE, CT_ENTRY_ANY,
+				      &ct_state, &trace->monitor);
 		if (ret < 0)
 			return ret;
 
@@ -693,7 +695,7 @@ snat_v4_needs_masquerade(struct __ctx_buff *ctx __maybe_unused,
 	if (is_reply)
 		goto skip_egress_gateway;
 
-	if (egress_gw_snat_needed(tuple->saddr, tuple->daddr, &target->addr)) {
+	if (egress_gw_snat_needed_hook(tuple->saddr, tuple->daddr, &target->addr)) {
 		target->egress_gateway = true;
 		/* If the endpoint is local, then the connection is already tracked. */
 		if (!local_ep)
@@ -1257,7 +1259,7 @@ snat_v6_nat_handle_mapping(struct __ctx_buff *ctx,
 
 		ret = ct_lazy_lookup6(get_ct_map6(&tuple_snat), &tuple_snat,
 				      ctx, off, CT_EGRESS, SCOPE_FORWARD,
-				      &ct_state, &trace->monitor);
+				      CT_ENTRY_ANY, &ct_state, &trace->monitor);
 		if (ret < 0)
 			return ret;
 
@@ -1303,7 +1305,7 @@ snat_v6_rev_nat_handle_mapping(struct __ctx_buff *ctx,
 
 		ret = ct_lazy_lookup6(get_ct_map6(&tuple_revsnat), &tuple_revsnat,
 				      ctx, off, CT_INGRESS, SCOPE_REVERSE,
-				      &ct_state, &trace->monitor);
+				      CT_ENTRY_ANY, &ct_state, &trace->monitor);
 		if (ret < 0)
 			return ret;
 

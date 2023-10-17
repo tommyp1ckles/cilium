@@ -34,7 +34,7 @@ const (
 	Backend4MapName = "cilium_lb4_backends"
 	// Backend4MapV2Name is the name of the IPv4 LB backends v2 BPF map.
 	Backend4MapV2Name = "cilium_lb4_backends_v2"
-	// Backend4MapV2Name is the name of the IPv4 LB backends v3 BPF map.
+	// Backend4MapV3Name is the name of the IPv4 LB backends v3 BPF map.
 	Backend4MapV3Name = "cilium_lb4_backends_v3"
 	// RevNat4MapName is the name of the IPv4 LB reverse NAT BPF map.
 	RevNat4MapName = "cilium_lb4_reverse_nat"
@@ -289,7 +289,7 @@ func (k *Service4Key) ToHost() ServiceKey {
 	return &h
 }
 
-// Service4Value must match 'struct lb4_service_v2' in "bpf/lib/common.h".
+// Service4Value must match 'struct lb4_service' in "bpf/lib/common.h".
 type Service4Value struct {
 	BackendID uint32    `align:"$union0"`
 	Count     uint16    `align:"count"`

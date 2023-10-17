@@ -84,6 +84,8 @@ type endpointManager struct {
 
 	// controllers associated with the endpoint manager.
 	controllers *controller.Manager
+
+	policyMapPressure *policyMapPressure
 }
 
 // EndpointResourceSynchronizer is an interface which synchronizes CiliumEndpoint
@@ -108,7 +110,7 @@ func New(epSynchronizer EndpointResourceSynchronizer) *endpointManager {
 		controllers:                  controller.NewManager(),
 	}
 	mgr.deleteEndpoint = mgr.removeEndpoint
-
+	mgr.policyMapPressure = newPolicyMapPressure()
 	return &mgr
 }
 
@@ -614,6 +616,7 @@ func (mgr *endpointManager) expose(ep *endpoint.Endpoint) error {
 	mgr.mutex.Lock()
 	// Get a copy of the identifiers before exposing the endpoint
 	identifiers := ep.Identifiers()
+	ep.PolicyMapPressureUpdater = mgr.policyMapPressure
 	ep.Start(newID)
 	mgr.mcastManager.AddAddress(ep.IPv6)
 	mgr.updateIDReferenceLocked(ep)
@@ -660,6 +663,29 @@ func (mgr *endpointManager) AddEndpoint(owner regeneration.Owner, ep *endpoint.E
 		s.EndpointCreated(ep)
 	}
 	mgr.mutex.RUnlock()
+
+	return nil
+}
+
+func (mgr *endpointManager) AddIngressEndpoint(
+	ctx context.Context,
+	owner regeneration.Owner,
+	policyGetter policyRepoGetter,
+	ipcache *ipcache.IPCache,
+	proxy endpoint.EndpointProxy,
+	allocator cache.IdentityAllocator,
+	reason string,
+) error {
+	ep, err := endpoint.CreateIngressEndpoint(owner, policyGetter, ipcache, proxy, allocator)
+	if err != nil {
+		return err
+	}
+
+	if err := mgr.AddEndpoint(owner, ep, reason); err != nil {
+		return err
+	}
+
+	ep.InitWithIngressLabels(ctx, launchTime)
 
 	return nil
 }

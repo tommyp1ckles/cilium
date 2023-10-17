@@ -209,6 +209,9 @@ extraConfig: {}
 #    test 2
 #    test 3
 
+# -- Annotations to be added to all top-level cilium-agent objects (resources under templates/cilium-agent)
+annotations: {}
+
 # -- Security Context for cilium-agent pods.
 podSecurityContext: {}
 
@@ -403,6 +406,12 @@ bgp:
 bgpControlPlane:
   # -- Enables the BGP control plane.
   enabled: false
+  # -- SecretsNamespace is the namespace which BGP support will retrieve secrets from.
+  secretsNamespace:
+    # -- Create secrets namespace for BGP secrets.
+    create: true
+    # -- The name of the secret namespace to which Cilium agents are given read access
+    name: cilium-bgp-secrets
 
 pmtuDiscovery:
   # -- Enable path MTU discovery to send ICMP fragmentation-needed replies to
@@ -588,6 +597,12 @@ cni:
 # connection tracking table.
 # @default -- `"0s"`
 conntrackGCInterval: ""
+
+# -- (string) Configure the maximum frequency for the garbage collection of the
+# connection tracking table. Only affects the automatic computation for the frequency
+# and has no effect when 'conntrackGCInterval' is set. This can be set to more frequently
+# clean up unused identities created from ToFQDN policies.
+conntrackGCMaxInterval: ""
 
 # -- Configure container runtime specific integration.
 # Deprecated in favor of bpf.autoMount.enabled. To be removed in 1.15.
@@ -818,6 +833,8 @@ encryption:
   wireguard:
     # -- Enables the fallback to the user-space implementation.
     userspaceFallback: false
+    # -- Controls Wireguard PersistentKeepalive option. Set 0s to disable.
+    persistentKeepalive: 0s
 
   # -- Deprecated in favor of encryption.ipsec.keyFile. To be removed in 1.15.
   # Name of the key file inside the Kubernetes secret configured via secretName.
@@ -965,6 +982,9 @@ hubble:
   # -- Enable Hubble (true by default).
   enabled: true
 
+  # -- Annotations to be added to all top-level hubble objects (resources under templates/hubble)
+  annotations: {}
+
   # -- Buffer size of the channel Hubble uses to receive monitor events. If this
   # value is not set, the queue size is set to the default monitor queue size.
   # eventQueueSize: ""
@@ -1011,6 +1031,8 @@ hubble:
       labels: {}
       # -- Annotations to add to ServiceMonitor hubble
       annotations: {}
+      # -- jobLabel to add for ServiceMonitor hubble
+      jobLabel: ""
       # -- Interval for scrape metrics.
       interval: "10s"
       # -- Relabeling configs for the ServiceMonitor hubble
@@ -1034,18 +1056,28 @@ hubble:
   # -- Unix domain socket path to listen to when Hubble is enabled.
   socketPath: /var/run/cilium/hubble.sock
 
-  # -- Configures the list of redact options for Hubble.
+  # -- Configures the redact options for Hubble.
   # Example:
   #
   #   redact:
-  #   - http-url-query
-  #   - kafka-api-key
+  #     enabled: true
+  #     http:
+  #       urlQuery: true
+  #     kafka:
+  #       apiKey: false
   #
-  # You can specify the list of options from the helm CLI:
+  # You can specify the options from the helm CLI:
   #
-  #   --set hubble.redact="{http-url-query,kafka-api-key}"
+  #   --set hubble.redact.enabled="true"
+  #   --set hubble.redact.http.urlQuery="true"
+  #   --set hubble.redact.kafka.apiKey="false"
   #
-  redact: ~
+  redact:
+    enabled: false
+    http:
+        urlQuery: false
+    kafka:
+        apiKey: false
 
   # -- An additional address for Hubble to listen to.
   # Set this field ":4244" if you are enabling Hubble Relay, as it assumes that
@@ -1166,6 +1198,9 @@ hubble:
 
     # -- Additional hubble-relay environment variables.
     extraEnv: []
+
+    # -- Annotations to be added to all top-level hubble-relay objects (resources under templates/hubble-relay)
+    annotations: {}
 
     # -- Annotations to be added to hubble-relay pods
     podAnnotations: {}
@@ -1422,6 +1457,9 @@ hubble:
     # -- The number of replicas of Hubble UI to deploy.
     replicas: 1
 
+    # -- Annotations to be added to all top-level hubble-ui objects (resources under templates/hubble-ui)
+    annotations: {}
+
     # -- Annotations to be added to hubble-ui pods
     podAnnotations: {}
 
@@ -1550,6 +1588,9 @@ ipam:
     # refill the bucket up to the burst size capacity.
     # @default -- `4.0`
     externalAPILimitQPS: ~
+
+# -- The api-rate-limit option can be used to overwrite individual settings of the default configuration for rate limiting calls to the Cilium Agent API
+apiRateLimit: ~
 
 # -- Configure the eBPF-based ip-masq-agent
 ipMasqAgent:
@@ -1792,6 +1833,10 @@ nodePort:
 # ref: https://docs.cilium.io/en/stable/security/policy/intro/#policy-enforcement-modes
 policyEnforcementMode: "default"
 
+# -- policyCIDRMatchMode is a list of entities that may be selected by CIDR selector.
+# The possible value is "nodes".
+policyCIDRMatchMode:
+
 pprof:
   # -- Enable pprof for cilium-agent
   enabled: false
@@ -1812,6 +1857,8 @@ prometheus:
     labels: {}
     # -- Annotations to add to ServiceMonitor cilium-agent
     annotations: {}
+    # -- jobLabel to add for ServiceMonitor cilium-agent
+    jobLabel: ""
     # -- Interval for scrape metrics.
     interval: "10s"
     # -- Specify the Kubernetes namespace where Prometheus expects to find
@@ -1889,10 +1936,10 @@ envoy:
   # -- Envoy container image.
   image:
     override: ~
-    repository: "quay.io/cilium/cilium-envoy"
-    tag: "v1.26.4-bad30dbe3f4c33c4a6e6747236f7c6d84b380d0d"
+    repository: "${CILIUM_ENVOY_REPO}"
+    tag: "${CILIUM_ENVOY_VERSION}"
     pullPolicy: "${PULL_POLICY}"
-    digest: "sha256:ec4f5a3b9504288b4de1db00893bd0ef79187c501a63e08bce11e2fb3de88920"
+    digest: "${CILIUM_ENVOY_DIGEST}"
     useDigest: true
 
   # -- Additional containers added to the cilium Envoy DaemonSet.
@@ -1933,6 +1980,9 @@ envoy:
       maxUnavailable: 2
   # -- Roll out cilium envoy pods automatically when configmap is updated.
   rollOutPods: false
+
+  # -- Annotations to be added to all top-level cilium-envoy objects (resources under templates/cilium-envoy)
+  annotations: {}
 
   # -- Security Context for cilium-envoy pods.
   podSecurityContext: {}
@@ -2136,17 +2186,27 @@ tls:
     #   -----END CERTIFICATE-----
 
 # -- Configure the encapsulation configuration for communication between nodes.
+# Deprecated in favor of tunnelProtocol and routingMode. To be removed in 1.15.
 # Possible values:
 #   - disabled
-#   - vxlan (default)
+#   - vxlan
 #   - geneve
+# @default -- `"vxlan"`
 tunnel: ""
 
 # -- Tunneling protocol to use in tunneling mode and for ad-hoc tunnels.
+# Possible values:
+#   - ""
+#   - vxlan
+#   - geneve
 # @default -- `"vxlan"`
 tunnelProtocol: ""
 
 # -- Enable native-routing mode or tunneling mode.
+# Possible values:
+#   - ""
+#   - native
+#   - tunnel
 # @default -- `"tunnel"`
 routingMode: ""
 
@@ -2208,6 +2268,9 @@ etcd:
   # ref: https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#nodeselector
   nodeSelector:
     kubernetes.io/os: linux
+
+  # -- Annotations to be added to all top-level etcd-operator objects (resources under templates/etcd-operator)
+  annotations: {}
 
   # -- Security context to be added to cilium-etcd-operator pods
   podSecurityContext: {}
@@ -2357,6 +2420,9 @@ operator:
   # -- Additional cilium-operator volumeMounts.
   extraVolumeMounts: []
 
+  # -- Annotations to be added to all top-level cilium-operator objects (resources under templates/cilium-operator)
+  annotations: {}
+
   # -- Security context to be added to cilium-operator pods
   podSecurityContext: {}
 
@@ -2417,7 +2483,7 @@ operator:
   # -- Enable prometheus metrics for cilium-operator on the configured port at
   # /metrics
   prometheus:
-    enabled: false
+    enabled: true
     port: 9963
     serviceMonitor:
       # -- Enable service monitors.
@@ -2427,6 +2493,8 @@ operator:
       labels: {}
       # -- Annotations to add to ServiceMonitor cilium-operator
       annotations: {}
+      # -- jobLabel to add for ServiceMonitor cilium-operator
+      jobLabel: ""
       # -- Interval for scrape metrics.
       interval: "10s"
       # -- Relabeling configs for the ServiceMonitor cilium-operator
@@ -2510,6 +2578,9 @@ nodeinit:
     #   operator: "Equal|Exists"
     #   value: "value"
     #   effect: "NoSchedule|PreferNoSchedule|NoExecute(1.6 only)"
+
+  # -- Annotations to be added to all top-level nodeinit objects (resources under templates/cilium-nodeinit)
+  annotations: {}
 
   # -- Annotations to be added to node-init pods.
   podAnnotations: {}
@@ -2619,6 +2690,9 @@ preflight:
     #   value: "value"
     #   effect: "NoSchedule|PreferNoSchedule|NoExecute(1.6 only)"
 
+  # -- Annotations to be added to all top-level preflight objects (resources under templates/cilium-preflight)
+  annotations: {}
+
   # -- Security context to be added to preflight pods.
   podSecurityContext: {}
 
@@ -2678,6 +2752,9 @@ enableCriticalPriorityClass: true
 clustermesh:
   # -- Deploy clustermesh-apiserver for clustermesh
   useAPIServer: false
+
+  # -- Annotations to be added to all top-level clustermesh objects (resources under templates/clustermesh-apiserver and templates/clustermesh-config)
+  annotations: {}
 
   # -- Clustermesh explicit configuration.
   config:
@@ -3016,7 +3093,7 @@ clustermesh:
 
       etcd:
         # -- Enables exporting etcd metrics in OpenMetrics format.
-        enabled: false
+        enabled: true
         # -- Set level of detail for etcd metrics; specify 'extensive' to include server side gRPC histogram metrics.
         mode: basic
         # -- Configure the port the etcd metric server listens on.
@@ -3146,6 +3223,8 @@ authentication:
     spire:
       # -- Enable SPIRE integration (beta)
       enabled: false
+      # -- Annotations to be added to all top-level spire objects (resources under templates/spire)
+      annotations: {}
       # Settings to control the SPIRE installation and configuration
       install:
         # -- Enable SPIRE installation.
@@ -3153,10 +3232,24 @@ authentication:
         enabled: true
         # -- SPIRE namespace to install into
         namespace: cilium-spire
+        # -- init container image of SPIRE agent and server
+        initImage:
+          override: ~
+          repository: "${SPIRE_INIT_REPO}"
+          tag: "${SPIRE_INIT_VERSION}"
+          digest: "${SPIRE_INIT_DIGEST}"
+          useDigest: true
+          pullPolicy: "${PULL_POLICY}"
         # SPIRE agent configuration
         agent:
           # -- SPIRE agent image
-          image: ghcr.io/spiffe/spire-agent:1.6.3@sha256:8eef9857bf223181ecef10d9bbcd2f7838f3689e9bd2445bede35066a732e823
+          image:
+            override: ~
+            repository: "${SPIRE_AGENT_REPO}"
+            tag: "${SPIRE_AGENT_VERSION}"
+            digest: "${SPIRE_AGENT_DIGEST}"
+            useDigest: true
+            pullPolicy: "${PULL_POLICY}"
           # -- SPIRE agent service account
           serviceAccount:
             create: true
@@ -3172,7 +3265,13 @@ authentication:
           tolerations: []
         server:
           # -- SPIRE server image
-          image: ghcr.io/spiffe/spire-server:1.6.3@sha256:f4bc49fb0bd1d817a6c46204cc7ce943c73fb0a5496a78e0e4dc20c9a816ad7f
+          image:
+            override: ~
+            repository: "${SPIRE_SERVER_REPO}"
+            tag: "${SPIRE_SERVER_VERSION}"
+            digest: "${SPIRE_SERVER_DIGEST}"
+            useDigest: true
+            pullPolicy: "${PULL_POLICY}"
           # -- SPIRE server service account
           serviceAccount:
             create: true

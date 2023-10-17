@@ -206,24 +206,24 @@ var (
 	identityAllocator = testidentity.NewMockIdentityAllocator(IdentityCache)
 	testSelectorCache = policy.NewSelectorCache(identityAllocator, IdentityCache)
 
-	wildcardCachedSelector, _ = testSelectorCache.AddIdentitySelector(dummySelectorCacheUser, api.WildcardEndpointSelector)
+	wildcardCachedSelector, _ = testSelectorCache.AddIdentitySelector(dummySelectorCacheUser, nil, api.WildcardEndpointSelector)
 
 	EndpointSelector1 = api.NewESFromLabels(
 		labels.NewLabel("app", "etcd", labels.LabelSourceK8s),
 	)
-	cachedSelector1, _ = testSelectorCache.AddIdentitySelector(dummySelectorCacheUser, EndpointSelector1)
+	cachedSelector1, _ = testSelectorCache.AddIdentitySelector(dummySelectorCacheUser, nil, EndpointSelector1)
 
 	// EndpointSelector1 with FromRequires("k8s:version=v2") folded in
 	RequiresV2Selector1 = api.NewESFromLabels(
 		labels.NewLabel("app", "etcd", labels.LabelSourceK8s),
 		labels.NewLabel("version", "v2", labels.LabelSourceK8s),
 	)
-	cachedRequiresV2Selector1, _ = testSelectorCache.AddIdentitySelector(dummySelectorCacheUser, RequiresV2Selector1)
+	cachedRequiresV2Selector1, _ = testSelectorCache.AddIdentitySelector(dummySelectorCacheUser, nil, RequiresV2Selector1)
 
 	EndpointSelector2 = api.NewESFromLabels(
 		labels.NewLabel("version", "v1", labels.LabelSourceK8s),
 	)
-	cachedSelector2, _ = testSelectorCache.AddIdentitySelector(dummySelectorCacheUser, EndpointSelector2)
+	cachedSelector2, _ = testSelectorCache.AddIdentitySelector(dummySelectorCacheUser, nil, EndpointSelector2)
 )
 
 var L7Rules12 = &policy.PerSelectorPolicy{L7Rules: api.L7Rules{HTTP: []api.PortRuleHTTP{*PortRuleHTTP1, *PortRuleHTTP2}}}
@@ -259,7 +259,7 @@ var ExpectedHttpRule122HeaderMatch = &cilium.PortNetworkPolicyRule_HttpRules{
 }
 
 var ExpectedPortNetworkPolicyRule12 = &cilium.PortNetworkPolicyRule{
-	RemotePolicies: []uint64{1001, 1002},
+	RemotePolicies: []uint32{1001, 1002},
 	L7:             ExpectedHttpRule12,
 }
 
@@ -268,7 +268,7 @@ var ExpectedPortNetworkPolicyRule12Wildcard = &cilium.PortNetworkPolicyRule{
 }
 
 var ExpectedPortNetworkPolicyRule122HeaderMatch = &cilium.PortNetworkPolicyRule{
-	RemotePolicies: []uint64{1001, 1002},
+	RemotePolicies: []uint32{1001, 1002},
 	L7:             ExpectedHttpRule122HeaderMatch,
 }
 
@@ -277,7 +277,7 @@ var ExpectedPortNetworkPolicyRule122HeaderMatchWildcard = &cilium.PortNetworkPol
 }
 
 var ExpectedPortNetworkPolicyRule1 = &cilium.PortNetworkPolicyRule{
-	RemotePolicies: []uint64{1001, 1003},
+	RemotePolicies: []uint32{1001, 1003},
 	L7:             ExpectedHttpRule1,
 }
 
@@ -426,10 +426,10 @@ var ExpectedPerPortPolicies12RequiresV2 = []*cilium.PortNetworkPolicy{
 		Port:     80,
 		Protocol: envoy_config_core.SocketAddress_TCP,
 		Rules: []*cilium.PortNetworkPolicyRule{{
-			RemotePolicies: []uint64{1001, 1002},
+			RemotePolicies: []uint32{1001, 1002},
 			L7:             ExpectedHttpRule1,
 		}, {
-			RemotePolicies: []uint64{1002},
+			RemotePolicies: []uint32{1002},
 			L7:             ExpectedHttpRule12,
 		}},
 	},
@@ -461,6 +461,31 @@ func (s *ServerSuite) TestGetHTTPRule(c *C) {
 	obtained, canShortCircuit := getHTTPRule(nil, PortRuleHTTP1, "")
 	c.Assert(obtained.Headers, checker.ExportedEquals, ExpectedHeaders1)
 	c.Assert(canShortCircuit, Equals, true)
+}
+
+func (s *ServerSuite) Test_getWildcardNetworkPolicyRule(c *C) {
+	perSelectorPoliciesWithWildcard := policy.L7DataMap{
+		cachedSelector1:           nil,
+		cachedRequiresV2Selector1: nil,
+		wildcardCachedSelector:    nil,
+	}
+
+	obtained := getWildcardNetworkPolicyRule(perSelectorPoliciesWithWildcard)
+	c.Assert(obtained, checker.ExportedEquals,
+		&cilium.PortNetworkPolicyRule{})
+
+	// both cachedSelector2 and cachedSelector2 select identity 1001, but duplicates must have been removed
+	perSelectorPolicies := policy.L7DataMap{
+		cachedSelector2:           nil,
+		cachedSelector1:           nil,
+		cachedRequiresV2Selector1: nil,
+	}
+
+	obtained = getWildcardNetworkPolicyRule(perSelectorPolicies)
+	c.Assert(obtained, checker.ExportedEquals,
+		&cilium.PortNetworkPolicyRule{
+			RemotePolicies: []uint32{1001, 1002, 1003},
+		})
 }
 
 func (s *ServerSuite) TestGetPortNetworkPolicyRule(c *C) {
@@ -615,7 +640,7 @@ var ExpectedPerPortPoliciesL7 = []*cilium.PortNetworkPolicy{
 		Port:     9090,
 		Protocol: envoy_config_core.SocketAddress_TCP,
 		Rules: []*cilium.PortNetworkPolicyRule{{
-			// RemotePolicies: []uint64{1001, 1002}, // Effective wildcard due to only one selector in the policy
+			// RemotePolicies: []uint32{1001, 1002}, // Effective wildcard due to only one selector in the policy
 			L7Proto: "tester",
 			L7: &cilium.PortNetworkPolicyRule_L7Rules{
 				L7Rules: &cilium.L7NetworkPolicyRules{
@@ -667,7 +692,7 @@ var ExpectedPerPortPoliciesKafka = []*cilium.PortNetworkPolicy{
 		Port:     9092,
 		Protocol: envoy_config_core.SocketAddress_TCP,
 		Rules: []*cilium.PortNetworkPolicyRule{{
-			// RemotePolicies: []uint64{1001, 1002}, // Effective wildcard due to only one selector in the policy
+			// RemotePolicies: []uint32{1001, 1002}, // Effective wildcard due to only one selector in the policy
 			L7Proto: "kafka",
 			L7: &cilium.PortNetworkPolicyRule_KafkaRules{
 				KafkaRules: &cilium.KafkaNetworkPolicyRules{
@@ -724,7 +749,7 @@ var ExpectedPerPortPoliciesMySQL = []*cilium.PortNetworkPolicy{
 		Port:     3306,
 		Protocol: envoy_config_core.SocketAddress_TCP,
 		Rules: []*cilium.PortNetworkPolicyRule{{
-			// RemotePolicies: []uint64{1001, 1002}, // Effective wildcard due to only one selector in the policy
+			// RemotePolicies: []uint32{1001, 1002}, // Effective wildcard due to only one selector in the policy
 			L7Proto: "envoy.filters.network.mysql_proxy",
 			L7: &cilium.PortNetworkPolicyRule_L7Rules{
 				L7Rules: &cilium.L7NetworkPolicyRules{
@@ -770,8 +795,6 @@ func (s *ServerSuite) TestGetNetworkPolicyMySQL(c *C) {
 	c.Assert(obtained, checker.ExportedEquals, expected)
 }
 
-var emptyL4Policy = &policy.L4Policy{}
-
 var kafkaIngressVisibilityPolicy = &policy.VisibilityPolicy{
 	Ingress: policy.DirectionalVisibilityPolicy{
 		"9092/TCP": &policy.VisibilityMetadata{ //"<Ingress/9092/TCP/Kafka>"
@@ -786,7 +809,8 @@ var kafkaIngressVisibilityPolicy = &policy.VisibilityPolicy{
 
 func (s *ServerSuite) TestGetNetworkPolicyProxylibVisibility(c *C) {
 	// No visibility gets allow-all policies
-	obtained := getNetworkPolicy(ep, nil, []string{IPv4Addr}, emptyL4Policy, false, false)
+	// Allow-all policies are generated also when l4 filter is nil when policy is not enforced.
+	obtained := getNetworkPolicy(ep, nil, []string{IPv4Addr}, nil, false, false)
 
 	expected := &cilium.NetworkPolicy{
 		EndpointIps:            []string{IPv4Addr},
@@ -798,7 +822,7 @@ func (s *ServerSuite) TestGetNetworkPolicyProxylibVisibility(c *C) {
 
 	c.Assert(obtained, checker.ExportedEquals, expected)
 
-	obtained = getNetworkPolicy(ep, kafkaIngressVisibilityPolicy, []string{IPv4Addr}, emptyL4Policy, false, false)
+	obtained = getNetworkPolicy(ep, kafkaIngressVisibilityPolicy, []string{IPv4Addr}, nil, false, false)
 
 	// Visibility policies still contain the allow-all policies, when policy is not enforced
 	expected = &cilium.NetworkPolicy{

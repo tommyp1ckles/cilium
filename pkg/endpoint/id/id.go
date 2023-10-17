@@ -81,7 +81,7 @@ const (
 
 // NewCiliumID returns a new endpoint identifier of type CiliumLocalIdPrefix
 func NewCiliumID(id int64) string {
-	return fmt.Sprintf("%s:%d", CiliumLocalIdPrefix, id)
+	return NewID(CiliumLocalIdPrefix, strconv.FormatInt(id, 10))
 }
 
 // NewID returns a new endpoint identifier
@@ -113,7 +113,7 @@ func NewCNIAttachmentID(containerID, containerIfName string) string {
 
 // splitID splits ID into prefix and id. No validation is performed on prefix.
 func splitID(id string) (PrefixType, string) {
-	if idx := strings.Index(id, ":"); idx > -1 {
+	if idx := strings.IndexByte(id, ':'); idx > -1 {
 		return PrefixType(id[:idx]), id[idx+1:]
 	}
 

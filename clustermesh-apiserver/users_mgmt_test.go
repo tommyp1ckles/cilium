@@ -15,6 +15,7 @@ import (
 	"go.uber.org/goleak"
 
 	"github.com/cilium/cilium/operator/watchers"
+	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	"github.com/cilium/cilium/pkg/hive"
 	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/kvstore"
@@ -53,6 +54,9 @@ func TestMain(m *testing.M) {
 		// To ignore goroutine started from sigs.k8s.io/controller-runtime/pkg/log.go
 		// init function
 		goleak.IgnoreTopFunction("time.Sleep"),
+		// Delaying workqueues used by resource.Resource[T].Events leaks this waitingLoop goroutine.
+		// It does stop when shutting down but is not guaranteed to before we actually exit.
+		goleak.IgnoreTopFunction("k8s.io/client-go/util/workqueue.(*delayingType).waitingLoop"),
 	)
 }
 
@@ -80,6 +84,10 @@ func TestUsersManagement(t *testing.T) {
 				ClusterUsersEnabled:    true,
 				ClusterUsersConfigPath: cfgPath,
 			}
+		}),
+
+		cell.Provide(func() cmtypes.ClusterInfo {
+			return cmtypes.ClusterInfo{ID: 10, Name: "fred"}
 		}),
 
 		cell.Provide(func(lc hive.Lifecycle) promise.Promise[kvstore.BackendOperationsUserMgmt] {

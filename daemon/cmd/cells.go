@@ -15,12 +15,14 @@ import (
 	"github.com/cilium/cilium/pkg/auth"
 	"github.com/cilium/cilium/pkg/bgpv1"
 	"github.com/cilium/cilium/pkg/clustermesh"
+	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/crypto/certificatemanager"
 	"github.com/cilium/cilium/pkg/datapath"
 	dptypes "github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/egressgateway"
+	"github.com/cilium/cilium/pkg/endpoint"
 	"github.com/cilium/cilium/pkg/endpointmanager"
 	"github.com/cilium/cilium/pkg/envoy"
 	"github.com/cilium/cilium/pkg/gops"
@@ -29,6 +31,7 @@ import (
 	ipamMetadata "github.com/cilium/cilium/pkg/ipam/metadata"
 	"github.com/cilium/cilium/pkg/k8s"
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
+	"github.com/cilium/cilium/pkg/kvstore/store"
 	"github.com/cilium/cilium/pkg/l2announcer"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/metrics"
@@ -97,6 +100,9 @@ var (
 		// DB provides an extendable in-memory database with rich transactions
 		// and multi-version concurrency control through immutable radix trees.
 		statedb.Cell,
+		// Store cell provides factory for creating watchStore/syncStore/storeManager
+		// useful for synchronizing data from/to kvstore.
+		store.Cell,
 	)
 
 	// ControlPlane implement the per-node control functions. These are pure
@@ -176,11 +182,15 @@ var (
 		cell.Provide(func(dp dptypes.Datapath) *k8s.ServiceCache { return k8s.NewServiceCache(dp.LocalNodeAddressing()) }),
 
 		// ClusterMesh is the Cilium's multicluster implementation.
+		cell.Config(cmtypes.DefaultClusterInfo),
 		clustermesh.Cell,
 
 		// L2announcer resolves l2announcement policies, services, node labels and devices into a list of IPs+netdevs
 		// which need to be announced on the local network.
 		l2announcer.Cell,
+
+		// RegeneratorCell provides extra options and utilities for endpoints regeneration.
+		endpoint.RegeneratorCell,
 	)
 )
 

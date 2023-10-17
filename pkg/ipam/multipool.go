@@ -15,11 +15,12 @@ import (
 	"golang.org/x/exp/slices"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	agentK8s "github.com/cilium/cilium/daemon/k8s"
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/ipam/types"
-	"github.com/cilium/cilium/pkg/k8s"
 	ciliumv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
+	"github.com/cilium/cilium/pkg/k8s/resource"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
@@ -155,7 +156,7 @@ func (p pendingAllocationsPerOwner) startExpirationAt(now time.Time, owner strin
 	p[family] = expires
 }
 
-// startExpiration removes the expiration timer for a pending allocation, this
+// removeExpiration removes the expiration timer for a pending allocation, this
 // happens either because the timer expired, or the allocation was fulfilled
 func (p pendingAllocationsPerOwner) removeExpiration(owner string, family Family) {
 	delete(p[family], owner)
@@ -185,6 +186,11 @@ func (p pendingAllocationsPerOwner) pendingForFamily(family Family) int {
 	return len(p[family])
 }
 
+type nodeUpdater interface {
+	Update(ctx context.Context, ciliumNode *ciliumv2.CiliumNode, opts metav1.UpdateOptions) (*ciliumv2.CiliumNode, error)
+	UpdateStatus(ctx context.Context, ciliumNode *ciliumv2.CiliumNode, opts metav1.UpdateOptions) (*ciliumv2.CiliumNode, error)
+}
+
 type multiPoolManager struct {
 	mutex *lock.Mutex
 	conf  Configuration
@@ -207,7 +213,7 @@ type multiPoolManager struct {
 
 var _ Allocator = (*multiPoolAllocator)(nil)
 
-func newMultiPoolManager(conf Configuration, nodeWatcher nodeWatcher, owner Owner, clientset nodeUpdater) *multiPoolManager {
+func newMultiPoolManager(conf Configuration, node agentK8s.LocalCiliumNodeResource, owner Owner, clientset nodeUpdater) *multiPoolManager {
 	preallocMap, err := parseMultiPoolPreAllocMap(option.Config.IPAMMultiPoolPreAllocation)
 	if err != nil {
 		log.WithError(err).Fatalf("Invalid %s flag value", option.IPAMMultiPoolPreAllocation)
@@ -240,13 +246,32 @@ func newMultiPoolManager(conf Configuration, nodeWatcher nodeWatcher, owner Owne
 		finishedRestore:        map[Family]bool{},
 	}
 
-	// Subscribe to CiliumNode updates
-	nodeWatcher.RegisterCiliumNodeSubscriber(c)
+	// We don't have a context to use here (as a lot of IPAM doesn't really
+	// carry contexts). Before being refactored to using a resource, the event
+	// handling callbacks were called via the (now removed) CiliumNodeChain,
+	// which was in turn invoked by an informer. While we'd ideally stop this
+	// resource and it's processing if IPAM and other subsytems are being
+	// stopped, there appears to be no such signal available here. Also, don't
+	// retry events - the downstream code isn't setup to handle retries.
+	evs := node.Events(context.TODO(), resource.WithErrorHandler(resource.RetryUpTo(0)))
+	go c.ciliumNodeEventLoop(evs)
 	owner.UpdateCiliumNodeResource()
 
 	c.waitForAllPools()
 
 	return c
+}
+
+func (m *multiPoolManager) ciliumNodeEventLoop(evs <-chan resource.Event[*ciliumv2.CiliumNode]) {
+	for ev := range evs {
+		switch ev.Kind {
+		case resource.Upsert:
+			m.ciliumNodeUpdated(ev.Object)
+		case resource.Delete:
+			log.WithField(logfields.Node, ev.Object).Warning("Local CiliumNode deleted. IPAM will continue on last seen version")
+		}
+		ev.Done(nil)
+	}
 }
 
 // waitForAllPools waits for all pools in preallocatedIPsPerPool to have IPs available.
@@ -505,10 +530,10 @@ func (m *multiPoolManager) upsertPoolLocked(poolName Pool, podCIDRs []types.IPAM
 	if !ok {
 		pool = &poolPair{}
 		if m.conf.IPv4Enabled() {
-			pool.v4 = newPodCIDRPool(nil)
+			pool.v4 = newPodCIDRPool()
 		}
 		if m.conf.IPv6Enabled() {
-			pool.v6 = newPodCIDRPool(nil)
+			pool.v6 = newPodCIDRPool()
 		}
 	}
 
@@ -538,35 +563,11 @@ func (m *multiPoolManager) upsertPoolLocked(poolName Pool, podCIDRs []types.IPAM
 	}
 }
 
-func (m *multiPoolManager) OnAddCiliumNode(node *ciliumv2.CiliumNode, swg *lock.StoppableWaitGroup) error {
-	if k8s.IsLocalCiliumNode(node) {
-		m.ciliumNodeUpdated(node)
-	}
-
-	return nil
-}
-
-func (m *multiPoolManager) OnUpdateCiliumNode(oldNode, newNode *ciliumv2.CiliumNode, swg *lock.StoppableWaitGroup) error {
-	if k8s.IsLocalCiliumNode(newNode) {
-		m.ciliumNodeUpdated(newNode)
-	}
-
-	return nil
-}
-
-func (m *multiPoolManager) OnDeleteCiliumNode(node *ciliumv2.CiliumNode, swg *lock.StoppableWaitGroup) error {
-	if k8s.IsLocalCiliumNode(node) {
-		log.WithField(logfields.Node, node).Warning("Local CiliumNode deleted. IPAM will continue on last seen version")
-	}
-
-	return nil
-}
-
-func (m *multiPoolManager) dump(family Family) (allocated map[string]string, status string) {
+func (m *multiPoolManager) dump(family Family) (allocated map[Pool]map[string]string, status string) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
-	allocated = map[string]string{}
+	allocated = map[Pool]map[string]string{}
 	for poolName, pool := range m.pools {
 		var p *podCIDRPool
 		switch family {
@@ -584,13 +585,16 @@ func (m *multiPoolManager) dump(family Family) (allocated map[string]string, sta
 			return nil, fmt.Sprintf("error: %s", err)
 		}
 
-		ipPrefix := ""
-		if poolName != PoolDefault {
-			ipPrefix = poolName.String() + "/"
+		if poolName == "" {
+			poolName = PoolDefault
+		}
+
+		if _, ok := allocated[poolName]; !ok {
+			allocated[poolName] = map[string]string{}
 		}
 
 		for ip, owner := range ipToOwner {
-			allocated[ipPrefix+ip] = owner
+			allocated[poolName][ip] = owner
 		}
 	}
 
@@ -714,8 +718,26 @@ func (c *multiPoolAllocator) AllocateNextWithoutSyncUpstream(owner string, pool 
 	return c.manager.allocateNext(owner, pool, c.family, false)
 }
 
-func (c *multiPoolAllocator) Dump() (map[string]string, string) {
+func (c *multiPoolAllocator) Dump() (map[Pool]map[string]string, string) {
 	return c.manager.dump(c.family)
+}
+
+func (c *multiPoolAllocator) Capacity() uint64 {
+	var capacity uint64
+	for _, pool := range c.manager.pools {
+		var p *podCIDRPool
+		switch c.family {
+		case IPv4:
+			p = pool.v4
+		case IPv6:
+			p = pool.v6
+		}
+		if p == nil {
+			continue
+		}
+		capacity += uint64(p.capacity())
+	}
+	return uint64(capacity)
 }
 
 func (c *multiPoolAllocator) RestoreFinished() {

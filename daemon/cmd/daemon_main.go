@@ -21,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	healthApi "github.com/cilium/cilium/api/v1/health/server"
 	"github.com/cilium/cilium/api/v1/server"
@@ -32,6 +33,7 @@ import (
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/cgroups"
 	"github.com/cilium/cilium/pkg/clustermesh"
+	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	"github.com/cilium/cilium/pkg/common"
 	"github.com/cilium/cilium/pkg/components"
 	"github.com/cilium/cilium/pkg/controller"
@@ -45,6 +47,7 @@ import (
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/egressgateway"
+	"github.com/cilium/cilium/pkg/endpoint"
 	"github.com/cilium/cilium/pkg/endpointmanager"
 	"github.com/cilium/cilium/pkg/envoy"
 	"github.com/cilium/cilium/pkg/flowdebug"
@@ -61,6 +64,7 @@ import (
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
 	"github.com/cilium/cilium/pkg/k8s/watchers/resources"
 	"github.com/cilium/cilium/pkg/kvstore"
+	"github.com/cilium/cilium/pkg/kvstore/store"
 	"github.com/cilium/cilium/pkg/l2announcer"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/labelsfilter"
@@ -86,6 +90,7 @@ import (
 	"github.com/cilium/cilium/pkg/promise"
 	"github.com/cilium/cilium/pkg/proxy"
 	"github.com/cilium/cilium/pkg/rate"
+	"github.com/cilium/cilium/pkg/resiliency"
 	"github.com/cilium/cilium/pkg/statedb"
 	"github.com/cilium/cilium/pkg/sysctl"
 	"github.com/cilium/cilium/pkg/version"
@@ -189,12 +194,6 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 	flags.String(option.CGroupRoot, "", "Path to Cgroup2 filesystem")
 	option.BindEnv(vp, option.CGroupRoot)
 
-	flags.Int(option.ClusterIDName, 0, "Unique identifier of the cluster")
-	option.BindEnv(vp, option.ClusterIDName)
-
-	flags.String(option.ClusterName, defaults.ClusterName, "Name of the cluster")
-	option.BindEnv(vp, option.ClusterName)
-
 	flags.StringSlice(option.CompilerFlags, []string{}, "Extra CFLAGS for BPF compilation")
 	flags.MarkHidden(option.CompilerFlags)
 	option.BindEnv(vp, option.CompilerFlags)
@@ -207,6 +206,9 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 
 	flags.Duration(option.ConntrackGCInterval, time.Duration(0), "Overwrite the connection-tracking garbage collection interval")
 	option.BindEnv(vp, option.ConntrackGCInterval)
+
+	flags.Duration(option.ConntrackGCMaxInterval, time.Duration(0), "Set the maximum interval for the connection-tracking garbage collection")
+	option.BindEnv(vp, option.ConntrackGCMaxInterval)
 
 	flags.BoolP(option.DebugArg, "D", false, "Enable debugging mode")
 	option.BindEnv(vp, option.DebugArg)
@@ -278,6 +280,7 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 	option.BindEnv(vp, option.IPv6MCastDevice)
 
 	flags.Bool(option.EnableRemoteNodeIdentity, defaults.EnableRemoteNodeIdentity, "Enable use of remote node identity")
+	flags.MarkDeprecated(option.EnableRemoteNodeIdentity, "Remote Node Identity is needed for various other features to work or work fully, including EgressGateway and Policies. There is no benefit to having it turned off. It will be removed in v1.16.")
 	option.BindEnv(vp, option.EnableRemoteNodeIdentity)
 
 	flags.String(option.EncryptInterface, "", "Transparent encryption interface")
@@ -334,9 +337,6 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 	flags.Bool(option.EnableExternalIPs, false, fmt.Sprintf("Enable k8s service externalIPs feature (requires enabling %s)", option.EnableNodePort))
 	option.BindEnv(vp, option.EnableExternalIPs)
 
-	flags.Bool(option.K8sEnableEndpointSlice, defaults.K8sEnableEndpointSlice, "Enables k8s EndpointSlice feature in Cilium if the k8s cluster supports it")
-	option.BindEnv(vp, option.K8sEnableEndpointSlice)
-
 	flags.Bool(option.EnableL7Proxy, defaults.EnableL7Proxy, "Enable L7 proxy for L7 policy enforcement")
 	option.BindEnv(vp, option.EnableL7Proxy)
 
@@ -381,6 +381,9 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 
 	flags.Bool(option.EnableWireguardUserspaceFallback, false, "Enable fallback to the WireGuard userspace implementation")
 	option.BindEnv(vp, option.EnableWireguardUserspaceFallback)
+
+	flags.Duration(option.WireguardPersistentKeepalive, 0, "The Wireguard keepalive interval as a Go duration string")
+	option.BindEnv(vp, option.WireguardPersistentKeepalive)
 
 	flags.String(option.NodeEncryptionOptOutLabels, defaults.NodeEncryptionOptOutLabels, "Label selector for nodes which will opt-out of node-to-node encryption")
 	option.BindEnv(vp, option.NodeEncryptionOptOutLabels)
@@ -838,6 +841,10 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 	flags.Int(option.PolicyMapEntriesName, policymap.MaxEntries, "Maximum number of entries in endpoint policy map (per endpoint)")
 	option.BindEnv(vp, option.PolicyMapEntriesName)
 
+	flags.Duration(option.PolicyMapFullReconciliationIntervalName, 15*time.Minute, "Interval for full reconciliation of endpoint policy map")
+	option.BindEnv(vp, option.PolicyMapFullReconciliationIntervalName)
+	flags.MarkHidden(option.PolicyMapFullReconciliationIntervalName)
+
 	flags.Int(option.SockRevNatEntriesName, option.SockRevNATMapEntriesDefault, "Maximum number of entries for the SockRevNAT BPF map")
 	option.BindEnv(vp, option.SockRevNatEntriesName)
 
@@ -854,7 +861,7 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 	flags.Int(option.ToFQDNsProxyPort, 0, "Global port on which the in-agent DNS proxy should listen. Default 0 is a OS-assigned port.")
 	option.BindEnv(vp, option.ToFQDNsProxyPort)
 
-	flags.StringVar(&option.Config.FQDNRejectResponse, option.FQDNRejectResponseCode, option.FQDNProxyDenyWithRefused, fmt.Sprintf("DNS response code for rejecting DNS requests, available options are '%v'", option.FQDNRejectOptions))
+	flags.String(option.FQDNRejectResponseCode, option.FQDNProxyDenyWithRefused, fmt.Sprintf("DNS response code for rejecting DNS requests, available options are '%v'", option.FQDNRejectOptions))
 	option.BindEnv(vp, option.FQDNRejectResponseCode)
 
 	flags.Int(option.ToFQDNsMaxIPsPerHost, defaults.ToFQDNsMaxIPsPerHost, "Maximum number of IPs to maintain per FQDN name for each endpoint")
@@ -993,8 +1000,14 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 	)
 	option.BindEnv(vp, option.HubbleMonitorEvents)
 
-	flags.StringSlice(option.HubbleRedact, []string{}, "List of Hubble redact options")
-	option.BindEnv(vp, option.HubbleRedact)
+	flags.Bool(option.HubbleRedactEnabled, defaults.HubbleRedactEnabled, "Hubble redact sensitive information from flows")
+	option.BindEnv(vp, option.HubbleRedactEnabled)
+
+	flags.Bool(option.HubbleRedactHttpURLQuery, defaults.HubbleRedactHttpURLQuery, "Hubble redact http URL query from flows")
+	option.BindEnv(vp, option.HubbleRedactHttpURLQuery)
+
+	flags.Bool(option.HubbleRedactKafkaApiKey, defaults.HubbleRedactKafkaApiKey, "Hubble redact Kafka API key from flows")
+	option.BindEnv(vp, option.HubbleRedactKafkaApiKey)
 
 	flags.StringSlice(option.DisableIptablesFeederRules, []string{}, "Chains to ignore when installing feeder rules.")
 	option.BindEnv(vp, option.DisableIptablesFeederRules)
@@ -1037,9 +1050,6 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 
 	flags.String(option.LocalRouterIPv6, "", "Link-local IPv6 used for Cilium's router devices")
 	option.BindEnv(vp, option.LocalRouterIPv6)
-
-	flags.String(option.K8sServiceProxyName, "", "Value of K8s service-proxy-name label for which Cilium handles the services (empty = all services without service.kubernetes.io/service-proxy-name label)")
-	option.BindEnv(vp, option.K8sServiceProxyName)
 
 	flags.Var(option.NewNamedMapOptions(option.BPFMapEventBuffers, &option.Config.BPFMapEventBuffers, option.Config.BPFMapEventBuffersValidator), option.BPFMapEventBuffers, "Configuration for BPF map event buffers: (example: --bpf-map-event-buffers cilium_ipcache=true,1024,1h)")
 	flags.MarkHidden(option.BPFMapEventBuffers)
@@ -1127,6 +1137,9 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 	flags.Bool(option.EnableK8sNetworkPolicy, defaults.EnableK8sNetworkPolicy, "Enable support for K8s NetworkPolicy")
 	flags.MarkHidden(option.EnableK8sNetworkPolicy)
 	option.BindEnv(vp, option.EnableK8sNetworkPolicy)
+
+	flags.StringSlice(option.PolicyCIDRMatchMode, defaults.PolicyCIDRMatchMode, "The entities that can be selected by CIDR policy. Supported values: 'nodes'")
+	option.BindEnv(vp, option.PolicyCIDRMatchMode)
 
 	if err := vp.BindPFlags(flags); err != nil {
 		log.Fatalf("BindPFlags failed: %s", err)
@@ -1474,6 +1487,14 @@ func initEnv(vp *viper.Viper) {
 		}
 	}
 
+	if option.Config.EnableEndpointRoutes && option.Config.EnableLocalNodeRoute {
+		option.Config.EnableLocalNodeRoute = false
+		log.Debugf(
+			"Auto-set %q to `false` because it is redundant to per-endpoint routes (%s=true)",
+			option.EnableLocalNodeRoute, option.EnableEndpointRoutes,
+		)
+	}
+
 	if option.Config.IPAM == ipamOption.IPAMAzure {
 		option.Config.EgressMultiHomeIPRuleCompat = true
 		log.WithFields(logrus.Fields{
@@ -1486,7 +1507,7 @@ func initEnv(vp *viper.Viper) {
 		)
 	}
 
-	if option.Config.IPAM == ipamOption.IPAMClusterPoolV2 || option.Config.IPAM == ipamOption.IPAMMultiPool {
+	if option.Config.IPAM == ipamOption.IPAMMultiPool {
 		if option.Config.TunnelingEnabled() {
 			log.Fatalf("Cannot specify IPAM mode %s in tunnel mode.", option.Config.IPAM)
 		}
@@ -1606,6 +1627,7 @@ var daemonCell = cell.Module(
 	// by the debuginfo API
 	cell.ProvidePrivate(daemonSettings),
 	cell.Invoke(func(promise.Promise[*Daemon]) {}), // Force instantiation.
+	endpointBPFrogWatchdogCell,
 )
 
 type daemonParams struct {
@@ -1643,13 +1665,14 @@ type daemonParams struct {
 	AuthManager          *auth.AuthManager
 	Settings             cellSettings
 	HealthProvider       cell.Health
-	HealthReporter       cell.HealthReporter
 	DeviceManager        *linuxdatapath.DeviceManager `optional:"true"`
-
 	// Grab the GC object so that we can start the CT/NAT map garbage collection.
 	// This is currently necessary because these maps have not yet been modularized,
 	// and because it depends on parameters which are not provided through hive.
-	CTNATMapGC gc.Enabler
+	CTNATMapGC          gc.Enabler
+	StoreFactory        store.Factory
+	EndpointRegenerator *endpoint.Regenerator
+	ClusterInfo         cmtypes.ClusterInfo
 }
 
 func newDaemonPromise(params daemonParams) promise.Promise[*Daemon] {
@@ -1685,6 +1708,9 @@ func newDaemonPromise(params daemonParams) promise.Promise[*Daemon] {
 		},
 		OnStop: func(hive.HookContext) error {
 			cancelDaemonCtx()
+			if daemon.statusCollector != nil {
+				daemon.statusCollector.Close()
+			}
 			cleaner.Clean()
 			wg.Wait()
 			return nil
@@ -1716,12 +1742,14 @@ func startDaemon(d *Daemon, restoredEndpoints *endpointRestoreState, cleaner *da
 		<-params.CacheStatus
 	}
 	bootstrapStats.k8sInit.End(true)
-	restoreComplete := d.initRestore(restoredEndpoints)
+	restoreComplete := d.initRestore(restoredEndpoints, params.EndpointRegenerator)
 
 	if params.WGAgent != nil {
-		if err := params.WGAgent.RestoreFinished(); err != nil {
-			log.WithError(err).Error("Failed to set up WireGuard peers")
-		}
+		go func() {
+			if err := params.WGAgent.RestoreFinished(d.clustermesh); err != nil {
+				log.WithError(err).Error("Failed to set up WireGuard peers")
+			}
+		}()
 	}
 
 	if d.endpointManager.HostEndpointExists() {
@@ -1733,6 +1761,25 @@ func startDaemon(d *Daemon, restoredEndpoints *endpointRestoreState, cleaner *da
 			"Create host endpoint", nodeTypes.GetName(),
 		); err != nil {
 			log.Fatalf("unable to create host endpoint: %s", err)
+		}
+	}
+
+	if option.Config.EnableEnvoyConfig {
+		if !d.endpointManager.IngressEndpointExists() {
+			// Creating Ingress Endpoint depends on the Ingress IPs having been
+			// allocated first. This happens earlier in the agent bootstrap.
+			if (option.Config.EnableIPv4 && len(node.GetIngressIPv4()) == 0) ||
+				(option.Config.EnableIPv6 && len(node.GetIngressIPv6()) == 0) {
+				log.Warn("Ingress IPs are not available, skipping creation of the Ingress Endpoint: Policy enforcement on Cilium Ingress will not work as expected.")
+			} else {
+				log.Info("Creating ingress endpoint")
+				if err := d.endpointManager.AddIngressEndpoint(
+					d.ctx, d, d, d.ipcache, d.l7Proxy, d.identityAllocator,
+					"Create ingress endpoint",
+				); err != nil {
+					log.Fatalf("unable to create ingress endpoint: %s", err)
+				}
+			}
 		}
 	}
 
@@ -1748,8 +1795,7 @@ func startDaemon(d *Daemon, restoredEndpoints *endpointRestoreState, cleaner *da
 		if restoreComplete != nil {
 			<-restoreComplete
 		}
-
-		// Only attempt CEP cleanup if cilium endpoint CRD is not disabled, otherwise the cep/ces
+		// Only attempt CEP cleanup if cilium endpoint CRD is enabled, otherwise the cep/ces
 		// watchers/indexers will not be initialized.
 		if params.Clientset.IsEnabled() && option.Config.EnableStaleCiliumEndpointCleanup && !option.Config.DisableCiliumEndpointCRD {
 			// Use restored endpoints to delete local CiliumEndpoints which are not in the restored endpoint cache.
@@ -1758,11 +1804,33 @@ func startDaemon(d *Daemon, restoredEndpoints *endpointRestoreState, cleaner *da
 			// This must wait for both K8s watcher caches to be synced and local endpoint restoration to be complete.
 			// Note: Synchronization of endpoints to their CEPs may not be complete at this point, but we only have to
 			// know what endpoints exist post-restoration in our endpointManager cache to perform cleanup.
-			if err := d.cleanStaleCEPs(context.Background(), d.endpointManager, params.Clientset.CiliumV2(), option.Config.EnableCiliumEndpointSlice); err != nil {
-				log.WithError(err).Error("Failed to clean up stale CEPs")
+			var (
+				retries int
+				bo      = wait.Backoff{
+					Duration: 500 * time.Millisecond,
+					Factor:   1,
+					Jitter:   0.1,
+					Steps:    5,
+					Cap:      0,
+				}
+			)
+			err := wait.ExponentialBackoffWithContext(context.Background(), bo, func(ctx context.Context) (done bool, err error) {
+				if err := d.cleanStaleCEPs(ctx, d.endpointManager, d.clientset.CiliumV2(), option.Config.EnableCiliumEndpointSlice); err != nil {
+					retries++
+					log.WithError(err).WithField(logfields.Attempt, retries).Error("Failed to clean up stale CEPs")
+					if resiliency.IsRetryable(err) {
+						return false, nil
+					}
+					return true, err
+				}
+				return true, nil
+			})
+			if err != nil {
+				log.WithError(err).Error("Failed to clean up stale CEPs after multiple attempts")
 			}
 		}
 	}()
+
 	go func() {
 		if restoreComplete != nil {
 			<-restoreComplete

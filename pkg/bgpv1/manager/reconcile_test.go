@@ -5,6 +5,7 @@ package manager
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -24,6 +25,7 @@ import (
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/node/addressing"
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
+	"github.com/cilium/cilium/pkg/option"
 )
 
 // We use similar local listen ports as the tests in the pkg/bgpv1/test package.
@@ -36,6 +38,20 @@ const (
 	localListenPort  = 1793
 	localListenPort2 = 1794
 )
+
+func FakeSecretStore(secrets map[string][]byte) resource.Store[*slim_corev1.Secret] {
+	store := newMockBGPCPResourceStore[*slim_corev1.Secret]()
+	for k, v := range secrets {
+		store.Upsert(&slim_corev1.Secret{
+			ObjectMeta: slim_metav1.ObjectMeta{
+				Namespace: "bgp-secrets",
+				Name:      k,
+			},
+			Data: map[string]slim_corev1.Bytes{"password": slim_corev1.Bytes(v)},
+		})
+	}
+	return store
+}
 
 // TestPreflightReconciler ensures if a BgpServer must be recreated, due to
 // permanent configuration of the said server changing, its done so correctly.
@@ -183,8 +199,14 @@ func TestNeighborReconciler(t *testing.T) {
 		//
 		// this is the resulting neighbors we expect on the BgpServer.
 		newNeighbors []v2alpha1api.CiliumBGPNeighbor
+		// secretStore passed to the test, provides a way to fetch secrets (use FakeSecretStore above).
+		secretStore resource.Store[*slim_corev1.Secret]
 		// checks validates set timer values
 		checks checkTimers
+		// expected secret if set.
+		expectedSecret string
+		// expected password if set.
+		expectedPassword string
 		// error provided or nil
 		err error
 	}{
@@ -312,6 +334,50 @@ func TestNeighborReconciler(t *testing.T) {
 			newNeighbors: []v2alpha1api.CiliumBGPNeighbor{},
 			err:          nil,
 		},
+		{
+			name:      "add neighbor with a password",
+			neighbors: []v2alpha1api.CiliumBGPNeighbor{},
+			newNeighbors: []v2alpha1api.CiliumBGPNeighbor{
+				{PeerASN: 64124, PeerAddress: "192.168.0.1/32", PeerPort: pointer.Int32(v2alpha1api.DefaultBGPPeerPort), AuthSecretRef: pointer.String("a-secret")},
+			},
+			secretStore:      FakeSecretStore(map[string][]byte{"a-secret": []byte("a-password")}),
+			expectedSecret:   "a-secret",
+			expectedPassword: "a-password",
+			err:              nil,
+		},
+		{
+			name: "neighbor's password secret not found",
+			neighbors: []v2alpha1api.CiliumBGPNeighbor{
+				{PeerASN: 64124, PeerAddress: "192.168.0.1/32", PeerPort: pointer.Int32(v2alpha1api.DefaultBGPPeerPort)},
+			},
+			newNeighbors: []v2alpha1api.CiliumBGPNeighbor{
+				{PeerASN: 64124, PeerAddress: "192.168.0.1/32", PeerPort: pointer.Int32(v2alpha1api.DefaultBGPPeerPort), AuthSecretRef: pointer.String("bad-secret")},
+			},
+			secretStore: FakeSecretStore(map[string][]byte{}),
+			err:         nil,
+		},
+		{
+			name: "bad secret store, returns error",
+			neighbors: []v2alpha1api.CiliumBGPNeighbor{
+				{PeerASN: 64124, PeerAddress: "192.168.0.1/32", PeerPort: pointer.Int32(v2alpha1api.DefaultBGPPeerPort)},
+			},
+			newNeighbors: []v2alpha1api.CiliumBGPNeighbor{
+				{PeerASN: 64124, PeerAddress: "192.168.0.1/32", PeerPort: pointer.Int32(v2alpha1api.DefaultBGPPeerPort), AuthSecretRef: pointer.String("a-secret")},
+			},
+			err: errors.New("fetch secret error"),
+		},
+		{
+			name: "neighbor's secret updated",
+			neighbors: []v2alpha1api.CiliumBGPNeighbor{
+				{PeerASN: 64124, PeerAddress: "192.168.0.1/32", PeerPort: pointer.Int32(v2alpha1api.DefaultBGPPeerPort), AuthSecretRef: pointer.String("a-secret")},
+			},
+			newNeighbors: []v2alpha1api.CiliumBGPNeighbor{
+				{PeerASN: 64124, PeerAddress: "192.168.0.1/32", PeerPort: pointer.Int32(v2alpha1api.DefaultBGPPeerPort), AuthSecretRef: pointer.String("another-secret")},
+			},
+			secretStore:      FakeSecretStore(map[string][]byte{"another-secret": []byte("another-password")}),
+			expectedSecret:   "another-secret",
+			expectedPassword: "another-password",
+		},
 	}
 	for _, tt := range table {
 		t.Run(tt.name, func(t *testing.T) {
@@ -338,9 +404,20 @@ func TestNeighborReconciler(t *testing.T) {
 			for _, n := range tt.neighbors {
 				n.SetDefaults()
 				oldc.Neighbors = append(oldc.Neighbors, n)
+				// create a temp. reconciler so we can get secrets.
+				neighborReconciler := NewNeighborReconciler(tt.secretStore, &option.DaemonConfig{BGPSecretsNamespace: "bgp-secrets"}).Reconciler.(*NeighborReconciler)
+
+				tcpPassword, err := neighborReconciler.fetchPeerPassword(testSC, &n)
+				if err != nil {
+					t.Fatalf("Failed to fetch peer password for oldc: %v", err)
+				}
+				if tcpPassword != "" {
+					neighborReconciler.updatePeerPassword(testSC, &n, tcpPassword)
+				}
 				testSC.Server.AddNeighbor(context.Background(), types.NeighborRequest{
 					Neighbor: &n,
 					VR:       oldc,
+					Password: tcpPassword,
 				})
 			}
 			testSC.Config = oldc
@@ -353,7 +430,7 @@ func TestNeighborReconciler(t *testing.T) {
 			newc.Neighbors = append(newc.Neighbors, tt.newNeighbors...)
 			newc.SetDefaults()
 
-			neighborReconciler := NewNeighborReconciler().Reconciler
+			neighborReconciler := NewNeighborReconciler(tt.secretStore, &option.DaemonConfig{BGPSecretsNamespace: "bgp-secrets"}).Reconciler
 			params := ReconcileParams{
 				CurrentServer: testSC,
 				DesiredConfig: newc,
@@ -363,6 +440,13 @@ func TestNeighborReconciler(t *testing.T) {
 			err = neighborReconciler.Reconcile(context.Background(), params)
 			if (tt.err == nil) != (err == nil) {
 				t.Fatalf("want error: %v, got: %v", (tt.err == nil), err)
+			}
+
+			// clear out secret ref if one isn't expected
+			if tt.expectedSecret == "" {
+				for i := range tt.newNeighbors {
+					tt.newNeighbors[i].AuthSecretRef = nil
+				}
 			}
 
 			// check testSC for desired neighbors
@@ -397,6 +481,12 @@ func TestNeighborReconciler(t *testing.T) {
 						Enabled:            peer.GracefulRestart.Enabled,
 						RestartTimeSeconds: pointer.Int32(int32(peer.GracefulRestart.RestartTimeSeconds)),
 					}
+				}
+
+				// Check the API correctly reports a password was used.
+				require.Equal(t, tt.expectedPassword != "", peer.TCPPasswordEnabled)
+				if tt.expectedPassword != "" && peer.TCPPasswordEnabled {
+					toCiliumPeer.AuthSecretRef = pointer.String(tt.expectedSecret)
 				}
 
 				runningPeers = append(runningPeers, toCiliumPeer)
@@ -491,6 +581,8 @@ func TestExportPodCIDRReconciler(t *testing.T) {
 				t.Fatalf("failed to create test bgp server: %v", err)
 			}
 			testSC.Config = oldc
+			reconciler := NewExportPodCIDRReconciler().Reconciler.(*ExportPodCIDRReconciler)
+			podCIDRAnnouncements := reconciler.getMetadata(testSC)
 			for _, cidr := range tt.advertised {
 				advrtResp, err := testSC.Server.AdvertisePath(context.Background(), types.PathRequest{
 					Path: types.NewPathForPrefix(cidr),
@@ -498,8 +590,9 @@ func TestExportPodCIDRReconciler(t *testing.T) {
 				if err != nil {
 					t.Fatalf("failed to advertise initial pod cidr routes: %v", err)
 				}
-				testSC.PodCIDRAnnouncements = append(testSC.PodCIDRAnnouncements, advrtResp.Path)
+				podCIDRAnnouncements = append(podCIDRAnnouncements, advrtResp.Path)
 			}
+			reconciler.storeMetadata(testSC, podCIDRAnnouncements)
 
 			newc := &v2alpha1api.CiliumBGPVirtualRouter{
 				LocalASN:      64125,
@@ -522,22 +615,23 @@ func TestExportPodCIDRReconciler(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to reconcile new pod cidr advertisements: %v", err)
 			}
+			podCIDRAnnouncements = reconciler.getMetadata(testSC)
 
 			// if we disable exports of pod cidr ensure no advertisements are
 			// still present.
 			if tt.shouldEnable == false {
-				if len(testSC.PodCIDRAnnouncements) > 0 {
+				if len(podCIDRAnnouncements) > 0 {
 					t.Fatal("disabled export but advertisements till present")
 				}
 			}
 
-			log.Printf("%+v %+v", testSC.PodCIDRAnnouncements, tt.updated)
+			log.Printf("%+v %+v", podCIDRAnnouncements, tt.updated)
 
 			// ensure we see tt.updated in testSC.PodCIDRAnnoucements
 			for _, cidr := range tt.updated {
 				prefix := netip.MustParsePrefix(cidr.String())
 				var seen bool
-				for _, advrt := range testSC.PodCIDRAnnouncements {
+				for _, advrt := range podCIDRAnnouncements {
 					if advrt.NLRI.String() == prefix.String() {
 						seen = true
 					}
@@ -549,7 +643,7 @@ func TestExportPodCIDRReconciler(t *testing.T) {
 
 			// ensure testSC.PodCIDRAnnouncements does not contain advertisements
 			// not in tt.updated
-			for _, advrt := range testSC.PodCIDRAnnouncements {
+			for _, advrt := range podCIDRAnnouncements {
 				var seen bool
 				for _, cidr := range tt.updated {
 					if advrt.NLRI.String() == cidr.String() {
@@ -1138,25 +1232,6 @@ func TestLBServiceReconciler(t *testing.T) {
 				t.Fatalf("failed to create test bgp server: %v", err)
 			}
 			testSC.Config = oldc
-			for svcKey, cidrs := range tt.advertised {
-				for _, cidr := range cidrs {
-					prefix := netip.MustParsePrefix(cidr)
-					advrtResp, err := testSC.Server.AdvertisePath(context.Background(), types.PathRequest{
-						Path: types.NewPathForPrefix(prefix),
-					})
-					if err != nil {
-						t.Fatalf("failed to advertise initial svc lb cidr routes: %v", err)
-					}
-
-					testSC.ServiceAnnouncements[svcKey] = append(testSC.ServiceAnnouncements[svcKey], advrtResp.Path)
-				}
-			}
-
-			newc := &v2alpha1api.CiliumBGPVirtualRouter{
-				LocalASN:        64125,
-				Neighbors:       []v2alpha1api.CiliumBGPNeighbor{},
-				ServiceSelector: tt.newServiceSelector,
-			}
 
 			diffstore := newFakeDiffStore[*slim_corev1.Service]()
 			for _, obj := range tt.upsertedServices {
@@ -1171,7 +1246,29 @@ func TestLBServiceReconciler(t *testing.T) {
 				epDiffStore.Upsert(obj)
 			}
 
-			reconciler := NewLBServiceReconciler(diffstore, epDiffStore).Reconciler
+			reconciler := NewLBServiceReconciler(diffstore, epDiffStore).Reconciler.(*LBServiceReconciler)
+			serviceAnnouncements := reconciler.getMetadata(testSC)
+
+			for svcKey, cidrs := range tt.advertised {
+				for _, cidr := range cidrs {
+					prefix := netip.MustParsePrefix(cidr)
+					advrtResp, err := testSC.Server.AdvertisePath(context.Background(), types.PathRequest{
+						Path: types.NewPathForPrefix(prefix),
+					})
+					if err != nil {
+						t.Fatalf("failed to advertise initial svc lb cidr routes: %v", err)
+					}
+
+					serviceAnnouncements[svcKey] = append(serviceAnnouncements[svcKey], advrtResp.Path)
+				}
+			}
+
+			newc := &v2alpha1api.CiliumBGPVirtualRouter{
+				LocalASN:        64125,
+				Neighbors:       []v2alpha1api.CiliumBGPNeighbor{},
+				ServiceSelector: tt.newServiceSelector,
+			}
+
 			err = reconciler.Reconcile(context.Background(), ReconcileParams{
 				CurrentServer: testSC,
 				DesiredConfig: newc,
@@ -1194,19 +1291,19 @@ func TestLBServiceReconciler(t *testing.T) {
 			// if we disable exports of pod cidr ensure no advertisements are
 			// still present.
 			if tt.newServiceSelector == nil && !containsLbClass(tt.upsertedServices) {
-				if len(testSC.ServiceAnnouncements) > 0 {
+				if len(serviceAnnouncements) > 0 {
 					t.Fatal("disabled export but advertisements still present")
 				}
 			}
 
-			log.Printf("%+v %+v", testSC.ServiceAnnouncements, tt.updated)
+			log.Printf("%+v %+v", serviceAnnouncements, tt.updated)
 
 			// ensure we see tt.updated in testSC.ServiceAnnouncements
 			for svcKey, cidrs := range tt.updated {
 				for _, cidr := range cidrs {
 					prefix := netip.MustParsePrefix(cidr)
 					var seen bool
-					for _, advrt := range testSC.ServiceAnnouncements[svcKey] {
+					for _, advrt := range serviceAnnouncements[svcKey] {
 						if advrt.NLRI.String() == prefix.String() {
 							seen = true
 						}
@@ -1219,7 +1316,7 @@ func TestLBServiceReconciler(t *testing.T) {
 
 			// ensure testSC.PodCIDRAnnouncements does not contain advertisements
 			// not in tt.updated
-			for svcKey, advrts := range testSC.ServiceAnnouncements {
+			for svcKey, advrts := range serviceAnnouncements {
 				for _, advrt := range advrts {
 					var seen bool
 					for _, cidr := range tt.updated[svcKey] {

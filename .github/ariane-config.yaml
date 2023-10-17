@@ -12,8 +12,10 @@ triggers:
     - conformance-ginkgo.yaml
     - conformance-gke.yaml
     - conformance-ingress.yaml
+    - conformance-multi-pool.yaml
     - conformance-runtime.yaml
     - integration-test.yaml
+    - tests-clustermesh-upgrade.yaml
     - tests-datapath-verifier.yaml
     - tests-l4lb.yaml
     - tests-ipsec-upgrade.yaml
@@ -26,6 +28,7 @@ triggers:
   /ci-clustermesh:
     workflows:
     - conformance-clustermesh.yaml
+    - tests-clustermesh-upgrade.yaml
   /ci-e2e:
     workflows:
     - conformance-e2e.yaml
@@ -53,6 +56,15 @@ triggers:
   /ci-ingress:
     workflows:
     - conformance-ingress.yaml
+  /ci-integration:
+    workflows:
+    - integration-test.yaml
+  /ci-multi-pool:
+    workflows:
+    - conformance-multi-pool.yaml
+  /ci-runtime:
+    workflows:
+    - conformance-runtime.yaml
   /ci-verifier:
     workflows:
     - tests-datapath-verifier.yaml
@@ -83,10 +95,14 @@ workflows:
     paths-ignore-regex: (test|Documentation)/
   conformance-ingress.yaml:
     paths-ignore-regex: (test|Documentation)/
+  conformance-multi-pool.yaml:
+    paths-ignore-regex: (test|Documentation)/
   conformance-runtime.yaml:
     paths-ignore-regex: Documentation/
   integration-test.yaml:
     paths-ignore-regex: Documentation/
+  tests-clustermesh-upgrade.yaml:
+    paths-ignore-regex: (test|Documentation)/
   tests-datapath-verifier.yaml:
     paths-regex: (bpf|test/verifier|vendor)/
   tests-l4lb.yaml:

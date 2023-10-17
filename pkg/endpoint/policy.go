@@ -45,6 +45,12 @@ var (
 	syncAddressIdentityMappingControllerGroup   = controller.NewGroup("sync-address-identity-mapping")
 )
 
+// HasBPFPolicyMap returns true if policy map changes should be collected
+func (e *Endpoint) HasBPFPolicyMap() bool {
+	// Ingress Endpoint has no policy maps
+	return !e.isIngress
+}
+
 // GetNamedPort returns the port for the given name.
 // Must be called with e.mutex NOT held
 func (e *Endpoint) GetNamedPort(ingress bool, name string, proto uint8) uint16 {
@@ -214,7 +220,6 @@ func (e *Endpoint) regeneratePolicy() (*policyGenerateResult, error) {
 	stats := &policyRegenerationStatistics{}
 	stats.totalTime.Start()
 	defer func() {
-		stats.totalTime.End(err == nil)
 		e.updatePolicyRegenerationStatistics(stats, forcePolicyCompute, err)
 	}()
 
@@ -526,9 +531,10 @@ func (e *Endpoint) updateRealizedState(stats *regenerationStatistics, origDir st
 		return fmt.Errorf("error synchronizing endpoint BPF program directories: %s", err)
 	}
 
-	// Keep PolicyMap for this endpoint in sync with desired / realized state.
+	// Start periodic background full reconciliation of the policy map.
+	// Does nothing if it has already been started.
 	if !option.Config.DryMode {
-		e.syncPolicyMapController()
+		e.startSyncPolicyMapController()
 	}
 
 	if e.desiredPolicy != e.realizedPolicy {
@@ -985,7 +991,7 @@ func (e *Endpoint) GetRealizedPolicyRuleLabelsForKey(key policy.Key) (
 	e.mutex.RLock()
 	defer e.mutex.RUnlock()
 
-	entry, ok := e.realizedPolicy.PolicyMapState[key]
+	entry, ok := e.realizedPolicy.GetPolicyMap().Get(key)
 	if !ok {
 		return nil, 0, false
 	}

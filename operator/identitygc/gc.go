@@ -12,10 +12,12 @@ import (
 
 	authIdentity "github.com/cilium/cilium/operator/auth/identity"
 	"github.com/cilium/cilium/pkg/allocator"
+	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/hive"
 	"github.com/cilium/cilium/pkg/hive/cell"
 	v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
+	"github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
 	ciliumV2 "github.com/cilium/cilium/pkg/k8s/client/clientset/versioned/typed/cilium.io/v2"
 	"github.com/cilium/cilium/pkg/k8s/resource"
@@ -31,22 +33,30 @@ type params struct {
 	Logger    logrus.FieldLogger
 	Lifecycle hive.Lifecycle
 
-	Clientset          k8sClient.Clientset
-	Identity           resource.Resource[*v2.CiliumIdentity]
-	AuthIdentityClient authIdentity.Provider
+	Clientset           k8sClient.Clientset
+	Identity            resource.Resource[*v2.CiliumIdentity]
+	CiliumEndpoint      resource.Resource[*v2.CiliumEndpoint]
+	CiliumEndpointSlice resource.Resource[*v2alpha1.CiliumEndpointSlice]
+	AuthIdentityClient  authIdentity.Provider
 
-	Cfg       Config
-	SharedCfg SharedConfig
+	Cfg         Config
+	SharedCfg   SharedConfig
+	ClusterInfo cmtypes.ClusterInfo
+
+	Metrics *Metrics
 }
 
 // GC represents the Cilium identities periodic GC.
 type GC struct {
 	logger logrus.FieldLogger
 
-	clientset          ciliumV2.CiliumIdentityInterface
-	identity           resource.Resource[*v2.CiliumIdentity]
-	authIdentityClient authIdentity.Provider
+	clientset           ciliumV2.CiliumIdentityInterface
+	identity            resource.Resource[*v2.CiliumIdentity]
+	ciliumEndpoint      resource.Resource[*v2.CiliumEndpoint]
+	ciliumEndpointSlice resource.Resource[*v2alpha1.CiliumEndpointSlice]
+	authIdentityClient  authIdentity.Provider
 
+	clusterInfo    cmtypes.ClusterInfo
 	allocationMode string
 
 	gcInterval       time.Duration
@@ -73,10 +83,10 @@ type GC struct {
 	allocationCfg identityAllocationConfig
 	allocator     *allocator.Allocator
 
-	enableMetrics bool
 	// counters for GC failed/successful runs
 	failedRuns     int
 	successfulRuns int
+	metrics        *Metrics
 }
 
 func registerGC(p params) {
@@ -85,15 +95,18 @@ func registerGC(p params) {
 	}
 
 	gc := &GC{
-		logger:             p.Logger,
-		clientset:          p.Clientset.CiliumV2().CiliumIdentities(),
-		identity:           p.Identity,
-		authIdentityClient: p.AuthIdentityClient,
-		allocationMode:     p.SharedCfg.IdentityAllocationMode,
-		gcInterval:         p.Cfg.Interval,
-		heartbeatTimeout:   p.Cfg.HeartbeatTimeout,
-		gcRateInterval:     p.Cfg.RateInterval,
-		gcRateLimit:        p.Cfg.RateLimit,
+		logger:              p.Logger,
+		clientset:           p.Clientset.CiliumV2().CiliumIdentities(),
+		identity:            p.Identity,
+		ciliumEndpoint:      p.CiliumEndpoint,
+		ciliumEndpointSlice: p.CiliumEndpointSlice,
+		authIdentityClient:  p.AuthIdentityClient,
+		clusterInfo:         p.ClusterInfo,
+		allocationMode:      p.SharedCfg.IdentityAllocationMode,
+		gcInterval:          p.Cfg.Interval,
+		heartbeatTimeout:    p.Cfg.HeartbeatTimeout,
+		gcRateInterval:      p.Cfg.RateInterval,
+		gcRateLimit:         p.Cfg.RateLimit,
 		heartbeatStore: newHeartbeatStore(
 			p.Cfg.HeartbeatTimeout,
 		),
@@ -102,10 +115,9 @@ func registerGC(p params) {
 			p.Cfg.RateLimit,
 		),
 		allocationCfg: identityAllocationConfig{
-			clusterName:  p.SharedCfg.ClusterName,
 			k8sNamespace: p.SharedCfg.K8sNamespace,
-			clusterID:    p.SharedCfg.ClusterID,
 		},
+		metrics: p.Metrics,
 	}
 	p.Lifecycle.Append(hive.Hook{
 		OnStart: func(ctx hive.HookContext) error {
@@ -135,19 +147,9 @@ func registerGC(p params) {
 
 // identityAllocationConfig is a helper struct that satisfies the Configuration interface.
 type identityAllocationConfig struct {
-	clusterName  string
 	k8sNamespace string
-	clusterID    uint32
-}
-
-func (cfg identityAllocationConfig) LocalClusterName() string {
-	return cfg.clusterName
 }
 
 func (cfg identityAllocationConfig) CiliumNamespaceName() string {
 	return cfg.k8sNamespace
-}
-
-func (cfg identityAllocationConfig) LocalClusterID() uint32 {
-	return cfg.clusterID
 }

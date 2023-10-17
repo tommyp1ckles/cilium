@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bombsimon/logrusr/v4"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -22,19 +23,22 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
+	ctrlRuntime "sigs.k8s.io/controller-runtime"
 
 	operatorApi "github.com/cilium/cilium/api/v1/operator/server"
 	"github.com/cilium/cilium/operator/api"
 	"github.com/cilium/cilium/operator/auth"
+	"github.com/cilium/cilium/operator/endpointgc"
 	"github.com/cilium/cilium/operator/identitygc"
 	operatorK8s "github.com/cilium/cilium/operator/k8s"
 	operatorMetrics "github.com/cilium/cilium/operator/metrics"
 	operatorOption "github.com/cilium/cilium/operator/option"
-	ces "github.com/cilium/cilium/operator/pkg/ciliumendpointslice"
+	"github.com/cilium/cilium/operator/pkg/ciliumendpointslice"
 	gatewayapi "github.com/cilium/cilium/operator/pkg/gateway-api"
 	"github.com/cilium/cilium/operator/pkg/ingress"
 	"github.com/cilium/cilium/operator/pkg/lbipam"
 	operatorWatchers "github.com/cilium/cilium/operator/watchers"
+	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	"github.com/cilium/cilium/pkg/components"
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/defaults"
@@ -46,11 +50,11 @@ import (
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	"github.com/cilium/cilium/pkg/k8s"
 	"github.com/cilium/cilium/pkg/k8s/apis"
-	k8sconstv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	k8sversion "github.com/cilium/cilium/pkg/k8s/version"
 	"github.com/cilium/cilium/pkg/kvstore"
+	"github.com/cilium/cilium/pkg/kvstore/store"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/metrics"
@@ -92,12 +96,30 @@ var (
 
 		// Provides Clientset, API for accessing Kubernetes objects.
 		k8sClient.Cell,
+
+		// Provides the modular metrics registry, metric HTTP server and legacy metrics cell.
+		operatorMetrics.Cell,
+		cell.Provide(func(
+			operatorCfg *operatorOption.OperatorConfig,
+		) operatorMetrics.SharedConfig {
+			return operatorMetrics.SharedConfig{
+				// Cloud provider specific allocators needs to read operatorCfg.EnableMetrics
+				// to add their metrics when it's set to true. Therefore, we leave the flag as global
+				// instead of declaring it as part of the metrics cell.
+				// This should be changed once the IPAM allocator is modularized.
+				EnableMetrics:    operatorCfg.EnableMetrics,
+				EnableGatewayAPI: operatorCfg.EnableGatewayAPI,
+			}
+		}),
 	)
 
 	// ControlPlane implements the control functions.
 	ControlPlane = cell.Module(
 		"operator-controlplane",
 		"Operator Control Plane",
+
+		cell.Config(cmtypes.DefaultClusterInfo),
+		cell.Invoke(func(cinfo cmtypes.ClusterInfo) error { return cinfo.Validate() }),
 
 		cell.Invoke(
 			registerOperatorHooks,
@@ -117,10 +139,25 @@ var (
 		) identitygc.SharedConfig {
 			return identitygc.SharedConfig{
 				IdentityAllocationMode: daemonCfg.IdentityAllocationMode,
-				EnableMetrics:          operatorCfg.EnableMetrics,
-				ClusterName:            daemonCfg.LocalClusterName(),
 				K8sNamespace:           daemonCfg.CiliumNamespaceName(),
-				ClusterID:              daemonCfg.LocalClusterID(),
+			}
+		}),
+
+		cell.Provide(func(
+			daemonCfg *option.DaemonConfig,
+		) ciliumendpointslice.SharedConfig {
+			return ciliumendpointslice.SharedConfig{
+				EnableCiliumEndpointSlice: daemonCfg.EnableCiliumEndpointSlice,
+			}
+		}),
+
+		cell.Provide(func(
+			operatorCfg *operatorOption.OperatorConfig,
+			daemonCfg *option.DaemonConfig,
+		) endpointgc.SharedConfig {
+			return endpointgc.SharedConfig{
+				Interval:                 operatorCfg.EndpointGCInterval,
+				DisableCiliumEndpointCRD: daemonCfg.DisableCiliumEndpointCRD,
 			}
 		}),
 
@@ -144,6 +181,7 @@ var (
 
 			lbipam.Cell,
 			auth.Cell,
+			store.Cell,
 			legacyCell,
 
 			// When running in kvstore mode, the start hook of the identity GC
@@ -153,6 +191,18 @@ var (
 			// setup operations. This is a hacky workaround until the kvstore is
 			// refactored into a proper cell.
 			identitygc.Cell,
+
+			// CiliumEndpointSlice controller depends on the CiliumEndpoint and
+			// CiliumEndpointSlice resources. It reconciles the state of CESs in the
+			// cluster based on the CEPs and CESs events.
+			// It is disabled if CiliumEndpointSlice is disabled in the cluster -
+			// when --enable-cilium-endpoint-slice is false.
+			ciliumendpointslice.Cell,
+
+			// Cilium Endpoint Garbage Collector. It removes all leaked Cilium
+			// Endpoints. Either once or periodically it validates all the present
+			// Cilium Endpoints and delete the ones that should be deleted.
+			endpointgc.Cell,
 		),
 	)
 
@@ -198,6 +248,9 @@ func NewOperatorCmd(h *hive.Hive) *cobra.Command {
 	// Enable fallback to direct API probing to check for support of Leases in
 	// case Discovery API fails.
 	h.Viper().Set(option.K8sEnableAPIDiscovery, true)
+
+	// Overwrite the metrics namespace with the one specific for the Operator
+	metrics.Namespace = metrics.CiliumOperatorNamespace
 
 	cmd.AddCommand(
 		MetricsCmd,
@@ -269,16 +322,12 @@ func doCleanup() {
 }
 
 // runOperator implements the logic of leader election for cilium-operator using
-// built-in leader election capbility in kubernetes.
+// built-in leader election capability in kubernetes.
 // See: https://github.com/kubernetes/client-go/blob/master/examples/leader-election/main.go
 func runOperator(lc *LeaderLifecycle, clientset k8sClient.Clientset, shutdowner hive.Shutdowner) {
 	isLeader.Store(false)
 
 	leaderElectionCtx, leaderElectionCtxCancel = context.WithCancel(context.Background())
-
-	if operatorOption.Config.EnableMetrics {
-		operatorMetrics.Register()
-	}
 
 	if clientset.IsEnabled() {
 		capabilities := k8sversion.Capabilities()
@@ -379,13 +428,14 @@ func kvstoreEnabled() bool {
 
 var legacyCell = cell.Invoke(registerLegacyOnLeader)
 
-func registerLegacyOnLeader(lc hive.Lifecycle, clientset k8sClient.Clientset, resources operatorK8s.Resources) {
+func registerLegacyOnLeader(lc hive.Lifecycle, clientset k8sClient.Clientset, resources operatorK8s.Resources, factory store.Factory) {
 	ctx, cancel := context.WithCancel(context.Background())
 	legacy := &legacyOnLeader{
-		ctx:       ctx,
-		cancel:    cancel,
-		clientset: clientset,
-		resources: resources,
+		ctx:          ctx,
+		cancel:       cancel,
+		clientset:    clientset,
+		resources:    resources,
+		storeFactory: factory,
 	}
 	lc.Append(hive.Hook{
 		OnStart: legacy.onStart,
@@ -394,11 +444,12 @@ func registerLegacyOnLeader(lc hive.Lifecycle, clientset k8sClient.Clientset, re
 }
 
 type legacyOnLeader struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
-	clientset k8sClient.Clientset
-	wg        sync.WaitGroup
-	resources operatorK8s.Resources
+	ctx          context.Context
+	cancel       context.CancelFunc
+	clientset    k8sClient.Clientset
+	wg           sync.WaitGroup
+	resources    operatorK8s.Resources
+	storeFactory store.Factory
 }
 
 func (legacy *legacyOnLeader) onStop(_ hive.HookContext) error {
@@ -414,29 +465,6 @@ func (legacy *legacyOnLeader) onStop(_ hive.HookContext) error {
 // in HA mode.
 func (legacy *legacyOnLeader) onStart(_ hive.HookContext) error {
 	isLeader.Store(true)
-
-	// If CiliumEndpointSlice feature is enabled, create CESController, start CEP watcher and run controller.
-	// Knowing CES are enabled only if CiliumEndpoint CRD are enabled too.
-	if legacy.clientset.IsEnabled() && option.Config.EnableCiliumEndpointSlice {
-		log.Info("Create and run CES controller, start CEP watcher")
-		// Initialize  the CES controller
-		cesController := ces.NewCESController(
-			legacy.ctx,
-			&legacy.wg,
-			legacy.clientset,
-			operatorOption.Config.CESMaxCEPsInCES,
-			operatorOption.Config.CESSlicingMode,
-			operatorOption.Config.CESWriteQPSLimit,
-			operatorOption.Config.CESWriteQPSBurst)
-		// Start CEP watcher
-		operatorWatchers.CiliumEndpointsSliceInit(legacy.ctx, &legacy.wg, legacy.clientset, cesController)
-		// Start the CES controller, after current CEPs are synced locally in cache.
-		legacy.wg.Add(1)
-		go func() {
-			defer legacy.wg.Done()
-			cesController.Run(operatorWatchers.CiliumEndpointStore, legacy.ctx.Done())
-		}()
-	}
 
 	// Restart kube-dns as soon as possible since it helps etcd-operator to be
 	// properly setup. If kube-dns is not managed by Cilium it can prevent
@@ -467,7 +495,6 @@ func (legacy *legacyOnLeader) onStart(_ hive.HookContext) error {
 	case ipamOption.IPAMAzure,
 		ipamOption.IPAMENI,
 		ipamOption.IPAMClusterPool,
-		ipamOption.IPAMClusterPoolV2,
 		ipamOption.IPAMMultiPool,
 		ipamOption.IPAMAlibabaCloud:
 		alloc, providerBuiltin := allocatorProviders[ipamMode]
@@ -506,13 +533,17 @@ func (legacy *legacyOnLeader) onStart(_ hive.HookContext) error {
 		})
 
 		if legacy.clientset.IsEnabled() && operatorOption.Config.SyncK8sServices {
+			clusterInfo := cmtypes.ClusterInfo{
+				ID:   option.Config.ClusterID,
+				Name: option.Config.ClusterName,
+			}
 			operatorWatchers.StartSynchronizingServices(legacy.ctx, &legacy.wg, operatorWatchers.ServiceSyncParameters{
-				ServiceSyncConfiguration: option.Config,
-
-				Clientset:  legacy.clientset,
-				Services:   legacy.resources.Services,
-				Endpoints:  legacy.resources.Endpoints,
-				SharedOnly: true,
+				ClusterInfo:  clusterInfo,
+				Clientset:    legacy.clientset,
+				Services:     legacy.resources.Services,
+				Endpoints:    legacy.resources.Endpoints,
+				SharedOnly:   true,
+				StoreFactory: legacy.storeFactory,
 			})
 			// If K8s is enabled we can do the service translation automagically by
 			// looking at services from k8s and retrieve the service IP from that.
@@ -640,7 +671,7 @@ func (legacy *legacyOnLeader) onStart(_ hive.HookContext) error {
 		}
 	}
 
-	if option.Config.IPAM == ipamOption.IPAMClusterPool || option.Config.IPAM == ipamOption.IPAMClusterPoolV2 || option.Config.IPAM == ipamOption.IPAMMultiPool {
+	if option.Config.IPAM == ipamOption.IPAMClusterPool || option.Config.IPAM == ipamOption.IPAMMultiPool {
 		// We will use CiliumNodes as the source of truth for the podCIDRs.
 		// Once the CiliumNodes are synchronized with the operator we will
 		// be able to watch for K8s Node events which they will be used
@@ -667,31 +698,6 @@ func (legacy *legacyOnLeader) onStart(_ hive.HookContext) error {
 	}
 
 	if legacy.clientset.IsEnabled() {
-		// Conditionally start the CiliumEndpoint garbage collector.
-		// The GC needs to continually run long-term if EndpointGCInterval is non-zero and if CiliumEndpoint CRDs
-		// are enabled. Otherwise, the GC still needs to run once to account for the case in which a user transitions
-		// from CiliumEndpoint CRD mode to kvstore mode, and to check if there are any stale CEPs that need to be
-		// purged.
-		if operatorOption.Config.EndpointGCInterval != 0 && !option.Config.DisableCiliumEndpointCRD {
-			enableCiliumEndpointSyncGC(legacy.ctx, &legacy.wg, legacy.clientset, ciliumNodeSynchronizer, false)
-		} else {
-			// Check if CEP CRD is available, as it could be missing if CEPs are not enabled.
-			// If the CRD is not available, then no garbage collection needs to be done.
-			_, err := legacy.clientset.ApiextensionsV1().CustomResourceDefinitions().Get(
-				legacy.ctx, k8sconstv2.CEPName, metav1.GetOptions{ResourceVersion: "0"},
-			)
-
-			if err == nil {
-				enableCiliumEndpointSyncGC(legacy.ctx, &legacy.wg, legacy.clientset, ciliumNodeSynchronizer, true)
-			} else if k8sErrors.IsNotFound(err) {
-				log.WithError(err).Info("CiliumEndpoint CRD cannot be found, skipping garbage collection")
-			} else {
-				log.WithError(err).Error(
-					"Unable to determine if CiliumEndpoint CRD is installed, cannot start garbage collector",
-				)
-			}
-		}
-
 		err = enableCNPWatcher(legacy.ctx, &legacy.wg, legacy.clientset)
 		if err != nil {
 			log.WithError(err).WithField(logfields.LogSubsys, "CNPWatcher").Fatal(
@@ -727,6 +733,9 @@ func (legacy *legacyOnLeader) onStart(_ hive.HookContext) error {
 	}
 
 	if operatorOption.Config.EnableGatewayAPI {
+		// Setting global logger for controller-runtime
+		ctrlRuntime.SetLogger(logrusr.New(log, logrusr.WithName("controller-runtime")))
+
 		gatewayController, err := gatewayapi.NewController(
 			operatorOption.Config.EnableGatewayAPISecretsSync,
 			operatorOption.Config.GatewayAPISecretsNamespace,

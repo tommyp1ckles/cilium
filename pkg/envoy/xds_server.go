@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,7 +29,6 @@ import (
 	envoy_type_matcher "github.com/cilium/proxy/go/envoy/type/matcher/v3"
 	"github.com/cilium/proxy/pkg/policy/api/kafka"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -812,7 +812,7 @@ func getListenerFilter(isIngress bool, useOriginalSourceAddr bool, l7lb bool) *e
 		BpfRoot:                  bpf.BPFFSRoot(),
 		IsL7Lb:                   l7lb,
 	}
-	// Set Ingress source addresses if configuring for L7 LB One of these will be used when
+	// Set Ingress source addresses if configuring for L7 LB.  One of these will be used when
 	// useOriginalSourceAddr is false, or when the source is known to not be from the local node
 	// (in such a case use of the original source address would lead to broken routing for the
 	// return traffic, as it would not be sent to the this node where upstream connection
@@ -829,10 +829,14 @@ func getListenerFilter(isIngress bool, useOriginalSourceAddr bool, l7lb bool) *e
 		ingressIPv4 := node.GetIngressIPv4()
 		if ingressIPv4 != nil {
 			conf.Ipv4SourceAddress = ingressIPv4.String()
+			// Enforce ingress policy for Ingress
+			conf.EnforcePolicyOnL7Lb = true
 		}
 		ingressIPv6 := node.GetIngressIPv6()
 		if ingressIPv6 != nil {
 			conf.Ipv6SourceAddress = ingressIPv6.String()
+			// Enforce ingress policy for Ingress
+			conf.EnforcePolicyOnL7Lb = true
 		}
 		log.Debugf("cilium.bpf_metadata: ipv4_source_address: %s", conf.GetIpv4SourceAddress())
 		log.Debugf("cilium.bpf_metadata: ipv6_source_address: %s", conf.GetIpv6SourceAddress())
@@ -843,20 +847,6 @@ func getListenerFilter(isIngress bool, useOriginalSourceAddr bool, l7lb bool) *e
 		ConfigType: &envoy_config_listener.ListenerFilter_TypedConfig{
 			TypedConfig: toAny(conf),
 		},
-	}
-}
-
-func getListenerSocketMarkOption(isIngress bool) *envoy_config_core.SocketOption {
-	socketMark := int64(0xB00)
-	if isIngress {
-		socketMark = 0xA00
-	}
-	return &envoy_config_core.SocketOption{
-		Description: "Listener socket mark",
-		Level:       unix.SOL_SOCKET,
-		Name:        unix.SO_MARK,
-		Value:       &envoy_config_core.SocketOption_IntValue{IntValue: socketMark},
-		State:       envoy_config_core.SocketOption_STATE_PREBIND,
 	}
 }
 
@@ -874,10 +864,6 @@ func (s *xdsServer) getListenerConf(name string, kind policy.L7ParserType, port 
 		Name:                name,
 		Address:             addr,
 		AdditionalAddresses: additionalAddr,
-		Transparent:         &wrapperspb.BoolValue{Value: true},
-		SocketOptions: []*envoy_config_core.SocketOption{
-			getListenerSocketMarkOption(isIngress),
-		},
 		// FilterChains: []*envoy_config_listener.FilterChain
 		ListenerFilters: []*envoy_config_listener.ListenerFilter{
 			// Always insert tls_inspector as the first filter
@@ -1305,14 +1291,14 @@ func getPortNetworkPolicyRule(sel policy.CachedSelector, wildcard bool, l7Parser
 	// Optimize the policy if the endpoint selector is a wildcard by
 	// keeping remote policies list empty to match all remote policies.
 	if !wildcard {
-		for _, id := range sel.GetSelections() {
-			r.RemotePolicies = append(r.RemotePolicies, uint64(id))
-		}
+		selections := sel.GetSelections()
 
 		// No remote policies would match this rule. Discard it.
-		if len(r.RemotePolicies) == 0 {
+		if len(selections) == 0 {
 			return nil, true
 		}
+
+		r.RemotePolicies = selections.AsUint32Slice()
 	}
 
 	if l7Rules == nil {
@@ -1398,28 +1384,20 @@ func getWildcardNetworkPolicyRule(selectors policy.L7DataMap) *cilium.PortNetwor
 				// No remote policies would match this rule. Discard it.
 				return nil
 			}
-			// convert from []uint32 to []uint64
-			remotePolicies := make([]uint64, len(selections))
-			for i, id := range selections {
-				remotePolicies[i] = uint64(id)
-			}
 			return &cilium.PortNetworkPolicyRule{
-				RemotePolicies: remotePolicies,
+				RemotePolicies: selections.AsUint32Slice(),
 			}
 		}
 	}
 
-	// Use map to remove duplicates
-	remoteMap := make(map[uint64]struct{})
+	// Get selections for each selector and count how many there are
+	sels := make([][]uint32, 0, len(selectors))
 	wildcardFound := false
+	var count int
 	for sel, l7 := range selectors {
 		if sel.IsWildcard() {
 			wildcardFound = true
 			break
-		}
-
-		for _, id := range sel.GetSelections() {
-			remoteMap[uint64(id)] = struct{}{}
 		}
 
 		if l7.IsRedirect() {
@@ -1428,26 +1406,32 @@ func getWildcardNetworkPolicyRule(selectors policy.L7DataMap) *cilium.PortNetwor
 			// l7.IsRedirect() will always return false.
 			log.Warningf("L3-only rule for selector %v surprisingly requires proxy redirection (%v)!", sel, *l7)
 		}
+
+		selections := sel.GetSelections()
+		if len(selections) == 0 {
+			continue
+		}
+		count += len(selections)
+		sels = append(sels, selections.AsUint32Slice())
 	}
+
+	var remotePolicies []uint32
 
 	if wildcardFound {
 		// Optimize the policy if the endpoint selector is a wildcard by
 		// keeping remote policies list empty to match all remote policies.
-		remoteMap = nil
-	} else if len(remoteMap) == 0 {
+	} else if count == 0 {
 		// No remote policies would match this rule. Discard it.
 		return nil
+	} else {
+		// allocate slice and copy selected identities
+		remotePolicies = make([]uint32, 0, count)
+		for _, selections := range sels {
+			remotePolicies = append(remotePolicies, selections...)
+		}
+		slices.Sort(remotePolicies)
+		remotePolicies = slices.Compact(remotePolicies)
 	}
-
-	// Convert to a sorted slice
-	remotePolicies := make([]uint64, 0, len(remoteMap))
-	for id := range remoteMap {
-		remotePolicies = append(remotePolicies, id)
-	}
-	sort.Slice(remotePolicies, func(i, j int) bool {
-		return remotePolicies[i] < remotePolicies[j]
-	})
-
 	return &cilium.PortNetworkPolicyRule{
 		RemotePolicies: remotePolicies,
 	}
@@ -1456,7 +1440,7 @@ func getWildcardNetworkPolicyRule(selectors policy.L7DataMap) *cilium.PortNetwor
 func getDirectionNetworkPolicy(ep endpoint.EndpointUpdater, l4Policy policy.L4PolicyMap, policyEnforced bool, vis policy.DirectionalVisibilityPolicy, dir string) []*cilium.PortNetworkPolicy {
 	// TODO: integrate visibility with enforced policy
 	if !policyEnforced {
-		PerPortPolicies := make([]*cilium.PortNetworkPolicy, 0, len(vis))
+		PerPortPolicies := make([]*cilium.PortNetworkPolicy, 0, len(vis)+1)
 		// Always allow all ports
 		PerPortPolicies = append(PerPortPolicies, allowAllTCPPortNetworkPolicy)
 		for _, visMeta := range vis {
@@ -1594,17 +1578,22 @@ func getNetworkPolicy(ep endpoint.EndpointUpdater, vis *policy.VisibilityPolicy,
 		EndpointId:       ep.GetID(),
 		ConntrackMapName: ep.ConntrackNameLocked(),
 	}
-	// If no policy, deny all traffic. Otherwise, convert the policies for ingress and egress.
-	if l4Policy != nil {
-		var visIngress policy.DirectionalVisibilityPolicy
-		var visEgress policy.DirectionalVisibilityPolicy
-		if vis != nil {
-			visIngress = vis.Ingress
-			visEgress = vis.Egress
-		}
-		p.IngressPerPortPolicies = getDirectionNetworkPolicy(ep, l4Policy.Ingress.PortRules, ingressPolicyEnforced, visIngress, "ingress")
-		p.EgressPerPortPolicies = getDirectionNetworkPolicy(ep, l4Policy.Egress.PortRules, egressPolicyEnforced, visEgress, "egress")
+
+	var visIngress policy.DirectionalVisibilityPolicy
+	var visEgress policy.DirectionalVisibilityPolicy
+	if vis != nil {
+		visIngress = vis.Ingress
+		visEgress = vis.Egress
 	}
+	var ingressMap policy.L4PolicyMap
+	var egressMap policy.L4PolicyMap
+	if l4Policy != nil {
+		ingressMap = l4Policy.Ingress.PortRules
+		egressMap = l4Policy.Egress.PortRules
+	}
+	p.IngressPerPortPolicies = getDirectionNetworkPolicy(ep, ingressMap, ingressPolicyEnforced, visIngress, "ingress")
+	p.EgressPerPortPolicies = getDirectionNetworkPolicy(ep, egressMap, egressPolicyEnforced, visEgress, "egress")
+
 	return p
 }
 

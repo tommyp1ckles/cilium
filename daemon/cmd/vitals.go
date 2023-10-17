@@ -43,7 +43,7 @@ func (d *Daemon) getHealthReport() models.ModulesHealth {
 
 func toModuleHealth(m cell.Status) *models.ModuleHealth {
 	return &models.ModuleHealth{
-		ModuleID:    m.ModuleID,
+		ModuleID:    m.FullModuleID.String(),
 		Message:     m.Message,
 		Level:       string(m.Level),
 		LastOk:      toAgeHuman(m.LastOK),

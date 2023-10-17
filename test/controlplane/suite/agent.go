@@ -22,6 +22,7 @@ import (
 	"github.com/cilium/cilium/pkg/hive/job"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
+	"github.com/cilium/cilium/pkg/kvstore/store"
 	"github.com/cilium/cilium/pkg/maps/authmap"
 	fakeauthmap "github.com/cilium/cilium/pkg/maps/authmap/fake"
 	"github.com/cilium/cilium/pkg/maps/ctmap/gc"
@@ -84,6 +85,7 @@ func (h *agentHandle) setupCiliumAgentHive(clientset k8sClient.Clientset, dp *fa
 		statedb.Cell,
 		job.Cell,
 		metrics.Cell,
+		store.Cell,
 		cmd.ControlPlane,
 		cell.Invoke(func(p promise.Promise[*cmd.Daemon]) {
 			h.p = p
@@ -111,7 +113,6 @@ func (h *agentHandle) populateCiliumAgentOptions(testDir string, modConfig func(
 	option.Config.KubeProxyReplacement = option.KubeProxyReplacementTrue
 	option.Config.EnableHostIPRestore = false
 	option.Config.K8sRequireIPv6PodCIDR = false
-	option.Config.K8sEnableK8sEndpointSlice = true
 	option.Config.EnableL7Proxy = false
 	option.Config.EnableHealthCheckNodePort = false
 	option.Config.Debug = true

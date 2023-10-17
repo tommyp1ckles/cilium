@@ -117,6 +117,10 @@ data:
   conntrack-gc-interval: {{ include "validateDuration" .Values.conntrackGCInterval | quote }}
 {{- end }}
 
+{{- if .Values.conntrackGCMaxInterval }}
+  conntrack-gc-max-interval: {{ include "validateDuration" .Values.conntrackGCMaxInterval | quote }}
+{{- end }}
+
 {{- if hasKey .Values "disableEnvoyVersionCheck" }}
   disable-envoy-version-check: {{ .Values.disableEnvoyVersionCheck | quote }}
 {{- end }}
@@ -184,6 +188,11 @@ data:
   # https://docs.cilium.io/en/latest/security/policy/intro/#policy-enforcement-modes
   enable-policy: "{{ lower .Values.policyEnforcementMode }}"
 {{- end }}
+
+{{- if hasKey .Values "policyCIDRMatchMode" }}
+  policy-cidr-match-mode: {{ join " " .Values.policyCIDRMatchMode | quote }}
+{{- end}}
+
 
 {{- if .Values.prometheus.enabled }}
   # If you want metrics enabled in all of your Cilium agents, set the port for
@@ -435,40 +444,37 @@ data:
 {{- if .Values.gke.enabled }}
   routing-mode: "native"
   enable-endpoint-routes: "true"
-  enable-local-node-route: "false"
 {{- else if .Values.aksbyocni.enabled }}
   routing-mode: "tunnel"
   tunnel-protocol: "vxlan"
-{{- end }}
-
-{{- if eq .Values.tunnel "disabled" }}
+{{- else if .Values.routingMode }}
+  routing-mode: {{ .Values.routingMode | quote }}
+{{- else }}
+  {{- if eq .Values.tunnel "disabled" }}
   routing-mode: "native"
-{{- else if eq .Values.tunnel "vxlan" }}
+  {{- else if eq .Values.tunnel "vxlan" }}
   routing-mode: "tunnel"
   tunnel-protocol: "vxlan"
-{{- else if eq .Values.tunnel "geneve" }}
+  {{- else if eq .Values.tunnel "geneve" }}
   routing-mode: "tunnel"
   tunnel-protocol: "geneve"
-{{- else if not (or .Values.gke.enabled .Values.aksbyocni.enabled) }}
+  {{- else }}
   # Default case
   routing-mode: "tunnel"
   tunnel-protocol: "vxlan"
-{{- end }}
-
-{{- if .Values.routingMode }}
-  routing-mode: "{{ .Values.routingMode }}"
+  {{- end }}
 {{- end }}
 
 {{- if .Values.tunnelProtocol }}
-  tunnel-protocol: "{{ .Values.tunnelProtocol }}"
+  tunnel-protocol: {{ .Values.tunnelProtocol | quote }}
 {{- end }}
 
 {{- if .Values.tunnelPort }}
-  tunnel-port: "{{ .Values.tunnelPort }}"
+  tunnel-port: {{ .Values.tunnelPort | quote }}
 {{- end }}
 
 {{- if .Values.MTU }}
-  mtu: "{{ .Values.MTU }}"
+  mtu: {{ .Values.MTU | quote }}
 {{- end }}
 
 {{- if .Values.eni.enabled }}
@@ -505,7 +511,6 @@ data:
 {{- if .Values.azure.enabled }}
   enable-endpoint-routes: "true"
   auto-create-cilium-node-resource: "true"
-  enable-local-node-route: "false"
 {{- if .Values.azure.userAssignedIdentityID }}
   azure-user-assigned-identity-id: {{ .Values.azure.userAssignedIdentityID | quote }}
 {{- end }}
@@ -588,6 +593,9 @@ data:
   enable-wireguard: {{ .Values.encryption.enabled | quote }}
     {{- if .Values.encryption.wireguard.userspaceFallback }}
   enable-wireguard-userspace-fallback: {{ .Values.encryption.wireguard.userspaceFallback | quote }}
+    {{- end }}
+    {{- if .Values.encryption.wireguard.persistentKeepalive }}
+  wireguard-persistent-keepalive: {{ .Values.encryption.wireguard.persistentKeepalive | quote }}
     {{- end }}
   {{- end }}
   {{- if .Values.encryption.nodeEncryption }}
@@ -866,9 +874,17 @@ data:
   enable-hubble-open-metrics: {{ .Values.hubble.metrics.enableOpenMetrics | quote }}
 {{- end }}
 {{- if .Values.hubble.redact }}
-  # A space separated list of redact options for Hubble.
-  hubble-redact: {{- range .Values.hubble.redact }}
-    {{.}}
+{{- if eq .Values.hubble.redact.enabled true }}
+  # Enables hubble redact capabilities
+  hubble-redact-enabled: "true"
+{{- if .Values.hubble.redact.http }}
+  # Enables redaction of the http URL query part in flows
+  hubble-redact-http-urlquery: {{ .Values.hubble.redact.http.urlQuery | quote }}
+{{- end }}
+{{- if .Values.hubble.redact.kafka }}
+  # Enables redaction of the Kafka API key part in flows
+  hubble-redact-kafka-apikey: {{ .Values.hubble.redact.kafka.apiKey | quote }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- if hasKey .Values.hubble "listenAddress" }}
@@ -904,7 +920,7 @@ data:
   ipam-cilium-node-update-rate: {{ include "validateDuration" .Values.ipam.ciliumNodeUpdateRate | quote }}
 {{- end }}
 
-{{- if or (eq $ipam "cluster-pool") (eq $ipam "cluster-pool-v2beta") }}
+{{- if (eq $ipam "cluster-pool") }}
 {{- if .Values.ipv4.enabled }}
   {{- if hasKey .Values.ipam.operator "clusterPoolIPv4PodCIDR" }}
     {{- /* ipam.operator.clusterPoolIPv4PodCIDR removed in v1.14, remove this failsafe around v1.17 */ -}}
@@ -944,6 +960,10 @@ data:
 {{- end }}
 {{- if .Values.ipam.operator.externalAPILimitQPS }}
   limit-ipam-api-qps: {{ .Values.ipam.operator.externalAPILimitQPS | quote }}
+{{- end }}
+
+{{- if .Values.apiRateLimit }}
+  api-rate-limit: {{ .Values.apiRateLimit | quote }}
 {{- end }}
 
 {{- if .Values.enableCnpStatusUpdates }}
@@ -1037,6 +1057,7 @@ data:
 
 {{- if .Values.bgpControlPlane.enabled }}
   enable-bgp-control-plane: "true"
+  bgp-secrets-namespace: {{ .Values.bgpControlPlane.secretsNamespace.name | quote }}
 {{- else }}
   enable-bgp-control-plane: "false"
 {{- end }}

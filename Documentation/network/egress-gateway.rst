@@ -76,6 +76,12 @@ Because egress gateway isn't compatible with identity allocation mode ``kvstore`
 you must use Kubernetes as Cilium's identity store (``identityAllocationMode``
 set to ``crd``). This is the default setting for new installations.
 
+Egress gateway is not compatible with the Cluster Mesh feature. The gateway selected
+by an egress gateway policy must be in the same cluster as the selected pods.
+
+Egress gateway is not compatible with the CiliumEndpointSlice feature
+(see :gh-issue:`24833` for details).
+
 Egress gateway is not supported for IPv6 traffic.
 
 Enable egress gateway
@@ -471,7 +477,7 @@ so it shouldn't matter which one you pick).
 
 .. code-block:: shell-session
 
-    $ kubectl -n kube-system exec ds/cilium -- cilium bpf egress list
+    $ kubectl -n kube-system exec ds/cilium -- cilium-dbg bpf egress list
     Defaulted container "cilium-agent" out of: cilium-agent, config (init), mount-cgroup (init), apply-sysctl-overwrites (init), mount-bpf-fs (init), wait-for-node-init (init), clean-cilium-state (init)
     Source IP    Destination CIDR    Egress IP   Gateway IP
     192.168.2.23 192.168.60.13/32    0.0.0.0     192.168.60.12

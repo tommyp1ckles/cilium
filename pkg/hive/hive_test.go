@@ -224,6 +224,39 @@ func TestProvideInvoke(t *testing.T) {
 	assert.True(t, invoked, "expected invoke to be called, but it was not")
 }
 
+func TestModuleID(t *testing.T) {
+	invoked := false
+	inner := cell.Module(
+		"inner",
+		"inner module",
+		cell.Invoke(func(id cell.ModuleID, fid cell.FullModuleID) error {
+			invoked = true
+			if id != "inner" {
+				return fmt.Errorf("inner id mismatch, expected 'inner', got %q", id)
+			}
+			if fid.String() != "outer.inner" {
+				return fmt.Errorf("outer id mismatch, expected 'outer.inner', got %q", fid)
+			}
+			return nil
+		}),
+	)
+
+	outer := cell.Module(
+		"outer",
+		"outer module",
+		inner,
+	)
+
+	err := hive.New(
+		outer,
+		shutdownOnStartCell,
+	).Run()
+	assert.NoError(t, err, "expected Run to succeed")
+
+	assert.True(t, invoked, "expected invoke to be called, but it was not")
+
+}
+
 func TestProvideHealthReporter(t *testing.T) {
 	// Module provided health reporter should be injected and be scoped to the
 	// module ID.
@@ -254,15 +287,18 @@ func TestProvideHealthReporter(t *testing.T) {
 	var all []cell.Status
 	h := hive.New(
 		testCell,
-		testCell2,
-		unknown,
+		cell.Module(
+			"wrap", "Wraps test modules",
+			testCell2,
+			unknown,
+		),
 		cell.Invoke(func(lc hive.Lifecycle, shutdowner hive.Shutdowner, hr cell.Health) {
 			lc.Append(hive.Hook{
 				OnStop: func(hive.HookContext) error {
 					all = hr.All()
-					s1 = hr.Get("test")
-					s2 = hr.Get("test2")
-					s3 = hr.Get("unknown")
+					s1 = hr.Get([]string{"test"})
+					s2 = hr.Get([]string{"wrap", "test2"})
+					s3 = hr.Get([]string{"wrap", "unknown"})
 					return nil
 				}})
 		}),
@@ -271,11 +307,11 @@ func TestProvideHealthReporter(t *testing.T) {
 	assert.NoError(t, h.Run(), "expected Run to succeed")
 	assert.Len(t, all, 3, "expected two health reports")
 	assert.Equal(t, s1.Level, cell.StatusOK)
-	assert.Equal(t, s1.ModuleID, "test")
+	assert.Equal(t, s1.FullModuleID.String(), "test")
 	assert.Equal(t, s1.Err, nil)
 	assert.True(t, s1.Stopped)
 	assert.Equal(t, s2.Level, cell.StatusDegraded)
-	assert.Equal(t, s2.ModuleID, "test2")
+	assert.Equal(t, s2.FullModuleID.String(), "wrap.test2")
 	assert.Equal(t, s2.Err, fmt.Errorf("someerr"))
 	assert.Equal(t, s3.Level, cell.StatusUnknown)
 }
@@ -466,3 +502,30 @@ var shutdownOnStartCell = cell.Invoke(func(lc hive.Lifecycle, shutdowner hive.Sh
 			return nil
 		}})
 })
+
+// Assert that we can reuse the same cell as part of multiple hives
+func TestSameCellMultipleHives(t *testing.T) {
+	var (
+		got1 string
+		got2 int
+	)
+
+	common := cell.Group(
+		cell.Config(Config{}),
+		cell.Provide(func() int { return 10 }),
+		cell.Invoke(func(_ Config, in1 string, in2 int) { got1, got2 = in1, in2 }),
+	)
+
+	h1 := hive.New(common, cell.Provide(func() string { return "foo" }))
+	h2 := hive.New(common, cell.Provide(func() string { return "bar" }))
+
+	require.NoError(t, h1.Start(context.TODO()))
+	require.Equal(t, "foo", got1)
+	require.Equal(t, 10, got2)
+	require.NoError(t, h2.Start(context.TODO()))
+	require.Equal(t, "bar", got1)
+	require.Equal(t, 10, got2)
+
+	require.NoError(t, h1.Stop(context.TODO()))
+	require.NoError(t, h1.Stop(context.TODO()))
+}

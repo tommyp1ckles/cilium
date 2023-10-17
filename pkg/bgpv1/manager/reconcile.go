@@ -12,12 +12,14 @@ import (
 	"github.com/cilium/cilium/pkg/bgpv1/types"
 	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/k8s"
+	v2api "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	v2alpha1api "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	"github.com/cilium/cilium/pkg/k8s/resource"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	"github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/labels"
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	"github.com/cilium/cilium/pkg/node"
+	"github.com/cilium/cilium/pkg/option"
 	ciliumslices "github.com/cilium/cilium/pkg/slices"
 
 	"github.com/sirupsen/logrus"
@@ -25,15 +27,23 @@ import (
 	"golang.org/x/exp/slices"
 )
 
+const (
+	podIPPoolNameLabel      = "io.cilium.podippool.name"
+	podIPPoolNamespaceLabel = "io.cilium.podippool.namespace"
+)
+
 type ReconcileParams struct {
 	CurrentServer *ServerWithConfig
 	DesiredConfig *v2alpha1api.CiliumBGPVirtualRouter
 	Node          *node.LocalNode
+	CiliumNode    *v2api.CiliumNode
 }
 
 // ConfigReconciler is a interface for reconciling a particular aspect
 // of an old and new *v2alpha1api.CiliumBGPVirtualRouter
 type ConfigReconciler interface {
+	// Name returns the name of a reconciler.
+	Name() string
 	// Priority is used to determine the order in which reconcilers are called. Reconcilers are called from lowest to
 	// highest.
 	Priority() int
@@ -46,7 +56,9 @@ var ConfigReconcilers = cell.ProvidePrivate(
 	NewPreflightReconciler,
 	NewNeighborReconciler,
 	NewExportPodCIDRReconciler,
+	NewPodIPPoolReconciler,
 	NewLBServiceReconciler,
+	NewRoutePolicyReconciler,
 )
 
 type PreflightReconcilerOut struct {
@@ -72,6 +84,10 @@ func NewPreflightReconciler() PreflightReconcilerOut {
 	return PreflightReconcilerOut{
 		Reconciler: &PreflightReconciler{},
 	}
+}
+
+func (r *PreflightReconciler) Name() string {
+	return "Preflight"
 }
 
 func (r *PreflightReconciler) Priority() int {
@@ -171,8 +187,7 @@ func (r *PreflightReconciler) Reconcile(ctx context.Context, p ReconcileParams) 
 	p.CurrentServer.Config = nil
 
 	// Clear the shadow state since any advertisements will be gone now that the server has been recreated.
-	p.CurrentServer.PodCIDRAnnouncements = nil
-	p.CurrentServer.ServiceAnnouncements = make(map[resource.Key][]*types.Path)
+	p.CurrentServer.ReconcilerMetadata = make(map[string]any)
 
 	return nil
 }
@@ -183,14 +198,24 @@ type NeighborReconcilerOut struct {
 	Reconciler ConfigReconciler `group:"bgp-config-reconciler"`
 }
 
-// neighborReconciler is a ConfigReconcilerFunc which reconciles the peers of
-// the provided BGP server with the provided CiliumBGPVirtualRouter.
-type NeighborReconciler struct{}
+// NeighborReconciler is a ConfigReconciler which reconciles the peers of the
+// provided BGP server with the provided CiliumBGPVirtualRouter.
+type NeighborReconciler struct {
+	SecretStore  BGPCPResourceStore[*slim_corev1.Secret]
+	DaemonConfig *option.DaemonConfig
+}
 
-func NewNeighborReconciler() NeighborReconcilerOut {
+func NewNeighborReconciler(SecretStore BGPCPResourceStore[*slim_corev1.Secret], DaemonConfig *option.DaemonConfig) NeighborReconcilerOut {
 	return NeighborReconcilerOut{
-		Reconciler: &NeighborReconciler{},
+		Reconciler: &NeighborReconciler{
+			SecretStore:  SecretStore,
+			DaemonConfig: DaemonConfig,
+		},
 	}
+}
+
+func (r *NeighborReconciler) Name() string {
+	return "Neighbor"
 }
 
 // Priority of neighbor reconciler is higher than pod/service announcements.
@@ -280,6 +305,15 @@ func (r *NeighborReconciler) Reconcile(ctx context.Context, p ReconcileParams) e
 		if m.cur != nil && m.new != nil {
 			if !m.cur.DeepEqual(m.new) {
 				toUpdate = append(toUpdate, m.new)
+			} else {
+				// Fetch the secret to check if the TCP password changed.
+				tcpPassword, err := r.fetchPeerPassword(p.CurrentServer, m.new)
+				if err != nil {
+					return err
+				}
+				if r.changedPeerPassword(p.CurrentServer, m.new, tcpPassword) {
+					toUpdate = append(toUpdate, m.new)
+				}
 			}
 		}
 	}
@@ -293,16 +327,28 @@ func (r *NeighborReconciler) Reconcile(ctx context.Context, p ReconcileParams) e
 	// create new neighbors
 	for _, n := range toCreate {
 		l.Infof("Adding peer %v %v to local ASN %v", n.PeerAddress, n.PeerASN, p.DesiredConfig.LocalASN)
-		if err := p.CurrentServer.Server.AddNeighbor(ctx, types.NeighborRequest{Neighbor: n, VR: p.DesiredConfig}); err != nil {
+		tcpPassword, err := r.fetchPeerPassword(p.CurrentServer, n)
+		if err != nil {
+			return fmt.Errorf("failed fetching password for neighbor %v %v: %w", n.PeerAddress, n.PeerASN, err)
+		}
+		if err := p.CurrentServer.Server.AddNeighbor(ctx, types.NeighborRequest{Neighbor: n, Password: tcpPassword, VR: p.DesiredConfig}); err != nil {
 			return fmt.Errorf("failed while reconciling neighbor %v %v: %w", n.PeerAddress, n.PeerASN, err)
 		}
+		r.updatePeerPassword(p.CurrentServer, n, tcpPassword)
 	}
 
 	// update neighbors
 	for _, n := range toUpdate {
 		l.Infof("Updating peer %v %v in local ASN %v", n.PeerAddress, n.PeerASN, p.DesiredConfig.LocalASN)
-		if err := p.CurrentServer.Server.UpdateNeighbor(ctx, types.NeighborRequest{Neighbor: n, VR: p.DesiredConfig}); err != nil {
+		tcpPassword, err := r.fetchPeerPassword(p.CurrentServer, n)
+		if err != nil {
+			return fmt.Errorf("failed fetching password for neighbor %v %v: %w", n.PeerAddress, n.PeerASN, err)
+		}
+		if err := p.CurrentServer.Server.UpdateNeighbor(ctx, types.NeighborRequest{Neighbor: n, Password: tcpPassword, VR: p.DesiredConfig}); err != nil {
 			return fmt.Errorf("failed while reconciling neighbor %v %v: %w", n.PeerAddress, n.PeerASN, err)
+		}
+		if r.changedPeerPassword(p.CurrentServer, n, tcpPassword) {
+			r.updatePeerPassword(p.CurrentServer, n, tcpPassword)
 		}
 	}
 
@@ -324,14 +370,21 @@ type ExportPodCIDRReconcilerOut struct {
 	Reconciler ConfigReconciler `group:"bgp-config-reconciler"`
 }
 
-// exportPodCIDRReconciler is a ConfigReconcilerFunc which reconciles the
+// exportPodCIDRReconciler is a ConfigReconciler which reconciles the
 // advertisement of the private Kubernetes PodCIDR block.
 type ExportPodCIDRReconciler struct{}
+
+// ExportPodCIDRReconcilerMetadata keeps a list of all advertised Paths
+type ExportPodCIDRReconcilerMetadata []*types.Path
 
 func NewExportPodCIDRReconciler() ExportPodCIDRReconcilerOut {
 	return ExportPodCIDRReconcilerOut{
 		Reconciler: &ExportPodCIDRReconciler{},
 	}
+}
+
+func (r *ExportPodCIDRReconciler) Name() string {
+	return "ExportPodCIDR"
 }
 
 func (r *ExportPodCIDRReconciler) Priority() int {
@@ -367,7 +420,7 @@ func (r *ExportPodCIDRReconciler) Reconcile(ctx context.Context, p ReconcilePara
 		sc:   p.CurrentServer,
 		newc: p.DesiredConfig,
 
-		currentAdvertisements: p.CurrentServer.PodCIDRAnnouncements,
+		currentAdvertisements: r.getMetadata(p.CurrentServer),
 		toAdvertise:           toAdvertise,
 	})
 
@@ -377,8 +430,19 @@ func (r *ExportPodCIDRReconciler) Reconcile(ctx context.Context, p ReconcilePara
 
 	// Update the server config's list of current advertisements only if the
 	// reconciliation logic didn't return any error
-	p.CurrentServer.PodCIDRAnnouncements = advertisements
+	r.storeMetadata(p.CurrentServer, advertisements)
 	return nil
+}
+
+func (r *ExportPodCIDRReconciler) getMetadata(sc *ServerWithConfig) ExportPodCIDRReconcilerMetadata {
+	if _, found := sc.ReconcilerMetadata[r.Name()]; !found {
+		sc.ReconcilerMetadata[r.Name()] = make(ExportPodCIDRReconcilerMetadata, 0)
+	}
+	return sc.ReconcilerMetadata[r.Name()].(ExportPodCIDRReconcilerMetadata)
+}
+
+func (r *ExportPodCIDRReconciler) storeMetadata(sc *ServerWithConfig, meta ExportPodCIDRReconcilerMetadata) {
+	sc.ReconcilerMetadata[r.Name()] = meta
 }
 
 type LBServiceReconcilerOut struct {
@@ -391,6 +455,9 @@ type LBServiceReconciler struct {
 	diffStore   DiffStore[*slim_corev1.Service]
 	epDiffStore DiffStore[*k8s.Endpoints]
 }
+
+// LBServiceReconcilerMetadata keeps a map of services to the respective advertised Paths
+type LBServiceReconcilerMetadata map[resource.Key][]*types.Path
 
 type localServices map[k8s.ServiceID]struct{}
 
@@ -405,6 +472,10 @@ func NewLBServiceReconciler(diffStore DiffStore[*slim_corev1.Service], epDiffSto
 			epDiffStore: epDiffStore,
 		},
 	}
+}
+
+func (r *LBServiceReconciler) Name() string {
+	return "LBService"
 }
 
 func (r *LBServiceReconciler) Priority() int {
@@ -441,6 +512,13 @@ func (r *LBServiceReconciler) Reconcile(ctx context.Context, p ReconcileParams) 
 	}
 
 	return nil
+}
+
+func (r *LBServiceReconciler) getMetadata(sc *ServerWithConfig) LBServiceReconcilerMetadata {
+	if _, found := sc.ReconcilerMetadata[r.Name()]; !found {
+		sc.ReconcilerMetadata[r.Name()] = make(LBServiceReconcilerMetadata)
+	}
+	return sc.ReconcilerMetadata[r.Name()].(LBServiceReconcilerMetadata)
 }
 
 func (r *LBServiceReconciler) resolveSvcFromEndpoints(eps *k8s.Endpoints) (*slim_corev1.Service, bool, error) {
@@ -490,6 +568,81 @@ endpointsLoop:
 	return ls
 }
 
+// NeighborReconcilerMetadata keeps a map of peers to passwords, fetched from
+// secrets. Key is PeerAddress+PeerASN.
+type NeighborReconcilerMetadata map[string]string
+
+func (r *NeighborReconciler) getMetadata(sc *ServerWithConfig) NeighborReconcilerMetadata {
+	if _, found := sc.ReconcilerMetadata[r.Name()]; !found {
+		sc.ReconcilerMetadata[r.Name()] = make(NeighborReconcilerMetadata)
+	}
+	return sc.ReconcilerMetadata[r.Name()].(NeighborReconcilerMetadata)
+}
+
+func (r *NeighborReconciler) fetchPeerPassword(sc *ServerWithConfig, n *v2alpha1api.CiliumBGPNeighbor) (string, error) {
+	peerPasswords := r.getMetadata(sc)
+
+	l := log.WithFields(
+		logrus.Fields{
+			"component": "manager.fetchPeerPassword",
+		},
+	)
+	if n.AuthSecretRef != nil {
+		secretRef := *n.AuthSecretRef
+		old := peerPasswords[fmt.Sprintf("%s%d", n.PeerAddress, n.PeerASN)]
+
+		secret, ok, err := r.fetchSecret(secretRef)
+		if err != nil {
+			return "", fmt.Errorf("failed to fetch secret %q: %w", secretRef, err)
+		}
+		if !ok {
+			if old != "" {
+				l.Errorf("Failed to fetch secret %q: not found (will continue with old secret)", secretRef)
+				return old, nil
+			}
+			l.Errorf("Failed to fetch secret %q: not found (will continue with empty password)", secretRef)
+			return "", nil
+		}
+		tcpPassword := string(secret["password"])
+		if tcpPassword == "" {
+			return "", fmt.Errorf("failed to fetch secret %q: missing password key", secretRef)
+		}
+		l.Debugf("Using TCP password from secret %q", secretRef)
+		return tcpPassword, nil
+	}
+	return "", nil
+}
+
+func (r *NeighborReconciler) fetchSecret(name string) (map[string][]byte, bool, error) {
+	if r.SecretStore == nil {
+		return nil, false, fmt.Errorf("SecretsNamespace not configured")
+	}
+	item, ok, err := r.SecretStore.GetByKey(resource.Key{Namespace: r.DaemonConfig.BGPSecretsNamespace, Name: name})
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	result := map[string][]byte{}
+	for k, v := range item.Data {
+		result[k] = []byte(v)
+	}
+	return result, true, nil
+}
+
+func (r *NeighborReconciler) changedPeerPassword(sc *ServerWithConfig, n *v2alpha1api.CiliumBGPNeighbor, tcpPassword string) bool {
+	peerPasswords := r.getMetadata(sc)
+
+	key := fmt.Sprintf("%s%d", n.PeerAddress, n.PeerASN)
+	old := peerPasswords[key]
+	return old != tcpPassword
+}
+
+func (r *NeighborReconciler) updatePeerPassword(sc *ServerWithConfig, n *v2alpha1api.CiliumBGPNeighbor, tcpPassword string) {
+	peerPasswords := r.getMetadata(sc)
+
+	key := fmt.Sprintf("%s%d", n.PeerAddress, n.PeerASN)
+	peerPasswords[key] = tcpPassword
+}
+
 func hasLocalEndpoints(svc *slim_corev1.Service, ls localServices) bool {
 	_, found := ls[k8s.ServiceID{Name: svc.GetName(), Namespace: svc.GetNamespace()}]
 	return found
@@ -499,7 +652,8 @@ func hasLocalEndpoints(svc *slim_corev1.Service, ls localServices) bool {
 // thus should be avoided if partial reconciliation is an option.
 func (r *LBServiceReconciler) fullReconciliation(ctx context.Context, sc *ServerWithConfig, newc *v2alpha1api.CiliumBGPVirtualRouter, ls localServices) error {
 	// Loop over all existing announcements, delete announcements for services which no longer exist
-	for svcKey := range sc.ServiceAnnouncements {
+	serviceAnnouncements := r.getMetadata(sc)
+	for svcKey := range serviceAnnouncements {
 		_, found, err := r.diffStore.GetByKey(svcKey)
 		if err != nil {
 			return fmt.Errorf("diffStore.GetByKey(); %w", err)
@@ -657,6 +811,7 @@ func (r *LBServiceReconciler) svcDesiredRoutes(newc *v2alpha1api.CiliumBGPVirtua
 // reconcileService gets the desired routes of a given service and makes sure that is what is being announced.
 // Adding missing announcements or withdrawing unwanted ones.
 func (r *LBServiceReconciler) reconcileService(ctx context.Context, sc *ServerWithConfig, newc *v2alpha1api.CiliumBGPVirtualRouter, svc *slim_corev1.Service, ls localServices) error {
+	serviceAnnouncements := r.getMetadata(sc)
 	svcKey := resource.NewKey(svc)
 
 	desiredCidrs, err := r.svcDesiredRoutes(newc, svc, ls)
@@ -666,7 +821,7 @@ func (r *LBServiceReconciler) reconcileService(ctx context.Context, sc *ServerWi
 
 	for _, desiredCidr := range desiredCidrs {
 		// If this route has already been announced, don't add it again
-		if slices.IndexFunc(sc.ServiceAnnouncements[svcKey], func(existing *types.Path) bool {
+		if slices.IndexFunc(serviceAnnouncements[svcKey], func(existing *types.Path) bool {
 			return desiredCidr.String() == existing.NLRI.String()
 		}) != -1 {
 			continue
@@ -679,12 +834,12 @@ func (r *LBServiceReconciler) reconcileService(ctx context.Context, sc *ServerWi
 		if err != nil {
 			return fmt.Errorf("failed to advertise service route %v: %w", desiredCidr, err)
 		}
-		sc.ServiceAnnouncements[svcKey] = append(sc.ServiceAnnouncements[svcKey], advertPathResp.Path)
+		serviceAnnouncements[svcKey] = append(serviceAnnouncements[svcKey], advertPathResp.Path)
 	}
 
 	// Loop over announcements in reverse order so we can delete entries without effecting iteration.
-	for i := len(sc.ServiceAnnouncements[svcKey]) - 1; i >= 0; i-- {
-		announcement := sc.ServiceAnnouncements[svcKey][i]
+	for i := len(serviceAnnouncements[svcKey]) - 1; i >= 0; i-- {
+		announcement := serviceAnnouncements[svcKey][i]
 		// If the announcement is within the list of desired routes, don't remove it
 		if slices.IndexFunc(desiredCidrs, func(existing netip.Prefix) bool {
 			return existing.String() == announcement.NLRI.String()
@@ -697,7 +852,7 @@ func (r *LBServiceReconciler) reconcileService(ctx context.Context, sc *ServerWi
 		}
 
 		// Delete announcement from slice
-		sc.ServiceAnnouncements[svcKey] = slices.Delete(sc.ServiceAnnouncements[svcKey], i, i+1)
+		serviceAnnouncements[svcKey] = slices.Delete(serviceAnnouncements[svcKey], i, i+1)
 	}
 
 	return nil
@@ -705,13 +860,14 @@ func (r *LBServiceReconciler) reconcileService(ctx context.Context, sc *ServerWi
 
 // withdrawService removes all announcements for the given service
 func (r *LBServiceReconciler) withdrawService(ctx context.Context, sc *ServerWithConfig, key resource.Key) error {
-	advertisements := sc.ServiceAnnouncements[key]
+	serviceAnnouncements := r.getMetadata(sc)
+	advertisements := serviceAnnouncements[key]
 	// Loop in reverse order so we can delete without effect to the iteration.
 	for i := len(advertisements) - 1; i >= 0; i-- {
 		advertisement := advertisements[i]
 		if err := sc.Server.WithdrawPath(ctx, types.PathRequest{Path: advertisement}); err != nil {
 			// Persist remaining advertisements
-			sc.ServiceAnnouncements[key] = advertisements
+			serviceAnnouncements[key] = advertisements
 			return fmt.Errorf("failed to withdraw deleted service route: %v: %w", advertisement.NLRI, err)
 		}
 
@@ -720,7 +876,7 @@ func (r *LBServiceReconciler) withdrawService(ctx context.Context, sc *ServerWit
 	}
 
 	// If all were withdrawn without error, we can delete the whole svc from the map
-	delete(sc.ServiceAnnouncements, key)
+	delete(serviceAnnouncements, key)
 
 	return nil
 }
@@ -733,4 +889,14 @@ func serviceLabelSet(svc *slim_corev1.Service) labels.Labels {
 	svcLabels["io.kubernetes.service.name"] = svc.Name
 	svcLabels["io.kubernetes.service.namespace"] = svc.Namespace
 	return labels.Set(svcLabels)
+}
+
+func podIPPoolLabelSet(pool *v2alpha1api.CiliumPodIPPool) labels.Labels {
+	poolLabels := maps.Clone(pool.Labels)
+	if poolLabels == nil {
+		poolLabels = make(map[string]string)
+	}
+	poolLabels[podIPPoolNameLabel] = pool.Name
+	poolLabels[podIPPoolNamespaceLabel] = pool.Namespace
+	return labels.Set(poolLabels)
 }

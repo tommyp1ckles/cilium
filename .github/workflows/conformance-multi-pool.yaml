@@ -1,28 +1,58 @@
-name: Conformance Multi Pool IPAM
+name: Conformance Multi Pool IPAM (ci-multi-pool)
 
 # Any change in triggers needs to be reflected in the concurrency group.
 on:
-  pull_request:
-    paths-ignore:
-      - 'Documentation/**'
-      - 'test/**'
-  push:
-    branches:
-      - main
-      - ft/main/**
-    paths-ignore:
-      - 'Documentation/**'
-      - 'test/**'
+  workflow_dispatch:
+    inputs:
+      PR-number:
+        description: "Pull request number."
+        required: true
+      context-ref:
+        description: "Context in which the workflow runs. If PR is from a fork, will be the PR target branch (general case). If PR is NOT from a fork, will be the PR branch itself (this allows committers to test changes to workflows directly from PRs)."
+        required: true
+      SHA:
+        description: "SHA under test (head of the PR branch)."
+        required: true
+      extra-args:
+        description: "[JSON object] Arbitrary arguments passed from the trigger comment via regex capture group. Parse with 'fromJson(inputs.extra-args).argName' in workflow."
+        required: false
+        default: '{}'
+  # Run every 6 hours
+  schedule:
+    - cron: '20 2/6 * * *'
 
-permissions: read-all
+# By specifying the access of one of the scopes, all of those that are not
+# specified are set to 'none'.
+permissions:
+  # To be able to access the repository with actions/checkout
+  contents: read
+  # To allow retrieving information from the PR API
+  pull-requests: read
+  # To be able to set commit status
+  statuses: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.after }}
+  # Structure:
+  # - Workflow name
+  # - Event type
+  # - A unique identifier depending on event type:
+  #   - schedule: SHA
+  #   - workflow_dispatch: PR number
+  #
+  # This structure ensures a unique concurrency group name is generated for each
+  # type of testing, such that re-runs will cancel the previous run.
+  group: |
+    ${{ github.workflow }}
+    ${{ github.event_name }}
+    ${{
+      (github.event_name == 'schedule' && github.sha) ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.PR-number)
+    }}
   cancel-in-progress: true
 
 env:
   # renovate: datasource=github-releases depName=cilium/cilium-cli
-  cilium_cli_version: v0.15.6
+  cilium_cli_version: v0.15.11
   cilium_cli_ci_version:
   # renovate: datasource=github-releases depName=kubernetes-sigs/kind
   kind_version: v0.20.0
@@ -30,34 +60,56 @@ env:
   timeout: 5m
 
 jobs:
+  commit-status-start:
+    name: Commit Status Start
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set initial commit status
+        uses: myrotvorets/set-commit-status-action@38f3f27c7d52fb381273e95542f07f0fba301307 # v2.0.0
+        with:
+          sha: ${{ inputs.SHA || github.sha }}
+
   multi-pool-ipam-conformance-test:
     name: Install and Connectivity Test
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - name: Checkout main branch to access local actions
-        uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
+      - name: Checkout context ref (trusted)
+        uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4.1.0
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ inputs.context-ref || github.sha }}
           persist-credentials: false
+
       - name: Set Environment Variables
         uses: ./.github/actions/set-env-variables
 
       - name: Install Cilium CLI
-        uses: cilium/cilium-cli@e718cf78ef55d95cfa0a5a0a935d6a224d567e1d # v0.15.6
+        uses: cilium/cilium-cli@951eb9108277f4ffeb86d047bd492b6b96a52542 # v0.15.11
         with:
           release-version: ${{ env.cilium_cli_version }}
           ci-version: ${{ env.cilium_cli_ci_version }}
 
-      - name: Set image tag
+      - name: Get Cilium's default values
+        id: default_vars
+        uses: ./.github/actions/helm-default
+        with:
+          image-tag: ${{ inputs.SHA }}
+
+      - name: Set up job variables
         id: vars
         run: |
-          if [ ${{ github.event.pull_request }} ]; then
-            SHA=${{ github.event.pull_request.head.sha }}
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            CONTEXT_REF="${{ inputs.context-ref }}"
+            OWNER="${{ inputs.PR-number }}"
           else
-            SHA=${{ github.sha }}
+            CONTEXT_REF="${{ github.sha }}"
+            OWNER="${{ github.ref_name }}"
+            OWNER="${OWNER/./-}"
           fi
-          echo sha=${SHA} >> $GITHUB_OUTPUT
+
+          echo sha=${{ steps.default_vars.outputs.sha }} >> $GITHUB_OUTPUT
+          echo context-ref=${CONTEXT_REF} >> $GITHUB_OUTPUT
+          echo owner=${OWNER} >> $GITHUB_OUTPUT
 
           # Notes:
           #  - Multi-pool IPAM only supports direct routing, thus we disable
@@ -69,31 +121,17 @@ jobs:
           #  - iptables-based masquerading does not support multiple non-masquerade
           #    CIDRs. Thus, we enable BPF masquerading where we can add multiple
           #    non-masquerade CIDRs.
-          CILIUM_INSTALL_DEFAULTS="--chart-directory=install/kubernetes/cilium \
-            --helm-set=debug.enabled=true \
+          CILIUM_INSTALL_DEFAULTS="${{ steps.default_vars.outputs.cilium_install_defaults }} \
             --helm-set=debug.verbose=envoy \
-            --helm-set=image.repository=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-ci \
-            --helm-set=image.useDigest=false \
-            --helm-set=image.tag=${SHA} \
-            --helm-set=operator.image.repository=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/operator \
-            --helm-set=operator.image.suffix=-ci \
-            --helm-set=operator.image.tag=${SHA} \
-            --helm-set=operator.image.useDigest=false \
             --helm-set=hubble.relay.enabled=true \
-            --helm-set=hubble.relay.image.repository=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/hubble-relay-ci \
-            --helm-set=hubble.relay.image.tag=${SHA} \
-            --helm-set=hubble.relay.image.useDigest=false \
-            --helm-set=tunnel=disabled \
             --helm-set=autoDirectNodeRoutes=true \
             --helm-set=routingMode=native \
             --helm-set=endpointRoutes.enabled=true \
-            --helm-set-string=extraConfig.enable-local-node-route=false \
             --helm-set=kubeProxyReplacement=strict \
             --helm-set=bpf.masquerade=true \
             --helm-set=bpf.hostLegacyRouting=true\
-            --helm-set=ipv4NativeRoutingCIDR=10.0.0.0/8 \
             --helm-set=ipMasqAgent.enabled=true \
-            --helm-set=ipMasqAgent.config.nonMasqueradeCIDRs='{192.168.0.0/16}' \
+            --helm-set=ipMasqAgent.config.nonMasqueradeCIDRs='{10.0.0.0/8,192.168.0.0/16}' \
             --helm-set=ipam.mode=multi-pool \
             --helm-set=ipam.operator.autoCreateCiliumPodIPPools.default.ipv4.cidrs='{10.10.0.0/16}' \
             --helm-set=ipam.operator.autoCreateCiliumPodIPPools.default.ipv4.maskSize=24 \
@@ -115,8 +153,10 @@ jobs:
           echo cilium_install_defaults=${CILIUM_INSTALL_DEFAULTS} >> $GITHUB_OUTPUT
           echo connectivity_test_defaults=${CONNECTIVITY_TEST_DEFAULTS} >> $GITHUB_OUTPUT
 
-      - name: Checkout
-        uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
+      # Warning: since this is a privileged workflow, subsequent workflow job
+      # steps must take care not to execute untrusted code.
+      - name: Checkout pull request branch (NOT TRUSTED)
+        uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4.1.0
         with:
           ref: ${{ steps.vars.outputs.sha }}
           persist-credentials: false
@@ -191,7 +231,7 @@ jobs:
 
       - name: Upload artifacts
         if: ${{ !success() }}
-        uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce # v3.1.2
+        uses: actions/upload-artifact@a8a3f3ad30e3422c9c7b888a15615d19a852ae32 # v3.1.3
         with:
           name: cilium-sysdump-out.zip
           path: cilium-sysdump-*.zip
@@ -199,7 +239,7 @@ jobs:
 
       - name: Upload JUnits [junit]
         if: ${{ always() }}
-        uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce # v3.1.2
+        uses: actions/upload-artifact@a8a3f3ad30e3422c9c7b888a15615d19a852ae32 # v3.1.3
         with:
           name: cilium-junits
           path: cilium-junits/*.xml
@@ -210,3 +250,15 @@ jobs:
         uses: aanm/junit2md@332ebf0fddd34e91b03a832cfafaa826306558f9 # v0.0.3
         with:
           junit-directory: "cilium-junits"
+
+  commit-status-final:
+    if: ${{ always() }}
+    name: Commit Status Final
+    needs: multi-pool-ipam-conformance-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set final commit status
+        uses: myrotvorets/set-commit-status-action@38f3f27c7d52fb381273e95542f07f0fba301307 # v2.0.0
+        with:
+          sha: ${{ inputs.SHA || github.sha }}
+          status: ${{ needs.multi-pool-ipam-conformance-test.result }}

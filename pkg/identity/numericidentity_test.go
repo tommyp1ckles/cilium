@@ -14,7 +14,7 @@ import (
 )
 
 func (s *IdentityTestSuite) TestLocalIdentity(c *C) {
-	localID := NumericIdentity(LocalIdentityFlag | 1)
+	localID := NumericIdentity(IdentityScopeLocal | 1)
 	c.Assert(localID.HasLocalScope(), Equals, true)
 
 	maxClusterID := NumericIdentity(types.ClusterIDMax | 1)
@@ -67,5 +67,15 @@ func TestGetAllReservedIdentities(t *testing.T) {
 		// NOTE: identity 0 is unknown, so the reserved identities start at 1
 		// hence the plus one here.
 		require.Equal(t, uint32(i+1), id.Uint32())
+	}
+}
+
+func TestAsUint32Slice(t *testing.T) {
+	nids := NumericIdentitySlice{2, 42, 42, 1, 1024, 1}
+	uint32Slice := nids.AsUint32Slice()
+	require.NotNil(t, uint32Slice)
+	require.Len(t, uint32Slice, len(nids))
+	for i, nid := range nids {
+		require.Equal(t, nid.Uint32(), uint32Slice[i])
 	}
 }

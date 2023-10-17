@@ -13,11 +13,14 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/ipam/service/ipallocator"
 	"github.com/cilium/cilium/pkg/ipam/types"
 	ciliumv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
+	"github.com/cilium/cilium/pkg/k8s/resource"
+	"github.com/cilium/cilium/pkg/lock"
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/trigger"
 )
@@ -26,12 +29,18 @@ func Test_MultiPoolManager(t *testing.T) {
 	fakeConfig := &testConfiguration{}
 	fakeOwner := &ownerMock{}
 	events := make(chan string, 1)
-	fakeK8sCiliumNodeAPI := &fakeK8sCiliumNodeAPI{
+	fakeK8sCiliumNodeAPI := &fakeK8sCiliumNodeAPIResource{
 		node: &ciliumv2.CiliumNode{},
-		onDeleteEvent: func() {
+		onDeleteEvent: func(err error) {
+			if err != nil {
+				t.Errorf("deleting failed: %v", err)
+			}
 			events <- "delete"
 		},
-		onUpsertEvent: func() {
+		onUpsertEvent: func(err error) {
+			if err != nil {
+				t.Errorf("upserting failed: %v", err)
+			}
 			events <- "upsert"
 		},
 	}
@@ -277,7 +286,9 @@ func Test_MultiPoolManager(t *testing.T) {
 	assert.Error(t, errors.New("all pod CIDR ranges are exhausted"), err)
 
 	ipv4Dump, _ := c.dump(IPv4)
-	assert.Len(t, ipv4Dump, numMarsIPs+1) // +1 from default pool
+	assert.Len(t, ipv4Dump, 2) // 2 pools: default + mars
+	assert.Len(t, ipv4Dump[PoolDefault], 1)
+	assert.Len(t, ipv4Dump[Pool("mars")], numMarsIPs)
 
 	// Ensure Requested numbers are bumped
 	assert.Equal(t, <-events, "upsert")
@@ -370,9 +381,13 @@ func Test_MultiPoolManager(t *testing.T) {
 	}, currentNode.Spec.IPAM.Pools.Allocated)
 
 	ipv4Dump, ipv4Summary := c.dump(IPv4)
-	assert.Equal(t, map[string]string{
-		defaultAllocation.IP.String():        "",
-		"mars/" + marsAllocation.IP.String(): "",
+	assert.Equal(t, map[Pool]map[string]string{
+		PoolDefault: {
+			defaultAllocation.IP.String(): "",
+		},
+		Pool("mars"): {
+			marsAllocation.IP.String(): "",
+		},
 	}, ipv4Dump)
 	assert.Equal(t, "2 IPAM pool(s) available", ipv4Summary)
 }
@@ -451,4 +466,77 @@ func Test_pendingAllocationsPerPool(t *testing.T) {
 	pending.markAsAllocated("other", "foo", IPv6)
 	assert.Equal(t, 0, pending.pendingForPool("other", IPv4))
 	assert.Equal(t, 0, pending.pendingForPool("other", IPv6))
+}
+
+type fakeK8sCiliumNodeAPIResource struct {
+	mutex lock.Mutex
+	node  *ciliumv2.CiliumNode
+	c     chan resource.Event[*ciliumv2.CiliumNode]
+
+	onUpsertEvent func(err error)
+	onDeleteEvent func(err error)
+}
+
+func (f *fakeK8sCiliumNodeAPIResource) Update(ctx context.Context, ciliumNode *ciliumv2.CiliumNode, _ v1.UpdateOptions) (*ciliumv2.CiliumNode, error) {
+	err := f.updateNode(ciliumNode)
+	return ciliumNode, err
+}
+
+func (f *fakeK8sCiliumNodeAPIResource) UpdateStatus(ctx context.Context, ciliumNode *ciliumv2.CiliumNode, _ v1.UpdateOptions) (*ciliumv2.CiliumNode, error) {
+	err := f.updateNode(ciliumNode)
+	return ciliumNode, err
+}
+
+func (f *fakeK8sCiliumNodeAPIResource) Observe(ctx context.Context, next func(resource.Event[*ciliumv2.CiliumNode]), complete func(error)) {
+	panic("unimplemented")
+}
+
+func (f *fakeK8sCiliumNodeAPIResource) Events(ctx context.Context, _ ...resource.EventsOpt) <-chan resource.Event[*ciliumv2.CiliumNode] {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+
+	f.c = make(chan resource.Event[*ciliumv2.CiliumNode])
+	return f.c
+}
+
+func (f *fakeK8sCiliumNodeAPIResource) Store(context.Context) (resource.Store[*ciliumv2.CiliumNode], error) {
+	return nil, errors.New("unimplemented")
+}
+
+// currentNode returns a the current snapshot of the node
+func (f *fakeK8sCiliumNodeAPIResource) currentNode() *ciliumv2.CiliumNode {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+
+	return f.node.DeepCopy()
+}
+
+// updateNode is to be invoked by the test code to simulate updates by the operator
+func (f *fakeK8sCiliumNodeAPIResource) updateNode(newNode *ciliumv2.CiliumNode) error {
+	f.mutex.Lock()
+	oldNode := f.node
+	if oldNode == nil {
+		f.mutex.Unlock()
+		return fmt.Errorf("failed to update CiliumNode %q: node not found", newNode.Name)
+	}
+	f.node = newNode.DeepCopy()
+
+	c := f.c
+	onUpsertEvent := f.onUpsertEvent
+	f.mutex.Unlock()
+
+	var err error
+	if c != nil {
+		c <- resource.Event[*ciliumv2.CiliumNode]{
+			Kind:   resource.Upsert,
+			Object: newNode,
+			Key:    resource.NewKey(newNode),
+			Done: func(err error) {
+				if onUpsertEvent != nil {
+					onUpsertEvent(err)
+				}
+			}}
+	}
+
+	return err
 }

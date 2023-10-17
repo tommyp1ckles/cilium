@@ -45,30 +45,30 @@ func (t *testConfiguration) IPAMMode() string                         { return i
 func (t *testConfiguration) SetIPv4NativeRoutingCIDR(cidr *cidr.CIDR) {}
 func (t *testConfiguration) GetIPv4NativeRoutingCIDR() *cidr.CIDR     { return nil }
 
-type fakeMetadataFunc func(owner string) (pool string, err error)
+type fakeMetadataFunc func(owner string, family Family) (pool string, err error)
 
-func (f fakeMetadataFunc) GetIPPoolForPod(owner string) (pool string, err error) {
-	return f(owner)
+func (f fakeMetadataFunc) GetIPPoolForPod(owner string, family Family) (pool string, err error) {
+	return f(owner, family)
 }
 
 type fakePoolAllocator struct {
-	pools map[string]Allocator
+	pools map[Pool]Allocator
 }
 
 func newFakePoolAllocator(poolMap map[string]string) *fakePoolAllocator {
-	pools := make(map[string]Allocator, len(poolMap))
+	pools := make(map[Pool]Allocator, len(poolMap))
 	for name, cidr := range poolMap {
 		_, ipnet, err := net.ParseCIDR(cidr)
 		if err != nil {
 			panic(fmt.Sprintf("failed to parse test cidr %s for pool %s", cidr, name))
 		}
-		pools[name] = newHostScopeAllocator(ipnet)
+		pools[Pool(name)] = newHostScopeAllocator(ipnet)
 	}
 	return &fakePoolAllocator{pools: pools}
 }
 
 func (f *fakePoolAllocator) Allocate(ip net.IP, owner string, pool Pool) (*AllocationResult, error) {
-	alloc, ok := f.pools[pool.String()]
+	alloc, ok := f.pools[pool]
 	if !ok {
 		return nil, fmt.Errorf("unknown pool %s", pool)
 	}
@@ -85,7 +85,7 @@ func (f fakePoolAllocator) AllocateWithoutSyncUpstream(ip net.IP, owner string, 
 }
 
 func (f fakePoolAllocator) Release(ip net.IP, pool Pool) error {
-	alloc, ok := f.pools[pool.String()]
+	alloc, ok := f.pools[pool]
 	if !ok {
 		return fmt.Errorf("unknown pool %s", pool)
 	}
@@ -93,7 +93,7 @@ func (f fakePoolAllocator) Release(ip net.IP, pool Pool) error {
 }
 
 func (f fakePoolAllocator) AllocateNext(owner string, pool Pool) (*AllocationResult, error) {
-	alloc, ok := f.pools[pool.String()]
+	alloc, ok := f.pools[pool]
 	if !ok {
 		return nil, fmt.Errorf("unknown pool %s", pool)
 	}
@@ -109,22 +109,29 @@ func (f fakePoolAllocator) AllocateNextWithoutSyncUpstream(owner string, pool Po
 	return f.AllocateNext(owner, pool)
 }
 
-func (f fakePoolAllocator) Dump() (map[string]string, string) {
-	result := map[string]string{}
+func (f fakePoolAllocator) Dump() (map[Pool]map[string]string, string) {
+	result := map[Pool]map[string]string{}
 	for name, alloc := range f.pools {
 		dump, _ := alloc.Dump()
-		for k, v := range dump {
-			result[name+":"+k] = v
+		if _, ok := result[name]; !ok {
+			result[name] = map[string]string{}
+		}
+		for k, v := range dump[name] {
+			result[name][k] = v
 		}
 	}
 	return result, fmt.Sprintf("%d pools", len(f.pools))
+}
+
+func (f fakePoolAllocator) Capacity() uint64 {
+	return uint64(0)
 }
 
 func (f fakePoolAllocator) RestoreFinished() {}
 
 func (s *IPAMSuite) TestLock(c *C) {
 	fakeAddressing := fake.NewNodeAddressing()
-	ipam := NewIPAM(fakeAddressing, &testConfiguration{}, &ownerMock{}, &ownerMock{}, &mtuMock, nil)
+	ipam := NewIPAM(fakeAddressing, &testConfiguration{}, &ownerMock{}, &ownerMock{}, &resourceMock{}, &mtuMock, nil)
 
 	// Since the IPs we have allocated to the endpoints might or might not
 	// be in the allocrange specified in cilium, we need to specify them
@@ -146,7 +153,7 @@ func (s *IPAMSuite) TestLock(c *C) {
 
 func (s *IPAMSuite) TestExcludeIP(c *C) {
 	fakeAddressing := fake.NewNodeAddressing()
-	ipam := NewIPAM(fakeAddressing, &testConfiguration{}, &ownerMock{}, &ownerMock{}, &mtuMock, nil)
+	ipam := NewIPAM(fakeAddressing, &testConfiguration{}, &ownerMock{}, &ownerMock{}, &resourceMock{}, &mtuMock, nil)
 
 	ipv4 := fakeIPv4AllocCIDRIP(fakeAddressing)
 	ipv4 = ipv4.Next()
@@ -177,7 +184,7 @@ func (s *IPAMSuite) TestDeriveFamily(c *C) {
 
 func (s *IPAMSuite) TestIPAMMetadata(c *C) {
 	fakeAddressing := fake.NewNodeAddressing()
-	ipam := NewIPAM(fakeAddressing, &testConfiguration{}, &ownerMock{}, &ownerMock{}, &mtuMock, nil)
+	ipam := NewIPAM(fakeAddressing, &testConfiguration{}, &ownerMock{}, &ownerMock{}, &resourceMock{}, &mtuMock, nil)
 	ipam.IPv4Allocator = newFakePoolAllocator(map[string]string{
 		"default": "10.10.0.0/16",
 		"test":    "192.168.178.0/24",
@@ -195,7 +202,7 @@ func (s *IPAMSuite) TestIPAMMetadata(c *C) {
 	c.Assert(resIPv4.IPPoolName, Equals, PoolDefault)
 	c.Assert(resIPv6.IPPoolName, Equals, PoolDefault)
 
-	ipam.WithMetadata(fakeMetadataFunc(func(owner string) (pool string, err error) {
+	ipam.WithMetadata(fakeMetadataFunc(func(owner string, family Family) (pool string, err error) {
 		// use namespace to determine pool name
 		namespace, _, _ := strings.Cut(owner, "/")
 		switch namespace {
@@ -254,8 +261,8 @@ func (s *IPAMSuite) TestLegacyAllocatorIPAMMetadata(c *C) {
 	// AllocationResult is always set to PoolDefault, regardless of the requested
 	// pool
 	fakeAddressing := fake.NewNodeAddressing()
-	ipam := NewIPAM(fakeAddressing, &testConfiguration{}, &ownerMock{}, &ownerMock{}, &mtuMock, nil)
-	ipam.WithMetadata(fakeMetadataFunc(func(owner string) (pool string, err error) {
+	ipam := NewIPAM(fakeAddressing, &testConfiguration{}, &ownerMock{}, &ownerMock{}, &resourceMock{}, &mtuMock, nil)
+	ipam.WithMetadata(fakeMetadataFunc(func(owner string, family Family) (pool string, err error) {
 		return "some-pool", nil
 	}))
 

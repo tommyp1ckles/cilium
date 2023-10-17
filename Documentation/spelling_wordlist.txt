@@ -33,6 +33,7 @@ Dinan
 Dockerfile
 Dockerfiles
 Donenfeld
+ENI
 FIt
 Fastabend
 Fosdem
@@ -55,6 +56,7 @@ JUnit
 Jakub
 Jenkinsfiles
 Jesper
+jobLabel
 KV
 KVstore
 Kata
@@ -116,6 +118,7 @@ Vagrantfile
 Vagrantfiles
 Viljoen
 Wendlandt
+Wireguard
 Wireshark
 Xenial
 Yan
@@ -132,6 +135,7 @@ allowlist
 amd
 ansible
 api
+apiKey
 apiKeys
 apiserver
 arithmetics
@@ -217,6 +221,7 @@ configSources
 configmap
 configs
 conntrack
+conntrackGCInterval
 containerd
 contrib
 coord
@@ -241,6 +246,7 @@ datapath
 datastore
 datastream
 datastreams
+dbg
 de
 deathstar
 debuginfo
@@ -295,6 +301,7 @@ failover
 filesystem
 filesystems
 firewalling
+fortio
 fqdn
 fromCIDR
 fromCIDRSet
@@ -326,6 +333,7 @@ hashtable
 hashtables
 healthcheck
 healthz
+helloworld
 herokuapp
 hexData
 hostPath
@@ -345,6 +353,7 @@ hugepages
 hv
 icmp
 ie
+ifindex
 impactful
 ingressing
 init
@@ -524,6 +533,7 @@ pluggable
 pmdabcc
 png
 podCIDR
+policyCIDRMatchMode
 policymap
 poller
 portmap
@@ -581,6 +591,7 @@ rn
 roadmap
 rollout
 routable
+routingMode
 rst
 runnable
 runtimes
@@ -663,6 +674,7 @@ toolchain
 tracepoint
 tracepoints
 transpiling
+tunnelProtocol
 ubuntu
 udp
 ui
@@ -686,6 +698,7 @@ uprobes
 uptime
 uretprobes
 url
+urlQuery
 userspace
 uuid
 vCPU
@@ -710,6 +723,7 @@ webhook
 webhooks
 webservice
 whitespace
+workqueue
 www
 xDS
 xdp

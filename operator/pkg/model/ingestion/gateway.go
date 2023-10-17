@@ -73,6 +73,10 @@ func GatewayAPI(input Input) ([]model.HTTPListener, []model.TLSListener) {
 					if (be.Kind != nil && *be.Kind != "Service") || (be.Group != nil && *be.Group != corev1.GroupName) {
 						continue
 					}
+					if be.BackendRef.Port == nil {
+						// must have port for Service reference
+						continue
+					}
 					if serviceExists(string(be.Name), helpers.NamespaceDerefOr(be.Namespace, r.Namespace), input.Services) {
 						bes = append(bes, backendToModelBackend(be.BackendRef, r.Namespace))
 					}
@@ -89,7 +93,7 @@ func GatewayAPI(input Input) ([]model.HTTPListener, []model.TLSListener) {
 				var responseHeaderFilter *model.HTTPHeaderFilter
 				var requestRedirectFilter *model.HTTPRequestRedirectFilter
 				var rewriteFilter *model.HTTPURLRewriteFilter
-				var requestMirror *model.HTTPRequestMirror
+				var requestMirrors []*model.HTTPRequestMirror
 
 				for _, f := range rule.Filters {
 					switch f.Type {
@@ -110,7 +114,7 @@ func GatewayAPI(input Input) ([]model.HTTPListener, []model.TLSListener) {
 					case gatewayv1beta1.HTTPRouteFilterURLRewrite:
 						rewriteFilter = toHTTPRewriteFilter(f.URLRewrite)
 					case gatewayv1beta1.HTTPRouteFilterRequestMirror:
-						requestMirror = toHTTPRequestMirror(f.RequestMirror, r.Namespace)
+						requestMirrors = append(requestMirrors, toHTTPRequestMirror(f.RequestMirror, r.Namespace))
 					}
 				}
 
@@ -123,7 +127,7 @@ func GatewayAPI(input Input) ([]model.HTTPListener, []model.TLSListener) {
 						ResponseHeaderModifier: responseHeaderFilter,
 						RequestRedirect:        requestRedirectFilter,
 						Rewrite:                rewriteFilter,
-						RequestMirror:          requestMirror,
+						RequestMirrors:         requestMirrors,
 					})
 				}
 
@@ -140,7 +144,7 @@ func GatewayAPI(input Input) ([]model.HTTPListener, []model.TLSListener) {
 						ResponseHeaderModifier: responseHeaderFilter,
 						RequestRedirect:        requestRedirectFilter,
 						Rewrite:                rewriteFilter,
-						RequestMirror:          requestMirror,
+						RequestMirrors:         requestMirrors,
 					})
 				}
 			}

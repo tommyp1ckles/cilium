@@ -819,6 +819,7 @@ const (
 	CapacityReservationInstancePlatformRhelWithHa                       CapacityReservationInstancePlatform = "RHEL with HA"
 	CapacityReservationInstancePlatformRhelWithHaAndSqlServerStandard   CapacityReservationInstancePlatform = "RHEL with HA and SQL Server Standard"
 	CapacityReservationInstancePlatformRhelWithHaAndSqlServerEnterprise CapacityReservationInstancePlatform = "RHEL with HA and SQL Server Enterprise"
+	CapacityReservationInstancePlatformUbuntuProLinux                   CapacityReservationInstancePlatform = "Ubuntu Pro"
 )
 
 // Values returns all known values for CapacityReservationInstancePlatform. Note
@@ -844,6 +845,7 @@ func (CapacityReservationInstancePlatform) Values() []CapacityReservationInstanc
 		"RHEL with HA",
 		"RHEL with HA and SQL Server Standard",
 		"RHEL with HA and SQL Server Enterprise",
+		"Ubuntu Pro",
 	}
 }
 
@@ -2385,6 +2387,40 @@ func (ImageAttributeName) Values() []ImageAttributeName {
 	}
 }
 
+type ImageBlockPublicAccessDisabledState string
+
+// Enum values for ImageBlockPublicAccessDisabledState
+const (
+	ImageBlockPublicAccessDisabledStateUnblocked ImageBlockPublicAccessDisabledState = "unblocked"
+)
+
+// Values returns all known values for ImageBlockPublicAccessDisabledState. Note
+// that this can be expanded in the future, and so it is only as up to date as the
+// client. The ordering of this slice is not guaranteed to be stable across
+// updates.
+func (ImageBlockPublicAccessDisabledState) Values() []ImageBlockPublicAccessDisabledState {
+	return []ImageBlockPublicAccessDisabledState{
+		"unblocked",
+	}
+}
+
+type ImageBlockPublicAccessEnabledState string
+
+// Enum values for ImageBlockPublicAccessEnabledState
+const (
+	ImageBlockPublicAccessEnabledStateBlockNewSharing ImageBlockPublicAccessEnabledState = "block-new-sharing"
+)
+
+// Values returns all known values for ImageBlockPublicAccessEnabledState. Note
+// that this can be expanded in the future, and so it is only as up to date as the
+// client. The ordering of this slice is not guaranteed to be stable across
+// updates.
+func (ImageBlockPublicAccessEnabledState) Values() []ImageBlockPublicAccessEnabledState {
+	return []ImageBlockPublicAccessEnabledState{
+		"block-new-sharing",
+	}
+}
+
 type ImageState string
 
 // Enum values for ImageState
@@ -2396,6 +2432,7 @@ const (
 	ImageStateTransient    ImageState = "transient"
 	ImageStateFailed       ImageState = "failed"
 	ImageStateError        ImageState = "error"
+	ImageStateDisabled     ImageState = "disabled"
 )
 
 // Values returns all known values for ImageState. Note that this can be expanded
@@ -2410,6 +2447,7 @@ func (ImageState) Values() []ImageState {
 		"transient",
 		"failed",
 		"error",
+		"disabled",
 	}
 }
 
@@ -3468,6 +3506,75 @@ const (
 	InstanceTypeM7iFlex2xlarge  InstanceType = "m7i-flex.2xlarge"
 	InstanceTypeM7iFlex4xlarge  InstanceType = "m7i-flex.4xlarge"
 	InstanceTypeM7iFlex8xlarge  InstanceType = "m7i-flex.8xlarge"
+	InstanceTypeM7aMedium       InstanceType = "m7a.medium"
+	InstanceTypeM7aLarge        InstanceType = "m7a.large"
+	InstanceTypeM7aXlarge       InstanceType = "m7a.xlarge"
+	InstanceTypeM7a2xlarge      InstanceType = "m7a.2xlarge"
+	InstanceTypeM7a4xlarge      InstanceType = "m7a.4xlarge"
+	InstanceTypeM7a8xlarge      InstanceType = "m7a.8xlarge"
+	InstanceTypeM7a12xlarge     InstanceType = "m7a.12xlarge"
+	InstanceTypeM7a16xlarge     InstanceType = "m7a.16xlarge"
+	InstanceTypeM7a24xlarge     InstanceType = "m7a.24xlarge"
+	InstanceTypeM7a32xlarge     InstanceType = "m7a.32xlarge"
+	InstanceTypeM7a48xlarge     InstanceType = "m7a.48xlarge"
+	InstanceTypeM7aMetal48xl    InstanceType = "m7a.metal-48xl"
+	InstanceTypeHpc7a12xlarge   InstanceType = "hpc7a.12xlarge"
+	InstanceTypeHpc7a24xlarge   InstanceType = "hpc7a.24xlarge"
+	InstanceTypeHpc7a48xlarge   InstanceType = "hpc7a.48xlarge"
+	InstanceTypeHpc7a96xlarge   InstanceType = "hpc7a.96xlarge"
+	InstanceTypeC7gdMedium      InstanceType = "c7gd.medium"
+	InstanceTypeC7gdLarge       InstanceType = "c7gd.large"
+	InstanceTypeC7gdXlarge      InstanceType = "c7gd.xlarge"
+	InstanceTypeC7gd2xlarge     InstanceType = "c7gd.2xlarge"
+	InstanceTypeC7gd4xlarge     InstanceType = "c7gd.4xlarge"
+	InstanceTypeC7gd8xlarge     InstanceType = "c7gd.8xlarge"
+	InstanceTypeC7gd12xlarge    InstanceType = "c7gd.12xlarge"
+	InstanceTypeC7gd16xlarge    InstanceType = "c7gd.16xlarge"
+	InstanceTypeM7gdMedium      InstanceType = "m7gd.medium"
+	InstanceTypeM7gdLarge       InstanceType = "m7gd.large"
+	InstanceTypeM7gdXlarge      InstanceType = "m7gd.xlarge"
+	InstanceTypeM7gd2xlarge     InstanceType = "m7gd.2xlarge"
+	InstanceTypeM7gd4xlarge     InstanceType = "m7gd.4xlarge"
+	InstanceTypeM7gd8xlarge     InstanceType = "m7gd.8xlarge"
+	InstanceTypeM7gd12xlarge    InstanceType = "m7gd.12xlarge"
+	InstanceTypeM7gd16xlarge    InstanceType = "m7gd.16xlarge"
+	InstanceTypeR7gdMedium      InstanceType = "r7gd.medium"
+	InstanceTypeR7gdLarge       InstanceType = "r7gd.large"
+	InstanceTypeR7gdXlarge      InstanceType = "r7gd.xlarge"
+	InstanceTypeR7gd2xlarge     InstanceType = "r7gd.2xlarge"
+	InstanceTypeR7gd4xlarge     InstanceType = "r7gd.4xlarge"
+	InstanceTypeR7gd8xlarge     InstanceType = "r7gd.8xlarge"
+	InstanceTypeR7gd12xlarge    InstanceType = "r7gd.12xlarge"
+	InstanceTypeR7gd16xlarge    InstanceType = "r7gd.16xlarge"
+	InstanceTypeR7aMedium       InstanceType = "r7a.medium"
+	InstanceTypeR7aLarge        InstanceType = "r7a.large"
+	InstanceTypeR7aXlarge       InstanceType = "r7a.xlarge"
+	InstanceTypeR7a2xlarge      InstanceType = "r7a.2xlarge"
+	InstanceTypeR7a4xlarge      InstanceType = "r7a.4xlarge"
+	InstanceTypeR7a8xlarge      InstanceType = "r7a.8xlarge"
+	InstanceTypeR7a12xlarge     InstanceType = "r7a.12xlarge"
+	InstanceTypeR7a16xlarge     InstanceType = "r7a.16xlarge"
+	InstanceTypeR7a24xlarge     InstanceType = "r7a.24xlarge"
+	InstanceTypeR7a32xlarge     InstanceType = "r7a.32xlarge"
+	InstanceTypeR7a48xlarge     InstanceType = "r7a.48xlarge"
+	InstanceTypeC7iLarge        InstanceType = "c7i.large"
+	InstanceTypeC7iXlarge       InstanceType = "c7i.xlarge"
+	InstanceTypeC7i2xlarge      InstanceType = "c7i.2xlarge"
+	InstanceTypeC7i4xlarge      InstanceType = "c7i.4xlarge"
+	InstanceTypeC7i8xlarge      InstanceType = "c7i.8xlarge"
+	InstanceTypeC7i12xlarge     InstanceType = "c7i.12xlarge"
+	InstanceTypeC7i16xlarge     InstanceType = "c7i.16xlarge"
+	InstanceTypeC7i24xlarge     InstanceType = "c7i.24xlarge"
+	InstanceTypeC7i48xlarge     InstanceType = "c7i.48xlarge"
+	InstanceTypeMac2M2proMetal  InstanceType = "mac2-m2pro.metal"
+	InstanceTypeR7izLarge       InstanceType = "r7iz.large"
+	InstanceTypeR7izXlarge      InstanceType = "r7iz.xlarge"
+	InstanceTypeR7iz2xlarge     InstanceType = "r7iz.2xlarge"
+	InstanceTypeR7iz4xlarge     InstanceType = "r7iz.4xlarge"
+	InstanceTypeR7iz8xlarge     InstanceType = "r7iz.8xlarge"
+	InstanceTypeR7iz12xlarge    InstanceType = "r7iz.12xlarge"
+	InstanceTypeR7iz16xlarge    InstanceType = "r7iz.16xlarge"
+	InstanceTypeR7iz32xlarge    InstanceType = "r7iz.32xlarge"
 )
 
 // Values returns all known values for InstanceType. Note that this can be
@@ -4155,6 +4262,75 @@ func (InstanceType) Values() []InstanceType {
 		"m7i-flex.2xlarge",
 		"m7i-flex.4xlarge",
 		"m7i-flex.8xlarge",
+		"m7a.medium",
+		"m7a.large",
+		"m7a.xlarge",
+		"m7a.2xlarge",
+		"m7a.4xlarge",
+		"m7a.8xlarge",
+		"m7a.12xlarge",
+		"m7a.16xlarge",
+		"m7a.24xlarge",
+		"m7a.32xlarge",
+		"m7a.48xlarge",
+		"m7a.metal-48xl",
+		"hpc7a.12xlarge",
+		"hpc7a.24xlarge",
+		"hpc7a.48xlarge",
+		"hpc7a.96xlarge",
+		"c7gd.medium",
+		"c7gd.large",
+		"c7gd.xlarge",
+		"c7gd.2xlarge",
+		"c7gd.4xlarge",
+		"c7gd.8xlarge",
+		"c7gd.12xlarge",
+		"c7gd.16xlarge",
+		"m7gd.medium",
+		"m7gd.large",
+		"m7gd.xlarge",
+		"m7gd.2xlarge",
+		"m7gd.4xlarge",
+		"m7gd.8xlarge",
+		"m7gd.12xlarge",
+		"m7gd.16xlarge",
+		"r7gd.medium",
+		"r7gd.large",
+		"r7gd.xlarge",
+		"r7gd.2xlarge",
+		"r7gd.4xlarge",
+		"r7gd.8xlarge",
+		"r7gd.12xlarge",
+		"r7gd.16xlarge",
+		"r7a.medium",
+		"r7a.large",
+		"r7a.xlarge",
+		"r7a.2xlarge",
+		"r7a.4xlarge",
+		"r7a.8xlarge",
+		"r7a.12xlarge",
+		"r7a.16xlarge",
+		"r7a.24xlarge",
+		"r7a.32xlarge",
+		"r7a.48xlarge",
+		"c7i.large",
+		"c7i.xlarge",
+		"c7i.2xlarge",
+		"c7i.4xlarge",
+		"c7i.8xlarge",
+		"c7i.12xlarge",
+		"c7i.16xlarge",
+		"c7i.24xlarge",
+		"c7i.48xlarge",
+		"mac2-m2pro.metal",
+		"r7iz.large",
+		"r7iz.xlarge",
+		"r7iz.2xlarge",
+		"r7iz.4xlarge",
+		"r7iz.8xlarge",
+		"r7iz.12xlarge",
+		"r7iz.16xlarge",
+		"r7iz.32xlarge",
 	}
 }
 
@@ -5033,6 +5209,7 @@ const (
 	LocationTypeRegion             LocationType = "region"
 	LocationTypeAvailabilityZone   LocationType = "availability-zone"
 	LocationTypeAvailabilityZoneId LocationType = "availability-zone-id"
+	LocationTypeOutpost            LocationType = "outpost"
 )
 
 // Values returns all known values for LocationType. Note that this can be
@@ -5043,6 +5220,7 @@ func (LocationType) Values() []LocationType {
 		"region",
 		"availability-zone",
 		"availability-zone-id",
+		"outpost",
 	}
 }
 

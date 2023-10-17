@@ -35,6 +35,7 @@ static volatile const __u8 mac_three[] = {0x31, 0x41, 0x59, 0x26, 0x35, 0x89};
 static volatile const __u8 mac_four[] =  {0x0D, 0x1D, 0x22, 0x59, 0xA9, 0xC2};
 static volatile const __u8 mac_five[] =  {0x15, 0x21, 0x39, 0x45, 0x4D, 0x5D};
 static volatile const __u8 mac_six[] =   {0x08, 0x14, 0x1C, 0x32, 0x52, 0x7E};
+static volatile const __u8 mac_zero[] =  {0x0, 0x0, 0x0, 0x0, 0x0, 0x0};
 
 /* A collection of pre-defined IP addresses, so tests can reuse them without
  *  having to come up with custom ips.
@@ -79,9 +80,13 @@ static volatile const __u8 v6_node_three[] = {0xfd, 0x07, 0, 0, 0, 0, 0, 0,
 					   0, 0, 0, 0, 0, 0, 0, 3};
 
 /* Source port to be used by a client */
-#define tcp_src_one	__bpf_htons(22334)
-#define tcp_src_two	__bpf_htons(33445)
-#define tcp_src_three	__bpf_htons(44556)
+#define tcp_src_one	__bpf_htons(22330)
+#define tcp_src_two	__bpf_htons(33440)
+#define tcp_src_three	__bpf_htons(44550)
+
+#define tcp_dst_one	__bpf_htons(22331)
+#define tcp_dst_two	__bpf_htons(33441)
+#define tcp_dst_three	__bpf_htons(44551)
 
 #define tcp_svc_one	__bpf_htons(80)
 #define tcp_svc_two	__bpf_htons(443)

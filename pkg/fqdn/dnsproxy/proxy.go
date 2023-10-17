@@ -17,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/miekg/dns"
+	"github.com/cilium/dns"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/sys/unix"
@@ -25,6 +25,7 @@ import (
 	"github.com/cilium/cilium/pkg/datapath/linux/linux_defaults"
 	"github.com/cilium/cilium/pkg/endpoint"
 	"github.com/cilium/cilium/pkg/fqdn/matchpattern"
+	"github.com/cilium/cilium/pkg/fqdn/proxy/ipfamily"
 	"github.com/cilium/cilium/pkg/fqdn/restore"
 	"github.com/cilium/cilium/pkg/identity"
 	ippkg "github.com/cilium/cilium/pkg/ip"
@@ -87,7 +88,7 @@ type DNSProxy struct {
 	// design now.
 	NotifyOnDNSMsg NotifyOnDNSMsgFunc
 
-	// DNSServers are the miekg/dns server instances.
+	// DNSServers are the cilium/dns server instances.
 	// Depending on the configuration, these might be
 	// TCPv4, UDPv4, TCPv6 and/or UDPv4.
 	// They handle DNS parsing etc. for us.
@@ -144,7 +145,7 @@ type DNSProxy struct {
 
 	// rejectReply is the OPCode send from the DNS-proxy to the endpoint if the
 	// DNS request is invalid
-	rejectReply int32
+	rejectReply atomic.Int32
 
 	// UnbindAddress unbinds dns servers from socket in order to stop serving DNS traffic before proxy shutdown
 	unbindAddress func()
@@ -241,7 +242,7 @@ func (p *DNSProxy) GetRules(endpointID uint16) (restore.DNSRules, error) {
 
 	portToSelRegex := make(map[uint16][]selRegex)
 	for port, entries := range p.allowed[uint64(endpointID)] {
-		var nidRules = make([]selRegex, 0, len(entries))
+		nidRules := make([]selRegex, 0, len(entries))
 		// Copy the entries to avoid racy map accesses after we release the lock. We don't need
 		// constant time access, hence a preallocated slice instead of another map.
 		for cs, regex := range entries {
@@ -528,6 +529,7 @@ func (e ErrFailedAcquireSemaphore) Timeout() bool { return true }
 
 // Temporary is deprecated. Return false.
 func (e ErrFailedAcquireSemaphore) Temporary() bool { return false }
+
 func (e ErrFailedAcquireSemaphore) Error() string {
 	return fmt.Sprintf(
 		"failed to acquire DNS proxy semaphore, %d parallel requests already in-flight",
@@ -631,7 +633,7 @@ func StartDNSProxy(
 		p.ConcurrencyLimit = semaphore.NewWeighted(int64(concurrencyLimit))
 		p.ConcurrencyGracePeriod = concurrencyGracePeriod
 	}
-	atomic.StoreInt32(&p.rejectReply, dns.RcodeRefused)
+	p.rejectReply.Store(dns.RcodeRefused)
 
 	// Start the DNS listeners on UDP and TCP for IPv4 and/or IPv6
 	var (
@@ -921,7 +923,8 @@ func (p *DNSProxy) ServeDNS(w dns.ResponseWriter, request *dns.Msg) {
 				return err
 			}
 			return soerr
-		}}
+		},
+	}
 	client.Dialer = &dialer
 
 	conn, err := client.Dial(targetServerAddrStr)
@@ -1003,7 +1006,7 @@ func (p *DNSProxy) enforceConcurrencyLimit(ctx context.Context) error {
 // The returned error is logged with scopedLog and is returned for convenience
 func (p *DNSProxy) sendRefused(scopedLog *logrus.Entry, w dns.ResponseWriter, request *dns.Msg) (err error) {
 	refused := new(dns.Msg)
-	refused.SetRcode(request, int(atomic.LoadInt32(&p.rejectReply)))
+	refused.SetRcode(request, int(p.rejectReply.Load()))
 
 	if err = w.WriteMsg(refused); err != nil {
 		scopedLog.WithError(err).Error("Cannot send REFUSED response")
@@ -1016,9 +1019,9 @@ func (p *DNSProxy) sendRefused(scopedLog *logrus.Entry, w dns.ResponseWriter, re
 func (p *DNSProxy) SetRejectReply(opt string) {
 	switch strings.ToLower(opt) {
 	case strings.ToLower(option.FQDNProxyDenyWithNameError):
-		atomic.StoreInt32(&p.rejectReply, dns.RcodeNameError)
+		p.rejectReply.Store(dns.RcodeNameError)
 	case strings.ToLower(option.FQDNProxyDenyWithRefused):
-		atomic.StoreInt32(&p.rejectReply, dns.RcodeRefused)
+		p.rejectReply.Store(dns.RcodeRefused)
 	default:
 		log.Infof("DNS reject response '%s' is not valid, available options are '%v'",
 			opt, option.FQDNRejectOptions)
@@ -1098,47 +1101,55 @@ func bindToAddr(address string, port uint16, handler dns.Handler, ipv4, ipv6 boo
 		}
 	}()
 
-	// Global singleton sessionUDPFactory which is used for IPv4 & IPv6
-	sessUdpFactory := &sessionUDPFactory{ipv4Enabled: ipv4, ipv6Enabled: ipv6}
-
-	var ipFamilies []ipFamily
+	var ipFamilies []ipfamily.IPFamily
 	if ipv4 {
-		ipFamilies = append(ipFamilies, ipv4Family())
+		ipFamilies = append(ipFamilies, ipfamily.IPv4())
 	}
 	if ipv6 {
-		ipFamilies = append(ipFamilies, ipv6Family())
+		ipFamilies = append(ipFamilies, ipfamily.IPv6())
 	}
 
-	for _, ipf := range ipFamilies {
-		lc := listenConfig(linux_defaults.MagicMarkEgress, ipf.IPv4Enabled, ipf.IPv6Enabled)
+	for _, ipFamily := range ipFamilies {
+		lc := listenConfig(linux_defaults.MagicMarkEgress, ipFamily)
 
-		tcpListener, err := lc.Listen(context.Background(), ipf.TCPAddress, evaluateAddress(address, port, bindPort, ipf))
+		tcpListener, err := lc.Listen(context.Background(), ipFamily.TCPAddress, evaluateAddress(address, port, bindPort, ipFamily))
 		if err != nil {
-			return nil, 0, fmt.Errorf("failed to listen on %s: %w", ipf.TCPAddress, err)
+			return nil, 0, fmt.Errorf("failed to listen on %s: %w", ipFamily.TCPAddress, err)
 		}
 		dnsServers = append(dnsServers, &dns.Server{
 			Listener: tcpListener, Handler: handler,
+			// Explicitly set a noop factory to prevent data race detection when InitPool is called
+			// multiple times on the default factory even for TCP (IPv4 & IPv6).
+			SessionUDPFactory: &noopSessionUDPFactory{},
 			// Net & Addr are only set for logging purposes and aren't used if using ActivateAndServe.
-			Net: ipf.TCPAddress, Addr: tcpListener.Addr().String(),
+			Net: ipFamily.TCPAddress, Addr: tcpListener.Addr().String(),
 		})
 
 		bindPort = uint16(tcpListener.Addr().(*net.TCPAddr).Port)
 
-		udpConn, err := lc.ListenPacket(context.Background(), ipf.UDPAddress, evaluateAddress(address, port, bindPort, ipf))
+		udpConn, err := lc.ListenPacket(context.Background(), ipFamily.UDPAddress, evaluateAddress(address, port, bindPort, ipFamily))
 		if err != nil {
-			return nil, 0, fmt.Errorf("failed to listen on %s: %w", ipf.UDPAddress, err)
+			return nil, 0, fmt.Errorf("failed to listen on %s: %w", ipFamily.UDPAddress, err)
+		}
+		sessionUDPFactory, ferr := NewSessionUDPFactory(ipFamily)
+		if ferr != nil {
+			return nil, 0, fmt.Errorf("failed to create UDP session factory for %s: %w", ipFamily.UDPAddress, err)
 		}
 		dnsServers = append(dnsServers, &dns.Server{
-			PacketConn: udpConn, Handler: handler, SessionUDPFactory: sessUdpFactory,
+			PacketConn: udpConn, Handler: handler, SessionUDPFactory: sessionUDPFactory,
 			// Net & Addr are only set for logging purposes and aren't used if using ActivateAndServe.
-			Net: ipf.UDPAddress, Addr: udpConn.LocalAddr().String(),
+			Net: ipFamily.UDPAddress, Addr: udpConn.LocalAddr().String(),
 		})
 	}
 
 	return dnsServers, bindPort, nil
 }
 
-func evaluateAddress(address string, port uint16, bindPort uint16, ipFamily ipFamily) string {
+func evaluateAddress(address string, port uint16, bindPort uint16, ipFamily ipfamily.IPFamily) string {
+	// If the address is ever changed, ensure that the change is also reflected
+	// where the proxy bind address is referenced in the iptables rules. See
+	// (*IptablesManager).doGetProxyPort().
+
 	addr := ipFamily.Localhost
 
 	if address != "" {
@@ -1157,7 +1168,7 @@ func evaluateAddress(address string, port uint16, bindPort uint16, ipFamily ipFa
 // for a given request.
 // Originally, DNS was limited to 512 byte responses. EDNS0 allows for larger
 // sizes. In either case, responses can apply DNS compression, and the original
-// RFCs require clients to accept this. In miekg/dns there is a comment that BIND
+// RFCs require clients to accept this. In cilium/dns there is a comment that BIND
 // does not support compression, so we retain the ability to suppress this.
 func shouldCompressResponse(request, response *dns.Msg) bool {
 	ednsOptions := request.IsEdns0()

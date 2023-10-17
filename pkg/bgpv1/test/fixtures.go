@@ -12,6 +12,7 @@ import (
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/pointer"
 
+	daemon_k8s "github.com/cilium/cilium/daemon/k8s"
 	"github.com/cilium/cilium/pkg/annotation"
 	"github.com/cilium/cilium/pkg/bgpv1"
 	"github.com/cilium/cilium/pkg/bgpv1/agent"
@@ -20,11 +21,14 @@ import (
 	"github.com/cilium/cilium/pkg/hive/job"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	k8sPkg "github.com/cilium/cilium/pkg/k8s"
+	cilium_api_v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	cilium_api_v2alpha1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
 	"github.com/cilium/cilium/pkg/k8s/client/clientset/versioned/typed/cilium.io/v2alpha1"
 	"github.com/cilium/cilium/pkg/k8s/resource"
 	slim_core_v1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
+	slim_meta_v1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
+	clientset_core_v1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/client/clientset/versioned/typed/core/v1"
 	"github.com/cilium/cilium/pkg/k8s/utils"
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/node/types"
@@ -69,13 +73,6 @@ var (
 			},
 		},
 	}
-
-	// Daemon start config
-	fixtureConf = fixtureConfig{
-		policy:    newPolicyObj(baseBGPPolicy),
-		ipam:      ipamOption.IPAMKubernetes,
-		bgpEnable: true,
-	}
 )
 
 // fixture is test harness
@@ -83,15 +80,42 @@ type fixture struct {
 	config        fixtureConfig
 	fakeClientSet *k8sClient.FakeClientset
 	policyClient  v2alpha1.CiliumBGPPeeringPolicyInterface
+	secretClient  clientset_core_v1.SecretInterface
 	hive          *hive.Hive
 	bgp           *agent.Controller
 	nodeStore     *node.LocalNodeStore
+	ciliumNode    daemon_k8s.LocalCiliumNodeResource
 }
 
 type fixtureConfig struct {
 	policy    cilium_api_v2alpha1.CiliumBGPPeeringPolicy
+	secret    slim_core_v1.Secret
 	ipam      string
 	bgpEnable bool
+}
+
+func newFixtureConf() fixtureConfig {
+	policyCfg := policyConfig{
+		nodeSelector: baseBGPPolicy.nodeSelector,
+	}
+	secret := slim_core_v1.Secret{
+		ObjectMeta: slim_meta_v1.ObjectMeta{
+			Namespace: "bgp-secrets",
+			Name:      "a-secret",
+		},
+		Data: map[string]slim_core_v1.Bytes{"password": slim_core_v1.Bytes("testing-123")},
+	}
+
+	// deepcopy the VirtualRouters as the tests modify them
+	for _, vr := range baseBGPPolicy.virtualRouters {
+		policyCfg.virtualRouters = append(policyCfg.virtualRouters, *vr.DeepCopy())
+	}
+	return fixtureConfig{
+		policy:    newPolicyObj(policyCfg),
+		ipam:      ipamOption.IPAMKubernetes,
+		secret:    secret,
+		bgpEnable: true,
+	}
 }
 
 func newFixture(conf fixtureConfig) *fixture {
@@ -101,23 +125,35 @@ func newFixture(conf fixtureConfig) *fixture {
 
 	f.fakeClientSet, _ = k8sClient.NewFakeClientset()
 	f.policyClient = f.fakeClientSet.CiliumFakeClientset.CiliumV2alpha1().CiliumBGPPeeringPolicies()
+	f.secretClient = f.fakeClientSet.SlimFakeClientset.CoreV1().Secrets("bgp-secrets")
 
 	// create initial bgp policy
 	f.fakeClientSet.CiliumFakeClientset.Tracker().Add(&conf.policy)
+	f.fakeClientSet.SlimFakeClientset.Tracker().Add(&conf.secret)
 
 	// Construct a new Hive with mocked out dependency cells.
 	f.hive = hive.New(
+		cell.Config(k8sPkg.DefaultConfig),
+
 		// service
-		cell.Provide(func(lc hive.Lifecycle, c k8sClient.Clientset) resource.Resource[*slim_core_v1.Service] {
-			return resource.New[*slim_core_v1.Service](
-				lc, utils.ListerWatcherFromTyped[*slim_core_v1.ServiceList](
-					c.Slim().CoreV1().Services(""),
-				),
-			)
-		}),
+		cell.Provide(k8sPkg.ServiceResource),
 
 		// endpoints
 		cell.Provide(k8sPkg.EndpointsResource),
+
+		// CiliumLoadBalancerIPPool
+		cell.Provide(k8sPkg.LBIPPoolsResource),
+
+		// cilium node
+		cell.Provide(func(lc hive.Lifecycle, c k8sClient.Clientset) daemon_k8s.LocalCiliumNodeResource {
+			store := resource.New[*cilium_api_v2.CiliumNode](
+				lc, utils.ListerWatcherFromTyped[*cilium_api_v2.CiliumNodeList](
+					c.CiliumV2().CiliumNodes(),
+				),
+			)
+			f.ciliumNode = store
+			return store
+		}),
 
 		// Provide the mocked client cells directly
 		cell.Provide(func() k8sClient.Clientset {
@@ -128,6 +164,7 @@ func newFixture(conf fixtureConfig) *fixture {
 		cell.Provide(func() *option.DaemonConfig {
 			return &option.DaemonConfig{
 				EnableBGPControlPlane: conf.bgpEnable,
+				BGPSecretsNamespace:   "bgp-secrets",
 				IPAM:                  conf.ipam,
 			}
 		}),
@@ -158,21 +195,19 @@ func newFixture(conf fixtureConfig) *fixture {
 	return f
 }
 
-func setupSingleNeighbor(ctx context.Context, f *fixture) error {
-	bgpPolicy := baseBGPPolicy
-	bgpPolicy.virtualRouters[0] = cilium_api_v2alpha1.CiliumBGPVirtualRouter{
+func setupSingleNeighbor(ctx context.Context, f *fixture, peerASN uint32) error {
+	f.config.policy.Spec.VirtualRouters[0] = cilium_api_v2alpha1.CiliumBGPVirtualRouter{
 		LocalASN:      int64(ciliumASN),
 		ExportPodCIDR: pointer.Bool(true),
 		Neighbors: []cilium_api_v2alpha1.CiliumBGPNeighbor{
 			{
 				PeerAddress: dummies[instance1Link].ipv4.String(),
-				PeerASN:     int64(gobgpASN),
+				PeerASN:     int64(peerASN),
 			},
 		},
 	}
-	policyObj := newPolicyObj(bgpPolicy)
 
-	_, err := f.policyClient.Update(ctx, &policyObj, meta_v1.UpdateOptions{})
+	_, err := f.policyClient.Update(ctx, &f.config.policy, meta_v1.UpdateOptions{})
 	return err
 }
 

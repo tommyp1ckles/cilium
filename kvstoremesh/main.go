@@ -4,17 +4,17 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
-	kmmetrics "github.com/cilium/cilium/kvstoremesh/metrics"
+	cmmetrics "github.com/cilium/cilium/clustermesh-apiserver/metrics"
 	kmopt "github.com/cilium/cilium/kvstoremesh/option"
 	"github.com/cilium/cilium/pkg/clustermesh/kvstoremesh"
 	"github.com/cilium/cilium/pkg/clustermesh/types"
+	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/gops"
@@ -63,10 +63,11 @@ func init() {
 		controller.Cell,
 
 		gops.Cell(defaults.GopsPortKVStoreMesh),
-		kmmetrics.Cell,
+		cmmetrics.Cell,
 
 		cell.Config(kmopt.KVStoreMeshConfig{}),
-		cell.Provide(cfgAdapter),
+		cell.Config(cmtypes.DefaultClusterInfo),
+		cell.Invoke(registerClusterInfoValidator),
 
 		kvstore.Cell(kvstore.EtcdBackendName),
 		cell.Provide(func() *kvstore.ExtraOptions { return nil }),
@@ -79,30 +80,15 @@ func init() {
 	rootCmd.AddCommand(rootHive.Command())
 }
 
+func registerClusterInfoValidator(lc hive.Lifecycle, cinfo types.ClusterInfo) {
+	lc.Append(hive.Hook{
+		OnStart: func(hive.HookContext) error { return cinfo.ValidateStrict() },
+	})
+}
+
 func main() {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-}
-
-func cfgAdapter(lc hive.Lifecycle, cfg kmopt.KVStoreMeshConfig) (types.ClusterIDName, error) {
-	lc.Append(hive.Hook{
-		OnStart: func(hive.HookContext) error {
-			if err := types.ValidateClusterID(cfg.ClusterID); err != nil {
-				return err
-			}
-
-			if cfg.ClusterName == "" {
-				return errors.New("ClusterName is unset")
-			}
-
-			return nil
-		},
-	})
-
-	return types.ClusterIDName{
-		ClusterID:   cfg.ClusterID,
-		ClusterName: cfg.ClusterName,
-	}, nil
 }

@@ -86,6 +86,15 @@ const (
 	// HubbleRecorderSinkQueueSize is the queue size for each recorder sink
 	HubbleRecorderSinkQueueSize = 1024
 
+	// HubbleRedactEnabled controls if sensitive information will be redacted from L7 flows
+	HubbleRedactEnabled = false
+
+	// HubbleRedactHttpURLQuery controls if the URL query will be redacted from flows
+	HubbleRedactHttpURLQuery = false
+
+	// HubbleRedactKafkaApiKey controls if the Kafka API key will be redacted from flows
+	HubbleRedactKafkaApiKey = false
+
 	// MonitorSockPath1_2 is the path to the UNIX domain socket used to
 	// distribute BPF and agent events to listeners.
 	// This is the 1.2 protocol version.
@@ -206,9 +215,6 @@ const (
 
 	// EnableHostLegacyRouting is the default value for using the old routing path via stack.
 	EnableHostLegacyRouting = false
-
-	// K8sEnableEndpointSlice is the default value for k8s EndpointSlice feature.
-	K8sEnableEndpointSlice = true
 
 	// PreAllocateMaps is the default value for BPF map preallocation
 	PreAllocateMaps = true
@@ -418,16 +424,6 @@ const (
 	// IPAMAPIQPSLimit is the default QPS limit when rate limiting access to external APIs
 	IPAMAPIQPSLimit = 4.0
 
-	// IPAMPodCIDRAllocationThreshold is the default value for
-	// CiliumNode.Spec.IPAM.PodCIDRAllocationThreshold if no value is set
-	// Defaults to 8, which is similar to IPAMPreAllocation
-	IPAMPodCIDRAllocationThreshold = 8
-
-	// IPAMPodCIDRReleaseThreshold is the default value for
-	// CiliumNode.Spec.IPAM.PodCIDRReleaseThreshold if no value is set
-	// Defaults to 16, which is 2x the allocation threshold to avoid flapping
-	IPAMPodCIDRReleaseThreshold = 16
-
 	// AutoCreateCiliumNodeResource enables automatic creation of a
 	// CiliumNode resource for the local node
 	AutoCreateCiliumNodeResource = true
@@ -577,4 +573,6 @@ var (
 		"cilium_lb6_source_range":   "enabled,128,0",
 		"cilium_lb6_affinity_match": "enabled,128,0",
 	}
+
+	PolicyCIDRMatchMode = []string{}
 )

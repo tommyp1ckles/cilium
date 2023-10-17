@@ -2082,6 +2082,10 @@ func init() {
           "description": "BGP peer operational state as described here\nhttps://www.rfc-editor.org/rfc/rfc4271#section-8.2.2\n",
           "type": "string"
         },
+        "tcp-password-enabled": {
+          "description": "Set when a TCP password is configured for communications with this peer",
+          "type": "boolean"
+        },
         "uptime-nanoseconds": {
           "description": "BGP peer connection uptime in nano seconds.",
           "type": "integer"
@@ -4629,6 +4633,10 @@ func init() {
           "items": {
             "type": "integer"
           }
+        },
+        "labels": {
+          "description": "Labels are the metadata labels associated with the selector",
+          "type": "object"
         },
         "selector": {
           "description": "string form of selector",
@@ -7526,6 +7534,10 @@ func init() {
         "session-state": {
           "description": "BGP peer operational state as described here\nhttps://www.rfc-editor.org/rfc/rfc4271#section-8.2.2\n",
           "type": "string"
+        },
+        "tcp-password-enabled": {
+          "description": "Set when a TCP password is configured for communications with this peer",
+          "type": "boolean"
         },
         "uptime-nanoseconds": {
           "description": "BGP peer connection uptime in nano seconds.",
@@ -10525,6 +10537,10 @@ func init() {
           "items": {
             "type": "integer"
           }
+        },
+        "labels": {
+          "description": "Labels are the metadata labels associated with the selector",
+          "type": "object"
         },
         "selector": {
           "description": "string form of selector",

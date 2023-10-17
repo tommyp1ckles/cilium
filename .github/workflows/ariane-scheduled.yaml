@@ -13,17 +13,18 @@ permissions:
 
 jobs:
   ariane-scheduled:
+    name: Run Scheduled Workflows
     strategy:
       fail-fast: false
       matrix:
-        branch: 
+        branch:
           - "1.12"
           - "1.13"
           - "1.14"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout branch
-        uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
+        uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4.1.0
         with:
           ref: v${{ matrix.branch }}
           persist-credentials: false
@@ -32,9 +33,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          REF="v${{ matrix.branch }}"
+          BRANCH="${{ matrix.branch }}"
+          REF="v${BRANCH}"
           SHA=$(git rev-parse ${REF})
-          readarray workflows < <(yq '.triggers["/test-backport-${{ matrix.branch }}"].workflows[]' .github/ariane-config.yaml)
+          readarray workflows < <(TRIGGER="/test-backport-${BRANCH}" yq '.triggers[env(TRIGGER)].workflows[]' .github/ariane-config.yaml)
 
           for workflow in ${workflows[@]}; do
             echo triggering ${workflow}

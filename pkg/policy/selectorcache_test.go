@@ -70,7 +70,7 @@ func (csu *cachedSelectionUser) AddIdentitySelector(sel api.EndpointSelector) Ca
 	csu.updateMutex.Lock()
 	defer csu.updateMutex.Unlock()
 
-	cached, added := csu.sc.AddIdentitySelector(csu, sel)
+	cached, added := csu.sc.AddIdentitySelector(csu, nil, sel)
 	csu.c.Assert(cached, Not(Equals), nil)
 
 	_, exists := csu.selections[cached]
@@ -88,7 +88,7 @@ func (csu *cachedSelectionUser) AddFQDNSelector(sel api.FQDNSelector) CachedSele
 	csu.updateMutex.Lock()
 	defer csu.updateMutex.Unlock()
 
-	cached, added := csu.sc.AddFQDNSelector(csu, sel)
+	cached, added := csu.sc.AddFQDNSelector(csu, nil, sel)
 	csu.c.Assert(cached, Not(Equals), nil)
 
 	_, exists := csu.selections[cached]
@@ -205,8 +205,11 @@ func (cs *testCachedSelector) deleteSelections(selections ...int) (deletes []ide
 
 // CachedSelector interface
 
-func (cs *testCachedSelector) GetSelections() []identity.NumericIdentity {
+func (cs *testCachedSelector) GetSelections() identity.NumericIdentitySlice {
 	return cs.selections
+}
+func (cs *testCachedSelector) GetMetadataLabels() labels.LabelArray {
+	return nil
 }
 func (cs *testCachedSelector) Selects(nid identity.NumericIdentity) bool {
 	for _, id := range cs.selections {
@@ -474,7 +477,7 @@ func (ds *SelectorCacheTestSuite) TestFQDNSelectorUpdates(c *C) {
 	c.Assert(len(sc.selectors), Equals, 0)
 
 	yahooSel := api.FQDNSelector{MatchName: "yahoo.com"}
-	_, added := sc.AddFQDNSelector(user1, yahooSel)
+	_, added := sc.AddFQDNSelector(user1, nil, yahooSel)
 	c.Assert(added, Equals, true)
 }
 
@@ -608,6 +611,21 @@ func (ds *SelectorCacheTestSuite) TestIdentityUpdatesMultipleUsers(c *C) {
 
 	// All identities removed
 	c.Assert(len(sc.selectors), Equals, 0)
+}
+
+func (ds *SelectorCacheTestSuite) TestSelectorManagerCanGetBeforeSet(c *C) {
+	defer func() {
+		r := recover()
+		c.Assert(r, Equals, nil)
+	}()
+
+	selectorManager := selectorManager{
+		key:   "test",
+		users: make(map[CachedSelectionUser]struct{}),
+	}
+	selections := selectorManager.GetSelections()
+	c.Assert(selections, Not(Equals), nil)
+	c.Assert(len(selections), Equals, 0)
 }
 
 func testNewSelectorCache(ids cache.IdentityCache) *SelectorCache {

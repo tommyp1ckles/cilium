@@ -8,11 +8,11 @@ import (
 
 	"github.com/sirupsen/logrus"
 
+	agentK8s "github.com/cilium/cilium/daemon/k8s"
 	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/datapath/types"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	"github.com/cilium/cilium/pkg/k8s/client"
-	"github.com/cilium/cilium/pkg/k8s/watchers/subscriber"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 )
@@ -74,10 +74,6 @@ type Owner interface {
 	// resource. The function must block until the custom resource has been
 	// created.
 	UpdateCiliumNodeResource()
-
-	// LocalAllocCIDRsUpdated informs the agent that the local allocation CIDRs have
-	// changed.
-	LocalAllocCIDRsUpdated(ipv4AllocCIDRs, ipv6AllocCIDRs []*cidr.CIDR)
 }
 
 // K8sEventRegister is used to register and handle events as they are processed
@@ -91,11 +87,6 @@ type K8sEventRegister interface {
 	// K8sEventProcessed is called to do metrics accounting for each processed
 	// Kubernetes event.
 	K8sEventProcessed(scope string, action string, status bool)
-
-	// RegisterCiliumNodeSubscriber allows registration of subscriber.CiliumNode
-	// implementations. Events for all CiliumNode events (not just the local one)
-	// will be sent to the subscriber.
-	RegisterCiliumNodeSubscriber(s subscriber.CiliumNode)
 }
 
 type MtuConfiguration interface {
@@ -103,11 +94,11 @@ type MtuConfiguration interface {
 }
 
 type Metadata interface {
-	GetIPPoolForPod(owner string) (pool string, err error)
+	GetIPPoolForPod(owner string, family Family) (pool string, err error)
 }
 
 // NewIPAM returns a new IP address manager
-func NewIPAM(nodeAddressing types.NodeAddressing, c Configuration, owner Owner, k8sEventReg K8sEventRegister, mtuConfig MtuConfiguration, clientset client.Clientset) *IPAM {
+func NewIPAM(nodeAddressing types.NodeAddressing, c Configuration, owner Owner, k8sEventReg K8sEventRegister, node agentK8s.LocalCiliumNodeResource, mtuConfig MtuConfiguration, clientset client.Clientset) *IPAM {
 	ipam := &IPAM{
 		nodeAddressing:   nodeAddressing,
 		config:           c,
@@ -130,20 +121,9 @@ func NewIPAM(nodeAddressing types.NodeAddressing, c Configuration, owner Owner, 
 		if c.IPv4Enabled() {
 			ipam.IPv4Allocator = newHostScopeAllocator(nodeAddressing.IPv4().AllocationCIDR().IPNet)
 		}
-	case ipamOption.IPAMClusterPoolV2:
-		log.
-			WithField(logfields.Hint, "IPAM mode cluster-pool-v2beta is deprecated. Please use multi-pool IPAM instead.").
-			Info("Initializing ClusterPool v2 IPAM")
-
-		if c.IPv6Enabled() {
-			ipam.IPv6Allocator = newClusterPoolAllocator(IPv6, c, owner, k8sEventReg, clientset)
-		}
-		if c.IPv4Enabled() {
-			ipam.IPv4Allocator = newClusterPoolAllocator(IPv4, c, owner, k8sEventReg, clientset)
-		}
 	case ipamOption.IPAMMultiPool:
 		log.Info("Initializing MultiPool IPAM")
-		manager := newMultiPoolManager(c, k8sEventReg, owner, clientset.CiliumV2().CiliumNodes())
+		manager := newMultiPoolManager(c, node, owner, clientset.CiliumV2().CiliumNodes())
 
 		if c.IPv6Enabled() {
 			ipam.IPv6Allocator = manager.Allocator(IPv6)

@@ -226,6 +226,7 @@
 /.devcontainer @cilium/contributing
 /.gitattributes @cilium/tophat
 /.github/ @cilium/contributing
+/.github/actions/ @cilium/github-sec @cilium/ci-structure
 /.github/workflows/ @cilium/github-sec @cilium/ci-structure
 /.github/workflows/*datapath*.yaml @cilium/sig-datapath @cilium/github-sec @cilium/ci-structure
 /.gitignore @cilium/tophat
@@ -254,9 +255,9 @@ Makefile* @cilium/build
 /bpf/lib/encrypt.h @cilium/ipsec
 /bugtool/ @cilium/tophat
 /bugtool/cmd/ @cilium/cli
-/cilium/ @cilium/cli
-/cilium/cmd/encrypt* @cilium/ipsec @cilium/cli
-/cilium/cmd/preflight_k8s_valid_cnp.go @cilium/sig-k8s
+/cilium-dbg/ @cilium/cli
+/cilium-dbg/cmd/encrypt* @cilium/ipsec @cilium/cli
+/cilium-dbg/cmd/preflight_k8s_valid_cnp.go @cilium/sig-k8s
 /cilium-health/ @cilium/sig-agent
 /cilium-health/cmd/ @cilium/sig-agent @cilium/cli
 /clustermesh-apiserver @cilium/sig-clustermesh
@@ -331,6 +332,7 @@ Makefile* @cilium/build
 /Documentation/observability/ @cilium/sig-policy @cilium/docs-structure
 /Documentation/operations/performance/ @cilium/sig-datapath @cilium/docs-structure
 /Documentation/operations/system_requirements.rst @cilium/sig-datapath @cilium/docs-structure
+/Documentation/operations/troubleshooting_clustermesh.rst @cilium/sig-clustermesh @cilium/docs-structure
 /Documentation/overview/component-overview.rst @cilium/docs-structure
 /Documentation/overview/intro.rst @cilium/docs-structure
 /Documentation/requirements.txt @cilium/docs-structure
@@ -345,7 +347,6 @@ Makefile* @cilium/build
 /Documentation/update-cmdref.sh @cilium/docs-structure
 /Documentation/update-spelling_wordlist.sh @cilium/docs-structure
 /Documentation/yaml.config @cilium/docs-structure
-/envoy/ @cilium/proxy
 /examples/ @cilium/docs-structure
 /examples/hubble/ @cilium/sig-hubble
 /examples/kubernetes/ @cilium/sig-k8s
@@ -475,6 +476,7 @@ Makefile* @cilium/build
 /pkg/policy @cilium/sig-policy
 /pkg/policy/api/ @cilium/api
 /pkg/policy/groups/aws/ @cilium/sig-policy @cilium/aws
+/pkg/pprof @cilium/sig-foundations
 /pkg/promise @cilium/sig-foundations
 /pkg/proxy/ @cilium/proxy
 /pkg/proxy/accesslog @cilium/api

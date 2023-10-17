@@ -10,63 +10,86 @@
 Development Setup
 =================
 
-Dev Container
-~~~~~~~~~~~~~
+This page provides an overview of different methods for efficient
+development on Cilium. Depending on your needs, you can choose the most
+suitable method.
 
-Cilium provides `Dev Container <https://code.visualstudio.com/docs/devcontainers/containers>`_ configuration for Visual Studio Code Remote Containers
-and `Github Codespaces <https://docs.github.com/en/codespaces/setting-up-your-project-for-codespaces/introduction-to-dev-containers>`_.
-This allows you to use a preconfigured development environment in the cloud or locally.
-The container is based on the official Cilium builder image and provides all the dependencies
-required to build Cilium.
+Quick Start
+-----------
 
-.. note::
+If you're in a hurry, here are the essential steps to get started:
 
-    The current Dev Container is running as root. Non-root user support requires non-root
-    user in Cilium builder image, which is related to :gh-issue:`23217`.
+On Linux:
+
+1. ``make kind`` - Provisions a Kind cluster.
+2. ``make kind-install-cilium-fast`` - Installs Cilium on the Kind cluster.
+3. ``make kind-image-fast`` - Builds Cilium and deploys it.
+
+On any OS:
+
+1. ``make kind`` - Provisions a Kind cluster.
+2. ``make kind-image`` - Builds Docker images.
+3. ``make kind-install-cilium`` - Installs Cilium on the Kind cluster.
+
+Detailed Instructions
+---------------------
+
+Depending on your specific development environment and requirements, you
+can follow the detailed instructions below.
 
 Verifying Your Development Setup
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Assuming you have Go installed, you can quickly verify many elements of your
-development setup by running:
+development setup by running the following command:
 
 .. code-block:: shell-session
 
     $ make dev-doctor
 
-Requirements
-~~~~~~~~~~~~
+Depending on your end-goal, not all dependencies listed are required to develop
+on Cilium. For example, "Ginkgo" is not required if you want to improve our
+documentation. Thus, do not consider that you need to have all tools installed.
 
-You need to have the following tools available in order to effectively
-contribute to Cilium:
+Version Requirements
+~~~~~~~~~~~~~~~~~~~~
 
-+--------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
-| Dependency                                                   | Version / Commit ID          | Download Command                                                |
-+==============================================================+==============================+=================================================================+
-|  git                                                         | latest                       | N/A (OS-specific)                                               |
-+--------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
-|  clang                                                       | >= 10.0 (latest recommended) | N/A (OS-specific)                                               |
-+--------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
-|  llvm                                                        | >= 10.0 (latest recommended) | N/A (OS-specific)                                               |
-+--------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
-| `go <https://golang.org/dl/>`_                               | |GO_RELEASE|                 | N/A (OS-specific)                                               |
-+--------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
-+ `ginkgo <https://github.com/onsi/ginkgo>`__                  | >= 1.4.0 and < 2.0.0         | ``go install github.com/onsi/ginkgo/ginkgo@v1.16.5``            |
-+--------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
-+ `golangci-lint <https://github.com/golangci/golangci-lint>`_ | >= v1.27                     | N/A (OS-specific)                                               |
-+--------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
-+ `cfssl <https://github.com/cloudflare/cfssl>`_               | >= v1.6.0                    | ``go install github.com/cloudflare/cfssl/cmd/cfssl@latest``     |
-+--------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
-+ `cfssljson <https://github.com/cloudflare/cfssl>`_           | >= v1.6.0                    | ``go install github.com/cloudflare/cfssl/cmd/cfssljson@latest`` |
-+--------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
-+ `Docker <https://docs.docker.com/engine/installation/>`_     | OS-Dependent                 | N/A (OS-specific)                                               |
-+--------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
-+ `Docker-Compose <https://docs.docker.com/compose/install/>`_ | OS-Dependent                 | N/A (OS-specific)                                               |
-+--------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
-+ python3-pip                                                  | latest                       | N/A (OS-specific)                                               |
-+--------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
-+ `helm <https://helm.sh/docs/intro/install/>`_                | >= v3.6.0                    | N/A (OS-specific)                                               |
-+--------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
+If using these tools, you need to have the following versions from them
+in order to effectively contribute to Cilium:
+
++-------------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
+| Dependency                                                        | Version / Commit ID          | Download Command                                                |
++===================================================================+==============================+=================================================================+
+|  git                                                              | latest                       | N/A (OS-specific)                                               |
++-------------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
+|  clang                                                            | >= 10.0 (latest recommended) | N/A (OS-specific)                                               |
++-------------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
+|  llvm                                                             | >= 10.0 (latest recommended) | N/A (OS-specific)                                               |
++-------------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
+| `go <https://golang.org/dl/>`_                                    | |GO_RELEASE|                 | N/A (OS-specific)                                               |
++-------------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
++ `ginkgo <https://github.com/onsi/ginkgo>`__                       | >= 1.4.0 and < 2.0.0         | ``go install github.com/onsi/ginkgo/ginkgo@v1.16.5``            |
++-------------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
++ `golangci-lint <https://github.com/golangci/golangci-lint>`_      | >= v1.27                     | N/A (OS-specific)                                               |
++-------------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
++ `cfssl <https://github.com/cloudflare/cfssl>`_                    | >= v1.6.0                    | ``go install github.com/cloudflare/cfssl/cmd/cfssl@latest``     |
++-------------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
++ `cfssljson <https://github.com/cloudflare/cfssl>`_                | >= v1.6.0                    | ``go install github.com/cloudflare/cfssl/cmd/cfssljson@latest`` |
++-------------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
++ `Docker <https://docs.docker.com/engine/installation/>`_          | OS-Dependent                 | N/A (OS-specific)                                               |
++-------------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
++ `Docker-Compose <https://docs.docker.com/compose/install/>`_      | OS-Dependent                 | N/A (OS-specific)                                               |
++-------------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
++ python3-pip                                                       | latest                       | N/A (OS-specific)                                               |
++-------------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
++ `helm <https://helm.sh/docs/intro/install/>`_                     | >= v3.6.0                    | N/A (OS-specific)                                               |
++-------------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
++ `kind <https://kind.sigs.k8s.io/docs/user/quick-start/>`__        | >= v0.7.0                    | ``go install sigs.k8s.io/kind@v0.19.0``                         |
++-------------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
++ `kubectl <https://kubernetes.io/docs/tasks/tools/#kubectl>`_      | >= v1.14.0                   | N/A (OS-specific)                                               |
++-------------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
++ `cilium-cli <https://github.com/cilium/cilium-cli#installation>`_ | Cilium-Dependent             | N/A (OS-specific)                                               |
++-------------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
 
 For `integration_testing`, you will need to run ``docker`` without privileges.
 You can usually achieve this by adding your current user to the ``docker``
@@ -90,16 +113,25 @@ You can find the setup for a `kind <https://kind.sigs.k8s.io/>`_ environment in
 VirtualBox on Linux, but does require `Docker for Mac
 <https://docs.docker.com/desktop/install/mac-install/>`_ for Mac OS.
 
-Makefile targets automate the task of spinning up an environment and building
-Cilium images:
+Makefile targets automate the task of spinning up an environment:
 
 * ``make kind``: Creates a kind cluster based on the configuration passed in.
-  For more information, see _`Configuration for clusters`.
+  For more information, see `configurations_for_clusters`.
+* ``make kind-down``: Tears down and deletes the cluster.
+
+Depending on your environment you can build Cilium by using the following
+makefile targets:
+
+For Linux and Mac OS
+^^^^^^^^^^^^^^^^^^^^
+
+Makefile targets automate building and installing Cilium images:
+
 * ``make kind-image``: Builds all Cilium images and loads them into the
   cluster.
-* ``make kind-image-agent``: Builds the Cilium Agent image only and loads it
+* ``make kind-image-agent``: Builds only the Cilium Agent image and loads it
   into the cluster.
-* ``make kind-image-operator``: Builds the Cilium Operator (generic) image only
+* ``make kind-image-operator``: Builds only the Cilium Operator (generic) image
   and loads it into the cluster.
 * ``make kind-debug``: Builds all Cilium images with optimizations disabled and
   ``dlv`` embedded for live debugging enabled and loads the images into the
@@ -108,10 +140,37 @@ Cilium images:
   Use if only the agent image needs to be rebuilt for faster iteration.
 * ``make kind-install-cilium``: Installs Cilium into the cluster using the
   Cilium CLI.
-* ``make kind-down``: Tears down and deletes the cluster.
 
-The preceding list includes the most used commands for convenience. For more
-targets, see the ``Makefile``.
+The preceding list includes the most used commands for **convenience**. For more
+targets, see the ``Makefile`` (or simply run ``make help``).
+
+For Linux only - with shorter development workflow time
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+On Linux environments, or on environments where you can compile and run
+Cilium, it is possible to use "fast" targets. These fast targets will build
+Cilium in the local environment and mount that binary, as well the bpf source
+code, in an pre-existing running Cilium container.
+
+* ``make kind-install-cilium-fast``: Installs Cilium into the cluster using the
+  Cilium CLI with the volume mounts defined.
+
+* ``make kind-image-fast``: Builds all Cilium binaries and loads them into all
+  kind clusters available in the host.
+
+Configuration for Cilium
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+The Makefile targets that install Cilium pass the following list of Helm
+values (YAML files) to the Cilium CLI.
+
+* ``contrib/testing/kind-common.yaml``: Shared between normal and fast installation modes.
+* ``contrib/testing/kind-values.yaml``: Used by normal installation mode.
+* ``contrib/testing/kind-fast.yaml``: Used by fast installation mode.
+* ``contrib/testing/kind-custom.yaml``: User defined custom values that are applied if
+  the file is present. The file is ignored by Git as specified in ``contrib/testing/.gitignore``.
+
+.. _configurations_for_clusters:
 
 Configuration for clusters
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -135,8 +194,8 @@ The setup for the Vagrantfile in the root of the Cilium tree depends on a
 number of environment variables and network setup that are managed via
 ``contrib/vagrant/start.sh``.
 
-Option 1 - Using the Provided Vagrantfiles (Recommended)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Option 1 - Using the Provided Vagrantfiles
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 To bring up a Vagrant VM with Cilium plus dependencies installed, run:
 
@@ -187,7 +246,7 @@ The box is currently available for the following providers:
 * virtualbox
 
 Configuration Options
----------------------
+^^^^^^^^^^^^^^^^^^^^^
 
 The following environment variables can be set to customize the VMs
 brought up by vagrant:
@@ -266,7 +325,7 @@ If you have any issue with the provided vagrant box
 build the box yourself using the `packer scripts <https://github.com/cilium/packer-ci-build>`_
 
 Launch CI VMs
--------------
+^^^^^^^^^^^^^
 
 The ``test`` directory also contains a ``Vagrantfile`` that can be
 used to bring up the CI VM images that will cache a Vagrant box
@@ -394,7 +453,7 @@ to enable NFS.
 
    VirtualBox for Ubuntu desktop might have network issues after
    suspending and resuming the host OS (typically by closing and
-   re-opening the laptop lid). If the ``cilium status`` keeps showing
+   re-opening the laptop lid). If the ``cilium-dbg status`` keeps showing
    unreachable from nodes but reachable from endpoints, you could
    hit this. Run the following code on each VM to rebuild routing
    and neighbor entries:
@@ -470,7 +529,7 @@ commands, respectively:
 .. code-block:: shell-session
 
     $ sudo systemctl status cilium
-    $ cilium status
+    $ cilium-dbg status
 
 Simple smoke-test with HTTP policies
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -491,7 +550,7 @@ finishes.
 .. _making_changes:
 
 Making Changes
-~~~~~~~~~~~~~~
+--------------
 
 #. Make sure the ``main`` branch of your fork is up-to-date:
 
@@ -541,11 +600,25 @@ Making Changes
    This make target works both inside and outside the Vagrant VM, assuming that ``docker``
    is running in the environment.
 
+Dev Container
+-------------
+
+Cilium provides `Dev Container <https://code.visualstudio.com/docs/devcontainers/containers>`_ configuration for Visual Studio Code Remote Containers
+and `Github Codespaces <https://docs.github.com/en/codespaces/setting-up-your-project-for-codespaces/introduction-to-dev-containers>`_.
+This allows you to use a preconfigured development environment in the cloud or locally.
+The container is based on the official Cilium builder image and provides all the dependencies
+required to build Cilium.
+
+.. note::
+
+    The current Dev Container is running as root. Non-root user support requires non-root
+    user in Cilium builder image, which is related to :gh-issue:`23217`.
+
 Update a golang version
-~~~~~~~~~~~~~~~~~~~~~~~
+-----------------------
 
 Minor version
-^^^^^^^^^^^^^
+~~~~~~~~~~~~~
 
 Each Cilium release is tied to a specific version of Golang via an explicit constraint
 in our Renovate configuration.
@@ -585,13 +658,13 @@ Once the CI is passing, the PR will be merged as part of the standard version
 upgrade process.
 
 Patch version
-^^^^^^^^^^^^^
+~~~~~~~~~~~~~
 
 New patch versions of Golang are picked up automatically by the CI; there should
 normally be no need to update the version manually.
 
 Add/update a golang dependency
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+------------------------------
 
 Let's assume we want to add ``github.com/containernetworking/cni`` version ``v0.5.2``:
 
@@ -620,7 +693,7 @@ change:
     $ git add go.mod go.sum vendor/
 
 Add/update a new Kubernetes version
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+-----------------------------------
 
 Let's assume we want to add a new Kubernetes version ``v1.19.0``:
 
@@ -630,7 +703,7 @@ Let's assume we want to add a new Kubernetes version ``v1.19.0``:
    update.
 
 Minor version
-^^^^^^^^^^^^^
+~~~~~~~~~~~~~
 
 #. Check if it is possible to remove the last supported Kubernetes version from
    :ref:`k8scompatibility`, :ref:`k8s_requirements`, :ref:`test_matrix`,
@@ -715,7 +788,7 @@ Minor version
 .. _Cilium CI matrix: https://docs.google.com/spreadsheets/d/1TThkqvVZxaqLR-Ela4ZrcJ0lrTJByCqrbdCjnI32_X0
 
 Patch version
-^^^^^^^^^^^^^
+~~~~~~~~~~~~~
 
 #. Bump the Kubernetes version in ``contrib/vagrant/scripts/helpers.bash``.
 
@@ -724,7 +797,7 @@ Patch version
 #. Submit all your changes into a new PR.
 
 Making changes to the Helm chart
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+--------------------------------
 
 The Helm chart is located in the ``install/kubernetes`` directory. The
 ``values.yaml.tmpl`` file contains the values for the Helm chart which are being used into the ``values.yaml`` file.
@@ -759,7 +832,7 @@ At last you might want to check the chart using the ``lint`` target:
 
 
 Optional: Docker and IPv6
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+-------------------------
 
 Note that these instructions are useful to you if you care about having IPv6
 addresses for your Docker containers.
@@ -808,15 +881,16 @@ If you'd like IPv6 addresses, you will need to follow these steps:
 Now new containers will have an IPv6 address assigned to them.
 
 Debugging
-~~~~~~~~~
+---------
 
 Datapath code
-^^^^^^^^^^^^^
-The tool ``cilium monitor`` can also be used to retrieve debugging information
+~~~~~~~~~~~~~
+
+The tool ``cilium-dbg monitor`` can also be used to retrieve debugging information
 from the eBPF based datapath. To enable all log messages:
 
 - Start the ``cilium-agent`` with ``--debug-verbose=datapath``, or
-- Run ``cilium config debug=true debugLB=true`` from an already running agent.
+- Run ``cilium-dbg config debug=true debugLB=true`` from an already running agent.
 
 These options enable logging functions in the datapath: ``cilium_dbg()``,
 ``cilium_dbg_lb()`` and ``printk()``.
@@ -830,7 +904,7 @@ These options enable logging functions in the datapath: ``cilium_dbg()``,
 
 The image below shows the options that could be used as startup options by
 ``cilium-agent`` (see upper blue box) or could be changed at runtime by running
-``cilium config <option(s)>`` for an already running agent (see lower blue box).
+``cilium-dbg config <option(s)>`` for an already running agent (see lower blue box).
 Along with each option, there is one or more logging function associated with it:
 ``cilium_dbg()`` and ``printk()``, for ``DEBUG`` and ``cilium_dbg_lb()`` for
 ``DEBUG_LB``.
@@ -842,17 +916,17 @@ Along with each option, there is one or more logging function associated with it
 .. note::
 
    If you need to enable the ``LB_DEBUG`` for an already running agent by running
-   ``cilium config debugLB=true``, you must pass the option ``debug=true`` along.
+   ``cilium-dbg config debugLB=true``, you must pass the option ``debug=true`` along.
 
 Debugging of an individual endpoint can be enabled by running
-``cilium endpoint config ID debug=true``. Running ``cilium monitor -v`` will
+``cilium-dbg endpoint config ID debug=true``. Running ``cilium-dbg monitor -v`` will
 print the normal form of monitor output along with debug messages:
 
 .. code-block:: shell-session
 
-   $ cilium endpoint config 731 debug=true
+   $ cilium-dbg endpoint config 731 debug=true
    Endpoint 731 configuration updated successfully
-   $ cilium monitor -v
+   $ cilium-dbg monitor -v
    Press Ctrl-C to quit
    level=info msg="Initializing dissection cache..." subsys=monitor
    <- endpoint 745 flow 0x6851276 identity 4->0 state new ifindex 0 orig-ip 0.0.0.0: 8e:3c:a3:67:cc:1e -> 16:f9:cd:dc:87:e5 ARP
@@ -871,9 +945,9 @@ Passing ``-v -v`` supports deeper detail, for example:
 
 .. code-block:: shell-session
 
-    $ cilium endpoint config 3978 debug=true
+    $ cilium-dbg endpoint config 3978 debug=true
     Endpoint 3978 configuration updated successfully
-    $ cilium monitor -v -v --hex
+    $ cilium-dbg monitor -v -v --hex
     Listening for events on 2 CPUs with 64x4096 of shared memory
     Press Ctrl-C to quit
     ------------------------------------------------------------------------------
@@ -909,13 +983,13 @@ endpoints appearing in the "not-ready" state and never switching out of it:
 
 .. code-block:: shell-session
 
-    $ cilium endpoint list
+    $ cilium-dbg endpoint list
     ENDPOINT   POLICY        IDENTITY   LABELS (source:key[=value])   IPv6                     IPv4            STATUS
                ENFORCEMENT
     48896      Disabled      266        container:id.server           fd02::c0a8:210b:0:bf00   10.11.13.37     not-ready
     60670      Disabled      267        container:id.client           fd02::c0a8:210b:0:ecfe   10.11.167.158   not-ready
 
-Running ``cilium endpoint get`` for one of the endpoints will provide a
+Running ``cilium-dbg endpoint get`` for one of the endpoints will provide a
 description of known state about it, which includes eBPF verification logs.
 
 The files under ``/var/run/cilium/state`` provide context about how the eBPF

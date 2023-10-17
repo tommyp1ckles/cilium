@@ -37,6 +37,7 @@ import (
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/identity/cache"
 	"github.com/cilium/cilium/pkg/identity/identitymanager"
+	ippkg "github.com/cilium/cilium/pkg/ip"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	"github.com/cilium/cilium/pkg/labels"
@@ -222,9 +223,8 @@ type Endpoint struct {
 	// reference to all policy related BPF
 	policyMap *policymap.PolicyMap
 
-	// policyMapPressureGauge is a metric to track and report the pressure over
-	// policyMap.
-	policyMapPressureGauge *metrics.GaugeWithThreshold
+	// PolicyMapPressureUpdater updates the policymap pressure metric.
+	PolicyMapPressureUpdater policyMapPressureUpdater
 
 	// Options determine the datapath configuration of the endpoint.
 	Options *option.IntOptions
@@ -377,7 +377,8 @@ type Endpoint struct {
 
 	allocator cache.IdentityAllocator
 
-	isHost bool
+	isIngress bool
+	isHost    bool
 
 	noTrackPort uint16
 
@@ -396,7 +397,7 @@ type policyRepoGetter interface {
 // EndpointSyncControllerName returns the controller name to synchronize
 // endpoint in to kubernetes.
 func EndpointSyncControllerName(epID uint16) string {
-	return fmt.Sprintf("sync-to-k8s-ciliumendpoint (%v)", epID)
+	return "sync-to-k8s-ciliumendpoint (" + strconv.FormatUint(uint64(epID), 10) + ")"
 }
 
 // SetAllocator sets the identity allocator for this endpoint.
@@ -475,9 +476,10 @@ func (e *Endpoint) waitForProxyCompletions(proxyWaitGroup *completion.WaitGroup)
 
 // NewEndpointWithState creates a new endpoint useful for testing purposes
 func NewEndpointWithState(owner regeneration.Owner, policyGetter policyRepoGetter, namedPortsGetter namedPortsGetter, proxy EndpointProxy, allocator cache.IdentityAllocator, ID uint16, state State) *Endpoint {
+	endpointQueueName := "endpoint-" + strconv.FormatUint(uint64(ID), 10)
 	ep := createEndpoint(owner, policyGetter, namedPortsGetter, proxy, allocator, ID, "")
 	ep.state = state
-	ep.eventQueue = eventqueue.NewEventQueueBuffered(fmt.Sprintf("endpoint-%d", ID), option.Config.EndpointQueueSize)
+	ep.eventQueue = eventqueue.NewEventQueueBuffered(endpointQueueName, option.Config.EndpointQueueSize)
 
 	ep.UpdateLogger(nil)
 
@@ -534,6 +536,22 @@ func (e *Endpoint) initDNSHistoryTrigger() {
 	if err != nil {
 		log.WithField(logfields.EndpointID, e.ID).WithError(err).Error("Failed to create the endpoint header file sync trigger")
 	}
+}
+
+// CreateIngressEndpoint creates the endpoint corresponding to Cilium Ingress.
+func CreateIngressEndpoint(owner regeneration.Owner, policyGetter policyRepoGetter, namedPortsGetter namedPortsGetter, proxy EndpointProxy, allocator cache.IdentityAllocator) (*Endpoint, error) {
+	ep := createEndpoint(owner, policyGetter, namedPortsGetter, proxy, allocator, 0, "")
+	ep.DatapathConfiguration = NewDatapathConfiguration()
+
+	ep.isIngress = true
+	// node.GetIngressIPv4 has been parsed with net.ParseIP() and may be in IPv4 mapped IPv6
+	// address format. Use ippkg.AddrFromIP() to make sure we get a plain IPv4 address.
+	ep.IPv4, _ = ippkg.AddrFromIP(node.GetIngressIPv4())
+	ep.IPv6, _ = netip.AddrFromSlice(node.GetIngressIPv6())
+
+	ep.setState(StateWaitingForIdentity, "Ingress Endpoint creation")
+
+	return ep, nil
 }
 
 // CreateHostEndpoint creates the endpoint corresponding to the host.
@@ -609,6 +627,8 @@ func (e *Endpoint) GetIPv4Address() string {
 	if !e.IPv4.IsValid() {
 		return ""
 	}
+	// e.IPv4 is assumed to not be an IPv4 mapped IPv6 address, which would be
+	// formatted like "::ffff:1.2.3.4"
 	return e.IPv4.String()
 }
 
@@ -704,7 +724,7 @@ func (e *Endpoint) Allows(id identity.NumericIdentity) bool {
 		TrafficDirection: trafficdirection.Ingress.Uint8(),
 	}
 
-	v, ok := e.desiredPolicy.PolicyMapState[keyToLookup]
+	v, ok := e.desiredPolicy.GetPolicyMap().Get(keyToLookup)
 	return ok && !v.IsDeny
 }
 
@@ -879,8 +899,10 @@ func parseEndpoint(ctx context.Context, owner regeneration.Owner, policyGetter p
 
 	// If host label is present, it's the host endpoint.
 	ep.isHost = ep.HasLabels(labels.LabelHost)
+	// If Ingress label is present, it's the Ingress endpoint.
+	ep.isIngress = ep.HasLabels(labels.LabelIngress)
 
-	if ep.isHost {
+	if ep.isHost || ep.isIngress {
 		// Overwrite datapath configuration with the current agent configuration.
 		ep.DatapathConfiguration = NewDatapathConfiguration()
 	}
@@ -1509,7 +1531,7 @@ func (e *Endpoint) getProxyStatisticsLocked(key string, l7Protocol string, port 
 
 // UpdateProxyStatistics updates the Endpoint's proxy  statistics to account
 // for a new observed flow with the given characteristics.
-func (e *Endpoint) UpdateProxyStatistics(l4Protocol string, port uint16, ingress, request bool, verdict accesslog.FlowVerdict) {
+func (e *Endpoint) UpdateProxyStatistics(proxyType, l4Protocol string, port uint16, ingress, request bool, verdict accesslog.FlowVerdict) {
 	e.proxyStatisticsMutex.Lock()
 	defer e.proxyStatisticsMutex.Unlock()
 
@@ -1528,22 +1550,18 @@ func (e *Endpoint) UpdateProxyStatistics(l4Protocol string, port uint16, ingress
 	}
 
 	stats.Received++
-	metrics.ProxyReceived.Inc()
-	metrics.ProxyPolicyL7Total.WithLabelValues("received").Inc()
+	metrics.ProxyPolicyL7Total.WithLabelValues("received", proxyType).Inc()
 
 	switch verdict {
 	case accesslog.VerdictForwarded:
 		stats.Forwarded++
-		metrics.ProxyForwarded.Inc()
-		metrics.ProxyPolicyL7Total.WithLabelValues("forwarded").Inc()
+		metrics.ProxyPolicyL7Total.WithLabelValues("forwarded", proxyType).Inc()
 	case accesslog.VerdictDenied:
 		stats.Denied++
-		metrics.ProxyDenied.Inc()
-		metrics.ProxyPolicyL7Total.WithLabelValues("denied").Inc()
+		metrics.ProxyPolicyL7Total.WithLabelValues("denied", proxyType).Inc()
 	case accesslog.VerdictError:
 		stats.Error++
-		metrics.ProxyParseErrors.Inc()
-		metrics.ProxyPolicyL7Total.WithLabelValues("parse_errors").Inc()
+		metrics.ProxyPolicyL7Total.WithLabelValues("parse_errors", proxyType).Inc()
 	}
 }
 
@@ -1701,6 +1719,25 @@ func (e *Endpoint) IsInit() bool {
 	return found && init.Source == labels.LabelSourceReserved
 }
 
+// InitWithIngressLabels initializes the endpoint with reserved:ingress.
+// It should only be used for the host endpoint.
+func (e *Endpoint) InitWithIngressLabels(ctx context.Context, launchTime time.Duration) {
+	if !e.isIngress {
+		return
+	}
+
+	epLabels := labels.Labels{}
+	epLabels.MergeLabels(labels.LabelIngress)
+
+	// Give the endpoint a security identity
+	newCtx, cancel := context.WithTimeout(ctx, launchTime)
+	defer cancel()
+	e.UpdateLabels(newCtx, epLabels, epLabels, true)
+	if errors.Is(newCtx.Err(), context.DeadlineExceeded) {
+		log.WithError(newCtx.Err()).Warning("Timed out while updating security identify for host endpoint")
+	}
+}
+
 // InitWithNodeLabels initializes the endpoint with the known node labels as
 // well as reserved:host. It should only be used for the host endpoint.
 func (e *Endpoint) InitWithNodeLabels(ctx context.Context, launchTime time.Duration) {
@@ -1822,7 +1859,7 @@ func (e *Endpoint) runIdentityResolver(ctx context.Context, myChangeRev int, blo
 		scopedLog.Info("Resolving identity labels (non-blocking)")
 	}
 
-	ctrlName := fmt.Sprintf("%s-%d", resolveIdentity, e.ID)
+	ctrlName := resolveIdentity + "-" + strconv.FormatUint(uint64(e.ID), 10)
 	e.controllers.UpdateController(ctrlName,
 		controller.ControllerParams{
 			Group: resolveIdentityControllerGroup,
@@ -1891,7 +1928,7 @@ func (e *Endpoint) identityLabelsChanged(ctx context.Context, myChangeRev int) (
 	allocatedIdentity, _, err := e.allocator.AllocateIdentity(allocateCtx, newLabels, notifySelectorCache, identity.InvalidIdentity)
 	if err != nil {
 		err = fmt.Errorf("unable to resolve identity: %s", err)
-		e.LogStatus(Other, Warning, fmt.Sprintf("%s (will retry)", err.Error()))
+		e.LogStatus(Other, Warning, err.Error()+" (will retry)")
 		return false, err
 	}
 

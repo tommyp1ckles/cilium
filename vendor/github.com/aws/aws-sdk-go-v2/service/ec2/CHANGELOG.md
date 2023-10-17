@@ -1,3 +1,49 @@
+# v1.125.0 (2023-10-12)
+
+* **Feature**: This release adds Ubuntu Pro as a supported platform for On-Demand Capacity Reservations and adds support for setting an Amazon Machine Image (AMI) to disabled state. Disabling the AMI makes it private if it was previously shared, and prevents new EC2 instance launches from it.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.124.0 (2023-10-06)
+
+* **Feature**: Documentation updates for Elastic Compute Cloud (EC2).
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.123.0 (2023-10-02)
+
+* **Feature**: Introducing Amazon EC2 R7iz instances with 3.9 GHz sustained all-core turbo frequency and deliver up to 20% better performance than previous generation z1d instances.
+
+# v1.122.0 (2023-09-28)
+
+* **Feature**: Adds support for Customer Managed Key encryption for Amazon Verified Access resources
+
+# v1.121.0 (2023-09-26)
+
+* **Feature**: The release includes AWS verified access to support FIPs compliance in North America regions
+
+# v1.120.0 (2023-09-22)
+
+* **Feature**: EC2 M2 Pro Mac instances are powered by Apple M2 Pro Mac Mini computers featuring 12 core CPU, 19 core GPU, 32 GiB of memory, and 16 core Apple Neural Engine and uniquely enabled by the AWS Nitro System through high-speed Thunderbolt connections.
+
+# v1.119.0 (2023-09-19)
+
+* **Feature**: This release adds support for C7i, and R7a instance types.
+
+# v1.118.0 (2023-09-12)
+
+* **Feature**: This release adds support for restricting public sharing of AMIs through AMI Block Public Access
+
+# v1.117.0 (2023-09-06)
+
+* **Feature**: This release adds 'outpost' location type to the DescribeInstanceTypeOfferings API, allowing customers that have been allowlisted for outpost to query their offerings in the API.
+
+# v1.116.0 (2023-09-05)
+
+* **Feature**: Introducing Amazon EC2 C7gd, M7gd, and R7gd Instances with up to 3.8 TB of local NVMe-based SSD block-level storage. These instances are powered by AWS Graviton3 processors, delivering up to 25% better performance over Graviton2-based instances.
+
+# v1.115.0 (2023-08-24)
+
+* **Feature**: Amazon EC2 M7a instances, powered by 4th generation AMD EPYC processors, deliver up to 50% higher performance compared to M6a instances. Amazon EC2 Hpc7a instances, powered by 4th Gen AMD EPYC processors, deliver up to 2.5x better performance compared to Amazon EC2 Hpc6a instances.
+
 # v1.114.0 (2023-08-21)
 
 * **Feature**: The DeleteKeyPair API has been updated to return the keyPairId when an existing key pair is deleted.

@@ -47,13 +47,6 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 	flags.Int64(operatorOption.ParallelAllocWorkers, defaults.ParallelAllocWorkers, "Maximum number of parallel IPAM workers")
 	option.BindEnv(vp, operatorOption.ParallelAllocWorkers)
 
-	// Clustermesh dedicated flags
-	flags.Uint32(option.ClusterIDName, 0, "Unique identifier of the cluster")
-	option.BindEnv(vp, option.ClusterIDName)
-
-	flags.String(option.ClusterName, defaults.ClusterName, "Name of the cluster")
-	option.BindEnv(vp, option.ClusterName)
-
 	// Operator-specific flags
 	flags.String(option.ConfigFile, "", `Configuration file (default "$HOME/ciliumd.yaml")`)
 	option.BindEnv(vp, option.ConfigFile)
@@ -156,7 +149,7 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 				return "cilium-operator-azure"
 			case ipamOption.IPAMAlibabaCloud:
 				return "cilium-operator-alibabacloud"
-			case ipamOption.IPAMKubernetes, ipamOption.IPAMClusterPool, ipamOption.IPAMClusterPoolV2, ipamOption.IPAMCRD:
+			case ipamOption.IPAMKubernetes, ipamOption.IPAMClusterPool, ipamOption.IPAMCRD:
 				return "cilium-operator-generic"
 			default:
 				return ""
@@ -238,17 +231,11 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 		option.KVStoreOpt, "Key-value store options e.g. etcd.address=127.0.0.1:4001")
 	option.BindEnv(vp, option.KVStoreOpt)
 
-	flags.Bool(option.K8sEnableEndpointSlice, defaults.K8sEnableEndpointSlice, "Enables k8s EndpointSlice feature into Cilium-Operator if the k8s cluster supports it")
-	option.BindEnv(vp, option.K8sEnableEndpointSlice)
-
 	flags.String(option.K8sNamespaceName, "", "Name of the Kubernetes namespace in which Cilium Operator is deployed in")
 	option.BindEnv(vp, option.K8sNamespaceName)
 
 	flags.Duration(operatorOption.NodesGCInterval, 5*time.Minute, "GC interval for CiliumNodes")
 	option.BindEnv(vp, operatorOption.NodesGCInterval)
-
-	flags.String(operatorOption.OperatorPrometheusServeAddr, operatorOption.PrometheusServeAddr, "Address to serve Prometheus metrics")
-	option.BindEnv(vp, operatorOption.OperatorPrometheusServeAddr)
 
 	flags.Bool(operatorOption.SyncK8sServices, true, "Synchronize Kubernetes services to kvstore")
 	option.BindEnv(vp, operatorOption.SyncK8sServices)
@@ -278,41 +265,14 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 		"Duration that LeaderElector clients should wait between retries of the actions")
 	option.BindEnv(vp, operatorOption.LeaderElectionRetryPeriod)
 
-	flags.String(option.K8sServiceProxyName, "", "Value of K8s service-proxy-name label for which Cilium handles the services (empty = all services without service.kubernetes.io/service-proxy-name label)")
-	option.BindEnv(vp, option.K8sServiceProxyName)
-
 	flags.Bool(option.BGPAnnounceLBIP, false, "Announces service IPs of type LoadBalancer via BGP")
 	option.BindEnv(vp, option.BGPAnnounceLBIP)
 
 	flags.String(option.BGPConfigPath, "/var/lib/cilium/bgp/config.yaml", "Path to file containing the BGP configuration")
 	option.BindEnv(vp, option.BGPConfigPath)
 
-	enableCES := flags.Bool(option.EnableCiliumEndpointSlice, false, "If set to true, the CiliumEndpointSlice feature is enabled. If any CiliumEndpoints resources are created, updated, or deleted in the cluster, all those changes are broadcast as CiliumEndpointSlice updates to all of the Cilium agents.")
+	flags.Bool(option.EnableCiliumEndpointSlice, false, "If set to true, the CiliumEndpointSlice feature is enabled. If any CiliumEndpoints resources are created, updated, or deleted in the cluster, all those changes are broadcast as CiliumEndpointSlice updates to all of the Cilium agents.")
 	option.BindEnv(vp, option.EnableCiliumEndpointSlice)
-
-	flags.Int(operatorOption.CESMaxCEPsInCES, operatorOption.CESMaxCEPsInCESDefault, "Maximum number of CiliumEndpoints allowed in a CES")
-	if *enableCES {
-		flags.MarkHidden(operatorOption.CESMaxCEPsInCES)
-	}
-	option.BindEnv(vp, operatorOption.CESMaxCEPsInCES)
-
-	flags.String(operatorOption.CESSlicingMode, operatorOption.CESSlicingModeDefault, "Slicing mode define how ceps are grouped into a CES")
-	if *enableCES {
-		flags.MarkHidden(operatorOption.CESSlicingMode)
-	}
-	option.BindEnv(vp, operatorOption.CESSlicingMode)
-
-	flags.Float64(operatorOption.CESWriteQPSLimit, operatorOption.CESWriteQPSLimitDefault, "CES work queue rate limit")
-	if *enableCES {
-		flags.MarkHidden(operatorOption.CESWriteQPSLimit)
-	}
-	option.BindEnv(vp, operatorOption.CESWriteQPSLimit)
-
-	flags.Int(operatorOption.CESWriteQPSBurst, operatorOption.CESWriteQPSBurstDefault, "CES work queue burst rate")
-	if *enableCES {
-		flags.MarkHidden(operatorOption.CESWriteQPSBurst)
-	}
-	option.BindEnv(vp, operatorOption.CESWriteQPSBurst)
 
 	flags.String(operatorOption.CiliumK8sNamespace, "", fmt.Sprintf("Name of the Kubernetes namespace in which Cilium is deployed in. Defaults to the same namespace defined in %s", option.K8sNamespaceName))
 	option.BindEnv(vp, operatorOption.CiliumK8sNamespace)
@@ -331,6 +291,9 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 
 	flags.StringSlice(operatorOption.IngressLBAnnotationPrefixes, operatorOption.IngressLBAnnotationsDefault, "Annotation prefixes for propagating from Ingress to the Load Balancer service")
 	option.BindEnv(vp, operatorOption.IngressLBAnnotationPrefixes)
+
+	flags.Uint32(operatorOption.IngressDefaultXffNumTrustedHops, 0, "The number of additional ingress proxy hops from the right side of the HTTP header to trust when determining the origin client's IP address.")
+	option.BindEnv(vp, operatorOption.IngressDefaultXffNumTrustedHops)
 
 	flags.String(operatorOption.PodRestartSelector, "k8s-app=kube-dns", "cilium-operator will delete/restart any pods with these labels if the pod is not managed by Cilium. If this option is empty, then all pods may be restarted")
 	option.BindEnv(vp, operatorOption.PodRestartSelector)

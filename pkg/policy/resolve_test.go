@@ -10,10 +10,13 @@ import (
 
 	. "github.com/cilium/checkmate"
 	"github.com/sirupsen/logrus"
+	"github.com/stretchr/testify/require"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 
 	"github.com/cilium/cilium/pkg/checker"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/identity/cache"
+	"github.com/cilium/cilium/pkg/k8s/apis/cilium.io/utils"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/option"
@@ -92,11 +95,12 @@ func GenerateL3IngressRules(numRules int) api.Rules {
 	}
 
 	var rules api.Rules
+	uuid := k8stypes.UID("11bba160-ddca-13e8-b697-0800273b04ff")
 	for i := 1; i <= numRules; i++ {
-
 		rule := api.Rule{
 			EndpointSelector: fooSelector,
 			Ingress:          []api.IngressRule{ingRule},
+			Labels:           utils.GetPolicyLabels("default", "l3-ingress", uuid, utils.ResourceTypeCiliumNetworkPolicy),
 		}
 		rule.Sanitize()
 		rules = append(rules, &rule)
@@ -118,11 +122,12 @@ func GenerateL3EgressRules(numRules int) api.Rules {
 	}
 
 	var rules api.Rules
+	uuid := k8stypes.UID("13bba160-ddca-13e8-b697-0800273b04ff")
 	for i := 1; i <= numRules; i++ {
-
 		rule := api.Rule{
 			EndpointSelector: fooSelector,
 			Egress:           []api.EgressRule{egRule},
+			Labels:           utils.GetPolicyLabels("default", "l3-egress", uuid, utils.ResourceTypeCiliumNetworkPolicy),
 		}
 		rule.Sanitize()
 		rules = append(rules, &rule)
@@ -155,11 +160,12 @@ func GenerateCIDRRules(numRules int) api.Rules {
 	}
 
 	var rules api.Rules
+	uuid := k8stypes.UID("12bba160-ddca-13e8-b697-0800273b04ff")
 	for i := 1; i <= numRules; i++ {
-
 		rule := api.Rule{
 			EndpointSelector: fooSelector,
 			Egress:           []api.EgressRule{egRule},
+			Labels:           utils.GetPolicyLabels("default", "cidr", uuid, utils.ResourceTypeCiliumNetworkPolicy),
 		}
 		rule.Sanitize()
 		rules = append(rules, &rule)
@@ -171,6 +177,10 @@ type DummyOwner struct{}
 
 func (d DummyOwner) LookupRedirectPortLocked(bool, string, uint16) uint16 {
 	return 4242
+}
+
+func (d DummyOwner) HasBPFPolicyMap() bool {
+	return true
 }
 
 func (d DummyOwner) GetNamedPort(ingress bool, name string, proto uint8) uint16 {
@@ -189,7 +199,7 @@ func (d DummyOwner) PolicyDebug(fields logrus.Fields, msg string) {
 	log.WithFields(fields).Info(msg)
 }
 
-func bootstrapRepo(ruleGenFunc func(int) api.Rules, numRules int, c *C) *Repository {
+func bootstrapRepo(ruleGenFunc func(int) api.Rules, numRules int, tb testing.TB) *Repository {
 	mgr := cache.NewCachingIdentityAllocator(&testidentity.IdentityAllocatorOwnerMock{})
 	ids := mgr.GetIdentityCache()
 	fakeAllocator := testidentity.NewMockIdentityAllocator(ids)
@@ -215,37 +225,36 @@ func bootstrapRepo(ruleGenFunc func(int) api.Rules, numRules int, c *C) *Reposit
 	rulez.UpdateRulesEndpointsCaches(epSet, epsToRegen, wg)
 	wg.Wait()
 
-	c.Assert(epSet.Len(), Equals, 0)
-	c.Assert(epsToRegen.Len(), Equals, 1)
+	require.Equal(tb, 0, epSet.Len())
+	require.Equal(tb, 1, epsToRegen.Len())
 
 	return testRepo
 }
 
-func (ds *PolicyTestSuite) BenchmarkRegenerateCIDRPolicyRules(c *C) {
-	testRepo := bootstrapRepo(GenerateCIDRRules, 1000, c)
-
-	c.ResetTimer()
-	for i := 0; i < c.N; i++ {
+func BenchmarkRegenerateCIDRPolicyRules(b *testing.B) {
+	testRepo := bootstrapRepo(GenerateCIDRRules, 1000, b)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
 		ip, _ := testRepo.resolvePolicyLocked(fooIdentity)
 		_ = ip.DistillPolicy(DummyOwner{}, false)
 		ip.Detach()
 	}
 }
 
-func (ds *PolicyTestSuite) BenchmarkRegenerateL3IngressPolicyRules(c *C) {
-	testRepo := bootstrapRepo(GenerateL3IngressRules, 1000, c)
-	c.ResetTimer()
-	for i := 0; i < c.N; i++ {
+func BenchmarkRegenerateL3IngressPolicyRules(b *testing.B) {
+	testRepo := bootstrapRepo(GenerateL3IngressRules, 1000, b)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
 		ip, _ := testRepo.resolvePolicyLocked(fooIdentity)
 		_ = ip.DistillPolicy(DummyOwner{}, false)
 		ip.Detach()
 	}
 }
 
-func (ds *PolicyTestSuite) BenchmarkRegenerateL3EgressPolicyRules(c *C) {
-	testRepo := bootstrapRepo(GenerateL3EgressRules, 1000, c)
-	c.ResetTimer()
-	for i := 0; i < c.N; i++ {
+func BenchmarkRegenerateL3EgressPolicyRules(b *testing.B) {
+	testRepo := bootstrapRepo(GenerateL3EgressRules, 1000, b)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
 		ip, _ := testRepo.resolvePolicyLocked(fooIdentity)
 		_ = ip.DistillPolicy(DummyOwner{}, false)
 		ip.Detach()
@@ -328,7 +337,7 @@ func (ds *PolicyTestSuite) TestL7WithIngressWildcard(c *C) {
 		PolicyOwner: DummyOwner{},
 		// inherit this from the result as it is outside of the scope
 		// of this test
-		PolicyMapState: policy.PolicyMapState,
+		policyMapState: policy.policyMapState,
 	}
 
 	// Have to remove circular reference before testing to avoid an infinite loop
@@ -425,7 +434,7 @@ func (ds *PolicyTestSuite) TestL7WithLocalHostWildcardd(c *C) {
 		PolicyOwner: DummyOwner{},
 		// inherit this from the result as it is outside of the scope
 		// of this test
-		PolicyMapState: policy.PolicyMapState,
+		policyMapState: policy.policyMapState,
 	}
 
 	// Have to remove circular reference before testing to avoid an infinite loop
@@ -507,10 +516,10 @@ func (ds *PolicyTestSuite) TestMapStateWithIngressWildcard(c *C) {
 			EgressPolicyEnabled:  false,
 		},
 		PolicyOwner: DummyOwner{},
-		PolicyMapState: MapState{
+		policyMapState: newMapState(map[Key]MapStateEntry{
 			{TrafficDirection: trafficdirection.Egress.Uint8()}: allowEgressMapStateEntry,
 			{DestPort: 80, Nexthdr: 6}:                          rule1MapStateEntry,
-		},
+		}),
 	}
 
 	// Add new identity to test accumulation of MapChanges
@@ -659,14 +668,14 @@ func (ds *PolicyTestSuite) TestMapStateWithIngress(c *C) {
 			EgressPolicyEnabled:  false,
 		},
 		PolicyOwner: DummyOwner{},
-		PolicyMapState: MapState{
+		policyMapState: newMapState(map[Key]MapStateEntry{
 			{TrafficDirection: trafficdirection.Egress.Uint8()}:                              allowEgressMapStateEntry,
 			{Identity: uint32(identity.ReservedIdentityWorld), DestPort: 80, Nexthdr: 6}:     rule1MapStateEntry.WithOwners(cachedSelectorWorld),
 			{Identity: uint32(identity.ReservedIdentityWorldIPv4), DestPort: 80, Nexthdr: 6}: rule1MapStateEntry.WithOwners(cachedSelectorWorld),
 			{Identity: uint32(identity.ReservedIdentityWorldIPv6), DestPort: 80, Nexthdr: 6}: rule1MapStateEntry.WithOwners(cachedSelectorWorld),
 			{Identity: 192, DestPort: 80, Nexthdr: 6}:                                        rule1MapStateEntry.WithAuthType(AuthTypeDisabled),
 			{Identity: 194, DestPort: 80, Nexthdr: 6}:                                        rule1MapStateEntry.WithAuthType(AuthTypeDisabled),
-		},
+		}),
 	}
 
 	// Have to remove circular reference before testing for Equality to avoid an infinite loop
@@ -698,7 +707,7 @@ func (ds *PolicyTestSuite) TestMapStateWithIngress(c *C) {
 func TestEndpointPolicy_AllowsIdentity(t *testing.T) {
 	type fields struct {
 		selectorPolicy *selectorPolicy
-		PolicyMapState MapState
+		PolicyMapState *mapState
 	}
 	type args struct {
 		identity identity.NumericIdentity
@@ -717,7 +726,7 @@ func TestEndpointPolicy_AllowsIdentity(t *testing.T) {
 					IngressPolicyEnabled: false,
 					EgressPolicyEnabled:  false,
 				},
-				PolicyMapState: MapState{},
+				PolicyMapState: newMapState(nil),
 			},
 			args: args{
 				identity: 0,
@@ -732,7 +741,7 @@ func TestEndpointPolicy_AllowsIdentity(t *testing.T) {
 					IngressPolicyEnabled: true,
 					EgressPolicyEnabled:  true,
 				},
-				PolicyMapState: MapState{},
+				PolicyMapState: newMapState(nil),
 			},
 			args: args{
 				identity: 0,
@@ -747,14 +756,14 @@ func TestEndpointPolicy_AllowsIdentity(t *testing.T) {
 					IngressPolicyEnabled: true,
 					EgressPolicyEnabled:  true,
 				},
-				PolicyMapState: MapState{
-					Key{
+				PolicyMapState: newMapState(map[Key]MapStateEntry{
+					{
 						Identity:         0,
 						DestPort:         0,
 						Nexthdr:          0,
 						TrafficDirection: trafficdirection.Ingress.Uint8(),
-					}: MapStateEntry{},
-				},
+					}: {},
+				}),
 			},
 			args: args{
 				identity: 0,
@@ -769,14 +778,14 @@ func TestEndpointPolicy_AllowsIdentity(t *testing.T) {
 					IngressPolicyEnabled: true,
 					EgressPolicyEnabled:  true,
 				},
-				PolicyMapState: MapState{
-					Key{
+				PolicyMapState: newMapState(map[Key]MapStateEntry{
+					{
 						Identity:         0,
 						DestPort:         0,
 						Nexthdr:          0,
 						TrafficDirection: trafficdirection.Egress.Uint8(),
-					}: MapStateEntry{},
-				},
+					}: {},
+				}),
 			},
 			args: args{
 				identity: 0,
@@ -791,14 +800,14 @@ func TestEndpointPolicy_AllowsIdentity(t *testing.T) {
 					IngressPolicyEnabled: true,
 					EgressPolicyEnabled:  true,
 				},
-				PolicyMapState: MapState{
-					Key{
+				PolicyMapState: newMapState(map[Key]MapStateEntry{
+					{
 						Identity:         0,
 						DestPort:         0,
 						Nexthdr:          0,
 						TrafficDirection: trafficdirection.Ingress.Uint8(),
-					}: MapStateEntry{IsDeny: true},
-				},
+					}: {IsDeny: true},
+				}),
 			},
 			args: args{
 				identity: 0,
@@ -813,14 +822,14 @@ func TestEndpointPolicy_AllowsIdentity(t *testing.T) {
 					IngressPolicyEnabled: false,
 					EgressPolicyEnabled:  true,
 				},
-				PolicyMapState: MapState{
-					Key{
+				PolicyMapState: newMapState(map[Key]MapStateEntry{
+					{
 						Identity:         0,
 						DestPort:         0,
 						Nexthdr:          0,
 						TrafficDirection: trafficdirection.Ingress.Uint8(),
-					}: MapStateEntry{IsDeny: true},
-				},
+					}: {IsDeny: true},
+				}),
 			},
 			args: args{
 				identity: 0,
@@ -835,14 +844,14 @@ func TestEndpointPolicy_AllowsIdentity(t *testing.T) {
 					IngressPolicyEnabled: true,
 					EgressPolicyEnabled:  true,
 				},
-				PolicyMapState: MapState{
-					Key{
+				PolicyMapState: newMapState(map[Key]MapStateEntry{
+					{
 						Identity:         0,
 						DestPort:         0,
 						Nexthdr:          0,
 						TrafficDirection: trafficdirection.Egress.Uint8(),
-					}: MapStateEntry{IsDeny: true},
-				},
+					}: {IsDeny: true},
+				}),
 			},
 			args: args{
 				identity: 0,
@@ -857,14 +866,14 @@ func TestEndpointPolicy_AllowsIdentity(t *testing.T) {
 					IngressPolicyEnabled: true,
 					EgressPolicyEnabled:  false,
 				},
-				PolicyMapState: MapState{
-					Key{
+				PolicyMapState: newMapState(map[Key]MapStateEntry{
+					{
 						Identity:         0,
 						DestPort:         0,
 						Nexthdr:          0,
 						TrafficDirection: trafficdirection.Egress.Uint8(),
-					}: MapStateEntry{IsDeny: true},
-				},
+					}: {IsDeny: true},
+				}),
 			},
 			args: args{
 				identity: 0,
@@ -877,7 +886,7 @@ func TestEndpointPolicy_AllowsIdentity(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			p := &EndpointPolicy{
 				selectorPolicy: tt.fields.selectorPolicy,
-				PolicyMapState: tt.fields.PolicyMapState,
+				policyMapState: tt.fields.PolicyMapState,
 			}
 			gotIngress, gotEgress := p.AllowsIdentity(tt.args.identity)
 			if gotIngress != tt.wantIngress {

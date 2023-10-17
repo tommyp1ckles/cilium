@@ -72,7 +72,7 @@ type l2AnnouncerParams struct {
 	Services             resource.Resource[*slim_corev1.Service]
 	L2AnnouncementPolicy resource.Resource[*cilium_api_v2alpha1.CiliumL2AnnouncementPolicy]
 	LocalNodeResource    daemon_k8s.LocalCiliumNodeResource
-	L2AnnounceTable      statedb.Table[*tables.L2AnnounceEntry]
+	L2AnnounceTable      statedb.RWTable[*tables.L2AnnounceEntry]
 	StateDB              *statedb.DB
 	JobRegistry          job.Registry
 }
@@ -303,7 +303,13 @@ func (l2a *L2Announcer) processPolicyEvent(ctx context.Context, event resource.E
 }
 
 func (l2a *L2Announcer) upsertSvc(svc *slim_corev1.Service) error {
+	// Ignore services managed by an unsupported load balancer class.
 	key := serviceKey(svc)
+	if svc.Spec.LoadBalancerClass != nil &&
+		*svc.Spec.LoadBalancerClass != cilium_api_v2alpha1.L2AnnounceLoadBalancerClass {
+		return l2a.delSvc(key)
+	}
+
 	ss, found := l2a.selectedServices[key]
 	if found {
 		// Update service object, labels or IPs may have changed

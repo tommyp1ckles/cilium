@@ -118,13 +118,6 @@ Review process
    passed, and all reviewers have approved the requested changes, you can merge
    the PR by clicking on the "Rebase and merge" button.
 
-#. If the PR is a backport PR, update the labels of cherry-picked PRs with the
-   command included at the end of the original post. For example:
-
-   .. code-block:: shell-session
-
-       $ for pr in 26759 24099; do contrib/backporting/set-labels.py $pr done 1.13; done
-
 Reviewer Teams
 --------------
 
@@ -134,7 +127,7 @@ to add or remove yourself from any team, please submit a PR against the
 `community repository`_.
 
 Once a contributor opens a PR, GitHub automatically picks which `teams
-<cilium_teams>`_ should review the PR using the ``CODEOWNERS`` file. Each
+<cilium_teams_>`_ should review the PR using the ``CODEOWNERS`` file. Each
 reviewer can see the PRs they need to review by filtering by reviews
 requested. A good filter is provided in this `link <user_review_filter_>`_ so
 make sure to bookmark it.

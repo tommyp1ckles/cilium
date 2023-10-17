@@ -4490,6 +4490,26 @@ func (m *validateOpDisableImageDeprecation) HandleInitialize(ctx context.Context
 	return next.HandleInitialize(ctx, in)
 }
 
+type validateOpDisableImage struct {
+}
+
+func (*validateOpDisableImage) ID() string {
+	return "OperationInputValidation"
+}
+
+func (m *validateOpDisableImage) HandleInitialize(ctx context.Context, in middleware.InitializeInput, next middleware.InitializeHandler) (
+	out middleware.InitializeOutput, metadata middleware.Metadata, err error,
+) {
+	input, ok := in.Parameters.(*DisableImageInput)
+	if !ok {
+		return out, metadata, fmt.Errorf("unknown input parameters type %T", in.Parameters)
+	}
+	if err := validateOpDisableImageInput(input); err != nil {
+		return out, metadata, err
+	}
+	return next.HandleInitialize(ctx, in)
+}
+
 type validateOpDisableIpamOrganizationAdminAccount struct {
 }
 
@@ -4890,6 +4910,26 @@ func (m *validateOpEnableFastSnapshotRestores) HandleInitialize(ctx context.Cont
 	return next.HandleInitialize(ctx, in)
 }
 
+type validateOpEnableImageBlockPublicAccess struct {
+}
+
+func (*validateOpEnableImageBlockPublicAccess) ID() string {
+	return "OperationInputValidation"
+}
+
+func (m *validateOpEnableImageBlockPublicAccess) HandleInitialize(ctx context.Context, in middleware.InitializeInput, next middleware.InitializeHandler) (
+	out middleware.InitializeOutput, metadata middleware.Metadata, err error,
+) {
+	input, ok := in.Parameters.(*EnableImageBlockPublicAccessInput)
+	if !ok {
+		return out, metadata, fmt.Errorf("unknown input parameters type %T", in.Parameters)
+	}
+	if err := validateOpEnableImageBlockPublicAccessInput(input); err != nil {
+		return out, metadata, err
+	}
+	return next.HandleInitialize(ctx, in)
+}
+
 type validateOpEnableImageDeprecation struct {
 }
 
@@ -4905,6 +4945,26 @@ func (m *validateOpEnableImageDeprecation) HandleInitialize(ctx context.Context,
 		return out, metadata, fmt.Errorf("unknown input parameters type %T", in.Parameters)
 	}
 	if err := validateOpEnableImageDeprecationInput(input); err != nil {
+		return out, metadata, err
+	}
+	return next.HandleInitialize(ctx, in)
+}
+
+type validateOpEnableImage struct {
+}
+
+func (*validateOpEnableImage) ID() string {
+	return "OperationInputValidation"
+}
+
+func (m *validateOpEnableImage) HandleInitialize(ctx context.Context, in middleware.InitializeInput, next middleware.InitializeHandler) (
+	out middleware.InitializeOutput, metadata middleware.Metadata, err error,
+) {
+	input, ok := in.Parameters.(*EnableImageInput)
+	if !ok {
+		return out, metadata, fmt.Errorf("unknown input parameters type %T", in.Parameters)
+	}
+	if err := validateOpEnableImageInput(input); err != nil {
 		return out, metadata, err
 	}
 	return next.HandleInitialize(ctx, in)
@@ -9306,6 +9366,10 @@ func addOpDisableImageDeprecationValidationMiddleware(stack *middleware.Stack) e
 	return stack.Initialize.Add(&validateOpDisableImageDeprecation{}, middleware.After)
 }
 
+func addOpDisableImageValidationMiddleware(stack *middleware.Stack) error {
+	return stack.Initialize.Add(&validateOpDisableImage{}, middleware.After)
+}
+
 func addOpDisableIpamOrganizationAdminAccountValidationMiddleware(stack *middleware.Stack) error {
 	return stack.Initialize.Add(&validateOpDisableIpamOrganizationAdminAccount{}, middleware.After)
 }
@@ -9386,8 +9450,16 @@ func addOpEnableFastSnapshotRestoresValidationMiddleware(stack *middleware.Stack
 	return stack.Initialize.Add(&validateOpEnableFastSnapshotRestores{}, middleware.After)
 }
 
+func addOpEnableImageBlockPublicAccessValidationMiddleware(stack *middleware.Stack) error {
+	return stack.Initialize.Add(&validateOpEnableImageBlockPublicAccess{}, middleware.After)
+}
+
 func addOpEnableImageDeprecationValidationMiddleware(stack *middleware.Stack) error {
 	return stack.Initialize.Add(&validateOpEnableImageDeprecation{}, middleware.After)
+}
+
+func addOpEnableImageValidationMiddleware(stack *middleware.Stack) error {
+	return stack.Initialize.Add(&validateOpEnableImage{}, middleware.After)
 }
 
 func addOpEnableIpamOrganizationAdminAccountValidationMiddleware(stack *middleware.Stack) error {
@@ -14722,6 +14794,21 @@ func validateOpDisableImageDeprecationInput(v *DisableImageDeprecationInput) err
 	}
 }
 
+func validateOpDisableImageInput(v *DisableImageInput) error {
+	if v == nil {
+		return nil
+	}
+	invalidParams := smithy.InvalidParamsError{Context: "DisableImageInput"}
+	if v.ImageId == nil {
+		invalidParams.Add(smithy.NewErrParamRequired("ImageId"))
+	}
+	if invalidParams.Len() > 0 {
+		return invalidParams
+	} else {
+		return nil
+	}
+}
+
 func validateOpDisableIpamOrganizationAdminAccountInput(v *DisableIpamOrganizationAdminAccountInput) error {
 	if v == nil {
 		return nil
@@ -15060,6 +15147,21 @@ func validateOpEnableFastSnapshotRestoresInput(v *EnableFastSnapshotRestoresInpu
 	}
 }
 
+func validateOpEnableImageBlockPublicAccessInput(v *EnableImageBlockPublicAccessInput) error {
+	if v == nil {
+		return nil
+	}
+	invalidParams := smithy.InvalidParamsError{Context: "EnableImageBlockPublicAccessInput"}
+	if len(v.ImageBlockPublicAccessState) == 0 {
+		invalidParams.Add(smithy.NewErrParamRequired("ImageBlockPublicAccessState"))
+	}
+	if invalidParams.Len() > 0 {
+		return invalidParams
+	} else {
+		return nil
+	}
+}
+
 func validateOpEnableImageDeprecationInput(v *EnableImageDeprecationInput) error {
 	if v == nil {
 		return nil
@@ -15070,6 +15172,21 @@ func validateOpEnableImageDeprecationInput(v *EnableImageDeprecationInput) error
 	}
 	if v.DeprecateAt == nil {
 		invalidParams.Add(smithy.NewErrParamRequired("DeprecateAt"))
+	}
+	if invalidParams.Len() > 0 {
+		return invalidParams
+	} else {
+		return nil
+	}
+}
+
+func validateOpEnableImageInput(v *EnableImageInput) error {
+	if v == nil {
+		return nil
+	}
+	invalidParams := smithy.InvalidParamsError{Context: "EnableImageInput"}
+	if v.ImageId == nil {
+		invalidParams.Add(smithy.NewErrParamRequired("ImageId"))
 	}
 	if invalidParams.Len() > 0 {
 		return invalidParams
@@ -16658,9 +16775,6 @@ func validateOpModifyVerifiedAccessEndpointPolicyInput(v *ModifyVerifiedAccessEn
 	if v.VerifiedAccessEndpointId == nil {
 		invalidParams.Add(smithy.NewErrParamRequired("VerifiedAccessEndpointId"))
 	}
-	if v.PolicyEnabled == nil {
-		invalidParams.Add(smithy.NewErrParamRequired("PolicyEnabled"))
-	}
 	if invalidParams.Len() > 0 {
 		return invalidParams
 	} else {
@@ -16690,9 +16804,6 @@ func validateOpModifyVerifiedAccessGroupPolicyInput(v *ModifyVerifiedAccessGroup
 	invalidParams := smithy.InvalidParamsError{Context: "ModifyVerifiedAccessGroupPolicyInput"}
 	if v.VerifiedAccessGroupId == nil {
 		invalidParams.Add(smithy.NewErrParamRequired("VerifiedAccessGroupId"))
-	}
-	if v.PolicyEnabled == nil {
-		invalidParams.Add(smithy.NewErrParamRequired("PolicyEnabled"))
 	}
 	if invalidParams.Len() > 0 {
 		return invalidParams

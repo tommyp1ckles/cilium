@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/tools/cache"
 	k8s_metrics "k8s.io/client-go/tools/metrics"
+	"k8s.io/client-go/util/workqueue"
 
 	agentK8s "github.com/cilium/cilium/daemon/k8s"
 	"github.com/cilium/cilium/pkg/cidr"
@@ -37,7 +38,6 @@ import (
 	k8smetrics "github.com/cilium/cilium/pkg/k8s/metrics"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	"github.com/cilium/cilium/pkg/k8s/synced"
-	k8sTypes "github.com/cilium/cilium/pkg/k8s/types"
 	"github.com/cilium/cilium/pkg/k8s/utils"
 	"github.com/cilium/cilium/pkg/k8s/watchers/resources"
 	"github.com/cilium/cilium/pkg/k8s/watchers/subscriber"
@@ -113,6 +113,8 @@ func init() {
 	k8s_metrics.RequestLatency = registerOps.RequestLatency
 	k8s_metrics.RateLimiterLatency = registerOps.RateLimiterLatency
 	k8s_metrics.RequestResult = registerOps.RequestResult
+
+	workqueue.SetProvider(workqueueMetricsProvider{})
 }
 
 var (
@@ -177,12 +179,6 @@ type bgpSpeakerManager interface {
 
 	OnUpdateEndpoints(eps *k8s.Endpoints) error
 }
-type EgressGatewayManager interface {
-	OnUpdateEndpoint(endpoint *k8sTypes.CiliumEndpoint)
-	OnDeleteEndpoint(endpoint *k8sTypes.CiliumEndpoint)
-	OnUpdateNode(node nodeTypes.Node)
-	OnDeleteNode(node nodeTypes.Node)
-}
 
 type envoyConfigManager interface {
 	UpsertEnvoyResources(context.Context, envoy.Resources, envoy.PortAllocator) error
@@ -236,12 +232,6 @@ type K8sWatcher struct {
 	// have their event handling methods called in order of registration.
 	NodeChain *subscriber.NodeChain
 
-	// CiliumNodeChain is the root of a notification chain for CiliumNode events.
-	// This CiliumNodeChain allows registration of subscriber.CiliumNode implementations.
-	// On CiliumNode events all registered subscriber.CiliumNode implementations will
-	// have their event handling methods called in order of registration.
-	CiliumNodeChain *subscriber.CiliumNodeChain
-
 	endpointManager endpointManager
 
 	nodeDiscoverManager   nodeDiscoverManager
@@ -250,7 +240,6 @@ type K8sWatcher struct {
 	svcManager            svcManager
 	redirectPolicyManager redirectPolicyManager
 	bgpSpeakerManager     bgpSpeakerManager
-	egressGatewayManager  EgressGatewayManager
 	ipcache               ipcacheManager
 	envoyConfigManager    envoyConfigManager
 	cgroupManager         cgroupManager
@@ -305,7 +294,6 @@ func NewK8sWatcher(
 	datapath datapath.Datapath,
 	redirectPolicyManager redirectPolicyManager,
 	bgpSpeakerManager bgpSpeakerManager,
-	egressGatewayManager EgressGatewayManager,
 	envoyConfigManager envoyConfigManager,
 	cfg WatcherConfiguration,
 	ipcache ipcacheManager,
@@ -329,10 +317,8 @@ func NewK8sWatcher(
 		datapath:                datapath,
 		redirectPolicyManager:   redirectPolicyManager,
 		bgpSpeakerManager:       bgpSpeakerManager,
-		egressGatewayManager:    egressGatewayManager,
 		cgroupManager:           cgroupManager,
 		NodeChain:               subscriber.NewNodeChain(),
-		CiliumNodeChain:         subscriber.NewCiliumNodeChain(),
 		envoyConfigManager:      envoyConfigManager,
 		cfg:                     cfg,
 		resources:               resources,
@@ -368,6 +354,36 @@ func (r *resultAdapter) Increment(_ context.Context, code, method, host string) 
 		}
 	}
 	k8smetrics.LastInteraction.Reset()
+}
+
+type workqueueMetricsProvider struct{}
+
+func (workqueueMetricsProvider) NewDepthMetric(name string) workqueue.GaugeMetric {
+	return metrics.WorkQueueDepth.WithLabelValues(name)
+}
+
+func (workqueueMetricsProvider) NewAddsMetric(name string) workqueue.CounterMetric {
+	return metrics.WorkQueueAddsTotal.WithLabelValues(name)
+}
+
+func (workqueueMetricsProvider) NewLatencyMetric(name string) workqueue.HistogramMetric {
+	return metrics.WorkQueueLatency.WithLabelValues(name)
+}
+
+func (workqueueMetricsProvider) NewWorkDurationMetric(name string) workqueue.HistogramMetric {
+	return metrics.WorkQueueDuration.WithLabelValues(name)
+}
+
+func (workqueueMetricsProvider) NewUnfinishedWorkSecondsMetric(name string) workqueue.SettableGaugeMetric {
+	return metrics.WorkQueueUnfinishedWork.WithLabelValues(name)
+}
+
+func (workqueueMetricsProvider) NewLongestRunningProcessorSecondsMetric(name string) workqueue.SettableGaugeMetric {
+	return metrics.WorkQueueLongestRunningProcessor.WithLabelValues(name)
+}
+
+func (workqueueMetricsProvider) NewRetriesMetric(name string) workqueue.CounterMetric {
+	return metrics.WorkQueueRetries.WithLabelValues(name)
 }
 
 // WaitForCacheSync blocks until the given resources have been synchronized from k8s.  Note that if
@@ -544,7 +560,6 @@ func (k *K8sWatcher) InitK8sSubsystem(ctx context.Context, cachesSynced chan str
 
 // WatcherConfiguration is the required configuration for enableK8sWatchers
 type WatcherConfiguration interface {
-	utils.ServiceConfiguration
 	utils.IngressConfiguration
 	utils.GatewayAPIConfiguration
 	utils.PolicyConfiguration

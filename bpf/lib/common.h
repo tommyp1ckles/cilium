@@ -809,11 +809,11 @@ enum {
 #define	CB_CLUSTER_ID_INGRESS	CB_POLICY	/* Alias, non-overlapping */
 #define CB_HSIPC_PORT		CB_POLICY	/* Alias, non-overlapping */
 #define CB_DSR_SRC_LABEL	CB_POLICY	/* Alias, non-overlapping */
-	CB_NAT,
-#define	CB_ADDR_V6_3		CB_NAT		/* Alias, non-overlapping */
-#define	CB_FROM_HOST		CB_NAT		/* Alias, non-overlapping */
-#define CB_SRV6_SID_4		CB_NAT		/* Alias, non-overlapping */
-#define CB_DSR_L3_OFF		CB_NAT		/* Alias, non-overlapping */
+	CB_3,
+#define	CB_ADDR_V6_3		CB_3		/* Alias, non-overlapping */
+#define	CB_FROM_HOST		CB_3		/* Alias, non-overlapping */
+#define CB_SRV6_SID_4		CB_3		/* Alias, non-overlapping */
+#define CB_DSR_L3_OFF		CB_3		/* Alias, non-overlapping */
 	CB_CT_STATE,
 #define	CB_ADDR_V6_4		CB_CT_STATE	/* Alias, non-overlapping */
 #define	CB_ENCRYPT_IDENTITY	CB_CT_STATE	/* Alias, non-overlapping,
@@ -934,7 +934,7 @@ struct ct_entry {
 	__u32 lifetime;
 	__u16 rx_closing:1,
 	      tx_closing:1,
-	      nat46:1,
+	      unused_nat46:1,	/* unused since v1.12 / 81dee05e82fb */
 	      lb_loopback:1,
 	      seen_non_syn:1,
 	      node_port:1,
@@ -947,6 +947,7 @@ struct ct_entry {
 	__u16 rev_nat_index;
 	/* In the kernel ifindex is u32, so we need to check in cilium-agent
 	 * that ifindex of a NodePort device is <= MAX(u16).
+	 * Unused when HAVE_FIB_INDEX is available.
 	 */
 	__u16 ifindex;
 
@@ -1137,10 +1138,6 @@ struct ct_state {
 	      reserved1:1,	/* Was auth_required, not used in production anywhere */
 	      from_tunnel:1,	/* Connection is from tunnel */
 	      reserved:8;
-#ifndef DISABLE_LOOPBACK_LB
-	__be32 addr;
-	__be32 svc_addr;
-#endif
 	__u32 src_sec_id;
 #ifndef HAVE_FIB_IFINDEX
 	__u16 ifindex;

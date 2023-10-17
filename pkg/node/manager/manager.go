@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cilium/workerpool"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/exp/slices"
 
@@ -27,6 +28,7 @@ import (
 	"github.com/cilium/cilium/pkg/ipcache"
 	ipcacheTypes "github.com/cilium/cilium/pkg/ipcache/types"
 	"github.com/cilium/cilium/pkg/labels"
+	cidrlabels "github.com/cilium/cilium/pkg/labels/cidr"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/metrics/metric"
@@ -181,6 +183,31 @@ type nodeMetrics struct {
 	// metricDatapathValidations is the prometheus metric to track the
 	// number of datapath node validation calls
 	DatapathValidations metric.Counter
+}
+
+// ProcessNodeDeletion upon node deletion ensures metrics associated
+// with the deleted node are no longer reported.
+// Notably for metrics node connectivity status and latency metrics
+func (*nodeMetrics) ProcessNodeDeletion(clusterName, nodeName string) {
+	// Removes all connectivity status associated with the deleted node.
+	_ = metrics.NodeConnectivityStatus.DeletePartialMatch(prometheus.Labels{
+		metrics.LabelSourceCluster:  clusterName,
+		metrics.LabelSourceNodeName: nodeName,
+	})
+	_ = metrics.NodeConnectivityStatus.DeletePartialMatch(prometheus.Labels{
+		metrics.LabelTargetCluster:  clusterName,
+		metrics.LabelTargetNodeName: nodeName,
+	})
+
+	// Removes all connectivity latency associated with the deleted node.
+	_ = metrics.NodeConnectivityLatency.DeletePartialMatch(prometheus.Labels{
+		metrics.LabelSourceCluster:  clusterName,
+		metrics.LabelSourceNodeName: nodeName,
+	})
+	_ = metrics.NodeConnectivityLatency.DeletePartialMatch(prometheus.Labels{
+		metrics.LabelTargetCluster:  clusterName,
+		metrics.LabelTargetNodeName: nodeName,
+	})
 }
 
 func NewNodeMetrics() *nodeMetrics {
@@ -385,6 +412,18 @@ func (m *manager) nodeIdentityLabels(n nodeTypes.Node) (nodeLabels labels.Labels
 	if m.conf.RemoteNodeIdentitiesEnabled() {
 		if n.IsLocal() {
 			nodeLabels = labels.NewFrom(labels.LabelHost)
+			if option.Config.PolicyCIDRMatchesNodes() {
+				for _, address := range n.IPAddresses {
+					addr, ok := ip.AddrFromIP(address.IP)
+					if ok {
+						prefix, err := addr.Prefix(addr.BitLen())
+						if err == nil {
+							cidrLabels := cidrlabels.GetCIDRLabels(prefix)
+							nodeLabels.MergeLabels(cidrLabels)
+						}
+					}
+				}
+			}
 		} else if !identity.NumericIdentity(n.NodeIdentity).IsReservedIdentity() {
 			// This needs to match clustermesh-apiserver's VMManager.AllocateNodeIdentity
 			nodeLabels = labels.Map2Labels(n.Labels, labels.LabelSourceK8s)
@@ -455,10 +494,17 @@ func (m *manager) NodeUpdated(n nodeTypes.Node) {
 			dpUpdate = false
 		}
 
+		lbls := nodeLabels
+		// Add the CIDR labels for this node, if we allow selecting nodes by CIDR
+		if option.Config.PolicyCIDRMatchesNodes() {
+			lbls = labels.NewFrom(nodeLabels)
+			lbls.MergeLabels(cidrlabels.GetCIDRLabels(prefix))
+		}
+
 		// Always associate the prefix with metadata, even though this may not
 		// end up in an ipcache entry.
 		m.ipcache.UpsertMetadata(prefix, n.Source, resource,
-			nodeLabels,
+			lbls,
 			ipcacheTypes.TunnelPeer{Addr: tunnelIP},
 			ipcacheTypes.EncryptKey(key))
 		if nodeIdentityOverride {
@@ -668,6 +714,7 @@ func (m *manager) NodeDeleted(n nodeTypes.Node) {
 	m.removeNodeFromIPCache(entry.node, resource, nil, nil, nil)
 
 	m.metrics.NumNodes.Dec()
+	m.metrics.ProcessNodeDeletion(n.Cluster, n.Name)
 
 	entry.mutex.Lock()
 	delete(m.nodes, nodeIdentifier)

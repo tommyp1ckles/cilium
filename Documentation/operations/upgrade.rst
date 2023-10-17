@@ -315,7 +315,20 @@ Annotations:
   Upgrading from Cilium 1.14.x or earlier to 1.15.y or later does not
   trigger this problem. Downgrading from Cilium 1.15.y or later to Cilium
   1.14.x or earlier may trigger this problem.
-  
+* ``CiliumNetworkPolicy`` cannot match the ``reserved:init`` labels any more.
+  If you have ``CiliumNetworkPolicy`` resources that have a match for
+  labels ``reserved:init``, these policies must be converted to
+  ``CiliumClusterwideNetworkPolicy`` by changing the resource type for the
+  policy.
+* Cluster name and ID are no longer automatically inferred by Cilium agents
+  running on :ref:`external workloads <external_workloads>`.
+  If the cluster name and ID are different from the default values, you must
+  specify them as parameters.
+  Generate the installation script using Cilium CLI >=v0.15.8 to automatically
+  include these parameters.
+* ``enable-endpoint-routes`` now automatically sets ``enable-local-node-route``
+  to false, as local node routes are redundant when per-endpoint routes are enabled.
+
 .. _upgrade_cilium_cli_helm_mode:
 
 Cilium CLI
@@ -333,12 +346,41 @@ To migrate a classic mode Cilium installation to Helm mode, you need to
 uninstall Cilium using classic mode Cilium CLI, and then re-install Cilium
 using Helm mode Cilium CLI.
 
+Removed Options
+~~~~~~~~~~~~~~~
+
+* The previously deprecated ``cluster-pool-v2beta`` IPAM mode has been removed.
+  The functionality to dynamically allocate Pod CIDRs is now provided by the more
+  flexible ``multi-pool`` IPAM mode.
+
 Helm Options
 ~~~~~~~~~~~~
 
 * Values ``clustermesh.apiserver.tls.ca.cert`` and ``clustermesh.apiserver.tls.ca.key``
   were deprecated in Cilium 1.14 in favor of ``tls.ca.cert`` and ``tls.ca.key`` respectively,
   and have been removed. The ```clustermesh-apiserver-ca-cert`` secret is no longer generated.
+
+* Values ``authentication.mutual.spire.install.agent.image`` and ``authentication.mutual.spire.install.server.image``
+  changed their type from a string to a structured definition that decouples repository and tag. This improves the
+  usage in offline environments.
+
+* Prometheus metrics for cilium-operator and clustermesh's kvstore are now enabled by default.
+  If you want to disable these prometheus metrics, set ``operator.prometheus.enabled=false``
+  and ``clustermesh.apiserver.metrics.etcd.enabled=false`` respectively.
+
+Added Metrics
+~~~~~~~~~~~~~
+
+* ``cilium_ipam_capacity``
+* ``cilium_endpoint_max_ifindex`` See `#27953 <https://github.com/cilium/cilium/pull/27953>`_ for configuration and usage information
+
+Removed Metrics
+~~~~~~~~~~~~~~~
+
+The following deprecated metrics were removed:
+
+* ``cilium_policy_l7_parse_errors_total``, ``cilium_policy_l7_forwarded_total``, ``cilium_policy_l7_denied_total``, ``cilium_policy_l7_received_total`` (replaced by ``cilium_policy_l7_total``)
+* ``cilium_policy_import_errors_total`` (replaced by ``cilium_policy_change_total``).
 
 Changed Metrics
 ~~~~~~~~~~~~~~~
@@ -349,6 +391,12 @@ Changed Metrics
   do not include client-side rate-limiting latency anymore.
   For checking client-side rate-limiting you can use corresponding
   ``*_api_limiter_wait_duration_seconds`` metrics.
+* The ``cilium_bpf_map_pressure`` for policy maps is now exposed as a single
+  label ``cilium_policy_*``, rather than a label per policy map of an endpoint.
+* ``cilium_policy_l7_total`` now has label ``proxy_type`` to distinguish between fqdn and envoy proxy requests.
+* The ``cilium_cidrgroup_policies`` metric has been renamed to
+  ``cilium_cidrgroups_referenced`` for better clarity.
+* The ``cilium_cidrgroup_translation_time_stats_seconds`` metric has been disabled by default.
 
 .. _earlier_upgrade_notes:
 
@@ -370,14 +418,14 @@ functional in general. The following is a list of operations that will not be
 available during the upgrade:
 
 * API-aware policy rules are enforced in user space proxies and are
-  running as part of the Cilium pod. Upgrading Cilium causes the proxy to 
+  running as part of the Cilium pod. Upgrading Cilium causes the proxy to
   restart, which results in a connectivity outage and causes the connection to reset.
 
 * Existing policy will remain effective but implementation of new policy rules
   will be postponed to after the upgrade has been completed on a particular
   node.
 
-* Monitoring components such as ``cilium monitor`` will experience a brief
+* Monitoring components such as ``cilium-dbg monitor`` will experience a brief
   outage while the Cilium pod is restarting. Events are queued up and read
   after the upgrade. If the number of events exceeds the event buffer size,
   events will be lost.
@@ -555,7 +603,7 @@ Example migration
 
 .. code-block:: shell-session
 
-      $ kubectl exec -n kube-system cilium-pre-flight-check-1234 -- cilium preflight migrate-identity
+      $ kubectl exec -n kube-system cilium-pre-flight-check-1234 -- cilium-dbg preflight migrate-identity
       INFO[0000] Setting up kvstore client
       INFO[0000] Connecting to etcd server...                  config=/var/lib/cilium/etcd-config.yml endpoints="[https://192.168.60.11:2379]" subsys=kvstore
       INFO[0000] Setting up kubernetes client
@@ -597,7 +645,7 @@ Once the migration is complete, confirm the endpoint identities match by listing
 .. code-block:: shell-session
 
       $ kubectl get ciliumendpoints -A # new CRD-backed endpoints
-      $ kubectl exec -n kube-system cilium-1234 -- cilium endpoint list # existing etcd-backed endpoints
+      $ kubectl exec -n kube-system cilium-1234 -- cilium-dbg endpoint list # existing etcd-backed endpoints
 
 Clearing CRD identities
 ~~~~~~~~~~~~~~~~~~~~~~~

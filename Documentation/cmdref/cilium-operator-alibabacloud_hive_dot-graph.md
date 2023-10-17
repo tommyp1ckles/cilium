@@ -17,10 +17,17 @@ cilium-operator-alibabacloud hive dot-graph [flags]
 ### Options inherited from parent commands
 
 ```
+      --ces-max-ciliumendpoints-per-ces int                  Maximum number of CiliumEndpoints allowed in a CES (default 100)
+      --ces-slice-mode string                                Slicing mode define how ceps are grouped into a CES (default "cesSliceModeIdentity")
+      --ces-write-qps-burst int                              CES work queue burst rate (default 20)
+      --ces-write-qps-limit float                            CES work queue rate limit (default 10)
+      --cluster-id uint32                                    Unique identifier of the cluster
+      --cluster-name string                                  Name of the cluster (default "default")
       --controller-group-metrics strings                     List of controller group names for which to to enable metrics. Accepts 'all' and 'none'. The set of controller group names available is not guaranteed to be stable between Cilium versions.
       --enable-cilium-operator-server-access strings         List of cilium operator APIs which are administratively enabled. Supports '*'. (default [*])
       --enable-k8s                                           Enable the k8s clientset (default true)
       --enable-k8s-api-discovery                             Enable discovery of Kubernetes API groups and resources with the discovery API
+      --enable-k8s-endpoint-slice                            Enables k8s EndpointSlice feature in Cilium if the k8s cluster supports it (default true)
       --gops-port uint16                                     Port for gops server to listen on (default 9891)
       --identity-gc-interval duration                        GC interval for security identities (default 15m0s)
       --identity-gc-rate-interval duration                   Interval used for rate limiting the GC of security identities (default 1m0s)
@@ -31,6 +38,7 @@ cilium-operator-alibabacloud hive dot-graph [flags]
       --k8s-client-qps float32                               Queries per second limit for the K8s client
       --k8s-heartbeat-timeout duration                       Configures the timeout for api-server heartbeat, set to 0 to disable (default 30s)
       --k8s-kubeconfig-path string                           Absolute path of the kubernetes kubeconfig file
+      --k8s-service-proxy-name string                        Value of K8s service-proxy-name label for which Cilium handles the services (empty = all services without service.kubernetes.io/service-proxy-name label)
       --mesh-auth-mutual-enabled                             The flag to enable mutual authentication for the SPIRE server (beta).
       --mesh-auth-spiffe-trust-domain string                 The trust domain for the SPIFFE identity. (default "spiffe.cilium")
       --mesh-auth-spire-agent-socket string                  The path for the SPIRE admin agent Unix socket. (default "/run/spire/sockets/agent/agent.sock")
@@ -40,6 +48,7 @@ cilium-operator-alibabacloud hive dot-graph [flags]
       --operator-pprof                                       Enable serving pprof debugging API
       --operator-pprof-address string                        Address that pprof listens on (default "localhost")
       --operator-pprof-port uint16                           Port that pprof listens on (default 6061)
+      --operator-prometheus-serve-addr string                Address to serve Prometheus metrics (default ":9963")
       --skip-crd-creation                                    When true, Kubernetes Custom Resource Definitions will not be created
 ```
 

@@ -43,7 +43,7 @@ command line, e.g.:
 
 Cilium will pick up that pods have received these annotations, and will
 transparently redirect traffic to the proxy such that the output of
-``cilium monitor`` shows traffic being redirected to the proxy, e.g.:
+``cilium-dbg monitor`` shows traffic being redirected to the proxy, e.g.:
 
 ::
 
@@ -82,20 +82,19 @@ parameters, API keys, and others.
    By default, Hubble does not redact potentially sensitive information
    present in `Layer 7 Hubble Flows <https://github.com/cilium/cilium/tree/master/api/v1/flow#flow-Layer7>`_.
 
-To harden security, Cilium provides the ``--hubble-redact`` option which
-accepts a comma-separated list of values that control how Hubble handles
-sensitive information present in Layer 7 flows. More specifically, it offers
-the following features and values for supported Layer 7 protocols:
+To harden security, Cilium provides the ``--hubble-redact-enabled`` option which
+enables Hubble to handle sensitive information present in Layer 7 flows.
+More specifically, it offers the following features for supported Layer 7 protocols:
 
-* For HTTP: redacting URL query (GET) parameters (``--hubble-redact=http-url-query``)
-* For Kafka: redacting API key (``--hubble-redact=kafka-api-key``)
+* For HTTP: redacting URL query (GET) parameters (``--hubble-redact-http-urlquery``)
+* For Kafka: redacting API key (``--hubble-redact-kafka-apikey``)
 
 For more information on configuring Cilium, see :ref:`Cilium Configuration <configuration>`.
 
 Troubleshooting
 ---------------
 
-If L7 visibility is not appearing in ``cilium monitor`` or Hubble components,
+If L7 visibility is not appearing in ``cilium-dbg monitor`` or Hubble components,
 it is worth double-checking that:
 
  * No enforcement policy is applied in the direction specified in the
