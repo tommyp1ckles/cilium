@@ -480,10 +480,18 @@ var (
 	// not expired (by TTL), per endpoint.
 	FQDNActiveNames = NoOpGaugeVec
 
+	// FQDNExpiredNames is the total number of domains inside the DNS cache of this
+	// agent.
+	FQDNTotalActiveNames = NoOpGauge
+
 	// FQDNActiveIPs is the number of IPs inside the DNS cache associated with
 	// a domain that has not expired (by TTL) and are currently active, per
 	// endpoint.
 	FQDNActiveIPs = NoOpGaugeVec
+
+	// FQDNTotalActiveIPs is the total number of active IPs inside the DNS cache of
+	// this agent.
+	FQDNTotalActiveIPs = NoOpGauge
 
 	// FQDNAliveZombieConnections is the number IPs associated with domains
 	// that have expired (by TTL) yet still associated with an active
@@ -688,7 +696,9 @@ type LegacyMetrics struct {
 	KVStoreQuorumErrors              metric.Vec[metric.Counter]
 	FQDNGarbageCollectorCleanedTotal metric.Counter
 	FQDNActiveNames                  metric.Vec[metric.Gauge]
+	FQDNTotalActiveNames             metric.Gauge
 	FQDNActiveIPs                    metric.Vec[metric.Gauge]
+	FQDNTotalActiveIPs               metric.Gauge
 	FQDNAliveZombieConnections       metric.Vec[metric.Gauge]
 	FQDNSemaphoreRejectedTotal       metric.Counter
 	IPCacheErrorsTotal               metric.Vec[metric.Counter]
@@ -1142,6 +1152,15 @@ func NewLegacyMetrics() *LegacyMetrics {
 			Help:       "Number of domains inside the DNS cache that have not expired (by TTL), per endpoint",
 		}, []string{LabelPeerEndpoint}),
 
+		FQDNTotalActiveNames: metric.NewGauge(metric.GaugeOpts{
+			ConfigName: Namespace + "_" + SubsystemFQDN + "_active_names",
+			Disabled:   true,
+			Namespace:  Namespace,
+			Subsystem:  SubsystemFQDN,
+			Name:       "active_names",
+			Help:       "Number of domains inside the DNS cache that have not expired (by TTL), per endpoint",
+		}),
+
 		FQDNActiveIPs: metric.NewGaugeVec(metric.GaugeOpts{
 			ConfigName: Namespace + "_" + SubsystemFQDN + "_active_ips",
 			Disabled:   true,
@@ -1150,6 +1169,15 @@ func NewLegacyMetrics() *LegacyMetrics {
 			Name:       "active_ips",
 			Help:       "Number of IPs inside the DNS cache associated with a domain that has not expired (by TTL), per endpoint",
 		}, []string{LabelPeerEndpoint}),
+
+		FQDNTotalActiveIPs: metric.NewGauge(metric.GaugeOpts{
+			ConfigName: Namespace + "_" + SubsystemFQDN + "_active_ips",
+			Disabled:   true,
+			Namespace:  Namespace,
+			Subsystem:  SubsystemFQDN,
+			Name:       "active_ips",
+			Help:       "Number of IPs inside the DNS cache associated with a domain that has not expired (by TTL), per endpoint",
+		}),
 
 		FQDNAliveZombieConnections: metric.NewGaugeVec(metric.GaugeOpts{
 			ConfigName: Namespace + "_" + SubsystemFQDN + "_alive_zombie_connections",

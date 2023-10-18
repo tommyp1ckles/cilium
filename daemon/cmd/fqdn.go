@@ -213,10 +213,13 @@ func (d *Daemon) bootstrapFQDN(possibleEndpoints map[uint16]*endpoint.Endpoint, 
 
 			// Cleanup each endpoint cache, deferring deletions via DNSZombies.
 			endpoints := d.endpointManager.GetEndpoints()
+			var totalIPs, totalNames uint64
 			for _, ep := range endpoints {
 				epID := ep.StringID()
+				countFQDNs, countIPs := ep.DNSHistory.Count()
+				totalIPs += countIPs
+				totalNames += countFQDNs
 				if metrics.FQDNActiveNames.IsEnabled() || metrics.FQDNActiveIPs.IsEnabled() {
-					countFQDNs, countIPs := ep.DNSHistory.Count()
 					if metrics.FQDNActiveNames.IsEnabled() {
 						metrics.FQDNActiveNames.WithLabelValues(epID).Set(float64(countFQDNs))
 					}
@@ -268,6 +271,8 @@ func (d *Daemon) bootstrapFQDN(possibleEndpoints map[uint16]*endpoint.Endpoint, 
 					}
 				}
 			}
+			metrics.FQDNTotalActiveIPs.Set(float64(totalIPs))
+			metrics.FQDNTotalActiveNames.Set(float64(totalNames))
 
 			if len(namesToClean) == 0 {
 				return nil
