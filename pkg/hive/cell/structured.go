@@ -433,17 +433,21 @@ func (s *StatusNode) allOk() bool {
 	return s.LastLevel == StatusOK
 }
 
-func (s *StatusNode) writeTo(w io.Writer, d int) {
+func (s *StatusNode) writeTo(w io.Writer, d int, last bool) {
 	if len(s.SubStatuses) == 0 {
 		since := "never"
 		if !s.UpdateTimestamp.IsZero() {
 			since = duration.HumanDuration(time.Since(s.UpdateTimestamp)) + " ago"
 		}
-		fmt.Fprintf(w, "%s%s\t%s\t%s\t%s\t(x%d)\n", strings.Repeat("\t", d), s.Name, s.LastLevel, s.Message, since, s.Count)
+		edge := "├"
+		if last {
+			edge = "└"
+		}
+		fmt.Fprintf(w, "%s%s── %s\t%s\t%s\t%s\t(x%d)\n", strings.Repeat("\t", d), edge, s.Name, s.LastLevel, s.Message, since, s.Count)
 	} else {
 		fmt.Fprintf(w, "%s%s\n", strings.Repeat("\t", d), s.Name)
-		for _, ss := range s.SubStatuses {
-			ss.writeTo(w, d+1)
+		for i, ss := range s.SubStatuses {
+			ss.writeTo(w, d+1, i == len(s.SubStatuses)-1)
 		}
 	}
 }
@@ -454,7 +458,7 @@ func (s *StatusNode) StringIndent(ident int) string {
 	}
 	buf := bytes.NewBuffer(nil)
 	w := tabwriter.NewWriter(buf, 0, 0, 1, ' ', 0)
-	s.writeTo(w, ident)
+	s.writeTo(w, ident, len(s.SubStatuses) <= 1)
 	w.Flush()
 	return buf.String()
 }
