@@ -90,18 +90,41 @@ type Scope interface {
 //	root(OK) 	// status has been reported, but we no longer have any degraded status
 //				// default to ok status.
 func GetSubScope(parent Scope, name string) Scope {
+	return GetSubScopeWithLabels(parent, name, nil)
+}
+
+func GetSubScopeWithLabels(parent Scope, name string, labels map[string]string) Scope {
 	if parent == nil {
 		return nil
 	}
-	return createSubScope(parent, name)
+	return createSubScope(parent, name, labels)
+}
+
+const (
+	HealthLabelFeatures = "features"
+)
+
+type Labels map[string]string
+
+func (l Labels) Copy() Labels {
+	if l == nil {
+		return nil
+	}
+	c := make(Labels, len(l))
+	maps.Copy(c, l)
+	return c
+}
+
+func GetHealthReporterWithLabels(parent Scope, name string, labels Labels) HealthReporter {
+	if parent == nil {
+		return &noopReporter{}
+	}
+	return getSubReporter(parent, name, true, labels)
 }
 
 // GetHealthReporter creates a new reporter under the given parent scope.
 func GetHealthReporter(parent Scope, name string) HealthReporter {
-	if parent == nil {
-		return &noopReporter{}
-	}
-	return getSubReporter(parent, name, true)
+	return GetHealthReporterWithLabels(parent, name, nil)
 }
 
 // TestScope exposes creating a root scope for testing purposes only.
@@ -126,7 +149,7 @@ func rootScope(id FullModuleID, hr statusNodeReporter) *scope {
 		},
 	}
 	// create root node, required in case reporters are created without any subscopes.
-	r.id = r.base.addChild("", id.String(), false)
+	r.id = r.base.addChild("", id.String(), false, nil)
 	r.base.rootID = r.id
 
 	// Realize walks the tree and creates a updated status for the reporter.
@@ -258,9 +281,9 @@ func (s *scope) Name() string {
 // reporter node emits a ok/degraded status and then is orphaned.
 // This is ok, because we're primarily interested in ensure that ephemerally created scopes that
 // are never reported upon and then lost do not grow the tree indefinitely.
-func createSubScope(parent Scope, name string) *scope {
+func createSubScope(parent Scope, name string, labels Labels) *scope {
 	s := &scope{
-		subReporter: getSubReporter(parent, name, false),
+		subReporter: getSubReporter(parent, name, false, labels),
 	}
 	runtime.SetFinalizer(s, func(s *scope) {
 		s.base.Lock()
@@ -274,11 +297,11 @@ func createSubScope(parent Scope, name string) *scope {
 	return s
 }
 
-func getSubReporter(parent Scope, name string, isReporter bool) *subReporter {
-	return scopeFromParent(parent, name, isReporter)
+func getSubReporter(parent Scope, name string, isReporter bool, labels Labels) *subReporter {
+	return scopeFromParent(parent, name, isReporter, labels)
 }
 
-func scopeFromParent(parent Scope, name string, isReporter bool) *subReporter {
+func scopeFromParent(parent Scope, name string, isReporter bool, labels Labels) *subReporter {
 	r := parent.scope()
 	r.base.Lock()
 	defer r.base.Unlock()
@@ -298,7 +321,7 @@ func scopeFromParent(parent Scope, name string, isReporter bool) *subReporter {
 		}
 	}
 
-	id := r.base.addChild(r.id, name, isReporter)
+	id := r.base.addChild(r.id, name, isReporter, labels)
 
 	return &subReporter{
 		base:            r.base,
@@ -344,7 +367,7 @@ func (s *subreporterBase) addNode(n *node) {
 	s.nodes[n.id] = n
 }
 
-func (s *subreporterBase) addChild(pid string, name string, isReporter bool) string {
+func (s *subreporterBase) addChild(pid string, name string, isReporter bool, labels Labels) string {
 	id := strconv.Itoa(int(s.counter.Add(1))) + "-" + name
 	s.addNode(&node{
 		id:       id,
@@ -357,6 +380,7 @@ func (s *subreporterBase) addChild(pid string, name string, isReporter bool) str
 		name:       name,
 		isReporter: isReporter,
 		refs:       1,
+		labels:     labels,
 	})
 	return id
 }
@@ -409,6 +433,7 @@ type StatusNode struct {
 	ID              string        `json:"id"`
 	LastLevel       Level         `json:"level,omitempty"`
 	Name            string        `json:"name"`
+	Labels          Labels        `json:"labels,omitempty"`
 	Message         string        `json:"message,omitempty"`
 	UpdateTimestamp time.Time     `json:"timestamp"`
 	Count           int           `json:"count"`
@@ -426,7 +451,7 @@ func (s *StatusNode) Timestamp() time.Time {
 }
 
 func (s *StatusNode) JSON() ([]byte, error) {
-	return json.MarshalIndent(s, "", "  ")
+	return json.Marshal(s)
 }
 
 func (s *StatusNode) allOk() bool {
@@ -473,6 +498,7 @@ func (s *subreporterBase) getStatusTreeLocked(nid string) *StatusNode {
 		n := &StatusNode{
 			ID:              nid,
 			Message:         rn.Message,
+			Labels:          rn.labels.Copy(),
 			Name:            rn.name,
 			UpdateTimestamp: rn.Timestamp,
 			Count:           rn.count,
@@ -516,6 +542,7 @@ type node struct {
 	isReporter bool
 	count      int
 	refs       int
+	labels     Labels
 	Message    string
 	Error      error
 	nodeUpdate

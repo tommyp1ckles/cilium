@@ -297,12 +297,17 @@ type mockReporter struct {
 }
 
 func (s *mockReporter) setStatus(n Update) {
-	switch n.Level() {
+	if n == nil {
+		panic("nil update")
+	}
+	switch n.(*StatusNode).LastLevel {
 	case StatusOK:
 		s.ok(n.String())
 	case StatusDegraded:
 		s.degraded(n.String())
 	case StatusStopped:
 		s.stopped(n.String())
+	default:
+		panic("unexpected status: " + n.(*StatusNode).LastLevel)
 	}
 }
