@@ -27,36 +27,55 @@ var _ translation.Translator = (*DedicatedIngressTranslator)(nil)
 type DedicatedIngressTranslator struct {
 	secretsNamespace   string
 	enforceHTTPs       bool
+	useProxyProtocol   bool
 	idleTimeoutSeconds int
 }
 
-func NewDedicatedIngressTranslator(secretsNamespace string, enforceHTTPs bool, idleTimeoutSeconds int) *DedicatedIngressTranslator {
+func NewDedicatedIngressTranslator(secretsNamespace string, enforceHTTPs bool, useProxyProtocol bool, idleTimeoutSeconds int) *DedicatedIngressTranslator {
 	return &DedicatedIngressTranslator{
 		secretsNamespace:   secretsNamespace,
 		enforceHTTPs:       enforceHTTPs,
+		useProxyProtocol:   useProxyProtocol,
 		idleTimeoutSeconds: idleTimeoutSeconds,
 	}
 }
 
 func (d *DedicatedIngressTranslator) Translate(m *model.Model) (*ciliumv2.CiliumEnvoyConfig, *corev1.Service, *corev1.Endpoints, error) {
-	if m == nil || len(m.HTTP) == 0 || len(m.HTTP[0].Sources) == 0 {
+	if m == nil || (len(m.HTTP) == 0 && len(m.TLS) == 0) {
 		return nil, nil, nil, fmt.Errorf("model source can't be empty")
 	}
 
-	name := fmt.Sprintf("%s-%s", ciliumIngressPrefix, m.HTTP[0].Sources[0].Name)
-	namespace := m.HTTP[0].Sources[0].Namespace
+	var name string
+	var namespace string
+	var sourceResource model.FullyQualifiedResource
+	var modelService *model.Service
+	var cecName string
+
+	if len(m.HTTP) == 0 {
+		name = fmt.Sprintf("%s-%s", ciliumIngressPrefix, m.TLS[0].Sources[0].Name)
+		namespace = m.TLS[0].Sources[0].Namespace
+		sourceResource = m.TLS[0].Sources[0]
+		modelService = m.TLS[0].Service
+		cecName = fmt.Sprintf("%s-%s-%s", ciliumIngressPrefix, namespace, m.TLS[0].Sources[0].Name)
+	} else {
+		name = fmt.Sprintf("%s-%s", ciliumIngressPrefix, m.HTTP[0].Sources[0].Name)
+		namespace = m.HTTP[0].Sources[0].Namespace
+		sourceResource = m.HTTP[0].Sources[0]
+		modelService = m.HTTP[0].Service
+		cecName = fmt.Sprintf("%s-%s-%s", ciliumIngressPrefix, namespace, m.HTTP[0].Sources[0].Name)
+	}
 
 	// The logic is same as what we have with default translator, but with a different model
 	// (i.e. the HTTP listeners are just belonged to one Ingress resource).
-	translator := translation.NewTranslator(name, namespace, d.secretsNamespace, d.enforceHTTPs, false, d.idleTimeoutSeconds)
+	translator := translation.NewTranslator(name, namespace, d.secretsNamespace, d.enforceHTTPs, d.useProxyProtocol, false, d.idleTimeoutSeconds)
 	cec, _, _, err := translator.Translate(m)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
 	// Set the name to avoid any breaking change during upgrade.
-	cec.Name = fmt.Sprintf("%s-%s-%s", ciliumIngressPrefix, namespace, m.HTTP[0].Sources[0].Name)
-	return cec, getService(m.HTTP[0].Sources[0], m.HTTP[0].Service), getEndpoints(m.HTTP[0].Sources[0]), err
+	cec.Name = cecName
+	return cec, getService(sourceResource, modelService), getEndpoints(sourceResource), err
 }
 
 func getService(resource model.FullyQualifiedResource, service *model.Service) *corev1.Service {

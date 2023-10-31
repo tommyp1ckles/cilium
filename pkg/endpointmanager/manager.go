@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net/netip"
 	"sync"
-	"time"
 
 	"github.com/sirupsen/logrus"
 
@@ -19,6 +18,7 @@ import (
 	endpointid "github.com/cilium/cilium/pkg/endpoint/id"
 	"github.com/cilium/cilium/pkg/endpoint/regeneration"
 	"github.com/cilium/cilium/pkg/endpointmanager/idallocator"
+	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/identity/cache"
 	"github.com/cilium/cilium/pkg/ipcache"
 	"github.com/cilium/cilium/pkg/k8s/watchers/subscriber"
@@ -31,6 +31,7 @@ import (
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
+	"github.com/cilium/cilium/pkg/time"
 )
 
 var (
@@ -48,6 +49,8 @@ var _ subscriber.Node = (*endpointManager)(nil)
 // endpointManager is a structure designed for containing state about the
 // collection of locally running endpoints.
 type endpointManager struct {
+	reporterScope cell.Scope
+
 	// mutex protects endpoints and endpointsAux
 	mutex lock.RWMutex
 
@@ -88,20 +91,14 @@ type endpointManager struct {
 	policyMapPressure *policyMapPressure
 }
 
-// EndpointResourceSynchronizer is an interface which synchronizes CiliumEndpoint
-// resources with Kubernetes.
-type EndpointResourceSynchronizer interface {
-	RunK8sCiliumEndpointSync(ep *endpoint.Endpoint, conf endpoint.EndpointStatusConfiguration)
-	DeleteK8sCiliumEndpointSync(e *endpoint.Endpoint)
-}
-
 // endpointDeleteFunc is used to abstract away concrete Endpoint Delete
 // functionality from endpoint management for testing purposes.
 type endpointDeleteFunc func(*endpoint.Endpoint, endpoint.DeleteConfig) []error
 
 // New creates a new endpointManager.
-func New(epSynchronizer EndpointResourceSynchronizer) *endpointManager {
+func New(epSynchronizer EndpointResourceSynchronizer, reporterScope cell.Scope) *endpointManager {
 	mgr := endpointManager{
+		reporterScope:                reporterScope,
 		endpoints:                    make(map[uint16]*endpoint.Endpoint),
 		endpointsAux:                 make(map[string]*endpoint.Endpoint),
 		mcastManager:                 mcastmanager.New(option.Config.IPv6MCastDevice),
@@ -120,10 +117,11 @@ func (mgr *endpointManager) WithPeriodicEndpointGC(ctx context.Context, checkHea
 	mgr.checkHealth = checkHealth
 	mgr.controllers.UpdateController("endpoint-gc",
 		controller.ControllerParams{
-			Group:       endpointGCControllerGroup,
-			DoFunc:      mgr.markAndSweep,
-			RunInterval: interval,
-			Context:     ctx,
+			Group:          endpointGCControllerGroup,
+			DoFunc:         mgr.markAndSweep,
+			RunInterval:    interval,
+			Context:        ctx,
+			HealthReporter: cell.GetHealthReporter(mgr.reporterScope, "endpoint-gc"),
 		})
 	return mgr
 }
@@ -383,7 +381,9 @@ func (mgr *endpointManager) ReleaseID(ep *endpoint.Endpoint) error {
 // unexpose removes the endpoint from the endpointmanager, so subsequent
 // lookups will no longer find the endpoint.
 func (mgr *endpointManager) unexpose(ep *endpoint.Endpoint) {
+	defer ep.Close()
 	identifiers := ep.Identifiers()
+
 	previousState := ep.GetState()
 
 	mgr.mutex.Lock()
@@ -623,7 +623,8 @@ func (mgr *endpointManager) expose(ep *endpoint.Endpoint) error {
 	mgr.updateReferencesLocked(ep, identifiers)
 	mgr.mutex.Unlock()
 
-	mgr.RunK8sCiliumEndpointSync(ep, option.Config)
+	ep.InitEndpointScope(mgr.reporterScope)
+	mgr.RunK8sCiliumEndpointSync(ep, option.Config, ep.GetReporter("cep-k8s-sync"))
 
 	return nil
 }

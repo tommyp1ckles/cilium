@@ -8,7 +8,6 @@ package ipam
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/sirupsen/logrus"
 	"k8s.io/client-go/tools/cache"
@@ -25,6 +24,7 @@ import (
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/math"
+	"github.com/cilium/cilium/pkg/time"
 	"github.com/cilium/cilium/pkg/trigger"
 )
 
@@ -334,6 +334,12 @@ func calculateExcessIPs(availableIPs, usedIPs, preAllocate, minAllocate, maxAbov
 	if usedIPs <= (minAllocate + maxAboveWatermark) {
 		if availableIPs <= (minAllocate + maxAboveWatermark) {
 			return 0
+		}
+
+		// if usedIPs+preAllocate not over minAllocate + maxAboveWatermark, only care
+		// the ips out of minAllocate + maxAboveWatermark
+		if (usedIPs + preAllocate) <= (minAllocate + maxAboveWatermark) {
+			return availableIPs - minAllocate - maxAboveWatermark
 		}
 	}
 

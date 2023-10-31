@@ -56,7 +56,6 @@ JUnit
 Jakub
 Jenkinsfiles
 Jesper
-jobLabel
 KV
 KVstore
 Kata
@@ -322,6 +321,7 @@ gluecon
 gobpf
 golang
 gops
+goroutine
 goroutines
 grafana
 graphviz
@@ -387,6 +387,7 @@ jitter
 jle
 jlt
 jne
+jobLabel
 jq
 js
 jset
@@ -533,6 +534,7 @@ pluggable
 pmdabcc
 png
 podCIDR
+podippool
 policyCIDRMatchMode
 policymap
 poller
@@ -671,8 +673,10 @@ toGroups
 tofqdns
 tolerations
 toolchain
+traceparent
 tracepoint
 tracepoints
+tracestate
 transpiling
 tunnelProtocol
 ubuntu
@@ -723,6 +727,7 @@ webhook
 webhooks
 webservice
 whitespace
+wildcarded
 workqueue
 www
 xDS

@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
-	"time"
 
 	"github.com/sirupsen/logrus"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -18,6 +17,7 @@ import (
 	"github.com/cilium/cilium/pkg/hive/job"
 	"github.com/cilium/cilium/pkg/rate"
 	"github.com/cilium/cilium/pkg/statedb"
+	"github.com/cilium/cilium/pkg/time"
 )
 
 var reconcilerCell = cell.Module(
@@ -34,11 +34,12 @@ type reconcilerParams struct {
 	Lifecycle hive.Lifecycle
 	Log       logrus.FieldLogger
 	Registry  job.Registry
+	Scope     cell.Scope
 	Reporter  cell.HealthReporter
 }
 
 func registerReconciler(p reconcilerParams) {
-	g := p.Registry.NewGroup()
+	g := p.Registry.NewGroup(p.Scope)
 	r := &reconciler{
 		reconcilerParams: p,
 		handle:           &backendsHandle{backends: sets.New[BackendID]()},
@@ -53,7 +54,7 @@ type reconciler struct {
 	handle *backendsHandle
 }
 
-func (r *reconciler) reconcileLoop(ctx context.Context) error {
+func (r *reconciler) reconcileLoop(ctx context.Context, health cell.HealthReporter) error {
 	defer r.Reporter.Stopped("Stopped")
 
 	wtxn := r.DB.WriteTxn(r.Backends)

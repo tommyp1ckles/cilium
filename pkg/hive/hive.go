@@ -20,6 +20,8 @@ import (
 	"go.uber.org/dig"
 
 	"github.com/cilium/cilium/pkg/hive/cell"
+	"github.com/cilium/cilium/pkg/hive/cell/lifecycle"
+	"github.com/cilium/cilium/pkg/hive/metrics"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 )
@@ -87,11 +89,27 @@ func New(cells ...cell.Cell) *Hive {
 		log.WithError(err).Fatal("Failed to provide default objects")
 	}
 
+	if err := metrics.Cell.Apply(h.container); err != nil {
+		log.WithError(err).Fatal("Failed to apply Hive metrics cell")
+	}
+
 	// Use a single health provider for all cells, which is used to create
 	// module scoped health reporters.
-	if err := h.container.Provide(func(lc Lifecycle) cell.Health {
+	if err := h.container.Provide(func(healthMetrics *metrics.HealthMetrics, lc Lifecycle) cell.Health {
 		hp := cell.NewHealthProvider()
+		updateStats := func() {
+			for l, c := range hp.Stats() {
+				healthMetrics.HealthStatusGauge.WithLabelValues(strings.ToLower(string(l))).Set(float64(c))
+			}
+		}
 		lc.Append(Hook{
+			OnStart: func(ctx HookContext) error {
+				updateStats()
+				hp.Subscribe(ctx, func(u cell.Update) {
+					updateStats()
+				}, func(err error) {})
+				return nil
+			},
 			OnStop: func(ctx HookContext) error {
 				return hp.Stop(ctx)
 			},
@@ -148,10 +166,27 @@ type defaults struct {
 
 	Flags             *pflag.FlagSet
 	Lifecycle         Lifecycle
+	LifecycleInternal lifecycle.Lifecycle
 	Logger            logrus.FieldLogger
 	Shutdowner        Shutdowner
 	InvokerList       cell.InvokerList
 	EmptyFullModuleID cell.FullModuleID
+}
+
+type internalLifecycle struct {
+	Lifecycle
+}
+
+func (i *internalLifecycle) Append(hook lifecycle.HookInterface) {
+	h := Hook{
+		OnStart: func(ctx HookContext) error {
+			return hook.Start(ctx)
+		},
+		OnStop: func(ctx HookContext) error {
+			return hook.Stop(ctx)
+		},
+	}
+	i.Lifecycle.Append(h)
 }
 
 func (h *Hive) provideDefaults() error {
@@ -159,6 +194,7 @@ func (h *Hive) provideDefaults() error {
 		return defaults{
 			Flags:             h.flags,
 			Lifecycle:         h.lifecycle,
+			LifecycleInternal: &internalLifecycle{h.lifecycle},
 			Logger:            log,
 			Shutdowner:        h,
 			InvokerList:       h,

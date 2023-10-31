@@ -5,7 +5,6 @@ package cmd
 
 import (
 	"context"
-	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
@@ -17,6 +16,7 @@ import (
 	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/promise"
+	"github.com/cilium/cilium/pkg/time"
 )
 
 const epBPFProgWatchdog = "ep-bpf-prog-watchdog"
@@ -109,6 +109,7 @@ func (d *Daemon) checkEndpointBPFPrograms(ctx context.Context, p epBPFProgWatchd
 		loaded, err = loader.DeviceHasTCProgramLoaded(ep.HostInterface(), ep.RequireEgressProg())
 		if err != nil {
 			log.WithField(logfields.Endpoint, ep.HostInterface()).
+				WithField(logfields.EndpointID, ep.ID).
 				WithError(err).
 				Error("Unable to assert if endpoint BPF programs need to be reloaded")
 			return err

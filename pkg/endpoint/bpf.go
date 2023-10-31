@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
 	"github.com/google/renameio/v2"
 	"github.com/sirupsen/logrus"
@@ -37,6 +36,7 @@ import (
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/revert"
+	"github.com/cilium/cilium/pkg/time"
 	"github.com/cilium/cilium/pkg/version"
 )
 
@@ -1397,9 +1397,9 @@ func (e *Endpoint) startSyncPolicyMapController() {
 	ctrlName := fmt.Sprintf("sync-policymap-%d", e.ID)
 	e.controllers.CreateController(ctrlName,
 		controller.ControllerParams{
-			Group: syncPolicymapControllerGroup,
+			Group:          syncPolicymapControllerGroup,
+			HealthReporter: e.GetReporter("policy map sync"),
 			DoFunc: func(ctx context.Context) error {
-				// Failure to lock is not an error, it means
 				// that the endpoint was disconnected and we
 				// should exit gracefully.
 				if err := e.lockAlive(); err != nil {

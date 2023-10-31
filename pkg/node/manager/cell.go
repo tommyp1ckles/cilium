@@ -4,14 +4,13 @@
 package manager
 
 import (
-	"time"
-
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/hive"
 	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/ipcache"
 	"github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/time"
 )
 
 // Cell provides the NodeManager, which manages information about Cilium nodes
@@ -65,8 +64,8 @@ type NodeManager interface {
 	StartNeighborRefresh(nh datapath.NodeNeighbors)
 }
 
-func newAllNodeManager(lc hive.Lifecycle, ipCache *ipcache.IPCache, nodeMetrics *nodeMetrics, healthReporter cell.HealthReporter) (NodeManager, error) {
-	mngr, err := New(option.Config, ipCache, nodeMetrics, healthReporter)
+func newAllNodeManager(lc hive.Lifecycle, ipCache *ipcache.IPCache, nodeMetrics *nodeMetrics, healthScope cell.Scope) (NodeManager, error) {
+	mngr, err := New(option.Config, ipCache, nodeMetrics, healthScope)
 	if err != nil {
 		return nil, err
 	}
