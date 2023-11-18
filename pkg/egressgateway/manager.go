@@ -15,11 +15,11 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/workqueue"
 
 	"github.com/cilium/cilium/pkg/datapath/linux/config/defines"
 	"github.com/cilium/cilium/pkg/datapath/linux/probes"
+	"github.com/cilium/cilium/pkg/datapath/tunnel"
 	"github.com/cilium/cilium/pkg/hive"
 	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/identity"
@@ -170,6 +170,7 @@ func NewEgressGatewayManager(p Params) (out struct {
 
 	*Manager
 	defines.NodeOut
+	tunnel.EnablerOut
 }, err error) {
 	dcfg := p.DaemonConfig
 
@@ -218,6 +219,8 @@ func NewEgressGatewayManager(p Params) (out struct {
 	out.NodeDefines = map[string]string{
 		"ENABLE_EGRESS_GATEWAY": "1",
 	}
+
+	out.EnablerOut = tunnel.NewEnabler(true)
 
 	return out, nil
 }
@@ -452,6 +455,7 @@ func (manager *Manager) addEndpoint(endpoint *k8sTypes.CiliumEndpoint) error {
 	logger := log.WithFields(logrus.Fields{
 		logfields.K8sEndpointName: endpoint.Name,
 		logfields.K8sNamespace:    endpoint.Namespace,
+		logfields.K8sUID:          endpoint.UID,
 	})
 
 	if identityLabels, err = manager.getIdentityLabels(uint32(endpoint.Identity.ID)); err != nil {
@@ -480,17 +484,18 @@ func (manager *Manager) addEndpoint(endpoint *k8sTypes.CiliumEndpoint) error {
 	return nil
 }
 
-func (manager *Manager) deleteEndpoint(id types.NamespacedName) {
+func (manager *Manager) deleteEndpoint(endpoint *k8sTypes.CiliumEndpoint) {
 	manager.Lock()
 	defer manager.Unlock()
 
 	logger := log.WithFields(logrus.Fields{
-		logfields.K8sEndpointName: id.Name,
-		logfields.K8sNamespace:    id.Namespace,
+		logfields.K8sEndpointName: endpoint.Name,
+		logfields.K8sNamespace:    endpoint.Namespace,
+		logfields.K8sUID:          endpoint.UID,
 	})
 
 	logger.Debug("Deleted CiliumEndpoint")
-	delete(manager.epDataStore, id)
+	delete(manager.epDataStore, endpoint.UID)
 
 	manager.setEventBitmap(eventDeleteEndpoint)
 	manager.reconciliationTrigger.TriggerWithReason("endpoint deleted")
@@ -499,15 +504,10 @@ func (manager *Manager) deleteEndpoint(id types.NamespacedName) {
 func (manager *Manager) handleEndpointEvent(event resource.Event[*k8sTypes.CiliumEndpoint]) {
 	endpoint := event.Object
 
-	id := types.NamespacedName{
-		Name:      endpoint.GetName(),
-		Namespace: endpoint.GetNamespace(),
-	}
-
 	if event.Kind == resource.Upsert {
 		event.Done(manager.addEndpoint(endpoint))
 	} else {
-		manager.deleteEndpoint(id)
+		manager.deleteEndpoint(endpoint)
 		event.Done(nil)
 	}
 }

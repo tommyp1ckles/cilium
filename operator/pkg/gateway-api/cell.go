@@ -8,10 +8,10 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/bombsimon/logrusr/v4"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrlRuntime "sigs.k8s.io/controller-runtime"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -19,10 +19,9 @@ import (
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	operatorOption "github.com/cilium/cilium/operator/option"
-	"github.com/cilium/cilium/pkg/hive"
+	"github.com/cilium/cilium/operator/pkg/secretsync"
 	"github.com/cilium/cilium/pkg/hive/cell"
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
-	"github.com/cilium/cilium/pkg/logging"
 )
 
 // Cell manages the Gateway API related controllers.
@@ -34,7 +33,8 @@ var Cell = cell.Module(
 		EnableGatewayAPISecretsSync: true,
 		GatewayAPISecretsNamespace:  "cilium-secrets",
 	}),
-	cell.Invoke(registerController),
+	cell.Invoke(initGatewayAPIController),
+	cell.Provide(registerSecretSync),
 )
 
 var requiredGVK = []schema.GroupVersionKind{
@@ -56,44 +56,58 @@ func (r gatewayApiConfig) Flags(flags *pflag.FlagSet) {
 	flags.String("gateway-api-secrets-namespace", r.GatewayAPISecretsNamespace, "Namespace having tls secrets used by CEC for Gateway API")
 }
 
-type params struct {
+type gatewayAPIParams struct {
 	cell.In
 
-	Clientset k8sClient.Clientset
-	Logger    logrus.FieldLogger
+	Logger             logrus.FieldLogger
+	K8sClient          k8sClient.Clientset
+	CtrlRuntimeManager ctrlRuntime.Manager
+	Scheme             *runtime.Scheme
+
+	Config gatewayApiConfig
 }
 
-func registerController(lc hive.Lifecycle, p params, config gatewayApiConfig) error {
+func initGatewayAPIController(params gatewayAPIParams) error {
 	if !operatorOption.Config.EnableGatewayAPI {
 		return nil
 	}
 
-	p.Logger.WithField("requiredGVK", requiredGVK).Info("Checking for required GatewayAPI resources")
-	if err := checkRequiredCRDs(context.Background(), p.Clientset); err != nil {
-		p.Logger.WithError(err).Error("Required GatewayAPI resources are not found, please refer to docs for installation instructions")
+	params.Logger.WithField("requiredGVK", requiredGVK).Info("Checking for required GatewayAPI resources")
+	if err := checkRequiredCRDs(context.Background(), params.K8sClient); err != nil {
+		params.Logger.WithError(err).Error("Required GatewayAPI resources are not found, please refer to docs for installation instructions")
 		return nil
 	}
 
-	// Setting global logger for controller-runtime
-	ctrlRuntime.SetLogger(logrusr.New(logging.DefaultLogger, logrusr.WithName("controller-runtime")))
+	if err := registerGatewayAPITypesToScheme(params.Scheme); err != nil {
+		return err
+	}
 
-	gatewayController, err := NewController(
-		config.EnableGatewayAPISecretsSync,
-		config.GatewayAPISecretsNamespace,
+	if err := registerReconcilers(
+		params.CtrlRuntimeManager,
+		params.Config.GatewayAPISecretsNamespace,
 		operatorOption.Config.ProxyIdleTimeoutSeconds,
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("failed to create gateway controller: %w", err)
 	}
 
-	lc.Append(hive.Hook{
-		OnStart: func(_ hive.HookContext) error {
-			go gatewayController.Run()
-			return nil
-		},
-	})
-
 	return nil
+}
+
+// registerSecretSync registers the Gateway API for secret synchronization based on TLS secrets referenced
+// by a Cilium Gateway resource.
+func registerSecretSync(params gatewayAPIParams) secretsync.SecretSyncRegistrationOut {
+	if !operatorOption.Config.EnableGatewayAPI || !params.Config.EnableGatewayAPISecretsSync {
+		return secretsync.SecretSyncRegistrationOut{}
+	}
+
+	return secretsync.SecretSyncRegistrationOut{
+		SecretSyncRegistration: &secretsync.SecretSyncRegistration{
+			RefObject:            &gatewayv1.Gateway{},
+			RefObjectEnqueueFunc: EnqueueTLSSecrets(params.CtrlRuntimeManager.GetClient(), params.Logger),
+			RefObjectCheckFunc:   IsReferencedByCiliumGateway,
+			SecretsNamespace:     params.Config.GatewayAPISecretsNamespace,
+		},
+	}
 }
 
 func checkRequiredCRDs(ctx context.Context, clientset k8sClient.Clientset) error {
@@ -123,4 +137,40 @@ func checkRequiredCRDs(ctx context.Context, clientset k8sClient.Clientset) error
 	}
 
 	return res
+}
+
+// registerReconcilers registers the Gateway API reconcilers to the controller-runtime library manager.
+func registerReconcilers(mgr ctrlRuntime.Manager, secretsNamespace string, idleTimeoutSeconds int) error {
+	reconcilers := []interface {
+		SetupWithManager(mgr ctrlRuntime.Manager) error
+	}{
+		newGatewayClassReconciler(mgr),
+		newGatewayReconciler(mgr, secretsNamespace, idleTimeoutSeconds),
+		newReferenceGrantReconciler(mgr),
+		newHTTPRouteReconciler(mgr),
+		newGRPCRouteReconciler(mgr),
+		newTLSRouteReconciler(mgr),
+	}
+
+	for _, r := range reconcilers {
+		if err := r.SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("failed to setup reconciler: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func registerGatewayAPITypesToScheme(scheme *runtime.Scheme) error {
+	for gv, f := range map[fmt.Stringer]func(s *runtime.Scheme) error{
+		gatewayv1.GroupVersion:       gatewayv1.AddToScheme,
+		gatewayv1beta1.GroupVersion:  gatewayv1beta1.AddToScheme,
+		gatewayv1alpha2.GroupVersion: gatewayv1alpha2.AddToScheme,
+	} {
+		if err := f(scheme); err != nil {
+			return fmt.Errorf("failed to add types from %s to scheme: %w", gv, err)
+		}
+	}
+
+	return nil
 }

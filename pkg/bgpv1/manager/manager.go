@@ -6,7 +6,6 @@ package manager
 import (
 	"context"
 	"fmt"
-	"slices"
 	"sort"
 
 	"github.com/cilium/cilium/api/v1/models"
@@ -85,18 +84,39 @@ type BGPRouterManager struct {
 //
 // See BGPRouterManager for details.
 func NewBGPRouterManager(params bgpRouterManagerParams) agent.BGPRouterManager {
-	for i := len(params.Reconcilers) - 1; i >= 0; i-- {
-		if params.Reconcilers[i] == nil {
-			params.Reconcilers = slices.Delete(params.Reconcilers, i, i+1)
+	reconcilers := make(map[string]ConfigReconciler)
+	for _, r := range params.Reconcilers {
+		if r == nil {
+			continue // reconciler not initialized
 		}
+		if existing, exists := reconcilers[r.Name()]; exists {
+			if existing.Priority() == r.Priority() {
+				log.Warnf("Skipping duplicate reconciler %s with the same priority (%d)", existing.Name(), existing.Priority())
+				continue
+			}
+			if existing.Priority() < r.Priority() {
+				log.Debugf("Skipping reconciler %s (priority %d) as it has lower priority than the existing one (%d)",
+					r.Name(), r.Priority(), existing.Priority())
+				continue
+			}
+			log.Debugf("Overriding existing reconciler %s (priority %d) with higher priority one (%d)",
+				existing.Name(), existing.Priority(), r.Priority())
+		}
+		reconcilers[r.Name()] = r
 	}
-	sort.Slice(params.Reconcilers, func(i, j int) bool {
-		return params.Reconcilers[i].Priority() < params.Reconcilers[j].Priority()
+
+	var activeReconcilers []ConfigReconciler
+	for _, r := range reconcilers {
+		log.Debugf("Adding BGP reconciler: %v (priority %d)", r.Name(), r.Priority())
+		activeReconcilers = append(activeReconcilers, r)
+	}
+	sort.Slice(activeReconcilers, func(i, j int) bool {
+		return activeReconcilers[i].Priority() < activeReconcilers[j].Priority()
 	})
 
 	return &BGPRouterManager{
 		Servers:     make(LocalASNMap),
-		Reconcilers: params.Reconcilers,
+		Reconcilers: activeReconcilers,
 	}
 }
 
@@ -427,6 +447,32 @@ func (m *BGPRouterManager) GetRoutes(ctx context.Context, params restapi.GetBgpR
 		res = append(res, routes...)
 	}
 
+	return res, nil
+}
+
+// GetRoutePolicies fetches BGP routing policies from underlying routing daemon.
+func (m *BGPRouterManager) GetRoutePolicies(ctx context.Context, params restapi.GetBgpRoutePoliciesParams) ([]*models.BgpRoutePolicy, error) {
+	m.RLock()
+	defer m.RUnlock()
+
+	// validate router ASN
+	if params.RouterAsn != nil {
+		if _, found := m.Servers[*params.RouterAsn]; !found {
+			return nil, fmt.Errorf("virtual router with ASN %d does not exist", *params.RouterAsn)
+		}
+	}
+
+	var res []*models.BgpRoutePolicy
+	for _, s := range m.Servers {
+		if params.RouterAsn != nil && *params.RouterAsn != s.Config.LocalASN {
+			continue // return policies matching provided router ASN only
+		}
+		rs, err := s.Server.GetRoutePolicies(ctx)
+		if err != nil {
+			return nil, err
+		}
+		res = append(res, api.ToAPIRoutePolicies(rs.Policies, s.Config.LocalASN)...)
+	}
 	return res, nil
 }
 

@@ -14,7 +14,10 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	controllerruntime "sigs.k8s.io/controller-runtime"
+	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -22,8 +25,21 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 
+	controllerruntime "github.com/cilium/cilium/operator/pkg/controller-runtime"
 	"github.com/cilium/cilium/operator/pkg/model"
+	ciliumv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 )
+
+func testScheme() *runtime.Scheme {
+	scheme := runtime.NewScheme()
+
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(ciliumv2.AddToScheme(scheme))
+
+	registerGatewayAPITypesToScheme(scheme)
+
+	return scheme
+}
 
 var controllerTestFixture = []client.Object{
 	// Cilium Gateway Class
@@ -68,6 +84,26 @@ var controllerTestFixture = []client.Object{
 								Name: "tls-secret",
 							},
 						},
+					},
+				},
+			},
+		},
+	},
+
+	&gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "valid-gateway-2",
+			Namespace: "default",
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: "cilium",
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "https",
+					Hostname: model.AddressOf[gatewayv1.Hostname]("example2.com"),
+					Port:     443,
+					TLS: &gatewayv1.GatewayTLSConfig{
+						CertificateRefs: []gatewayv1.SecretObjectReference{},
 					},
 				},
 			},
@@ -211,7 +247,7 @@ var namespaceFixtures = []client.Object{
 }
 
 func Test_hasMatchingController(t *testing.T) {
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(controllerTestFixture...).Build()
+	c := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(controllerTestFixture...).Build()
 	fn := hasMatchingController(context.Background(), c, "io.cilium/gateway-controller")
 
 	t.Run("invalid object", func(t *testing.T) {
@@ -239,7 +275,7 @@ func Test_hasMatchingController(t *testing.T) {
 }
 
 func Test_getGatewaysForSecret(t *testing.T) {
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(controllerTestFixture...).Build()
+	c := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(controllerTestFixture...).Build()
 
 	t.Run("secret is used in gateway", func(t *testing.T) {
 		gwList := getGatewaysForSecret(context.Background(), c, &corev1.Secret{
@@ -267,7 +303,7 @@ func Test_getGatewaysForSecret(t *testing.T) {
 
 func Test_getGatewaysForNamespace(t *testing.T) {
 	c := fake.NewClientBuilder().
-		WithScheme(scheme).
+		WithScheme(testScheme()).
 		WithObjects(namespaceFixtures...).
 		WithObjects(controllerTestFixture...).
 		Build()
@@ -321,18 +357,18 @@ func Test_getGatewaysForNamespace(t *testing.T) {
 func Test_success(t *testing.T) {
 	tests := []struct {
 		name    string
-		want    controllerruntime.Result
+		want    ctrl.Result
 		wantErr assert.ErrorAssertionFunc
 	}{
 		{
 			name:    "success",
-			want:    controllerruntime.Result{},
+			want:    ctrl.Result{},
 			wantErr: assert.NoError,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := success()
+			got, err := controllerruntime.Success()
 			if !tt.wantErr(t, err, "success()") {
 				return
 			}
@@ -348,7 +384,7 @@ func Test_fail(t *testing.T) {
 	tests := []struct {
 		name    string
 		args    args
-		want    controllerruntime.Result
+		want    ctrl.Result
 		wantErr assert.ErrorAssertionFunc
 	}{
 		{
@@ -356,13 +392,13 @@ func Test_fail(t *testing.T) {
 			args: args{
 				e: errors.New("fail"),
 			},
-			want:    controllerruntime.Result{},
+			want:    ctrl.Result{},
 			wantErr: assert.Error,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := fail(tt.args.e)
+			got, err := controllerruntime.Fail(tt.args.e)
 			if !tt.wantErr(t, err, fmt.Sprintf("fail(%v)", tt.args.e)) {
 				return
 			}

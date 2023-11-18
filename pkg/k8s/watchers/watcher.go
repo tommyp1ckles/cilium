@@ -23,6 +23,7 @@ import (
 	"github.com/cilium/cilium/pkg/cidr"
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	"github.com/cilium/cilium/pkg/controller"
+	"github.com/cilium/cilium/pkg/datapath/linux/bandwidth"
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/endpoint"
 	"github.com/cilium/cilium/pkg/envoy"
@@ -198,7 +199,7 @@ type cgroupManager interface {
 }
 
 type ipcacheManager interface {
-	AllocateCIDRs(prefixes []netip.Prefix, oldNIDs []identity.NumericIdentity, newlyAllocatedIdentities map[netip.Prefix]*identity.Identity) ([]*identity.Identity, error)
+	AllocateCIDRs(prefixes []netip.Prefix, newlyAllocatedIdentities map[netip.Prefix]*identity.Identity) ([]*identity.Identity, error)
 	ReleaseCIDRIdentitiesByCIDR(prefixes []netip.Prefix)
 
 	// GH-21142: Re-evaluate the need for these APIs
@@ -243,6 +244,8 @@ type K8sWatcher struct {
 	ipcache               ipcacheManager
 	envoyConfigManager    envoyConfigManager
 	cgroupManager         cgroupManager
+
+	bandwidthManager bandwidth.Manager
 
 	// controllersStarted is a channel that is closed when all watchers that do not depend on
 	// local node configuration have been started
@@ -300,6 +303,7 @@ func NewK8sWatcher(
 	cgroupManager cgroupManager,
 	resources agentK8s.Resources,
 	serviceCache *k8s.ServiceCache,
+	bandwidthManager bandwidth.Manager,
 ) *K8sWatcher {
 	return &K8sWatcher{
 		clientset:               clientset,
@@ -318,6 +322,7 @@ func NewK8sWatcher(
 		redirectPolicyManager:   redirectPolicyManager,
 		bgpSpeakerManager:       bgpSpeakerManager,
 		cgroupManager:           cgroupManager,
+		bandwidthManager:        bandwidthManager,
 		NodeChain:               subscriber.NewNodeChain(),
 		envoyConfigManager:      envoyConfigManager,
 		cfg:                     cfg,
@@ -673,7 +678,7 @@ func (k *K8sWatcher) k8sServiceHandler() {
 			} else if result.NumToServicesRules > 0 {
 				// Only trigger policy updates if ToServices rules are in effect
 				k.ipcache.ReleaseCIDRIdentitiesByCIDR(result.PrefixesToRelease)
-				_, err := k.ipcache.AllocateCIDRs(result.PrefixesToAdd, nil, nil)
+				_, err := k.ipcache.AllocateCIDRs(result.PrefixesToAdd, nil)
 				if err != nil {
 					scopedLog.WithError(err).
 						Error("Unabled to allocate ipcache CIDR for toService rule")

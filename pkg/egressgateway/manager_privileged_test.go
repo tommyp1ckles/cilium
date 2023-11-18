@@ -12,7 +12,9 @@ import (
 
 	. "github.com/cilium/checkmate"
 	"github.com/cilium/ebpf/rlimit"
+	"github.com/google/uuid"
 	"github.com/vishvananda/netlink"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/hive"
@@ -43,6 +45,7 @@ const (
 
 	ep1IP = "10.0.0.1"
 	ep2IP = "10.0.0.2"
+	ep3IP = "10.0.0.3"
 
 	destCIDR        = "1.1.1.0/24"
 	allZeroDestCIDR = "0.0.0.0/0"
@@ -210,12 +213,13 @@ func (k *EgressGatewayTestSuite) TestEgressGatewayManager(c *C) {
 
 	policyMap := k.manager.policyMap
 	egressGatewayManager := k.manager
+	reconciliationEventsCount := egressGatewayManager.reconciliationEventsCount.Load()
 
 	k.policies.sync(c)
 	k.nodes.sync(c)
 	k.endpoints.sync(c)
 
-	reconciliationEventsCount := egressGatewayManager.reconciliationEventsCount.Load()
+	reconciliationEventsCount = waitForReconciliationRun(c, egressGatewayManager, reconciliationEventsCount)
 
 	node1 := newCiliumNode(node1, node1IP, nodeGroup1Labels)
 	k.nodes.process(c, resource.Event[*cilium_api_v2.CiliumNode]{
@@ -310,7 +314,8 @@ func (k *EgressGatewayTestSuite) TestEgressGatewayManager(c *C) {
 	})
 
 	// Test excluded CIDRs by adding one to policy-1
-	addPolicy(c, k.policies, &policyParams{name: "policy-1",
+	addPolicy(c, k.policies, &policyParams{
+		name:            "policy-1",
 		endpointLabels:  ep1Labels,
 		destinationCIDR: destCIDR,
 		excludedCIDRs:   []string{excludedCIDR1},
@@ -326,7 +331,8 @@ func (k *EgressGatewayTestSuite) TestEgressGatewayManager(c *C) {
 	})
 
 	// Add a second excluded CIDR to policy-1
-	addPolicy(c, k.policies, &policyParams{name: "policy-1",
+	addPolicy(c, k.policies, &policyParams{
+		name:            "policy-1",
 		endpointLabels:  ep1Labels,
 		destinationCIDR: destCIDR,
 		excludedCIDRs:   []string{excludedCIDR1, excludedCIDR2},
@@ -343,7 +349,8 @@ func (k *EgressGatewayTestSuite) TestEgressGatewayManager(c *C) {
 	})
 
 	// Remove the first excluded CIDR from policy-1
-	addPolicy(c, k.policies, &policyParams{name: "policy-1",
+	addPolicy(c, k.policies, &policyParams{
+		name:            "policy-1",
 		endpointLabels:  ep1Labels,
 		destinationCIDR: destCIDR,
 		excludedCIDRs:   []string{excludedCIDR2},
@@ -359,7 +366,8 @@ func (k *EgressGatewayTestSuite) TestEgressGatewayManager(c *C) {
 	})
 
 	// Remove the second excluded CIDR
-	addPolicy(c, k.policies, &policyParams{name: "policy-1",
+	addPolicy(c, k.policies, &policyParams{
+		name:            "policy-1",
 		endpointLabels:  ep1Labels,
 		destinationCIDR: destCIDR,
 		nodeLabels:      nodeGroup1Labels,
@@ -373,7 +381,8 @@ func (k *EgressGatewayTestSuite) TestEgressGatewayManager(c *C) {
 	})
 
 	// Test matching no gateway
-	addPolicy(c, k.policies, &policyParams{name: "policy-1",
+	addPolicy(c, k.policies, &policyParams{
+		name:            "policy-1",
 		endpointLabels:  ep1Labels,
 		destinationCIDR: destCIDR,
 		nodeLabels:      nodeGroupNotFoundLabels,
@@ -393,6 +402,78 @@ func (k *EgressGatewayTestSuite) TestEgressGatewayManager(c *C) {
 
 	assertEgressRules(c, policyMap, []egressRule{
 		{ep2IP, destCIDR, zeroIP4, node2IP},
+	})
+}
+
+func (k *EgressGatewayTestSuite) TestEndpointDataStore(c *C) {
+	createTestInterface(c, testInterface1, egressCIDR1)
+
+	policyMap := k.manager.policyMap
+	egressGatewayManager := k.manager
+
+	k.policies.sync(c)
+	k.nodes.sync(c)
+	k.endpoints.sync(c)
+
+	reconciliationEventsCount := egressGatewayManager.reconciliationEventsCount.Load()
+
+	node1 := newCiliumNode(node1, node1IP, nodeGroup1Labels)
+	k.nodes.process(c, resource.Event[*cilium_api_v2.CiliumNode]{
+		Kind:   resource.Upsert,
+		Object: node1.ToCiliumNode(),
+	})
+	reconciliationEventsCount = waitForReconciliationRun(c, egressGatewayManager, reconciliationEventsCount)
+
+	// Create a new policy
+	policy1 := policyParams{
+		name:            "policy-1",
+		endpointLabels:  ep1Labels,
+		destinationCIDR: destCIDR,
+		nodeLabels:      nodeGroup1Labels,
+		iface:           testInterface1,
+	}
+
+	addPolicy(c, k.policies, &policy1)
+	reconciliationEventsCount = waitForReconciliationRun(c, egressGatewayManager, reconciliationEventsCount)
+
+	assertEgressRules(c, policyMap, []egressRule{})
+
+	// Add a new endpoint & ID which matches policy-1
+	ep1, _ := newEndpointAndIdentity("ep-1", ep1IP, ep1Labels)
+	addEndpoint(c, k.endpoints, &ep1)
+	reconciliationEventsCount = waitForReconciliationRun(c, egressGatewayManager, reconciliationEventsCount)
+
+	assertEgressRules(c, policyMap, []egressRule{
+		{ep1IP, destCIDR, egressIP1, node1IP},
+	})
+
+	// Simulate statefulset pod migrations to a different node.
+
+	// Produce a new endpoint ep2 similar to ep1 - with the same name & labels, but with a different IP address.
+	// The ep1 will be deleted.
+	ep2, _ := newEndpointAndIdentity(ep1.Name, ep2IP, ep1Labels)
+
+	// Test event order: add new -> delete old
+	addEndpoint(c, k.endpoints, &ep2)
+	reconciliationEventsCount = waitForReconciliationRun(c, egressGatewayManager, reconciliationEventsCount)
+	deleteEndpoint(c, k.endpoints, &ep1)
+	reconciliationEventsCount = waitForReconciliationRun(c, egressGatewayManager, reconciliationEventsCount)
+
+	assertEgressRules(c, policyMap, []egressRule{
+		{ep2IP, destCIDR, egressIP1, node1IP},
+	})
+
+	// Produce a new endpoint ep3 similar to ep2 (and ep1) - with the same name & labels, but with a different IP address.
+	ep3, _ := newEndpointAndIdentity(ep1.Name, ep3IP, ep1Labels)
+
+	// Test event order: delete old -> update new
+	deleteEndpoint(c, k.endpoints, &ep2)
+	reconciliationEventsCount = waitForReconciliationRun(c, egressGatewayManager, reconciliationEventsCount)
+	addEndpoint(c, k.endpoints, &ep3)
+	waitForReconciliationRun(c, egressGatewayManager, reconciliationEventsCount)
+
+	assertEgressRules(c, policyMap, []egressRule{
+		{ep3IP, destCIDR, egressIP1, node1IP},
 	})
 }
 
@@ -468,6 +549,7 @@ func newEndpointAndIdentity(name, ip string, epLabels map[string]string) (k8sTyp
 	return k8sTypes.CiliumEndpoint{
 		ObjectMeta: slimv1.ObjectMeta{
 			Name: name,
+			UID:  types.UID(uuid.New().String()),
 		},
 		Identity: &cilium_api_v2.EndpointIdentity{
 			ID: int64(id.ID),

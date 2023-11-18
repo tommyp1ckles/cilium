@@ -372,10 +372,12 @@ Makefile* @cilium/build
 /netlify.toml @cilium/ci-structure
 /operator/ @cilium/operator
 /operator/pkg/ciliumenvoyconfig @cilium/sig-servicemesh
+/operator/pkg/controller-runtime @cilium/sig-servicemesh
 /operator/pkg/gateway-api @cilium/sig-servicemesh
 /operator/pkg/ingress @cilium/sig-servicemesh
 /operator/pkg/lbipam @cilium/sig-lb
 /operator/pkg/model @cilium/sig-servicemesh
+/operator/pkg/secretsync @cilium/sig-servicemesh
 /operator/watchers/bgp.go @cilium/sig-bgp
 /pkg/ @cilium/tophat
 /pkg/annotation @cilium/sig-k8s
@@ -387,7 +389,7 @@ Makefile* @cilium/build
 /pkg/aws/ @cilium/aws
 /pkg/azure/ @cilium/azure
 /pkg/backoff/ @cilium/sig-agent
-/pkg/bandwidth/ @cilium/sig-datapath
+/pkg/datapath/linux/bandwidth/ @cilium/sig-datapath
 /pkg/bgp/ @cilium/sig-bgp
 /pkg/bgpv1/ @cilium/sig-bgp
 /pkg/bpf/ @cilium/loader
@@ -490,6 +492,7 @@ Makefile* @cilium/build
 /pkg/serializer @cilium/sig-agent
 /pkg/service @cilium/sig-lb
 /pkg/slices @cilium/sig-foundations
+/pkg/socketlb @cilium/loader
 /pkg/source @cilium/ipcache
 /pkg/status/ @cilium/sig-agent
 /pkg/statedb @cilium/sig-foundations

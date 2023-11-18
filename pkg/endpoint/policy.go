@@ -18,6 +18,7 @@ import (
 
 	"github.com/cilium/cilium/pkg/completion"
 	"github.com/cilium/cilium/pkg/controller"
+	"github.com/cilium/cilium/pkg/datapath/linux/bandwidth"
 	endpointid "github.com/cilium/cilium/pkg/endpoint/id"
 	"github.com/cilium/cilium/pkg/endpoint/regeneration"
 	"github.com/cilium/cilium/pkg/eventqueue"
@@ -710,7 +711,7 @@ func (e *Endpoint) Regenerate(regenMetadata *regeneration.ExternalRegenerationMe
 				e.getLogger().WithError(regenError).Error("endpoint regeneration failed")
 				hr.Degraded("Endpoint regeneration failed", regenError)
 			}
-			hr.OK(("Endpoint regeneration successful"))
+			hr.OK("Endpoint regeneration successful")
 		} else {
 			// This may be unnecessary(?) since 'closing' of the results
 			// channel means that event has been cancelled?
@@ -958,8 +959,9 @@ func (e *Endpoint) UpdateVisibilityPolicy(annoCB AnnotationsResolverCB) {
 
 // UpdateBandwidthPolicy updates the egress bandwidth of this endpoint to
 // progagate the throttle rate to the BPF data path.
-func (e *Endpoint) UpdateBandwidthPolicy(annoCB AnnotationsResolverCB) {
+func (e *Endpoint) UpdateBandwidthPolicy(bwm bandwidth.Manager, annoCB AnnotationsResolverCB) {
 	ch, err := e.eventQueue.Enqueue(eventqueue.NewEvent(&EndpointPolicyBandwidthEvent{
+		bwm:    bwm,
 		ep:     e,
 		annoCB: annoCB,
 	}))

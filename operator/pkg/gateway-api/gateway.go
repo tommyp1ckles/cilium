@@ -38,15 +38,21 @@ type gatewayReconciler struct {
 	Scheme             *runtime.Scheme
 	SecretsNamespace   string
 	IdleTimeoutSeconds int
+}
 
-	controllerName string
-	Model          *internalModel
+func newGatewayReconciler(mgr ctrl.Manager, secretsNamespace string, idleTimeoutSeconds int) *gatewayReconciler {
+	return &gatewayReconciler{
+		Client:             mgr.GetClient(),
+		Scheme:             mgr.GetScheme(),
+		SecretsNamespace:   secretsNamespace,
+		IdleTimeoutSeconds: idleTimeoutSeconds,
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.
 // The reconciler will be triggered by Gateway, or any cilium-managed GatewayClass events
 func (r *gatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	hasMatchingControllerFn := hasMatchingController(context.Background(), r.Client, r.controllerName)
+	hasMatchingControllerFn := hasMatchingController(context.Background(), r.Client, controllerName)
 	return ctrl.NewControllerManagedBy(mgr).
 		// Watch its own resource
 		For(&gatewayv1.Gateway{},
@@ -236,7 +242,10 @@ func (r *gatewayReconciler) enqueueRequestForTLSSecret() handler.EventHandler {
 		reqs := make([]reconcile.Request, 0, len(gateways))
 		for _, gw := range gateways {
 			reqs = append(reqs, reconcile.Request{
-				NamespacedName: gw,
+				NamespacedName: types.NamespacedName{
+					Namespace: gw.GetNamespace(),
+					Name:      gw.GetName(),
+				},
 			})
 		}
 		return reqs

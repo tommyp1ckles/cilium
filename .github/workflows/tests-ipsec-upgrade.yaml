@@ -52,11 +52,11 @@ concurrency:
 
 env:
   # renovate: datasource=github-releases depName=cilium/cilium-cli
-  cilium_cli_version: v0.15.11
+  cilium_cli_version: v0.15.14
   cilium_cli_ci_version:
   check_url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
   # renovate: datasource=docker depName=quay.io/cilium/kindest-node
-  k8s_version: v1.28.2
+  k8s_version: v1.28.3
 
 jobs:
   commit-status-start:
@@ -131,6 +131,7 @@ jobs:
         id: cilium-stable-config
         uses: ./.github/actions/cilium-config
         with:
+          image-tag: ${{ steps.vars.outputs.downgrade_version }}
           chart-dir: './cilium-${{ steps.vars.outputs.downgrade_version }}/install/kubernetes/cilium/'
           tunnel: ${{ matrix.tunnel }}
           endpoint-routes: ${{ matrix.endpoint-routes }}
@@ -180,7 +181,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Cilium CLI-cli
-        uses: cilium/cilium-cli@951eb9108277f4ffeb86d047bd492b6b96a52542 # v0.15.11
+        uses: cilium/cilium-cli@446392499db483906bcc3ade85f023912a79e5ee # v0.15.14
         with:
           release-version: ${{ env.cilium_cli_version }}
           ci-version: ${{ env.cilium_cli_ci_version }}
@@ -242,19 +243,12 @@ jobs:
             # TODO: After Cilium 1.15 release, update to cilium-dbg
             kubectl -n kube-system exec daemonset/cilium -- cilium status
 
-      - name: Test Cilium ${{ steps.vars.outputs.downgrade_version }} (${{ matrix.name }})
+      - name: Start conn-disrupt-test
         uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
         with:
           provision: 'false'
           cmd: |
             cd /host/
-
-            ./cilium-cli connectivity test --include-unsafe-tests --collect-sysdump-on-failure \
-              --flush-ct \
-              --sysdump-hubble-flows-count=1000000 --sysdump-hubble-flows-timeout=5m \
-              --sysdump-output-filename "cilium-sysdump-${{ matrix.name }}-<ts>" \
-              --junit-file "cilium-junits/${{ env.job_name }} (${{ join(matrix.*, ', ') }}).xml" \
-              --junit-property github_job_step="Run tests upgrade 1 (${{ join(matrix.*, ', ') }})"
 
             # Create pods which establish long lived connections. It will be used by
             # subsequent connectivity tests with --include-conn-disrupt-test to catch any
@@ -262,12 +256,9 @@ jobs:
             ./cilium-cli connectivity test --include-conn-disrupt-test --conn-disrupt-test-setup
 
       - name: Upgrade Cilium & Test (${{ matrix.name }})
-        uses: cilium/cilium/.github/actions/conn-disrupt-test@1633d7b7c36e73e9ea45f010bcfc88fe6bc7ddc9
+        uses: cilium/cilium/.github/actions/conn-disrupt-test@93f26fd0af7f5bd5832e08b10785ec53d4252b1c
         with:
           job-name: ipsec-upgrade-${{ matrix.name }}
-          # Disable no-missed-tail-calls due to https://github.com/cilium/cilium/issues/26739
-          # Disable check-log-errors due to https://github.com/cilium/cilium-cli/issues/1858
-          extra-connectivity-test-flags: --test '!no-missed-tail-calls,!check-log-errors'
           operation-cmd: |
             cd /host/
 
@@ -279,12 +270,11 @@ jobs:
             kubectl -n kube-system exec daemonset/cilium -- cilium-dbg status
 
       - name: Downgrade Cilium to ${{ steps.vars.outputs.downgrade_version }} & Test (${{ matrix.name }})
-        uses: cilium/cilium/.github/actions/conn-disrupt-test@1633d7b7c36e73e9ea45f010bcfc88fe6bc7ddc9
+        uses: cilium/cilium/.github/actions/conn-disrupt-test@93f26fd0af7f5bd5832e08b10785ec53d4252b1c
         with:
           job-name: ipsec-downgrade-${{ matrix.name }}
           # Disable no-missed-tail-calls due to https://github.com/cilium/cilium/issues/26739
-          # Disable check-log-errors due to https://github.com/cilium/cilium-cli/issues/1858
-          extra-connectivity-test-flags: --test '!no-missed-tail-calls,!check-log-errors'
+          extra-connectivity-test-flags: --test '!no-missed-tail-calls'
           operation-cmd: |
             cd /host/
 

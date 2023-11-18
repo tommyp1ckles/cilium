@@ -31,6 +31,7 @@ import (
 	"github.com/cilium/cilium/pkg/maps/lbmap"
 	"github.com/cilium/cilium/pkg/maps/lxcmap"
 	"github.com/cilium/cilium/pkg/maps/metricsmap"
+	"github.com/cilium/cilium/pkg/maps/timestamp"
 	tunnelmap "github.com/cilium/cilium/pkg/maps/tunnel"
 	"github.com/cilium/cilium/pkg/node"
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
@@ -174,15 +175,15 @@ func (d *Daemon) getIPV4BigTCPStatus() *models.IPV4BigTCP {
 
 func (d *Daemon) getBandwidthManagerStatus() *models.BandwidthManager {
 	s := &models.BandwidthManager{
-		Enabled: option.Config.EnableBandwidthManager,
+		Enabled: d.bwManager.Enabled(),
 	}
 
-	if !option.Config.EnableBandwidthManager {
+	if !d.bwManager.Enabled() {
 		return s
 	}
 
 	s.CongestionControl = models.BandwidthManagerCongestionControlCubic
-	if option.Config.EnableBBR {
+	if d.bwManager.BBREnabled() {
 		s.CongestionControl = models.BandwidthManagerCongestionControlBbr
 	}
 
@@ -210,12 +211,7 @@ func (d *Daemon) getHostFirewallStatus() *models.HostFirewall {
 }
 
 func (d *Daemon) getClockSourceStatus() *models.ClockSource {
-	s := &models.ClockSource{Mode: models.ClockSourceModeKtime}
-	if option.Config.ClockSource == option.ClockSourceJiffies {
-		s.Mode = models.ClockSourceModeJiffies
-		s.Hertz = int64(option.Config.KernelHz)
-	}
-	return s
+	return timestamp.GetClockSourceFromOptions()
 }
 
 func (d *Daemon) getCNIChainingStatus() *models.CNIChainingStatus {
@@ -275,6 +271,14 @@ func (d *Daemon) getKubeProxyReplacementStatus() *models.KubeProxyReplacement {
 	if option.Config.EnableNodePort {
 		features.NodePort.Enabled = true
 		features.NodePort.Mode = strings.ToUpper(option.Config.NodePortMode)
+		switch option.Config.LoadBalancerDSRDispatch {
+		case option.DSRDispatchIPIP:
+			features.NodePort.DsrMode = models.KubeProxyReplacementFeaturesNodePortDsrModeIPIP
+		case option.DSRDispatchOption:
+			features.NodePort.DsrMode = models.KubeProxyReplacementFeaturesNodePortDsrModeIPOptionExtension
+		case option.DSRDispatchGeneve:
+			features.NodePort.DsrMode = models.KubeProxyReplacementFeaturesNodePortDsrModeGeneve
+		}
 		if option.Config.NodePortMode == option.NodePortModeHybrid {
 			features.NodePort.Mode = strings.Title(option.Config.NodePortMode)
 		}
@@ -736,8 +740,8 @@ func (d *Daemon) getStatus(brief bool) models.StatusResponse {
 
 func (d *Daemon) getIdentityRange() *models.IdentityRange {
 	s := &models.IdentityRange{
-		MinIdentity: int64(identity.MinimalAllocationIdentity),
-		MaxIdentity: int64(identity.MaximumAllocationIdentity),
+		MinIdentity: int64(identity.GetMinimalAllocationIdentity()),
+		MaxIdentity: int64(identity.GetMaximumAllocationIdentity()),
 	}
 
 	return s

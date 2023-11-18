@@ -290,8 +290,7 @@ struct endpoint_key {
 	};
 	__u8 family;
 	__u8 key;
-	__u8 cluster_id;
-	__u8 pad;
+	__u16 cluster_id;
 } __packed;
 
 struct tunnel_key {
@@ -305,8 +304,8 @@ struct tunnel_key {
 		union v6addr	ip6;
 	};
 	__u8 family;
-	__u8 cluster_id;
-	__u16 pad;
+	__u8 pad;
+	__u16 cluster_id;
 } __packed;
 
 struct tunnel_value {
@@ -721,9 +720,12 @@ enum metric_dir {
  */
 #define MARK_MAGIC_HEALTH		MARK_MAGIC_DECRYPT
 
-/* Shouldn't interfere with MARK_MAGIC_TO_PROXY. Lower 8bits carries cluster_id */
+/* MARK_MAGIC_CLUSTER_ID shouldn't interfere with MARK_MAGIC_TO_PROXY. Lower
+ * 8bits carries cluster_id, and when extended via the 'max-connected-clusters'
+ * option, the upper 16bits may also be used for cluster_id, starting at the
+ * most significant bit.
+ */
 #define MARK_MAGIC_CLUSTER_ID		MARK_MAGIC_TO_PROXY
-#define MARK_MAGIC_CLUSTER_ID_MASK	0x00FF
 
 /* IPv4 option used to carry service addr and port for DSR.
  *
@@ -994,11 +996,11 @@ struct lb6_backend {
 	__be16 port;
 	__u8 proto;
 	__u8 flags;
-	__u8 cluster_id;	/* With this field, we can distinguish two
+	__u16 cluster_id;	/* With this field, we can distinguish two
 				 * backends that have the same IP address,
 				 * but belong to the different cluster.
 				 */
-	__u8 pad[3];
+	__u8 pad[2];
 };
 
 struct lb6_health {
@@ -1053,11 +1055,11 @@ struct lb4_backend {
 	__be16 port;		/* L4 port filter */
 	__u8 proto;		/* L4 protocol, currently not used (set to 0) */
 	__u8 flags;
-	__u8 cluster_id;	/* With this field, we can distinguish two
+	__u16 cluster_id;	/* With this field, we can distinguish two
 				 * backends that have the same IP address,
 				 * but belong to the different cluster.
 				 */
-	__u8 pad[3];
+	__u8 pad[2];
 };
 
 struct lb4_health {
@@ -1172,7 +1174,8 @@ struct lb6_src_range_key {
 
 static __always_inline int redirect_ep(struct __ctx_buff *ctx __maybe_unused,
 				       int ifindex __maybe_unused,
-				       bool needs_backlog __maybe_unused)
+				       bool needs_backlog __maybe_unused,
+				       bool from_tunnel)
 {
 	/* Going via CPU backlog queue (aka needs_backlog) is required
 	 * whenever we cannot do a fast ingress -> ingress switch but
@@ -1181,15 +1184,15 @@ static __always_inline int redirect_ep(struct __ctx_buff *ctx __maybe_unused,
 	 */
 	if (needs_backlog || !is_defined(ENABLE_HOST_ROUTING)) {
 		return ctx_redirect(ctx, ifindex, 0);
-	} else {
-# ifdef HAVE_ENCAP
-		/* When coming from overlay, we need to set packet type
-		 * to HOST as otherwise we might get dropped in IP layer.
-		 */
-		ctx_change_type(ctx, PACKET_HOST);
-# endif /* HAVE_ENCAP */
-		return ctx_redirect_peer(ctx, ifindex, 0);
 	}
+
+	/* When coming from overlay, we need to set packet type
+	 * to HOST as otherwise we might get dropped in IP layer.
+	 */
+	if (from_tunnel)
+		ctx_change_type(ctx, PACKET_HOST);
+
+	return ctx_redirect_peer(ctx, ifindex, 0);
 }
 
 static __always_inline __u64 ctx_adjust_hroom_flags(void)

@@ -82,6 +82,7 @@ type linuxNodeHandler struct {
 	ipsecMetricOnce      sync.Once
 
 	prefixClusterMutatorFn func(node *types.Node) []cmtypes.PrefixClusterOpts
+	enableEncapsulation    func(node *types.Node) bool
 }
 
 var (
@@ -545,8 +546,8 @@ func (n *linuxNodeHandler) NodeUpdate(oldNode, newNode nodeTypes.Node) error {
 
 func getNextHopIP(nodeIP net.IP, link netlink.Link) (nextHopIP net.IP, err error) {
 	// Figure out whether nodeIP is directly reachable (i.e. in the same L2)
-	routes, err := netlink.RouteGetWithOptions(nodeIP, &netlink.RouteGetOptions{Oif: link.Attrs().Name})
-	if err != nil {
+	routes, err := netlink.RouteGetWithOptions(nodeIP, &netlink.RouteGetOptions{Oif: link.Attrs().Name, FIBMatch: true})
+	if err != nil && !errors.Is(err, unix.EHOSTUNREACH) && !errors.Is(err, unix.ENETUNREACH) {
 		return nil, fmt.Errorf("failed to retrieve route for remote node IP: %w", err)
 	}
 	if len(routes) == 0 {
@@ -562,6 +563,25 @@ func getNextHopIP(nodeIP net.IP, link netlink.Link) (nextHopIP net.IP, err error
 			// can be used.
 			copy(nextHopIP, route.Gw.To16())
 			break
+		}
+
+		// Select a gw for the specified link if there are multi paths to the nodeIP
+		// For example, the nextHop to the nodeIP 9.9.9.9 from eth0 is 10.0.1.2,
+		// from eth1 is 10.0.2.2 as shown bellow.
+		//
+		// 9.9.9.9 proto bird metric 32
+		//        nexthop via 10.0.1.2 dev eth0 weight 1
+		//        nexthop via 10.0.2.2 dev eth1 weight 1
+		//
+		// NOTE: We currently don't handle multiple next hops, so only one next hop
+		// per device can be used.
+		if route.MultiPath != nil {
+			for _, mp := range route.MultiPath {
+				if mp.LinkIndex == link.Attrs().Index {
+					copy(nextHopIP, mp.Gw.To16())
+					break
+				}
+			}
 		}
 	}
 	return nextHopIP, nil
@@ -991,7 +1011,7 @@ func (n *linuxNodeHandler) nodeUpdate(oldNode, newNode *nodeTypes.Node, firstAdd
 		return errs
 	}
 
-	if n.nodeConfig.EnableAutoDirectRouting {
+	if n.nodeConfig.EnableAutoDirectRouting && !n.enableEncapsulation(newNode) {
 		if err := n.updateDirectRoutes(oldAllIP4AllocCidrs, newAllIP4AllocCidrs, oldIP4, newIP4, firstAddition, n.nodeConfig.EnableIPv4); err != nil {
 			errs = errors.Join(errs, fmt.Errorf("failed to enable direct routes for ipv4: %w", err))
 		}
@@ -1001,7 +1021,7 @@ func (n *linuxNodeHandler) nodeUpdate(oldNode, newNode *nodeTypes.Node, firstAdd
 		return errs
 	}
 
-	if n.nodeConfig.EnableEncapsulation {
+	if n.enableEncapsulation(newNode) {
 		// An uninitialized PrefixCluster has empty netip.Prefix and 0 ClusterID.
 		// We use this empty PrefixCluster instead of nil here.
 		var (
@@ -1084,7 +1104,7 @@ func (n *linuxNodeHandler) nodeDelete(oldNode *nodeTypes.Node) error {
 	oldIP6 := oldNode.GetNodeIP(true)
 
 	var errs error
-	if n.nodeConfig.EnableAutoDirectRouting {
+	if n.nodeConfig.EnableAutoDirectRouting && !n.enableEncapsulation(oldNode) {
 		if err := n.deleteDirectRoute(oldNode.IPv4AllocCIDR, oldIP4); err != nil {
 			errs = errors.Join(errs, fmt.Errorf("failed to remove old direct routing: deleting old routes %w", err))
 		}
@@ -1093,7 +1113,7 @@ func (n *linuxNodeHandler) nodeDelete(oldNode *nodeTypes.Node) error {
 		}
 	}
 
-	if n.nodeConfig.EnableEncapsulation {
+	if n.enableEncapsulation(oldNode) {
 		oldPrefix4 := cmtypes.PrefixClusterFromCIDR(oldNode.IPv4AllocCIDR, n.prefixClusterMutatorFn(oldNode)...)
 		oldPrefix6 := cmtypes.PrefixClusterFromCIDR(oldNode.IPv6AllocCIDR, n.prefixClusterMutatorFn(oldNode)...)
 		if err := deleteTunnelMapping(oldPrefix4, false); err != nil {
@@ -1188,6 +1208,10 @@ func (n *linuxNodeHandler) NodeConfigurationChanged(newConfig datapath.LocalNode
 
 	prevConfig := n.nodeConfig
 	n.nodeConfig = newConfig
+
+	if n.enableEncapsulation == nil {
+		n.enableEncapsulation = func(*nodeTypes.Node) bool { return n.nodeConfig.EnableEncapsulation }
+	}
 
 	if n.nodeConfig.EnableIPv4 || n.nodeConfig.EnableIPv6 {
 		var ifaceNames []string
@@ -1518,7 +1542,7 @@ func (n *linuxNodeHandler) NodeCleanNeighbors(migrateOnly bool) {
 	// up all neighbors.
 	successClean := true
 	defer func() {
-		if successClean {
+		if successClean && !migrateOnly {
 			os.Remove(filepath.Join(option.Config.StateDir, neighFileName))
 		}
 	}()
@@ -1663,4 +1687,8 @@ func deleteDefaultLocalRule(family int) error {
 
 func (n *linuxNodeHandler) SetPrefixClusterMutatorFn(mutator func(*nodeTypes.Node) []cmtypes.PrefixClusterOpts) {
 	n.prefixClusterMutatorFn = mutator
+}
+
+func (n *linuxNodeHandler) OverrideEnableEncapsulation(fn func(*nodeTypes.Node) bool) {
+	n.enableEncapsulation = fn
 }

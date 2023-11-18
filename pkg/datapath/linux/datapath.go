@@ -4,6 +4,7 @@
 package linux
 
 import (
+	"github.com/cilium/cilium/pkg/datapath/linux/bandwidth"
 	"github.com/cilium/cilium/pkg/datapath/loader"
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/maps/lbmap"
@@ -15,6 +16,9 @@ import (
 type DatapathConfiguration struct {
 	// HostDevice is the name of the device to be used to access the host.
 	HostDevice string
+
+	// TunnelDevice is the name of the tunnel device (if any).
+	TunnelDevice string
 
 	ProcFs string
 }
@@ -28,22 +32,31 @@ type linuxDatapath struct {
 	loader         *loader.Loader
 	wgAgent        datapath.WireguardAgent
 	lbmap          datapath.LBMap
+	bwmgr          bandwidth.Manager
+}
+
+type DatapathParams struct {
+	ConfigWriter datapath.ConfigWriter
+	RuleManager  datapath.IptablesManager
+	WGAgent      datapath.WireguardAgent
+	NodeMap      nodemap.Map
+	BWManager    bandwidth.Manager
 }
 
 // NewDatapath creates a new Linux datapath
-func NewDatapath(cfg DatapathConfiguration, ruleManager datapath.IptablesManager, wgAgent datapath.WireguardAgent,
-	nodeMap nodemap.Map, writer datapath.ConfigWriter) datapath.Datapath {
+func NewDatapath(p DatapathParams, cfg DatapathConfiguration) datapath.Datapath {
 	dp := &linuxDatapath{
-		ConfigWriter:    writer,
-		IptablesManager: ruleManager,
+		ConfigWriter:    p.ConfigWriter,
+		IptablesManager: p.RuleManager,
 		nodeAddressing:  NewNodeAddressing(),
 		config:          cfg,
 		loader:          loader.NewLoader(),
-		wgAgent:         wgAgent,
+		wgAgent:         p.WGAgent,
 		lbmap:           lbmap.New(),
+		bwmgr:           p.BWManager,
 	}
 
-	dp.node = NewNodeHandler(cfg, dp.nodeAddressing, nodeMap)
+	dp.node = NewNodeHandler(cfg, dp.nodeAddressing, p.NodeMap)
 	return dp
 }
 
@@ -84,4 +97,12 @@ func (l *linuxDatapath) Procfs() string {
 
 func (l *linuxDatapath) LBMap() datapath.LBMap {
 	return l.lbmap
+}
+
+func (l *linuxDatapath) BandwidthManager() bandwidth.Manager {
+	return l.bwmgr
+}
+
+func (l *linuxDatapath) DeleteEndpointBandwidthLimit(epID uint16) error {
+	return l.bwmgr.DeleteEndpointBandwidthLimit(epID)
 }

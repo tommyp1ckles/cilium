@@ -29,7 +29,6 @@ import (
 	"github.com/cilium/cilium/pkg/loadinfo"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
-	"github.com/cilium/cilium/pkg/maps/bwmap"
 	"github.com/cilium/cilium/pkg/maps/ctmap"
 	"github.com/cilium/cilium/pkg/maps/lxcmap"
 	"github.com/cilium/cilium/pkg/maps/policymap"
@@ -975,8 +974,8 @@ func (e *Endpoint) deleteMaps() []error {
 	}
 
 	// Remove rate-limit from bandwidth manager map.
-	if e.bps != 0 && option.Config.EnableBandwidthManager {
-		if err := bwmap.Delete(e.ID); err != nil {
+	if e.bps != 0 {
+		if err := e.owner.Datapath().BandwidthManager().DeleteEndpointBandwidthLimit(e.ID); err != nil {
 			errors = append(errors, fmt.Errorf("unable to remote endpoint from bandwidth manager map: %s", err))
 		}
 	}
@@ -1405,8 +1404,9 @@ func (e *Endpoint) startSyncPolicyMapController() {
 	e.controllers.CreateController(ctrlName,
 		controller.ControllerParams{
 			Group:          syncPolicymapControllerGroup,
-			HealthReporter: e.GetReporter("policy map sync"),
+			HealthReporter: e.GetReporter("policymap-sync"),
 			DoFunc: func(ctx context.Context) error {
+				// Failure to lock is not an error, it means
 				// that the endpoint was disconnected and we
 				// should exit gracefully.
 				if err := e.lockAlive(); err != nil {

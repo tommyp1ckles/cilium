@@ -57,7 +57,13 @@ static __always_inline int handle_ipv6(struct __ctx_buff *ctx,
 #ifdef ENABLE_NODEPORT
 	if (!ctx_skip_nodeport(ctx)) {
 		ret = nodeport_lb6(ctx, ip6, *identity, ext_err);
-		if (ret < 0)
+		/* nodeport_lb6() returns with TC_ACT_REDIRECT for
+		 * traffic to L7 LB. Policy enforcement needs to take
+		 * place after L7 LB has processed the packet, so we
+		 * return to stack immediately here with
+		 * TC_ACT_REDIRECT.
+		 */
+		if (ret < 0 || ret == TC_ACT_REDIRECT)
 			return ret;
 	}
 #endif
@@ -121,7 +127,7 @@ not_esp:
 	ep = lookup_ip6_endpoint(ip6);
 	if (ep && !(ep->flags & ENDPOINT_F_HOST))
 		return ipv6_local_delivery(ctx, l3_off, *identity, ep,
-					   METRIC_INGRESS, false);
+					   METRIC_INGRESS, false, true);
 
 	/* A packet entering the node from the tunnel and not going to a local
 	 * endpoint has to be going to the local host.
@@ -282,8 +288,13 @@ static __always_inline int handle_ipv4(struct __ctx_buff *ctx,
 #ifdef ENABLE_NODEPORT
 	if (!ctx_skip_nodeport(ctx)) {
 		int ret = nodeport_lb4(ctx, ip4, ETH_HLEN, *identity, ext_err);
-
-		if (ret < 0)
+		/* nodeport_lb4() returns with TC_ACT_REDIRECT for
+		 * traffic to L7 LB. Policy enforcement needs to take
+		 * place after L7 LB has processed the packet, so we
+		 * return to stack immediately here with
+		 * TC_ACT_REDIRECT.
+		 */
+		if (ret < 0 || ret == TC_ACT_REDIRECT)
 			return ret;
 	}
 #endif
@@ -671,17 +682,6 @@ int cil_to_overlay(struct __ctx_buff *ctx)
 	int ret = TC_ACT_OK;
 	__u32 cluster_id __maybe_unused = 0;
 	__s8 ext_err = 0;
-
-	/* When WireGuard strict mode is enabled, we have additional information
-	 * regarding to which CIDRs packets must encrypted. We have to check the
-	 * packets against the CIDRs before encapsulation. If the packet is not
-	 * encrypted, we drop it.
-	 */
-	#if defined(TUNNEL_MODE) && defined(ENCRYPTION_STRICT_MODE)
-	if (!strict_allow(ctx))
-		return send_drop_notify_error(ctx, 0, DROP_UNENCRYPTED_TRAFFIC,
-					      CTX_ACT_DROP, METRIC_EGRESS);
-	#endif
 
 #ifdef ENABLE_BANDWIDTH_MANAGER
 	/* In tunneling mode, we should do this as close as possible to the
