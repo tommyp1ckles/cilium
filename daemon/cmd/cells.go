@@ -19,10 +19,10 @@ import (
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/crypto/certificatemanager"
 	"github.com/cilium/cilium/pkg/datapath"
-	dptypes "github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/egressgateway"
 	"github.com/cilium/cilium/pkg/endpoint"
+	"github.com/cilium/cilium/pkg/endpointcleanup"
 	"github.com/cilium/cilium/pkg/endpointmanager"
 	"github.com/cilium/cilium/pkg/envoy"
 	"github.com/cilium/cilium/pkg/gops"
@@ -122,9 +122,11 @@ var (
 		// observing changes to it.
 		node.LocalNodeStoreCell,
 
-		// Provide a LocalNodeInitializer that is invoked when LocalNodeStore is started.
+		// Provide a newLocalNodeSynchronizer that is invoked when LocalNodeStore is started.
 		// This fills in the initial state before it is accessed by other sub-systems.
-		cell.Provide(newLocalNodeInitializer),
+		// Then, it takes care of keeping selected fields (e.g., labels, annotations)
+		// synchronized with the corresponding kubernetes object.
+		cell.Provide(newLocalNodeSynchronizer),
 
 		// Controller provides flags and configuration related
 		// to Controller management, concurrent control loops
@@ -137,6 +139,10 @@ var (
 
 		// EndpointManager maintains a collection of the locally running endpoints.
 		endpointmanager.Cell,
+
+		// Register the startup procedure to remove stale CiliumEndpoints referencing pods no longer
+		// managed by Cilium.
+		endpointcleanup.Cell,
 
 		// NodeManager maintains a collection of other nodes in the cluster.
 		nodeManager.Cell,
@@ -188,7 +194,7 @@ var (
 		egressgateway.Cell,
 
 		// ServiceCache holds the list of known services correlated with the matching endpoints.
-		cell.Provide(func(dp dptypes.Datapath) *k8s.ServiceCache { return k8s.NewServiceCache(dp.LocalNodeAddressing()) }),
+		k8s.ServiceCacheCell,
 
 		// ClusterMesh is the Cilium's multicluster implementation.
 		cell.Config(cmtypes.DefaultClusterInfo),
@@ -200,6 +206,9 @@ var (
 
 		// RegeneratorCell provides extra options and utilities for endpoints regeneration.
 		endpoint.RegeneratorCell,
+
+		// The device reloader reloads the datapath when the devices change at runtime.
+		cell.Invoke(registerDeviceReloader),
 	)
 )
 

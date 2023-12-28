@@ -4,16 +4,18 @@
 package ingress
 
 import (
-	"context"
 	"fmt"
 
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
+	networkingv1 "k8s.io/api/networking/v1"
+	ctrlRuntime "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	operatorK8s "github.com/cilium/cilium/operator/k8s"
 	operatorOption "github.com/cilium/cilium/operator/option"
-	"github.com/cilium/cilium/pkg/hive"
+	"github.com/cilium/cilium/operator/pkg/secretsync"
 	"github.com/cilium/cilium/pkg/hive/cell"
-	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
 )
 
 // Cell manages the Kubernetes Ingress related controllers.
@@ -31,7 +33,8 @@ var Cell = cell.Module(
 		IngressSharedLBServiceName:  "cilium-ingress",
 		IngressDefaultLBMode:        "dedicated",
 	}),
-	cell.Invoke(registerController),
+	cell.Invoke(registerReconciler),
+	cell.Provide(registerSecretSync),
 )
 
 type ingressConfig struct {
@@ -60,42 +63,75 @@ func (r ingressConfig) Flags(flags *pflag.FlagSet) {
 	flags.String("ingress-default-secret-name", r.IngressDefaultSecretName, "Default secret name for Ingress.")
 }
 
-func registerController(lc hive.Lifecycle, clientset k8sClient.Clientset, resources operatorK8s.Resources, config ingressConfig) error {
-	if !config.EnableIngressController {
+type ingressParams struct {
+	cell.In
+
+	Logger             logrus.FieldLogger
+	CtrlRuntimeManager ctrlRuntime.Manager
+	Config             ingressConfig
+}
+
+func registerReconciler(params ingressParams) error {
+	if !params.Config.EnableIngressController {
 		return nil
 	}
 
-	ingressController, err := NewController(
-		clientset,
-		resources.IngressClasses,
-		WithCiliumNamespace(operatorOption.Config.CiliumK8sNamespace),
-		WithHTTPSEnforced(config.EnforceIngressHTTPS),
-		WithProxyProtocol(config.EnableIngressProxyProtocol),
-		WithSecretsSyncEnabled(config.EnableIngressSecretsSync),
-		WithSecretsNamespace(config.IngressSecretsNamespace),
-		WithLBAnnotationPrefixes(config.IngressLBAnnotationPrefixes),
-		WithSharedLBServiceName(config.IngressSharedLBServiceName),
-		WithDefaultLoadbalancerMode(config.IngressDefaultLBMode),
-		WithDefaultSecretNamespace(config.IngressDefaultSecretNamespace),
-		WithDefaultSecretName(config.IngressDefaultSecretName),
-		WithIdleTimeoutSeconds(operatorOption.Config.ProxyIdleTimeoutSeconds),
+	reconciler := newIngressReconciler(
+		params.Logger,
+		params.CtrlRuntimeManager.GetClient(),
+		operatorOption.Config.CiliumK8sNamespace,
+		params.Config.EnforceIngressHTTPS,
+		params.Config.EnableIngressProxyProtocol,
+		params.Config.IngressSecretsNamespace,
+		params.Config.IngressLBAnnotationPrefixes,
+		params.Config.IngressSharedLBServiceName,
+		params.Config.IngressDefaultLBMode,
+		params.Config.IngressDefaultSecretNamespace,
+		params.Config.IngressDefaultSecretName,
+		operatorOption.Config.ProxyIdleTimeoutSeconds,
 	)
-	if err != nil {
-		return fmt.Errorf("failed to create ingress controller: %w", err)
+
+	if err := reconciler.SetupWithManager(params.CtrlRuntimeManager); err != nil {
+		return fmt.Errorf("failed to setup ingress reconciler: %w", err)
 	}
 
-	ctx, cancelCtx := context.WithCancel(context.Background())
-
-	lc.Append(hive.Hook{
-		OnStart: func(_ hive.HookContext) error {
-			go ingressController.Run(ctx)
-			return nil
-		},
-		OnStop: func(hive.HookContext) error {
-			cancelCtx()
-			return nil
-		},
-	})
-
 	return nil
+}
+
+// registerSecretSync registers the Ingress Controller for secret synchronization based on TLS secrets referenced
+// by a Cilium Ingress resource.
+func registerSecretSync(params ingressParams) secretsync.SecretSyncRegistrationOut {
+	if !params.Config.EnableIngressController || !params.Config.EnableIngressSecretsSync {
+		return secretsync.SecretSyncRegistrationOut{}
+	}
+
+	registration := secretsync.SecretSyncRegistrationOut{
+		SecretSyncRegistration: &secretsync.SecretSyncRegistration{
+			RefObject:            &networkingv1.Ingress{},
+			RefObjectEnqueueFunc: EnqueueReferencedTLSSecrets(params.CtrlRuntimeManager.GetClient(), params.Logger),
+			RefObjectCheckFunc:   IsReferencedByCiliumIngress,
+			SecretsNamespace:     params.Config.IngressSecretsNamespace,
+			// In addition to changed Ingresses an additional watch on IngressClass gets added.
+			// Its purpose is to detect any changes regarding the default IngressClass
+			// (that is marked via annotation).
+			AdditionalWatches: []secretsync.AdditionalWatch{
+				{
+					RefObject:            &networkingv1.IngressClass{},
+					RefObjectEnqueueFunc: enqueueAllSecrets(params.CtrlRuntimeManager.GetClient()),
+					RefObjectWatchOptions: []builder.WatchesOption{
+						builder.WithPredicates(predicate.AnnotationChangedPredicate{}),
+					},
+				},
+			},
+		},
+	}
+
+	if params.Config.IngressDefaultSecretName != "" && params.Config.IngressDefaultSecretNamespace != "" {
+		registration.SecretSyncRegistration.DefaultSecret = &secretsync.DefaultSecret{
+			Namespace: params.Config.IngressDefaultSecretNamespace,
+			Name:      params.Config.IngressDefaultSecretName,
+		}
+	}
+
+	return registration
 }

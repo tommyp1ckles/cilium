@@ -52,15 +52,13 @@ concurrency:
 
 env:
   clusterName: ${{ github.repository_owner }}-${{ github.event.repository.name }}-${{ github.run_id }}-${{ github.run_attempt }}
-  # renovate: datasource=github-releases depName=cilium/cilium-cli
-  cilium_cli_version: v0.15.14
   cilium_cli_ci_version:
   CILIUM_CLI_MODE: helm
   check_url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
   # renovate: datasource=github-releases depName=eksctl-io/eksctl
-  eksctl_version: v0.164.0
+  eksctl_version: v0.166.0
   # renovate: datasource=github-releases depName=kubernetes/kubernetes
-  kubectl_version: v1.28.3
+  kubectl_version: v1.29.0-rc.1
 
 jobs:
   commit-status-start:
@@ -97,7 +95,10 @@ jobs:
         run: |
           cd /tmp/generated/aws
 
-          if [ "${{ github.event_name }}" == "schedule" ];then
+          # Use complete matrix in case of scheduled run
+          # main -> event_name = schedule
+          # other stable branches -> PR-number starting with v (e.g. v1.14)
+          if [[ "${{ github.event_name }}" == "schedule" || "${{ inputs.PR-number }}" == v* ]];then
             cp aws.json /tmp/matrix.json
           else
             jq '{ "include": [ .include[] | select(.default) ] }' aws.json > /tmp/matrix.json
@@ -167,9 +168,10 @@ jobs:
           echo owner=${OWNER} >> $GITHUB_OUTPUT
 
       - name: Install Cilium CLI
-        uses: cilium/cilium-cli@446392499db483906bcc3ade85f023912a79e5ee # v0.15.14
+        uses: cilium/cilium-cli@32109b32259a487c803648a3c9463cdcafa4c0c3 # v0.15.19
         with:
-          release-version: ${{ env.cilium_cli_version }}
+          repository: ${{ env.CILIUM_CLI_RELEASE_REPO }}
+          release-version: ${{ env.CILIUM_CLI_VERSION }}
           ci-version: ${{ env.cilium_cli_ci_version }}
 
       - name: Install kubectl
@@ -200,6 +202,7 @@ jobs:
           region: ${{ matrix.region }}
           owner: "${{ steps.vars.outputs.owner }}"
           version: ${{ matrix.version }}
+          spot: ${{ github.event_name != 'schedule' }}
 
       - name: Wait for images to be available
         timeout-minutes: 30
@@ -224,8 +227,18 @@ jobs:
 
       - name: Wait for Cilium to be ready
         run: |
-          cilium status --wait
+          cilium status --wait --wait-duration=10m
           kubectl get pods -n kube-system
+
+      - name: Check that AWS iptables chains have not been removed
+        run: |
+          for pod in $(kubectl get po -n kube-system -l app.kubernetes.io/name=cilium-agent -o name); do
+            echo "Checking ${pod}"
+            if ! kubectl exec -n kube-system  ${pod} -c cilium-agent -- iptables-save | grep --silent ':AWS'; then
+              echo "Expected AWS iptables chains are not present"
+              exit 1
+            fi
+          done
 
       - name: Port forward Relay
         run: |
@@ -251,11 +264,6 @@ jobs:
           cilium status
           cilium sysdump --output-filename cilium-sysdump-final-${{ join(matrix.*, '-') }}
         shell: bash {0} # Disable default fail-fast behaviour so that all commands run independently
-
-      - name: Clean up EKS
-        if: ${{ always() }}
-        run: |
-          eksctl delete cluster --name ${{ env.clusterName }} --region ${{ matrix.region }}
 
       - name: Upload artifacts
         if: ${{ !success() }}
@@ -290,3 +298,32 @@ jobs:
         with:
           sha: ${{ inputs.SHA || github.sha }}
           status: ${{ needs.installation-and-connectivity.result }}
+
+  cleanup:
+    name: Cleanup EKS Clusters
+    if: ${{ always() }}
+    continue-on-error: true
+    needs: [generate-matrix, installation-and-connectivity]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix: ${{fromJson(needs.generate-matrix.outputs.matrix)}}
+
+    steps:
+      - name: Install eksctl CLI
+        run: |
+          curl -LO "https://github.com/eksctl-io/eksctl/releases/download/${{ env.eksctl_version }}/eksctl_$(uname -s)_amd64.tar.gz"
+          sudo tar xzvfC eksctl_$(uname -s)_amd64.tar.gz /usr/bin
+          rm eksctl_$(uname -s)_amd64.tar.gz
+
+      - name: Set up AWS CLI credentials
+        uses: aws-actions/configure-aws-credentials@010d0da01d0b5a38af31e9c3470dbfdabdecca3a # v4.0.1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_PR_SA_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_PR_SA_KEY }}
+          aws-region: ${{ matrix.region }}
+
+      - name: Clean up EKS
+        run: |
+          eksctl delete cluster --name ${{ env.clusterName }} --region ${{ matrix.region }}

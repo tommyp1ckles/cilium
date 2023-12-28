@@ -1465,7 +1465,7 @@ func (ds *PolicyTestSuite) TestL3RuleLabels(c *C) {
 					for sel := range filter.PerSelectorPolicies {
 						cidrLabels := labels.ParseLabelArray("cidr:" + cidr)
 						c.Logf("Testing %+v", cidrLabels)
-						if matches = sel.(*labelIdentitySelector).xxxMatches(cidrLabels); matches {
+						if matches = sel.(*identitySelector).source.(*labelIdentitySelector).xxxMatches(cidrLabels); matches {
 							break
 						}
 					}
@@ -1961,7 +1961,7 @@ func (ds *PolicyTestSuite) TestEgressL4AllowWorld(c *C) {
 	c.Assert(filter.Port, Equals, 80)
 	c.Assert(filter.Ingress, Equals, false)
 
-	c.Assert(len(filter.PerSelectorPolicies), Equals, 1)
+	c.Assert(len(filter.PerSelectorPolicies), Equals, 3)
 	l4EgressPolicy.Detach(repo.GetSelectorCache())
 }
 

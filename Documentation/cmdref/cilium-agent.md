@@ -67,6 +67,7 @@ cilium-agent [flags]
       --cni-chaining-mode string                                  Enable CNI chaining with the specified plugin (default "none")
       --cni-chaining-target string                                CNI network name into which to insert the Cilium chained configuration. Use '*' to select any network.
       --cni-exclusive                                             Whether to remove other CNI configurations
+      --cni-external-routing                                      Whether the chained CNI plugin handles routing on the node
       --cni-log-file string                                       Path where the CNI plugin should write logs (default "/var/run/cilium/cilium-cni.log")
       --config string                                             Configuration file (default "$HOME/ciliumd.yaml")
       --config-dir string                                         Configuration directory that contains a file for each option
@@ -130,7 +131,6 @@ cilium-agent [flags]
       --enable-k8s                                                Enable the k8s clientset (default true)
       --enable-k8s-api-discovery                                  Enable discovery of Kubernetes API groups and resources with the discovery API
       --enable-k8s-endpoint-slice                                 Enables k8s EndpointSlice feature in Cilium if the k8s cluster supports it (default true)
-      --enable-k8s-event-handover                                 Enable k8s event handover to kvstore for improved scalability
       --enable-k8s-terminating-endpoint                           Enable auto-detect of terminating endpoint condition (default true)
       --enable-l2-announcements                                   Enable L2 announcements
       --enable-l2-neigh-discovery                                 Enables L2 neighbor discovery used by kube-proxy-replacement and IPsec (default true)
@@ -188,6 +188,7 @@ cilium-agent [flags]
       --hubble-export-file-max-backups int                        Number of rotated Hubble export files to keep. (default 5)
       --hubble-export-file-max-size-mb int                        Size in MB at which to rotate Hubble export file. (default 10)
       --hubble-export-file-path string                            Filepath to write Hubble events to.
+      --hubble-flowlogs-config-path string                        Filepath with configuration of hubble flowlogs
       --hubble-listen-address string                              An additional address for Hubble server to listen to, e.g. ":4244"
       --hubble-metrics strings                                    List of Hubble metrics to enable.
       --hubble-metrics-server string                              Address to serve Hubble metrics on.
@@ -303,8 +304,8 @@ cilium-agent [flags]
       --restore                                                   Restores state, if possible, from previous daemon (default true)
       --route-metric int                                          Overwrite the metric used by cilium when adding routes to its 'cilium_host' device
       --routing-mode string                                       Routing mode ("native" or "tunnel") (default "tunnel")
+      --service-no-backend-response string                        Response to traffic for a service without backends (default "reject")
       --sidecar-istio-proxy-image string                          Regular expression matching compatible Istio sidecar istio-proxy container image names (default "cilium/istio_proxy")
-      --single-cluster-route                                      Use a single cluster route instead of per node routes
       --socket-path string                                        Sets daemon's socket path to listen for connections (default "/var/run/cilium/cilium.sock")
       --state-dir string                                          Directory path to store runtime state (default "/var/run/cilium")
       --tofqdns-dns-reject-response-code string                   DNS response code for rejecting DNS requests, available options are '[nameError refused]' (default "refused")

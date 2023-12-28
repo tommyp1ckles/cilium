@@ -107,14 +107,42 @@ func NewDefaultClientWithTimeout(timeout time.Duration) (*Client, error) {
 // If host is nil then use SockPath provided by CILIUM_SOCK
 // or the cilium default SockPath
 func NewClient(host string) (*Client, error) {
-	clientTrans, err := NewRuntime(host)
+	clientTrans, err := NewRuntime(WithHost(host))
 	return &Client{*clientapi.New(clientTrans, strfmt.Default)}, err
 }
 
-func NewRuntime(host string) (*runtime_client.Runtime, error) {
+type runtimeOptions struct {
+	host     string
+	basePath string
+}
+
+func WithHost(host string) func(options *runtimeOptions) {
+	return func(options *runtimeOptions) {
+		options.host = host
+	}
+}
+
+func WithBasePath(basePath string) func(options *runtimeOptions) {
+	return func(options *runtimeOptions) {
+		options.basePath = basePath
+	}
+}
+
+func NewRuntime(opts ...func(options *runtimeOptions)) (*runtime_client.Runtime, error) {
+	r := runtimeOptions{}
+	for _, opt := range opts {
+		opt(&r)
+	}
+
+	host := r.host
 	if host == "" {
 		host = DefaultSockPath()
 	}
+	basePath := r.basePath
+	if basePath == "" {
+		basePath = clientapi.DefaultBasePath
+	}
+
 	tmp := strings.SplitN(host, "://", 2)
 	if len(tmp) != 2 {
 		return nil, fmt.Errorf("invalid host format '%s'", host)
@@ -138,7 +166,7 @@ func NewRuntime(host string) (*runtime_client.Runtime, error) {
 
 	transport := configureTransport(nil, tmp[0], host)
 	httpClient := &http.Client{Transport: transport}
-	clientTrans := runtime_client.NewWithClient(hostHeader, clientapi.DefaultBasePath,
+	clientTrans := runtime_client.NewWithClient(hostHeader, basePath,
 		clientapi.DefaultSchemes, httpClient)
 	return clientTrans, nil
 }

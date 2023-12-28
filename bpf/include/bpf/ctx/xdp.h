@@ -33,6 +33,7 @@
 /* This must be a mask and all offsets guaranteed to be less than that. */
 #define __CTX_OFF_MAX			0xff
 
+#ifndef HAVE_XDP_LOAD_BYTES
 static __always_inline __maybe_unused int
 xdp_load_bytes(const struct xdp_md *ctx, __u64 off, void *to, const __u64 len)
 {
@@ -60,7 +61,9 @@ xdp_load_bytes(const struct xdp_md *ctx, __u64 off, void *to, const __u64 len)
 		memcpy(to, from, len);
 	return ret;
 }
+#endif
 
+#ifndef HAVE_XDP_STORE_BYTES
 static __always_inline __maybe_unused int
 xdp_store_bytes(const struct xdp_md *ctx, __u64 off, const void *from,
 		const __u64 len, __u64 flags __maybe_unused)
@@ -86,6 +89,7 @@ xdp_store_bytes(const struct xdp_md *ctx, __u64 off, const void *from,
 		memcpy(to, from, len);
 	return ret;
 }
+#endif
 
 #define ctx_load_bytes			xdp_load_bytes
 #define ctx_store_bytes			xdp_store_bytes
@@ -346,6 +350,13 @@ ctx_redirect_peer(const struct xdp_md *ctx __maybe_unused,
 	return -ENOTSUP;
 }
 
+#ifdef HAVE_XDP_GET_BUFF_LEN
+static __always_inline __maybe_unused __u64
+ctx_full_len(const struct xdp_md *ctx)
+{
+	return xdp_get_buff_len((struct xdp_md *)ctx);
+}
+#else
 static __always_inline __maybe_unused __u64
 ctx_full_len(const struct xdp_md *ctx)
 {
@@ -363,6 +374,7 @@ ctx_full_len(const struct xdp_md *ctx)
 		     : "r1", "r2");
 	return len;
 }
+#endif
 
 static __always_inline __maybe_unused __u32
 ctx_wire_len(const struct xdp_md *ctx)
@@ -413,6 +425,12 @@ ctx_get_protocol(const struct xdp_md *ctx)
 
 static __always_inline __maybe_unused __u32
 ctx_get_ifindex(const struct xdp_md *ctx)
+{
+	return ctx->ingress_ifindex;
+}
+
+static __always_inline __maybe_unused __u32
+ctx_get_ingress_ifindex(const struct xdp_md *ctx)
 {
 	return ctx->ingress_ifindex;
 }

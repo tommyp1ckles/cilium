@@ -6,6 +6,7 @@ package loader
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -20,7 +21,6 @@ import (
 	"github.com/cilium/cilium/pkg/datapath/linux/ethtool"
 	"github.com/cilium/cilium/pkg/datapath/linux/linux_defaults"
 	"github.com/cilium/cilium/pkg/datapath/linux/route"
-	linuxrouting "github.com/cilium/cilium/pkg/datapath/linux/routing"
 	"github.com/cilium/cilium/pkg/datapath/prefilter"
 	"github.com/cilium/cilium/pkg/datapath/tunnel"
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
@@ -98,7 +98,7 @@ func writePreFilterHeader(preFilter *prefilter.PreFilter, dir string) error {
 	return fw.Flush()
 }
 
-func addENIRules(sysSettings []sysctl.Setting, nodeAddressing datapath.NodeAddressing) ([]sysctl.Setting, error) {
+func addENIRules(sysSettings []sysctl.Setting) ([]sysctl.Setting, error) {
 	// AWS ENI mode requires symmetric routing, see
 	// iptables.addCiliumENIRules().
 	// The default AWS daemonset installs the following rules that are used
@@ -140,21 +140,32 @@ func addENIRules(sysSettings []sysctl.Setting, nodeAddressing datapath.NodeAddre
 		return nil, fmt.Errorf("unable to install ip rule for ENI multi-node NodePort: %w", err)
 	}
 
-	// Add rules for router (cilium_host).
-	info := node.GetRouterInfo()
-	cidrs := info.GetIPv4CIDRs()
-	routerIP := net.IPNet{
-		IP:   nodeAddressing.IPv4().Router(),
-		Mask: net.CIDRMask(32, 32),
-	}
+	return retSettings, nil
+}
 
-	for _, cidr := range cidrs {
-		if err = linuxrouting.SetupRules(&routerIP, &cidr, info.GetMac().String(), info.GetInterfaceNumber()); err != nil {
-			return nil, fmt.Errorf("unable to install ip rule for cilium_host: %w", err)
+func cleanIngressQdisc() error {
+	for _, iface := range option.Config.GetDevices() {
+		link, err := netlink.LinkByName(iface)
+		if err != nil {
+			return fmt.Errorf("failed to retrieve link %s by name: %q", iface, err)
+		}
+		qdiscs, err := netlink.QdiscList(link)
+		if err != nil {
+			return fmt.Errorf("failed to retrieve qdisc list of link %s: %q", iface, err)
+		}
+		for _, q := range qdiscs {
+			if q.Type() != "ingress" {
+				continue
+			}
+			err = netlink.QdiscDel(q)
+			if err != nil {
+				return fmt.Errorf("failed to delete ingress qdisc of link %s: %q", iface, err)
+			} else {
+				log.WithField(logfields.Device, iface).Info("Removed prior present ingress qdisc from device so that Cilium's datapath can be loaded")
+			}
 		}
 	}
-
-	return retSettings, nil
+	return nil
 }
 
 // reinitializeIPSec is used to recompile and load encryption network programs.
@@ -185,17 +196,33 @@ func (l *Loader) reinitializeIPSec(ctx context.Context) error {
 	}
 
 	// No interfaces is valid in tunnel disabled case
-	if len(interfaces) != 0 {
-		for _, iface := range interfaces {
-			if err := connector.DisableRpFilter(iface); err != nil {
-				log.WithError(err).WithField(logfields.Interface, iface).Warn("Rpfilter could not be disabled, node to node encryption may fail")
-			}
+	if len(interfaces) == 0 {
+		return nil
+	}
+
+	progs := []progDefinition{{progName: symbolFromNetwork, direction: dirIngress}}
+	var errs error
+	for _, iface := range interfaces {
+		if err := connector.DisableRpFilter(iface); err != nil {
+			log.WithError(err).WithField(logfields.Interface, iface).Warn("Rpfilter could not be disabled, node to node encryption may fail")
 		}
 
-		if err := l.replaceNetworkDatapath(ctx, interfaces); err != nil {
-			return fmt.Errorf("failed to load encryption program: %w", err)
+		finalize, err := replaceDatapath(ctx, iface, networkObj, progs, "")
+		if err != nil {
+			log.WithField(logfields.Interface, iface).WithError(err).Error("Load encryption network failed")
+			// collect errors, but keep trying replacing other interfaces.
+			errs = errors.Join(errs, err)
+		} else {
+			log.WithField(logfields.Interface, iface).Info("Encryption network program (re)loaded")
+			// Defer map removal until all interfaces' progs have been replaced.
+			defer finalize()
 		}
 	}
+
+	if errs != nil {
+		return fmt.Errorf("failed to load encryption program: %w", errs)
+	}
+
 	return nil
 }
 
@@ -327,7 +354,7 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 
 	if option.Config.IPAM == ipamOption.IPAMENI {
 		var err error
-		if sysSettings, err = addENIRules(sysSettings, o.Datapath().LocalNodeAddressing()); err != nil {
+		if sysSettings, err = addENIRules(sysSettings); err != nil {
 			return fmt.Errorf("unable to install ip rule for ENI multi-node NodePort: %w", err)
 		}
 	}
@@ -340,6 +367,11 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 	// add internal ipv4 and ipv6 addresses to cilium_host
 	if err := addHostDeviceAddr(hostDev1, nodeIPv4, nodeIPv6); err != nil {
 		return fmt.Errorf("failed to add internal IP address to %s: %w", hostDev1.Attrs().Name, err)
+	}
+
+	if err := cleanIngressQdisc(); err != nil {
+		log.WithError(err).Warn("Unable to clean up ingress qdiscs")
+		return err
 	}
 
 	if err := l.writeNodeConfigHeader(o); err != nil {

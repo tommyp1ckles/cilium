@@ -10,6 +10,7 @@ import (
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/datapath/agentliveness"
 	"github.com/cilium/cilium/pkg/datapath/garp"
+	"github.com/cilium/cilium/pkg/datapath/ipcache"
 	"github.com/cilium/cilium/pkg/datapath/iptables"
 	"github.com/cilium/cilium/pkg/datapath/l2responder"
 	"github.com/cilium/cilium/pkg/datapath/link"
@@ -17,6 +18,7 @@ import (
 	"github.com/cilium/cilium/pkg/datapath/linux/bandwidth"
 	"github.com/cilium/cilium/pkg/datapath/linux/bigtcp"
 	dpcfg "github.com/cilium/cilium/pkg/datapath/linux/config"
+	"github.com/cilium/cilium/pkg/datapath/linux/ipsec"
 	"github.com/cilium/cilium/pkg/datapath/linux/modules"
 	"github.com/cilium/cilium/pkg/datapath/linux/utime"
 	"github.com/cilium/cilium/pkg/datapath/tables"
@@ -29,6 +31,7 @@ import (
 	"github.com/cilium/cilium/pkg/maps/eventsmap"
 	"github.com/cilium/cilium/pkg/maps/nodemap"
 	monitorAgent "github.com/cilium/cilium/pkg/monitor/agent"
+	"github.com/cilium/cilium/pkg/mtu"
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
 	wg "github.com/cilium/cilium/pkg/wireguard/agent"
@@ -70,6 +73,9 @@ var Cell = cell.Module(
 	// Provides the Table[NodeAddress] and the controller that populates it from Table[*Device]
 	tables.NodeAddressCell,
 
+	// Provides the legacy accessor for the above, the NodeAddressing interface.
+	tables.NodeAddressingCell,
+
 	// This cell periodically updates the agent liveness value in configmap.Map to inform
 	// the datapath of the liveness of the agent.
 	agentliveness.Cell,
@@ -93,6 +99,12 @@ var Cell = cell.Module(
 	// The bandwidth manager provides efficient EDT-based rate-limiting (on Linux).
 	bandwidth.Cell,
 
+	// IPsec cell provides the IPsecKeyCustodian.
+	ipsec.Cell,
+
+	// MTU provides the MTU configuration of the node.
+	mtu.Cell,
+
 	cell.Provide(func(dp types.Datapath) types.NodeIDHandler {
 		return dp.NodeIDs()
 	}),
@@ -103,8 +115,13 @@ var Cell = cell.Module(
 		// Provide the configured devices to the devices controller.
 		// This is temporary until DevicesController takes ownership of the
 		// device-related configuration options.
-		return linuxdatapath.DevicesConfig{Devices: cfg.GetDevices()}
+		return linuxdatapath.DevicesConfig{
+			Devices: cfg.GetDevices(),
+		}
 	}),
+
+	// Synchronizes the userspace ipcache with the corresponding BPF map.
+	ipcache.Cell,
 )
 
 func newWireguardAgent(lc hive.Lifecycle, localNodeStore *node.LocalNodeStore) *wg.Agent {
@@ -143,10 +160,12 @@ func newDatapath(params datapathParams) types.Datapath {
 	}
 
 	datapath := linuxdatapath.NewDatapath(linuxdatapath.DatapathParams{
-		ConfigWriter: params.ConfigWriter,
-		RuleManager:  params.IptablesManager,
-		WGAgent:      params.WgAgent,
-		NodeMap:      params.NodeMap,
+		ConfigWriter:   params.ConfigWriter,
+		RuleManager:    params.IptablesManager,
+		WGAgent:        params.WgAgent,
+		NodeMap:        params.NodeMap,
+		NodeAddressing: params.NodeAddressing,
+		BWManager:      params.BandwidthManager,
 	}, datapathConfig)
 
 	params.LC.Append(hive.Hook{
@@ -171,10 +190,14 @@ type datapathParams struct {
 
 	NodeMap nodemap.Map
 
+	NodeAddressing types.NodeAddressing
+
 	// Depend on DeviceManager to ensure devices have been resolved.
 	// This is required until option.Config.GetDevices() has been removed and
 	// uses of it converted to Table[Device].
 	DeviceManager *linuxdatapath.DeviceManager
+
+	BandwidthManager bandwidth.Manager
 
 	ModulesManager *modules.Manager
 

@@ -291,6 +291,15 @@ func (d *Daemon) allocateDatapathIPs(family types.NodeAddressingFamily, fromK8s,
 		if err != nil {
 			return nil, fmt.Errorf("failed to create router info %w", err)
 		}
+		if err = routingInfo.Configure(
+			result.IP,
+			d.mtuConfig.GetDeviceMTU(),
+			option.Config.EgressMultiHomeIPRuleCompat,
+			true,
+		); err != nil {
+			return nil, fmt.Errorf("failed to configure router IP rules and routes %w", err)
+		}
+
 		node.SetRouterInfo(routingInfo)
 	}
 
@@ -402,6 +411,7 @@ func (d *Daemon) allocateIngressIPs() error {
 						result.IP,
 						d.mtuConfig.GetDeviceMTU(),
 						option.Config.EgressMultiHomeIPRuleCompat,
+						false,
 					); err != nil {
 						log.WithError(err).Warn("Error while configuring ingress IP rules and routes.")
 					}
@@ -587,7 +597,7 @@ func (d *Daemon) startIPAM(node agentK8s.LocalCiliumNodeResource) {
 	bootstrapStats.ipam.Start()
 	log.Info("Initializing node addressing")
 	// Set up ipam conf after init() because we might be running d.conf.KVStoreIPv4Registration
-	d.ipam = ipam.NewIPAM(d.datapath.LocalNodeAddressing(), option.Config, d.nodeDiscovery, d.k8sWatcher, node, &d.mtuConfig, d.clientset)
+	d.ipam = ipam.NewIPAM(d.datapath.LocalNodeAddressing(), option.Config, d.nodeDiscovery, d.k8sWatcher, node, d.mtuConfig, d.clientset)
 	if d.ipamMetadata != nil {
 		d.ipam.WithMetadata(d.ipamMetadata)
 	}

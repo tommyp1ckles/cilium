@@ -41,6 +41,7 @@ var (
 			k8s.CiliumCIDRGroupResource,
 			k8s.CiliumNodeResource,
 			k8s.CiliumSlimEndpointResource,
+			k8s.CiliumEndpointSliceResource,
 		),
 	)
 
@@ -77,11 +78,11 @@ var (
 	)
 )
 
-// LocalNodeResource is a resource.Resource[*corev1.Node] but one which will only stream updates for the node object
+// LocalNodeResource is a resource.Resource[*slim_corev1.Node] but one which will only stream updates for the node object
 // associated with the node we are currently running on.
 type LocalNodeResource resource.Resource[*slim_corev1.Node]
 
-// LocalCiliumNodeResource is a resource.Resource[*cilium_api_v2.Node] but one which will only stream updates for the
+// LocalCiliumNodeResource is a resource.Resource[*cilium_api_v2.CiliumNode] but one which will only stream updates for the
 // CiliumNode object associated with the node we are currently running on.
 type LocalCiliumNodeResource resource.Resource[*cilium_api_v2.CiliumNode]
 
@@ -102,10 +103,10 @@ type Resources struct {
 	NetworkPolicies                  resource.Resource[*slim_networkingv1.NetworkPolicy]
 	CiliumNetworkPolicies            resource.Resource[*cilium_api_v2.CiliumNetworkPolicy]
 	CiliumClusterwideNetworkPolicies resource.Resource[*cilium_api_v2.CiliumClusterwideNetworkPolicy]
-	CIDRGroups                       resource.Resource[*cilium_api_v2alpha1.CiliumCIDRGroup]
+	CiliumCIDRGroups                 resource.Resource[*cilium_api_v2alpha1.CiliumCIDRGroup]
 }
 
-// LocalNodeResources is a convenience struct to group CiliumNode and Node resources as cell contructor parameters.
+// LocalNodeResources is a convenience struct to group CiliumNode and Node resources as cell constructor parameters.
 type LocalNodeResources struct {
 	cell.In
 

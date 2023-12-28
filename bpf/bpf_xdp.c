@@ -104,6 +104,7 @@ int tail_lb_ipv4(struct __ctx_buff *ctx)
 		int l3_off = ETH_HLEN;
 		void *data, *data_end;
 		struct iphdr *ip4;
+		bool __maybe_unused is_dsr = false;
 
 		if (!revalidate_data(ctx, &data, &data_end, &ip4)) {
 			ret = DROP_INVALID;
@@ -184,12 +185,10 @@ int tail_lb_ipv4(struct __ctx_buff *ctx)
 no_encap:
 #endif /* ENABLE_DSR && !ENABLE_DSR_HYBRID && DSR_ENCAP_MODE == DSR_ENCAP_GENEVE */
 
-		ret = nodeport_lb4(ctx, ip4, l3_off, 0, &ext_err);
-		if (ret == NAT_46X64_RECIRC) {
-			ep_tail_call(ctx, CILIUM_CALL_IPV6_FROM_NETDEV);
-			return send_drop_notify_error(ctx, 0, DROP_MISSED_TAIL_CALL,
-						      CTX_ACT_DROP, METRIC_INGRESS);
-		}
+		ret = nodeport_lb4(ctx, ip4, l3_off, 0, &ext_err, &is_dsr);
+		if (ret == NAT_46X64_RECIRC)
+			ret = tail_call_internal(ctx, CILIUM_CALL_IPV6_FROM_NETDEV,
+						 &ext_err);
 	}
 
 out:
@@ -202,9 +201,12 @@ out:
 
 static __always_inline int check_v4_lb(struct __ctx_buff *ctx)
 {
-	ep_tail_call(ctx, CILIUM_CALL_IPV4_FROM_NETDEV);
-	return send_drop_notify_error(ctx, 0, DROP_MISSED_TAIL_CALL, CTX_ACT_DROP,
-				      METRIC_INGRESS);
+	__s8 ext_err = 0;
+	int ret;
+
+	ret = tail_call_internal(ctx, CILIUM_CALL_IPV4_FROM_NETDEV, &ext_err);
+	return send_drop_notify_error_ext(ctx, 0, ret, ext_err, CTX_ACT_DROP,
+					  METRIC_INGRESS);
 }
 #else
 static __always_inline int check_v4_lb(struct __ctx_buff *ctx __maybe_unused)
@@ -257,13 +259,14 @@ int tail_lb_ipv6(struct __ctx_buff *ctx)
 	if (!ctx_skip_nodeport(ctx)) {
 		void *data, *data_end;
 		struct ipv6hdr *ip6;
+		bool is_dsr = false;
 
 		if (!revalidate_data(ctx, &data, &data_end, &ip6)) {
 			ret = DROP_INVALID;
 			goto drop_err;
 		}
 
-		ret = nodeport_lb6(ctx, ip6, 0, &ext_err);
+		ret = nodeport_lb6(ctx, ip6, 0, &ext_err, &is_dsr);
 		if (IS_ERR(ret))
 			goto drop_err;
 	}
@@ -277,9 +280,12 @@ drop_err:
 
 static __always_inline int check_v6_lb(struct __ctx_buff *ctx)
 {
-	ep_tail_call(ctx, CILIUM_CALL_IPV6_FROM_NETDEV);
-	return send_drop_notify_error(ctx, 0, DROP_MISSED_TAIL_CALL, CTX_ACT_DROP,
-				      METRIC_INGRESS);
+	__s8 ext_err = 0;
+	int ret;
+
+	ret = tail_call_internal(ctx, CILIUM_CALL_IPV6_FROM_NETDEV, &ext_err);
+	return send_drop_notify_error_ext(ctx, 0, ret, ext_err, CTX_ACT_DROP,
+					  METRIC_INGRESS);
 }
 #else
 static __always_inline int check_v6_lb(struct __ctx_buff *ctx __maybe_unused)

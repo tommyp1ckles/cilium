@@ -62,6 +62,11 @@ Users (Alphabetically)
       U: L3/L4/L7 policies
       L: https://youtu.be/39FLsSc2P-Y
 
+    * N: AirQo
+      D: AirQo uses Cilium as the CNI plugin
+      U: CNI, Networking, NetworkPolicy, Cluster Mesh, Hubble, Kubernetes services
+      L: @airqo-platform
+
     * N: Alibaba Cloud
       D: Alibaba Cloud is using Cilium together with Terway CNI as the high-performance ENI dataplane
       U: Networking, NetworkPolicy, Services, IPVLAN
@@ -577,6 +582,12 @@ Users (Alphabetically)
       U: Available supported CNI
       L: https://sighup.io, https://github.com/sighupio/fury-kubernetes-networking
       Q: @jnardiello @nutellino
+
+    * N: SI Analytics
+      D: SI Analytics uses Cilium as CNI in self-managed Kubernetes clusters in on-prem DCs. And also use Cilium as CNI in its GKE dataplane v2 based clusters.
+      U: CNI, Network Policies, Hubble
+      L: https://si-analytics.ai, https://ovision.ai
+      Q: @jholee
 
     * N: SIGHUP
       D: SIGHUP integrated Cilium as a supported CNI for KFD (Kubernetes Fury Distribution), our enterprise-grade OSS reference architecture

@@ -4,6 +4,7 @@
 package translation
 
 import (
+	"fmt"
 	"slices"
 	"testing"
 
@@ -13,8 +14,11 @@ import (
 	envoy_config_route_v3 "github.com/cilium/proxy/go/envoy/config/route/v3"
 	envoy_http_connection_manager_v3 "github.com/cilium/proxy/go/envoy/extensions/filters/network/http_connection_manager/v3"
 	envoy_transport_sockets_tls_v3 "github.com/cilium/proxy/go/envoy/extensions/transport_sockets/tls/v3"
+	matcherv3 "github.com/cilium/proxy/go/envoy/type/matcher/v3"
+	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/testing/protocmp"
 
 	"github.com/cilium/cilium/operator/pkg/model"
 	ciliumv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
@@ -356,94 +360,218 @@ func TestSharedIngressTranslator_getClusters(t *testing.T) {
 
 func TestSharedIngressTranslator_getEnvoyHTTPRouteConfiguration(t *testing.T) {
 	type args struct {
-		m *model.Model
+		m            *model.Model
+		enforceHTTPS bool
 	}
+
 	tests := []struct {
-		name               string
-		args               args
-		expectedRouteVHMap map[string][]string
+		name                 string
+		args                 args
+		expectedRouteConfigs []*envoy_config_route_v3.RouteConfiguration
 	}{
 		{
 			name: "default backend",
 			args: args{
 				m: defaultBackendModel,
 			},
-			expectedRouteVHMap: map[string][]string{
-				"listener-insecure": {
-					"*",
-				},
-			},
+			expectedRouteConfigs: defaultBackendExpectedConfig,
 		},
 		{
 			name: "host rule",
 			args: args{
 				m: hostRulesModel,
 			},
-			expectedRouteVHMap: map[string][]string{
-				"listener-insecure": {
-					"*.foo.com",
-					"foo.bar.com",
-				},
-				"listener-secure": {
-					"foo.bar.com",
-				},
+			expectedRouteConfigs: hostRulesExpectedConfig,
+		},
+		{
+			name: "host rule with enforceHTTPS",
+			args: args{
+				m:            hostRulesModel,
+				enforceHTTPS: true,
 			},
+			expectedRouteConfigs: hostRulesExpectedConfigEnforceHTTPS,
 		},
 		{
 			name: "path rules",
 			args: args{
 				m: pathRulesModel,
 			},
-			expectedRouteVHMap: map[string][]string{
-				"listener-insecure": {
-					"exact-path-rules",
-					"mixed-path-rules",
-					"prefix-path-rules",
-					"trailing-slash-path-rules",
-				},
-			},
+			expectedRouteConfigs: pathRulesExpectedConfig,
 		},
 		{
 			name: "complex ingress",
 			args: args{
 				m: complexIngressModel,
 			},
-			expectedRouteVHMap: map[string][]string{
-				"listener-insecure": {
-					"*",
-				},
-				"listener-secure": {
-					"very-secure.server.com",
-					"another-very-secure.server.com",
-				},
+			expectedRouteConfigs: complexIngressExpectedConfig,
+		},
+		{
+			name: "complex ingress with enforceHTTPS",
+			args: args{
+				m:            complexIngressModel,
+				enforceHTTPS: true,
 			},
+			expectedRouteConfigs: complexIngressExpectedConfigEnforceHTTPS,
+		},
+		{
+			name: "multiple path types in one listener",
+			args: args{
+				m: multiplePathTypesModel,
+			},
+			expectedRouteConfigs: multiplePathTypesExpectedConfig,
+		},
+		{
+			name: "routes with multiple hostnames in one listener",
+			args: args{
+				m: multipleRouteHostnamesModel,
+			},
+			expectedRouteConfigs: multipleRouteHostnamesExpectedConfig,
 		},
 	}
 
-	i := &defaultTranslator{
+	defT := &defaultTranslator{
 		name:      "cilium-ingress",
 		namespace: "kube-system",
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			res := i.getEnvoyHTTPRouteConfiguration(tt.args.m)
-			require.Len(t, res, len(tt.expectedRouteVHMap))
+			defT.enforceHTTPs = tt.args.enforceHTTPS
+			res := defT.getEnvoyHTTPRouteConfiguration(tt.args.m)
+			require.Len(t, res, len(tt.expectedRouteConfigs), "Number of Listeners did not match")
 
-			for i := 0; i < len(tt.expectedRouteVHMap); i++ {
-				route := &envoy_config_route_v3.RouteConfiguration{}
-				err := proto.Unmarshal(res[i].GetValue(), route)
+			for i, rawRoute := range res {
+				ttListener := tt.expectedRouteConfigs[i]
+				listener := &envoy_config_route_v3.RouteConfiguration{}
+				err := proto.Unmarshal(rawRoute.Value, listener)
 				require.NoError(t, err)
-				require.Containsf(t, tt.expectedRouteVHMap, route.Name, "route name %s not found", route.Name)
 
-				var names []string
-				for _, vh := range route.VirtualHosts {
-					names = append(names, vh.Name)
+				for j, vhost := range listener.VirtualHosts {
+					if j >= len(ttListener.VirtualHosts) {
+						t.Errorf("More VirtualHosts in the actual than the expected for actual Listener name %s", listener.Name)
+						continue
+					}
+
+					ttVhost := ttListener.VirtualHosts[j]
+
+					for k, route := range vhost.Routes {
+						if k >= len(ttVhost.Routes) {
+							t.Errorf("More Routes in the actual than the expected for actual VirtualHost name %s in actual Listener %s", vhost.Name, listener.Name)
+							continue
+						}
+
+						ttRoute := ttVhost.Routes[k]
+
+						diffOutput := cmp.Diff(ttRoute, route, protocmp.Transform())
+						if len(diffOutput) != 0 {
+							t.Errorf("Routes did not match for Listener %s and VirtualHost %s, route number %d:\n%s\n", ttListener.Name, ttVhost.Name, k, diffOutput)
+						}
+					}
+					// If there were no errors at the Route level, check for errors at the VirtualHost level
+					if !t.Failed() {
+						diffOutput := cmp.Diff(ttVhost, vhost, protocmp.Transform())
+						if len(diffOutput) != 0 {
+							t.Errorf("VirtualHosts did not match for Listener %s:\n %s\n", listener.Name, diffOutput)
+						}
+					}
 				}
-				require.ElementsMatchf(t, tt.expectedRouteVHMap[route.Name], names, "virtual hosts for route %s do not match", route.Name)
+				// If there were no errors anywhere else, check for errors at the Listener level
+				if !t.Failed() {
+					diffOutput := cmp.Diff(ttListener, listener, protocmp.Transform())
+					if len(diffOutput) != 0 {
+						t.Errorf("VirtualHosts did not match:\n %s\n", diffOutput)
+					}
+				}
+
 			}
 		})
 	}
+}
+
+// The following helpers generate various types of path matches.
+// Most notably, we treat a match for the path "/" differently to other matches,
+// so it has its own helper.
+
+func envoyRouteMatchExactPath(path string) *envoy_config_route_v3.RouteMatch {
+	return &envoy_config_route_v3.RouteMatch{
+		PathSpecifier: &envoy_config_route_v3.RouteMatch_Path{
+			Path: path,
+		},
+	}
+}
+
+func envoyRouteMatchImplementationSpecific(path string) *envoy_config_route_v3.RouteMatch {
+	return &envoy_config_route_v3.RouteMatch{
+		PathSpecifier: &envoy_config_route_v3.RouteMatch_SafeRegex{
+			SafeRegex: &matcherv3.RegexMatcher{
+				Regex: path,
+			},
+		},
+	}
+}
+
+func envoyRouteMatchRootPath() *envoy_config_route_v3.RouteMatch {
+	return &envoy_config_route_v3.RouteMatch{
+		PathSpecifier: &envoy_config_route_v3.RouteMatch_Prefix{
+			Prefix: "/",
+		},
+	}
+}
+
+func envoyRouteMatchPrefixPath(path string) *envoy_config_route_v3.RouteMatch {
+	return &envoy_config_route_v3.RouteMatch{
+		PathSpecifier: &envoy_config_route_v3.RouteMatch_PathSeparatedPrefix{
+			PathSeparatedPrefix: path,
+		},
+	}
+}
+
+func envoyRouteAction(namespace, backend, port string) *envoy_config_route_v3.Route_Route {
+	return &envoy_config_route_v3.Route_Route{
+		Route: &envoy_config_route_v3.RouteAction{
+			ClusterSpecifier: &envoy_config_route_v3.RouteAction_Cluster{
+				Cluster: fmt.Sprintf("%s:%s:%s", namespace, backend, port),
+			},
+		},
+	}
+}
+
+func envoyHTTPSRouteRedirect() *envoy_config_route_v3.Route_Redirect {
+	return &envoy_config_route_v3.Route_Redirect{
+		Redirect: &envoy_config_route_v3.RedirectAction{
+			SchemeRewriteSpecifier: &envoy_config_route_v3.RedirectAction_HttpsRedirect{
+				HttpsRedirect: true,
+			},
+		},
+	}
+}
+
+func withAuthority(match *envoy_config_route_v3.RouteMatch, regex string) *envoy_config_route_v3.RouteMatch {
+
+	authorityHeader := &envoy_config_route_v3.HeaderMatcher{
+		Name: ":authority",
+		HeaderMatchSpecifier: &envoy_config_route_v3.HeaderMatcher_StringMatch{
+			StringMatch: &matcherv3.StringMatcher{
+				MatchPattern: &matcherv3.StringMatcher_SafeRegex{
+					SafeRegex: &matcherv3.RegexMatcher{
+						Regex: regex,
+					},
+				},
+			},
+		},
+	}
+
+	match.Headers = append(match.Headers, authorityHeader)
+
+	return match
+}
+
+func domainsHelper(domain string) []string {
+	if domain == "*" {
+		return []string{domain}
+	}
+
+	return []string{domain, fmt.Sprintf("%s:*", domain)}
 }
 
 func TestSharedIngressTranslator_getResources(t *testing.T) {

@@ -85,6 +85,7 @@ The policy in ``yaml`` form is defined below:
       neighbors: # []CiliumBGPNeighbor
        - peerAddress: 'fc00:f853:ccd:e793::50/128'
          peerASN: 64512
+         authSecretRef: secretname
          eBGPMultihopTTL: 10
          connectRetryTimeSeconds: 120
          holdTimeSeconds: 90
@@ -303,18 +304,23 @@ By configuring ``authSecretRef`` for a neighbor you can configure that a
 peer.
 
 ``authSecretRef`` should reference the name of a secret in the BGP secrets
-namespace (if using the Helm chart this is ``cilium-bgp-secrets`` by default).
-The secret should contain a key with a name of ``password``.
+namespace (if using the Helm chart this is ``kube-system`` by default). The
+secret should contain a key with a name of ``password``.
 
 BGP secrets are limited to a configured namespace to keep the permissions
-needed on each Cilium Agent instance to a minimum. The Helm chart will create
-this namespace and configure Cilium to be able to read from it by default.
+needed on each Cilium Agent instance to a minimum. The Helm chart will
+configure Cilium to be able to read from it by default.
 
 An example of creating a secret is:
 
 .. code-block:: shell-session
 
-  # kubectl create secret generic -n cilium-bgp-secrets --type=string secretName --from-literal=password=my-secret-password
+   $ kubectl create secret generic -n kube-system --type=string secretname --from-literal=password=my-secret-password
+
+If you wish to change the namespace, you can set the
+``bgpControlPlane.secretNamespace.name`` Helm chart value. To have the
+namespace created automatically, you can set the
+``bgpControlPlane.secretNamespace.create`` Helm chart value  to ``true``.
 
 Because TCP MD5 passwords sign the header of the packet they cannot be used if
 the session will be address translated by Cilium (i.e. the Cilium Agent's pod
@@ -325,6 +331,10 @@ connection will not succeed. This will appear as ``dial: i/o timeout`` in the
 Cilium Agent's logs rather than a more specific error message.
 
 .. _RFC-2385 : https://www.rfc-editor.org/rfc/rfc2385.html
+
+If a ``CiliumBGPPeeringPolicy`` is deployed with an ``authSecretRef`` that Cilium cannot find, the BGP session will use an empty password and the agent will log an error such as in the following example::
+
+   level=error msg="Failed to fetch secret \"secretname\": not found (will continue with empty password)" component=manager.fetchPeerPassword subsys=bgp-control-plane
 
 Graceful Restart
 ''''''''''''''''
@@ -421,12 +431,14 @@ Each ``AdvertisedPathAttributes`` configuration item consists of two parts:
  - ``SelectorType`` with ``Selector`` define which BGP advertisements will be extended with additional Path Attributes.
  - ``Communities`` and / or ``LocalPreference`` define the additional Path Attributes applied on the selected routes.
 
-There are two possible values of the ``SelectorType`` which define the object type on which the ``Selector`` applies:
+There are three possible values of the ``SelectorType`` which define the object type on which the ``Selector`` applies:
 
  - ``PodCIDR``: matches ``CiliumNode`` custom resources
    (Path Attributes apply to routes announced for PodCIDRs of selected ``CiliumNode`` objects).
  - ``CiliumLoadBalancerIPPool``: matches ``CiliumLoadBalancerIPPool`` custom resources
    (Path Attributes apply to routes announced for selected ``CiliumLoadBalancerIPPool`` objects).
+ - ``CiliumPodIPPool``: matches ``CiliumPodIPPool`` custom resources
+   (Path Attributes apply to routes announced for allocated prefixes of selected ``CiliumPodIPPool`` objects).
 
 There are two types of additional Path Attributes that can be advertised with the routes: ``Communities`` and ``LocalPreference``.
 
@@ -605,7 +617,7 @@ Cilium CLI displays the BGP peering status of all nodes.
 
 .. code-block:: shell-session
 
-   # cilium bgp peers -h
+   $ cilium bgp peers -h
    Gets BGP peering status from all nodes in the cluster
 
    Usage:

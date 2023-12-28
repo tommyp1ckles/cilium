@@ -325,7 +325,7 @@ func (l *Loader) reloadHostDatapath(ctx context.Context, ep datapath.Endpoint, o
 	// Replace program on cilium_net.
 	if _, err := netlink.LinkByName(defaults.SecondHostDevice); err != nil {
 		log.WithError(err).WithField("device", defaults.SecondHostDevice).Error("Link does not exist")
-		return err
+		return fmt.Errorf("device '%s' not found: %w", defaults.SecondHostDevice, err)
 	}
 
 	secondDevObjPath := path.Join(ep.StateDir(), hostEndpointPrefix+"_"+defaults.SecondHostDevice+".o")
@@ -465,23 +465,6 @@ func (l *Loader) reloadDatapath(ctx context.Context, ep datapath.Endpoint, dirs 
 	}
 
 	return nil
-}
-
-func (l *Loader) replaceNetworkDatapath(ctx context.Context, interfaces []string) (err error) {
-	progs := []progDefinition{{progName: symbolFromNetwork, direction: dirIngress}}
-	for _, iface := range option.Config.EncryptInterface {
-		finalize, replaceErr := replaceDatapath(ctx, iface, networkObj, progs, "")
-		if replaceErr != nil {
-			log.WithField(logfields.Interface, iface).WithError(replaceErr).Error("Load encryption network failed")
-			// Return the error to the caller, but keep trying replacing other interfaces.
-			err = replaceErr
-		} else {
-			log.WithField(logfields.Interface, iface).Info("Encryption network program (re)loaded")
-			// Defer map removal until all interfaces' progs have been replaced.
-			defer finalize()
-		}
-	}
-	return
 }
 
 func (l *Loader) replaceOverlayDatapath(ctx context.Context, cArgs []string, iface string) error {

@@ -4,6 +4,7 @@
 #include "bpf/types_mapper.h"
 #include <bpf/ctx/skb.h>
 #include <bpf/api.h>
+#include <linux/in.h>
 
 #include <ep_config.h>
 #include <node_config.h>
@@ -33,6 +34,7 @@
 #include "lib/lxc.h"
 #include "lib/identity.h"
 #include "lib/policy.h"
+#include "lib/mcast.h"
 
 /* Override LB_SELECTION initially defined in node_config.h to force bpf_lxc to use the random backend selection
  * algorithm for in-cluster traffic. Otherwise, it will fail with the Maglev hash algorithm because Cilium doesn't provision
@@ -89,7 +91,7 @@ static __always_inline int __per_packet_lb_svc_xlate_4(void *ctx, struct iphdr *
 
 	ret = lb4_extract_tuple(ctx, ip4, ETH_HLEN, &l4_off, &tuple);
 	if (IS_ERR(ret)) {
-		if (ret == DROP_NO_SERVICE || ret == DROP_UNKNOWN_L4)
+		if (ret == DROP_UNSUPP_SERVICE_PROTO || ret == DROP_UNKNOWN_L4)
 			goto skip_service_lookup;
 		else
 			return ret;
@@ -108,6 +110,14 @@ static __always_inline int __per_packet_lb_svc_xlate_4(void *ctx, struct iphdr *
 		ret = lb4_local(get_ct_map4(&tuple), ctx, ipv4_is_fragment(ip4),
 				ETH_HLEN, l4_off, &key, &tuple, svc, &ct_state_new,
 				has_l4_header, false, &cluster_id, ext_err);
+
+#ifdef SERVICE_NO_BACKEND_RESPONSE
+		if (ret == DROP_NO_SERVICE) {
+			ep_tail_call(ctx, CILIUM_CALL_IPV4_NO_SERVICE);
+			return DROP_MISSED_TAIL_CALL;
+		}
+#endif
+
 		if (IS_ERR(ret))
 			return ret;
 	}
@@ -133,7 +143,7 @@ static __always_inline int __per_packet_lb_svc_xlate_6(void *ctx, struct ipv6hdr
 
 	ret = lb6_extract_tuple(ctx, ip6, ETH_HLEN, &l4_off, &tuple);
 	if (IS_ERR(ret)) {
-		if (ret == DROP_NO_SERVICE || ret == DROP_UNKNOWN_L4)
+		if (ret == DROP_UNSUPP_SERVICE_PROTO || ret == DROP_UNKNOWN_L4)
 			goto skip_service_lookup;
 		else
 			return ret;
@@ -158,6 +168,14 @@ static __always_inline int __per_packet_lb_svc_xlate_6(void *ctx, struct ipv6hdr
 #endif /* ENABLE_L7_LB */
 		ret = lb6_local(get_ct_map6(&tuple), ctx, ETH_HLEN, l4_off,
 				&key, &tuple, svc, &ct_state_new, false, ext_err);
+
+#ifdef SERVICE_NO_BACKEND_RESPONSE
+		if (ret == DROP_NO_SERVICE) {
+			ep_tail_call(ctx, CILIUM_CALL_IPV6_NO_SERVICE);
+			return DROP_MISSED_TAIL_CALL;
+		}
+#endif
+
 		if (IS_ERR(ret))
 			return ret;
 	}
@@ -264,7 +282,7 @@ int NAME(struct __ctx_buff *ctx)						\
 	if (!map)								\
 		return drop_for_direction(ctx, DIR, DROP_CT_NO_MAP_FOUND);	\
 										\
-	ct_buffer.ret = ct_lookup4(map, tuple, ctx, ct_buffer.l4_off,		\
+	ct_buffer.ret = ct_lookup4(map, tuple, ctx, ip4, ct_buffer.l4_off,	\
 				   DIR, ct_state, &ct_buffer.monitor);		\
 	if (ct_buffer.ret < 0)							\
 		return drop_for_direction(ctx, DIR, ct_buffer.ret);		\
@@ -605,7 +623,8 @@ ct_recreate6:
 #endif /* ENABLE_HOST_ROUTING || ENABLE_ROUTING */
 			policy_clear_mark(ctx);
 			/* If the packet is from L7 LB it is coming from the host */
-			return ipv6_local_delivery(ctx, ETH_HLEN, SECLABEL_IPV6, ep,
+			return ipv6_local_delivery(ctx, ETH_HLEN, SECLABEL_IPV6,
+						   MARK_MAGIC_IDENTITY, ep,
 						   METRIC_EGRESS, from_l7lb, false);
 		}
 	}
@@ -676,10 +695,9 @@ pass_to_stack:
 #ifndef TUNNEL_MODE
 # ifdef ENABLE_IPSEC
 	if (encrypt_key && tunnel_endpoint) {
-		ret = set_ipsec_encrypt_mark(ctx, encrypt_key, tunnel_endpoint);
+		ret = set_ipsec_encrypt(ctx, encrypt_key, tunnel_endpoint, SECLABEL_IPV6, false);
 		if (unlikely(ret != CTX_ACT_OK))
 			return ret;
-		set_identity_meta(ctx, SECLABEL_IPV6);
 	} else
 # endif /* ENABLE_IPSEC */
 #endif /* TUNNEL_MODE */
@@ -690,7 +708,7 @@ pass_to_stack:
 		 * source identity can still be derived even if SNAT is
 		 * performed by a component such as portmap.
 		 */
-		set_identity_mark(ctx, SECLABEL_IPV6);
+		set_identity_mark(ctx, SECLABEL_IPV6, MARK_MAGIC_IDENTITY);
 #endif
 	}
 
@@ -1094,7 +1112,8 @@ ct_recreate4:
 #endif /* ENABLE_HOST_ROUTING || ENABLE_ROUTING */
 			policy_clear_mark(ctx);
 			/* If the packet is from L7 LB it is coming from the host */
-			return ipv4_local_delivery(ctx, ETH_HLEN, SECLABEL_IPV4, ip4,
+			return ipv4_local_delivery(ctx, ETH_HLEN, SECLABEL_IPV4,
+						   MARK_MAGIC_IDENTITY, ip4,
 						   ep, METRIC_EGRESS, from_l7lb,
 						   bypass_ingress_policy, false, 0);
 		}
@@ -1235,10 +1254,9 @@ pass_to_stack:
 #ifndef TUNNEL_MODE
 # ifdef ENABLE_IPSEC
 	if (encrypt_key && tunnel_endpoint) {
-		ret = set_ipsec_encrypt_mark(ctx, encrypt_key, tunnel_endpoint);
+		ret = set_ipsec_encrypt(ctx, encrypt_key, tunnel_endpoint, SECLABEL_IPV4, false);
 		if (unlikely(ret != CTX_ACT_OK))
 			return ret;
-		set_identity_meta(ctx, SECLABEL_IPV4);
 	} else
 # endif /* ENABLE_IPSEC */
 #endif /* TUNNEL_MODE */
@@ -1249,7 +1267,7 @@ pass_to_stack:
 		 * source identity can still be derived even if SNAT is
 		 * performed by a component such as portmap.
 		 */
-		set_identity_mark(ctx, SECLABEL_IPV4);
+		set_identity_mark(ctx, SECLABEL_IPV4, MARK_MAGIC_IDENTITY);
 #endif
 	}
 
@@ -1310,6 +1328,23 @@ static __always_inline int __tail_handle_ipv4(struct __ctx_buff *ctx,
 
 	if (unlikely(!is_valid_lxc_src_ipv4(ip4)))
 		return DROP_INVALID_SIP;
+
+#ifdef ENABLE_MULTICAST
+	if (mcast_ipv4_is_igmp(ip4)) {
+		/* note:
+		 * we will always drop IGMP from this point on as we have no
+		 * need to forward to the stack
+		 */
+		return mcast_ipv4_handle_igmp(ctx, ip4, data, data_end);
+	}
+
+	if (IN_MULTICAST(bpf_ntohl(ip4->daddr))) {
+		if (mcast_lookup_subscriber_map(&ip4->daddr)) {
+			ep_tail_call(ctx, CILIUM_CALL_MULTICAST_EP_DELIVERY);
+			return DROP_MISSED_TAIL_CALL;
+		}
+	}
+#endif /* ENABLE_MULTICAST */
 
 #ifdef ENABLE_PER_PACKET_LB
 	/* will tailcall internally or return error */
@@ -1449,7 +1484,7 @@ ipv6_policy(struct __ctx_buff *ctx, struct ipv6hdr *ip6, int ifindex, __u32 src_
 	/* If packet is coming from the ingress proxy we have to skip
 	 * redirection to the ingress proxy as we would loop forever.
 	 */
-	skip_ingress_proxy = tc_index_skip_ingress_proxy(ctx);
+	skip_ingress_proxy = tc_index_from_ingress_proxy(ctx);
 
 	ct_buffer = map_lookup_elem(&CT_TAIL_CALL_BUFFER6, &zero);
 	if (!ct_buffer)
@@ -1472,7 +1507,7 @@ ipv6_policy(struct __ctx_buff *ctx, struct ipv6hdr *ip6, int ifindex, __u32 src_
 		 * Always redirect connections that originated from L7 LB.
 		 */
 		if (ct_state_is_from_l7lb(ct_state) ||
-		    (ct_state->proxy_redirect && !tc_index_skip_egress_proxy(ctx))) {
+		    (ct_state->proxy_redirect && !tc_index_from_egress_proxy(ctx))) {
 			/* This is a reply, the proxy port does not need to be embedded
 			 * into ctx->mark and *proxy_port can be left unset.
 			 */
@@ -1591,7 +1626,11 @@ int tail_ipv6_policy(struct __ctx_buff *ctx)
 	ctx_store_meta(ctx, CB_FROM_HOST, 0);
 
 #ifdef HAVE_ENCAP
-	from_tunnel = ctx_load_meta(ctx, CB_FROM_TUNNEL);
+	/* TODO use CB_FROM_TUNNEL on v1.16, when we can trust that all
+	 * callers populate it (even after downgrade).
+	 */
+	/* from_tunnel = ctx_load_meta(ctx, CB_FROM_TUNNEL); */
+	from_tunnel = true;
 	ctx_store_meta(ctx, CB_FROM_TUNNEL, 0);
 #endif
 
@@ -1772,7 +1811,7 @@ ipv4_policy(struct __ctx_buff *ctx, struct iphdr *ip4, int ifindex, __u32 src_la
 	/* If packet is coming from the ingress proxy we have to skip
 	 * redirection to the ingress proxy as we would loop forever.
 	 */
-	skip_ingress_proxy = tc_index_skip_ingress_proxy(ctx);
+	skip_ingress_proxy = tc_index_from_ingress_proxy(ctx);
 
 	orig_sip = ip4->saddr;
 
@@ -1805,7 +1844,7 @@ ipv4_policy(struct __ctx_buff *ctx, struct iphdr *ip4, int ifindex, __u32 src_la
 	/* Skip policy enforcement for return traffic. */
 	if (ret == CT_REPLY || ret == CT_RELATED) {
 		if (ct_state_is_from_l7lb(ct_state) ||
-		    (ct_state->proxy_redirect && !tc_index_skip_egress_proxy(ctx))) {
+		    (ct_state->proxy_redirect && !tc_index_from_egress_proxy(ctx))) {
 			/* This is a reply, the proxy port does not need to be embedded
 			 * into ctx->mark and *proxy_port can be left unset.
 			 */

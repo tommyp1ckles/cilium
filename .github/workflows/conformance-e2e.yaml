@@ -51,8 +51,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # renovate: datasource=github-releases depName=cilium/cilium-cli
-  cilium_cli_version: v0.15.14
   cilium_cli_ci_version:
   check_url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
@@ -76,25 +74,27 @@ jobs:
       max-parallel: 16
       matrix:
         include:
-          # See https://github.com/cilium/cilium/issues/20606 for configuration table
+          # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+          # ! NOTE: keep tests-e2e-upgrade.yaml config in sync !
+          # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
           - name: '1'
             # renovate: datasource=docker depName=quay.io/lvh-images/kind
-            kernel: '4.19-20231026.065108'
+            kernel: '4.19-20231220.153727'
             kube-proxy: 'iptables'
             kpr: 'false'
             tunnel: 'vxlan'
 
           - name: '2'
             # renovate: datasource=docker depName=quay.io/lvh-images/kind
-            kernel: '5.4-20231026.065108'
+            kernel: '5.4-20231220.153727'
             kube-proxy: 'iptables'
             kpr: 'false'
             tunnel: 'disabled'
 
           - name: '3'
             # renovate: datasource=docker depName=quay.io/lvh-images/kind
-            kernel: '5.10-20231026.065108'
+            kernel: '5.10-20231220.153727'
             kube-proxy: 'iptables'
             kpr: 'false'
             tunnel: 'disabled'
@@ -102,7 +102,7 @@ jobs:
 
           - name: '4'
             # renovate: datasource=docker depName=quay.io/lvh-images/kind
-            kernel: '5.10-20231026.065108'
+            kernel: '5.10-20231220.153727'
             kube-proxy: 'iptables'
             kpr: 'true'
             devices: '{eth0,eth1}'
@@ -114,7 +114,7 @@ jobs:
 
           - name: '5'
             # renovate: datasource=docker depName=quay.io/lvh-images/kind
-            kernel: '5.15-20231026.065108'
+            kernel: '5.15-20231220.153727'
             kube-proxy: 'iptables'
             kpr: 'true'
             devices: '{eth0,eth1}'
@@ -127,7 +127,7 @@ jobs:
 
           - name: '6'
             # renovate: datasource=docker depName=quay.io/lvh-images/kind
-            kernel: '6.0-20231019.053646'
+            kernel: '6.1-20231220.153727'
             kube-proxy: 'none'
             kpr: 'true'
             tunnel: 'vxlan'
@@ -135,10 +135,11 @@ jobs:
             egress-gateway: 'true'
             host-fw: 'true'
             lb-acceleration: 'testing-only'
+            ingress-controller: 'true'
 
           - name: '7'
             # renovate: datasource=docker depName=quay.io/lvh-images/kind
-            kernel: 'bpf-next-20231030.012704'
+            kernel: 'bpf-next-20231220.153727'
             kube-proxy: 'none'
             kpr: 'true'
             devices: '{eth0,eth1}'
@@ -147,10 +148,11 @@ jobs:
             lb-mode: 'snat'
             egress-gateway: 'true'
             lb-acceleration: 'testing-only'
+            ingress-controller: 'true'
 
           - name: '8'
             # renovate: datasource=docker depName=quay.io/lvh-images/kind
-            kernel: 'bpf-next-20231030.012704'
+            kernel: 'bpf-next-20231220.153727'
             kube-proxy: 'iptables'
             kpr: 'false'
             tunnel: 'geneve'
@@ -158,7 +160,7 @@ jobs:
 
           - name: '9'
             # renovate: datasource=docker depName=quay.io/lvh-images/kind
-            kernel: '5.10-20231026.065108'
+            kernel: '5.10-20231220.153727'
             kube-proxy: 'iptables'
             kpr: 'true'
             devices: '{eth0,eth1}'
@@ -172,7 +174,7 @@ jobs:
 
           - name: '10'
             # renovate: datasource=docker depName=quay.io/lvh-images/kind
-            kernel: '5.15-20231026.065108'
+            kernel: '5.15-20231220.153727'
             kube-proxy: 'iptables'
             kpr: 'true'
             devices: '{eth0,eth1}'
@@ -186,7 +188,7 @@ jobs:
 
           - name: '11'
             # renovate: datasource=docker depName=quay.io/lvh-images/kind
-            kernel: '6.0-20231019.053646'
+            kernel: '6.1-20231220.153727'
             kube-proxy: 'none'
             kpr: 'true'
             devices: '{eth0,eth1}'
@@ -196,10 +198,11 @@ jobs:
             encryption-node: 'true'
             lb-mode: 'snat'
             egress-gateway: 'true'
+            ingress-controller: 'true'
 
           - name: '12'
             # renovate: datasource=docker depName=quay.io/lvh-images/kind
-            kernel: 'bpf-next-20231030.012704'
+            kernel: 'bpf-next-20231220.153727'
             kube-proxy: 'none'
             kpr: 'true'
             devices: '{eth0,eth1}'
@@ -209,14 +212,27 @@ jobs:
             encryption-node: 'true'
             lb-mode: 'snat'
             egress-gateway: 'true'
+            ingress-controller: 'true'
 
           - name: '13'
             # renovate: datasource=docker depName=quay.io/lvh-images/kind
-            kernel: '4.19-20231026.065108'
+            kernel: '4.19-20231220.153727'
             kube-proxy: 'iptables'
             kpr: 'false'
             tunnel: 'vxlan'
             misc: 'policyCIDRMatchMode=nodes'
+
+          - name: '14'
+            # renovate: datasource=docker depName=quay.io/lvh-images/kind
+            kernel: '5.4-20231220.153727'
+            kube-proxy: 'iptables'
+            kpr: 'true'
+            devices: '{eth0,eth1}'
+            secondary-network: 'true'
+            tunnel: 'vxlan'
+            lb-mode: 'snat'
+            egress-gateway: 'true'
+            lb-acceleration: 'testing-only'
 
 
     timeout-minutes: 60
@@ -257,6 +273,7 @@ jobs:
           encryption-node: ${{ matrix.encryption-node }}
           egress-gateway: ${{ matrix.egress-gateway }}
           host-fw: ${{ matrix.host-fw }}
+          ingress-controller: ${{ matrix.ingress-controller }}
           misc: ${{ matrix.misc }}
 
       # Warning: since this is a privileged workflow, subsequent workflow job
@@ -268,24 +285,30 @@ jobs:
           persist-credentials: false
 
       - name: Install Cilium CLI-cli
-        uses: cilium/cilium-cli@446392499db483906bcc3ade85f023912a79e5ee # v0.15.14
+        uses: cilium/cilium-cli@32109b32259a487c803648a3c9463cdcafa4c0c3 # v0.15.19
         with:
-          release-version: ${{ env.cilium_cli_version }}
+          repository: ${{ env.CILIUM_CLI_RELEASE_REPO }}
+          release-version: ${{ env.CILIUM_CLI_VERSION }}
           ci-version: ${{ env.cilium_cli_ci_version }}
           binary-name: cilium-cli
           binary-dir: ./
 
-      - name: Provision LVH VMs
-        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
+      - name: Set Kind params
+        id: kind-params
+        shell: bash
+        run: |
+          IP_FAM="dual"
+          if [ "${{ matrix.ipv6 }}" == "false" ]; then
+            IP_FAM="ipv4"
+          fi
+          echo params="--xdp --secondary-network \"\" 3 \"\" \"\" ${{ matrix.kube-proxy }} $IP_FAM" >> $GITHUB_OUTPUT
+
+      - name: Provision K8s on LVH VM
+        uses: cilium/cilium/.github/actions/lvh-kind@main
         with:
           test-name: e2e-conformance
-          image-version: ${{ matrix.kernel }}
-          host-mount: ./
-          cpu: 4
-          dns-resolver: '1.1.1.1'
-          install-dependencies: 'true'
-          cmd: |
-            git config --global --add safe.directory /host
+          kernel: ${{ matrix.kernel }}
+          kind-params: "${{ steps.kind-params.outputs.params }}"
 
       - name: Wait for images to be available
         timeout-minutes: 30
@@ -295,73 +318,50 @@ jobs:
             until docker manifest inspect quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/$image:${{ steps.vars.outputs.sha }} &> /dev/null; do sleep 45s; done
           done
 
-      - name: Setup K8s cluster
-        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
-        with:
-          provision: 'false'
-          cmd: |
-            cd /host/
-
-            IP_FAM="dual"
-            if [ "${{ matrix.ipv6 }}" == "false" ]; then
-              IP_FAM="ipv4"
-            fi
-            ./contrib/scripts/kind.sh --xdp --secondary-network "" 3 "" "" "${{ matrix.kube-proxy }}" \$IP_FAM
-
-            kubectl patch node kind-worker3 --type=json -p='[{"op":"add","path":"/metadata/labels/cilium.io~1no-schedule","value":"true"}]'
-
       - name: Install Cilium
-        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
-        with:
-          provision: 'false'
-          cmd: |
-            cd /host/
+        shell: bash
+        run: |
+          kubectl patch node kind-worker3 --type=json -p='[{"op":"add","path":"/metadata/labels/cilium.io~1no-schedule","value":"true"}]'
 
-            export CILIUM_CLI_MODE=helm
-            ./cilium-cli install ${{ steps.cilium-config.outputs.config }}
-            kubectl -n cilium-spire wait --for=condition=Ready pod -l app=spire-server --timeout=300s
-            kubectl -n cilium-spire wait --for=condition=Ready pod -l app=spire-agent --timeout=300s
+          export CILIUM_CLI_MODE=helm
+          ./cilium-cli install ${{ steps.cilium-config.outputs.config }}
+          kubectl -n cilium-spire wait --for=condition=Ready pod -l app=spire-server --timeout=300s
+          kubectl -n cilium-spire wait --for=condition=Ready pod -l app=spire-agent --timeout=300s
 
-            ./cilium-cli status --wait
-            kubectl get pods --all-namespaces -o wide
-            kubectl -n kube-system exec daemonset/cilium -- cilium-dbg status
+          ./cilium-cli status --wait
+          kubectl get pods --all-namespaces -o wide
+          kubectl -n kube-system exec daemonset/cilium -- cilium-dbg status
 
-            mkdir -p cilium-junits
+          mkdir -p cilium-junits
 
       - name: Run tests
-        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
-        with:
-          provision: 'false'
-          cmd: |
-            cd /host/
+        shell: bash
+        run: |
+          EXTRA=()
+          if [ "${{ matrix.secondary-network }}" = "true" ]; then
+            EXTRA+=("--secondary-network-iface=eth1")
+          fi
 
-            EXTRA=""
-            if [ "${{ matrix.secondary-network }}" = "true" ]; then
-              EXTRA="--secondary-network-iface=eth1"
-            fi
+          if [ "${{ matrix.host-fw }}" == "true" ]; then
+            # Until https://github.com/cilium/cilium/issues/28088 is fixed
+            EXTRA+=("--expected-drop-reasons=+Missed tail call")
+          fi
 
-            ./cilium-cli connectivity test --include-unsafe-tests --collect-sysdump-on-failure \
-              --sysdump-hubble-flows-count=1000000 --sysdump-hubble-flows-timeout=5m \
-              --sysdump-output-filename "cilium-sysdump-${{ matrix.name }}-<ts>" \
-              --junit-file "cilium-junits/${{ env.job_name }} (${{ matrix.name }}).xml" \
-              --junit-property github_job_step="Run tests (${{ matrix.name }})" \
-              \$EXTRA
-
-            ./contrib/scripts/kind-down.sh
+          ./cilium-cli connectivity test --include-unsafe-tests --collect-sysdump-on-failure \
+            "${EXTRA[@]}" \
+            --sysdump-hubble-flows-count=1000000 --sysdump-hubble-flows-timeout=5m \
+            --sysdump-output-filename "cilium-sysdump-${{ matrix.name }}-<ts>" \
+            --junit-file "cilium-junits/${{ env.job_name }} (${{ matrix.name }}).xml" \
+            --junit-property github_job_step="Run tests (${{ matrix.name }})" \
 
       - name: Fetch artifacts
         if: ${{ !success() && steps.run-tests.outcome != 'skipped' }}
-        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
-        with:
-          provision: 'false'
-          cmd: |
-            cd /host
-            kubectl get pods --all-namespaces -o wide
-            ./cilium-cli status
-            mkdir -p cilium-sysdumps
-            ./cilium-cli sysdump --output-filename cilium-sysdump-${{ matrix.name }}-final
-            # To debug https://github.com/cilium/cilium/issues/26062
-            head -n -0 /proc/buddyinfo /proc/pagetypeinfo
+        shell: bash
+        run: |
+          kubectl get pods --all-namespaces -o wide
+          ./cilium-cli status
+          mkdir -p cilium-sysdumps
+          ./cilium-cli sysdump --output-filename cilium-sysdump-${{ matrix.name }}-final
 
       - name: Upload artifacts
         if: ${{ !success() }}

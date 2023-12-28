@@ -27,7 +27,6 @@ import (
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/maglev"
 	"github.com/cilium/cilium/pkg/mountinfo"
-	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/safeio"
 	"github.com/cilium/cilium/pkg/sysctl"
@@ -349,12 +348,11 @@ func probeKubeProxyReplacementOptions() error {
 			}
 		}
 
-		if !option.Config.EnableSocketLB {
-			option.Config.EnableSocketLBTracing = false
-		}
-		if probes.HaveProgramHelper(ebpf.CGroupSockAddr, asm.FnPerfEventOutput) != nil {
-			option.Config.EnableSocketLBTracing = false
-			log.Warn("Disabling socket-LB tracing as it requires kernel 5.7 or newer")
+		if option.Config.EnableSocketLBTracing {
+			if probes.HaveProgramHelper(ebpf.CGroupSockAddr, asm.FnPerfEventOutput) != nil {
+				option.Config.EnableSocketLBTracing = false
+				log.Warn("Disabling socket-LB tracing as it requires kernel 5.7 or newer")
+			}
 		}
 	} else {
 		option.Config.EnableSocketLBTracing = false
@@ -396,11 +394,6 @@ func finishKubeProxyReplacementInit() error {
 
 	if option.Config.DryMode {
 		return nil
-	}
-
-	if err := node.InitNodePortAddrs(option.Config.GetDevices(), option.Config.LBDevInheritIPAddr); err != nil {
-		msg := "failed to initialize NodePort addrs."
-		return fmt.Errorf(msg+" : %w", err)
 	}
 
 	// +-------------------------------------------------------+

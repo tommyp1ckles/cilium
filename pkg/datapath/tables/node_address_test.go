@@ -57,6 +57,7 @@ func TestNodeAddressConfig(t *testing.T) {
 }
 
 var ciliumHostIP = net.ParseIP("9.9.9.9")
+var ciliumHostIPLinkScoped = net.ParseIP("9.9.9.8")
 
 var nodeAddressTests = []struct {
 	name         string
@@ -74,6 +75,7 @@ var nodeAddressTests = []struct {
 		},
 		wantLocal: []net.IP{
 			ciliumHostIP,
+			ciliumHostIPLinkScoped,
 			net.ParseIP("10.0.0.1"),
 		},
 		wantNodePort: []net.IP{
@@ -90,6 +92,7 @@ var nodeAddressTests = []struct {
 		},
 		wantLocal: []net.IP{
 			ciliumHostIP,
+			ciliumHostIPLinkScoped,
 			net.ParseIP("2001:db8::1"),
 		},
 		wantNodePort: []net.IP{
@@ -111,6 +114,7 @@ var nodeAddressTests = []struct {
 
 		wantLocal: []net.IP{
 			ciliumHostIP,
+			ciliumHostIPLinkScoped,
 			net.ParseIP("2001:db8::1"),
 			net.ParseIP("10.0.0.1"),
 		},
@@ -139,9 +143,10 @@ var nodeAddressTests = []struct {
 		},
 
 		// The default AddressMaxScope is set to LINK-1, so addresses with
-		// scope LINK or above are ignored
+		// scope LINK or above are ignored (except for cilium_host addresses)
 		wantLocal: []net.IP{
 			ciliumHostIP,
+			ciliumHostIPLinkScoped,
 			net.ParseIP("10.0.1.1"),
 		},
 
@@ -166,6 +171,7 @@ var nodeAddressTests = []struct {
 
 		wantLocal: []net.IP{
 			ciliumHostIP,
+			ciliumHostIPLinkScoped,
 			net.ParseIP("10.0.0.1"),
 			net.ParseIP("10.0.0.2"),
 		},
@@ -189,6 +195,7 @@ var nodeAddressTests = []struct {
 
 		wantLocal: []net.IP{
 			ciliumHostIP,
+			ciliumHostIPLinkScoped,
 			net.ParseIP("2001:db8::1"),
 			net.ParseIP("2600:beef::2"),
 		},
@@ -204,38 +211,7 @@ func TestNodeAddress(t *testing.T) {
 
 	for _, tt := range nodeAddressTests {
 		t.Run(tt.name, func(t *testing.T) {
-			var (
-				db        *statedb.DB
-				devices   statedb.RWTable[*tables.Device]
-				nodeAddrs statedb.Table[tables.NodeAddress]
-			)
-			h := hive.New(
-				job.Cell,
-				statedb.Cell,
-				tables.NodeAddressCell,
-				cell.Provide(
-					tables.NewDeviceTable,
-					statedb.RWTable[*tables.Device].ToTable,
-				),
-				cell.Invoke(func(db_ *statedb.DB, d statedb.RWTable[*tables.Device], na statedb.Table[tables.NodeAddress]) {
-					db = db_
-					devices = d
-					nodeAddrs = na
-					db.RegisterTable(d)
-				}),
-
-				// option.DaemonConfig needed for AddressMaxScope. This flag will move into NodeAddressConfig
-				// in a follow-up PR.
-				cell.Provide(func() *option.DaemonConfig {
-					return &option.DaemonConfig{
-						AddressScopeMax: defaults.AddressScopeMax,
-					}
-				}),
-			)
-
-			if !assert.NoError(t, h.Start(context.TODO()), "Start") {
-				return
-			}
+			db, devices, nodeAddrs := fixture(t, defaults.AddressScopeMax, nil)
 
 			txn := db.WriteTxn(devices)
 			_, watch := nodeAddrs.All(txn)
@@ -246,6 +222,7 @@ func TestNodeAddress(t *testing.T) {
 				Flags: net.FlagUp,
 				Addrs: []tables.DeviceAddress{
 					{Addr: ip.MustAddrFromIP(ciliumHostIP), Scope: unix.RT_SCOPE_UNIVERSE},
+					{Addr: ip.MustAddrFromIP(ciliumHostIPLinkScoped), Scope: unix.RT_SCOPE_LINK},
 				},
 				Selected: false,
 			})
@@ -264,9 +241,10 @@ func TestNodeAddress(t *testing.T) {
 			<-watch // wait for propagation
 
 			iter, _ := nodeAddrs.All(db.ReadTxn())
+			addrs := statedb.Collect(iter)
 			local := []string{}
 			nodePort := []string{}
-			for addr, _, ok := iter.Next(); ok; addr, _, ok = iter.Next() {
+			for _, addr := range addrs {
 				local = append(local, addr.Addr.String())
 				if addr.NodePort {
 					nodePort = append(nodePort, addr.Addr.String())
@@ -274,10 +252,52 @@ func TestNodeAddress(t *testing.T) {
 			}
 			assert.ElementsMatch(t, local, ipStrings(tt.wantLocal), "LocalAddresses do not match")
 			assert.ElementsMatch(t, nodePort, ipStrings(tt.wantNodePort), "LoadBalancerNodeAddresses do not match")
-			assert.NoError(t, h.Stop(context.TODO()), "Stop")
+			assertOnePrimaryPerDevice(t, addrs)
 		})
 	}
 
+}
+
+// TestNodeAddressHostDevice checks that the for cilium_host the link scope'd
+// addresses are always picked regardless of the max scope.
+// More context in commit 080857bdedca67d58ec39f8f96c5f38b22f6dc0b.
+func TestNodeAddressHostDevice(t *testing.T) {
+	t.Parallel()
+
+	db, devices, nodeAddrs := fixture(t, unix.RT_SCOPE_SITE, nil)
+
+	txn := db.WriteTxn(devices)
+	_, watch := nodeAddrs.All(txn)
+
+	devices.Insert(txn, &tables.Device{
+		Index: 1,
+		Name:  "cilium_host",
+		Flags: net.FlagUp,
+		Addrs: []tables.DeviceAddress{
+			// <SITE
+			{Addr: ip.MustAddrFromIP(ciliumHostIP), Scope: unix.RT_SCOPE_UNIVERSE},
+			// >SITE, but included
+			{Addr: ip.MustAddrFromIP(ciliumHostIPLinkScoped), Scope: unix.RT_SCOPE_LINK},
+			// >SITE, skipped
+			{Addr: netip.MustParseAddr("10.0.0.1"), Scope: unix.RT_SCOPE_HOST},
+		},
+		Selected: false,
+	})
+
+	txn.Commit()
+	<-watch // wait for propagation
+
+	iter, _ := nodeAddrs.All(db.ReadTxn())
+	addrs := statedb.Collect(iter)
+
+	if assert.Len(t, addrs, 2) {
+		// The addresses are sorted by IP, so we see the link-scoped address first.
+		assert.Equal(t, addrs[0].Addr.String(), ciliumHostIPLinkScoped.String())
+		assert.False(t, addrs[0].Primary)
+
+		assert.Equal(t, addrs[1].Addr.String(), ciliumHostIP.String())
+		assert.True(t, addrs[1].Primary)
+	}
 }
 
 var nodeAddressWhitelistTests = []struct {
@@ -302,6 +322,7 @@ var nodeAddressWhitelistTests = []struct {
 		},
 		wantLocal: []net.IP{
 			ciliumHostIP,
+			ciliumHostIPLinkScoped,
 			net.ParseIP("10.0.0.1"),
 			net.ParseIP("11.0.0.1"),
 		},
@@ -324,6 +345,7 @@ var nodeAddressWhitelistTests = []struct {
 		},
 		wantLocal: []net.IP{
 			ciliumHostIP,
+			ciliumHostIPLinkScoped,
 			net.ParseIP("2001:db8::1"),
 			net.ParseIP("2600:beef::2"),
 		},
@@ -355,6 +377,7 @@ var nodeAddressWhitelistTests = []struct {
 
 		wantLocal: []net.IP{
 			ciliumHostIP,
+			ciliumHostIPLinkScoped,
 			net.ParseIP("10.0.0.1"),
 			net.ParseIP("11.0.0.1"),
 			net.ParseIP("2001:db8::1"),
@@ -372,40 +395,10 @@ func TestNodeAddressWhitelist(t *testing.T) {
 
 	for _, tt := range nodeAddressWhitelistTests {
 		t.Run(tt.name, func(t *testing.T) {
-
-			var (
-				db        *statedb.DB
-				devices   statedb.RWTable[*tables.Device]
-				nodeAddrs statedb.Table[tables.NodeAddress]
-			)
-			h := hive.New(
-				job.Cell,
-				statedb.Cell,
-				tables.NodeAddressCell,
-				cell.Provide(
-					tables.NewDeviceTable,
-					statedb.RWTable[*tables.Device].ToTable,
-				),
-				cell.Invoke(func(db_ *statedb.DB, d statedb.RWTable[*tables.Device], na statedb.Table[tables.NodeAddress]) {
-					db = db_
-					devices = d
-					nodeAddrs = na
-					db.RegisterTable(d)
-				}),
-
-				// option.DaemonConfig needed for AddressMaxScope. This flag will move into NodeAddressConfig
-				// in a follow-up PR.
-				cell.Provide(func() *option.DaemonConfig {
-					return &option.DaemonConfig{
-						AddressScopeMax: defaults.AddressScopeMax,
-					}
-				}),
-			)
-			h.Viper().Set("nodeport-addresses", tt.cidrs)
-
-			if !assert.NoError(t, h.Start(context.TODO()), "Start") {
-				return
-			}
+			db, devices, nodeAddrs := fixture(t, defaults.AddressScopeMax,
+				func(h *hive.Hive) {
+					h.Viper().Set("nodeport-addresses", tt.cidrs)
+				})
 
 			txn := db.WriteTxn(devices)
 			_, watch := nodeAddrs.All(txn)
@@ -416,6 +409,7 @@ func TestNodeAddressWhitelist(t *testing.T) {
 				Flags: net.FlagUp,
 				Addrs: []tables.DeviceAddress{
 					{Addr: ip.MustAddrFromIP(ciliumHostIP), Scope: unix.RT_SCOPE_UNIVERSE},
+					{Addr: ip.MustAddrFromIP(ciliumHostIPLinkScoped), Scope: unix.RT_SCOPE_LINK},
 				},
 				Selected: false,
 			})
@@ -444,10 +438,48 @@ func TestNodeAddressWhitelist(t *testing.T) {
 			}
 			assert.ElementsMatch(t, local, ipStrings(tt.wantLocal), "LocalAddresses do not match")
 			assert.ElementsMatch(t, nodePort, ipStrings(tt.wantNodePort), "LoadBalancerNodeAddresses do not match")
-			assert.NoError(t, h.Stop(context.TODO()), "Stop")
 		})
 	}
 
+}
+
+func fixture(t *testing.T, addressScopeMax int, beforeStart func(*hive.Hive)) (*statedb.DB, statedb.RWTable[*tables.Device], statedb.Table[tables.NodeAddress]) {
+	var (
+		db        *statedb.DB
+		devices   statedb.RWTable[*tables.Device]
+		nodeAddrs statedb.Table[tables.NodeAddress]
+	)
+	h := hive.New(
+		job.Cell,
+		statedb.Cell,
+		tables.NodeAddressCell,
+		cell.Provide(
+			tables.NewDeviceTable,
+			statedb.RWTable[*tables.Device].ToTable,
+		),
+		cell.Invoke(func(db_ *statedb.DB, d statedb.RWTable[*tables.Device], na statedb.Table[tables.NodeAddress]) {
+			db = db_
+			devices = d
+			nodeAddrs = na
+			db.RegisterTable(d)
+		}),
+
+		// option.DaemonConfig needed for AddressMaxScope. This flag will move into NodeAddressConfig
+		// in a follow-up PR.
+		cell.Provide(func() *option.DaemonConfig {
+			return &option.DaemonConfig{
+				AddressScopeMax: addressScopeMax,
+			}
+		}),
+	)
+	if beforeStart != nil {
+		beforeStart(h)
+	}
+	require.NoError(t, h.Start(context.TODO()), "Start")
+	t.Cleanup(func() {
+		assert.NoError(t, h.Stop(context.TODO()), "Stop")
+	})
+	return db, devices, nodeAddrs
 }
 
 // ipStrings converts net.IP to a string. Used to assert equalence without having to deal
@@ -466,4 +498,34 @@ func shuffleSlice[T any](xs []T) {
 		func(i, j int) {
 			xs[i], xs[j] = xs[j], xs[i]
 		})
+}
+
+func assertOnePrimaryPerDevice(t *testing.T, addrs []tables.NodeAddress) {
+	ipv4 := map[string]netip.Addr{}
+	ipv6 := map[string]netip.Addr{}
+	hasPrimary := map[string]bool{}
+
+	for _, addr := range addrs {
+		hasPrimary[addr.DeviceName] = hasPrimary[addr.DeviceName] || addr.Primary
+		if !addr.Primary {
+			continue
+		}
+		if addr.Addr.Is4() {
+			if other, ok := ipv4[addr.DeviceName]; ok && other != addr.Addr {
+				assert.Fail(t, "multiple primary IPv4 addresses", "device %q had multiple primary IPv4 addresses: %q and %q", addr.DeviceName, addr.Addr, other)
+			}
+			ipv4[addr.DeviceName] = addr.Addr
+		} else {
+			if other, ok := ipv6[addr.DeviceName]; ok && other != addr.Addr {
+				assert.Fail(t, "multiple primary IPv6 addresses", "device %q had multiple primary IPv6 addresses: %q and %q", addr.DeviceName, addr.Addr, other)
+			}
+			ipv6[addr.DeviceName] = addr.Addr
+		}
+	}
+
+	for dev, primary := range hasPrimary {
+		if !primary {
+			assert.Fail(t, "device %q had no primary addresses", dev)
+		}
+	}
 }

@@ -5,8 +5,6 @@ package endpoint
 
 import (
 	"context"
-	"net"
-	"net/netip"
 	"reflect"
 	"strings"
 	"testing"
@@ -20,7 +18,6 @@ import (
 	"github.com/cilium/cilium/pkg/endpoint/regeneration"
 	"github.com/cilium/cilium/pkg/eventqueue"
 	"github.com/cilium/cilium/pkg/fqdn/restore"
-	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/identity/cache"
 	ciliumio "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 	"github.com/cilium/cilium/pkg/kvstore"
@@ -46,7 +43,7 @@ type EndpointSuite struct {
 	regeneration.Owner
 	repo     *policy.Repository
 	datapath datapath.Datapath
-	mgr      fakeIdentityAllocator
+	mgr      *cache.CachingIdentityAllocator
 
 	// Owners interface mock
 	OnGetPolicyRepository     func() *policy.Repository
@@ -114,42 +111,19 @@ func (s *EndpointSuite) GetDNSRules(epID uint16) restore.DNSRules {
 func (s *EndpointSuite) RemoveRestoredDNSRules(epID uint16) {
 }
 
-// TODO: Remove the etcd dependency from these tests with a full dummy
-// implementation of an identity allocator under pkg/testutils/identity.
-// Until we do that, these tests must rely on the real CachingIdentityAllocator
-// implementation inside.
-type fakeIdentityAllocator struct {
-	*cache.CachingIdentityAllocator
-}
-
-func (f fakeIdentityAllocator) AllocateCIDRsForIPs([]net.IP, map[netip.Prefix]*identity.Identity) ([]*identity.Identity, error) {
-	return nil, nil
-}
-
-func (f fakeIdentityAllocator) ReleaseCIDRIdentitiesByID(context.Context, []identity.NumericIdentity) {
-}
-
-func NewCachingIdentityAllocator(owner cache.IdentityAllocatorOwner) fakeIdentityAllocator {
-	return fakeIdentityAllocator{
-		CachingIdentityAllocator: cache.NewCachingIdentityAllocator(owner),
-	}
-}
-
-// func (f *fakeIdentityAllocator)
-
 func (s *EndpointSuite) SetUpTest(c *C) {
 	/* Required to test endpoint CEP policy model */
 	kvstore.SetupDummy(c, "etcd")
 	// The nils are only used by k8s CRD identities. We default to kvstore.
-	mgr := NewCachingIdentityAllocator(&testidentity.IdentityAllocatorOwnerMock{})
+	mgr := cache.NewCachingIdentityAllocator(&testidentity.IdentityAllocatorOwnerMock{})
 	<-mgr.InitIdentityAllocator(nil)
 	s.mgr = mgr
 	node.SetTestLocalNodeStore()
-}
 
-func (s *EndpointSuite) TearDownTest(c *C) {
-	s.mgr.Close()
-	node.UnsetTestLocalNodeStore()
+	c.Cleanup(func() {
+		s.mgr.Close()
+		node.UnsetTestLocalNodeStore()
+	})
 }
 
 func (s *EndpointSuite) TestEndpointStatus(c *C) {
@@ -265,24 +239,39 @@ func (s *EndpointSuite) TestEndpointUpdateLabels(c *C) {
 	e := NewEndpointWithState(s, s, testipcache.NewMockIPCache(), &FakeEndpointProxy{}, testidentity.NewMockIdentityAllocator(nil), 100, StateWaitingForIdentity)
 
 	// Test that inserting identity labels works
-	rev := e.replaceIdentityLabels(labels.Map2Labels(map[string]string{"foo": "bar", "zip": "zop"}, "cilium"))
+	rev := e.replaceIdentityLabels(labels.LabelSourceAny, labels.Map2Labels(map[string]string{"foo": "bar", "zip": "zop"}, "cilium"))
 	c.Assert(rev, Not(Equals), 0)
 	c.Assert(string(e.OpLabels.OrchestrationIdentity.SortedList()), Equals, "cilium:foo=bar;cilium:zip=zop;")
 	// Test that nothing changes
-	rev = e.replaceIdentityLabels(labels.Map2Labels(map[string]string{"foo": "bar", "zip": "zop"}, "cilium"))
+	rev = e.replaceIdentityLabels(labels.LabelSourceAny, labels.Map2Labels(map[string]string{"foo": "bar", "zip": "zop"}, "cilium"))
 	c.Assert(rev, Equals, 0)
 	c.Assert(string(e.OpLabels.OrchestrationIdentity.SortedList()), Equals, "cilium:foo=bar;cilium:zip=zop;")
 	// Remove one label, change the source and value of the other.
-	rev = e.replaceIdentityLabels(labels.Map2Labels(map[string]string{"foo": "zop"}, "nginx"))
+	rev = e.replaceIdentityLabels(labels.LabelSourceAny, labels.Map2Labels(map[string]string{"foo": "zop"}, "cilium"))
 	c.Assert(rev, Not(Equals), 0)
-	c.Assert(string(e.OpLabels.OrchestrationIdentity.SortedList()), Equals, "nginx:foo=zop;")
+	c.Assert(string(e.OpLabels.OrchestrationIdentity.SortedList()), Equals, "cilium:foo=zop;")
 
 	// Test that inserting information labels works
-	e.replaceInformationLabels(labels.Map2Labels(map[string]string{"foo": "bar", "zip": "zop"}, "cilium"))
+	e.replaceInformationLabels(labels.LabelSourceAny, labels.Map2Labels(map[string]string{"foo": "bar", "zip": "zop"}, "cilium"))
 	c.Assert(string(e.OpLabels.OrchestrationInfo.SortedList()), Equals, "cilium:foo=bar;cilium:zip=zop;")
-	// Remove one label, change the source and value of the other.
-	e.replaceInformationLabels(labels.Map2Labels(map[string]string{"foo": "zop"}, "nginx"))
-	c.Assert(string(e.OpLabels.OrchestrationInfo.SortedList()), Equals, "nginx:foo=zop;")
+
+	// Test that inserting a new nginx will also keep the previous cilium label
+	e.replaceInformationLabels("nginx", labels.Map2Labels(map[string]string{"foo2": "zop2", "zip": "zop2"}, "nginx"))
+	c.Assert(string(e.OpLabels.OrchestrationInfo.SortedList()), Equals, "cilium:foo=bar;nginx:foo2=zop2;cilium:zip=zop;")
+
+	// Test that we will keep the 'nginx' label because we only want to add
+	// Cilium labels.
+	e.replaceInformationLabels("cilium", labels.Map2Labels(map[string]string{"foo2": "bar2", "zip2": "zop2"}, "cilium"))
+	c.Assert(string(e.OpLabels.OrchestrationInfo.SortedList()), Equals, "nginx:foo2=zop2;cilium:zip2=zop2;")
+
+	// Test that we will keep the 'nginx' label because we only want to update
+	// Cilium labels.
+	e.replaceInformationLabels("cilium", labels.Map2Labels(map[string]string{"foo3": "bar3"}, "cilium"))
+	c.Assert(string(e.OpLabels.OrchestrationInfo.SortedList()), Equals, "nginx:foo2=zop2;cilium:foo3=bar3;")
+
+	// Test that we will not replace labels from other sources if the key is the same.
+	e.replaceInformationLabels(labels.LabelSourceAny, labels.Map2Labels(map[string]string{"foo2": "bar2"}, "cilium"))
+	c.Assert(string(e.OpLabels.OrchestrationInfo.SortedList()), Equals, "nginx:foo2=zop2;")
 }
 
 func (s *EndpointSuite) TestEndpointState(c *C) {
@@ -534,15 +523,23 @@ func (s *EndpointSuite) TestWaitForPolicyRevision(c *C) {
 
 func (s *EndpointSuite) TestProxyID(c *C) {
 	e := &Endpoint{ID: 123, policyRevision: 0}
+	e.UpdateLogger(nil)
 
-	id := e.proxyID(&policy.L4Filter{Port: 8080, Protocol: api.ProtoTCP, Ingress: true})
+	id, port := e.proxyID(&policy.L4Filter{Port: 8080, Protocol: api.ProtoTCP, Ingress: true})
 	c.Assert(id, Not(Equals), "")
+	c.Assert(port, Equals, uint16(8080))
+
 	endpointID, ingress, protocol, port, err := policy.ParseProxyID(id)
 	c.Assert(endpointID, Equals, uint16(123))
 	c.Assert(ingress, Equals, true)
 	c.Assert(protocol, Equals, "TCP")
 	c.Assert(port, Equals, uint16(8080))
 	c.Assert(err, IsNil)
+
+	// Undefined named port
+	id, port = e.proxyID(&policy.L4Filter{PortName: "foobar", Protocol: api.ProtoTCP, Ingress: true})
+	c.Assert(id, Equals, "")
+	c.Assert(port, Equals, uint16(0))
 }
 
 func TestEndpoint_GetK8sPodLabels(t *testing.T) {

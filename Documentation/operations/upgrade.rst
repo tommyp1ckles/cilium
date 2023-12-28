@@ -339,6 +339,15 @@ Annotations:
   is configured in native routing mode and :ref:`DSR mode with Geneve` is enabled.
   Explicitly configure ``--tunnel-protocol=geneve`` (or the equivalent
   ``tunnelProtocol=geneve`` helm value) when DSR with Geneve is enabled.
+* The ``CILIUM_PREPEND_IPTABLES_CHAIN`` environment variable has been renamed
+  to ``CILIUM_PREPEND_IPTABLES_CHAINS`` (note the trailing ``S``) to more accurately
+  match the name of the associated command line flag ``--prepend-iptables-chains``.
+* ``CiliumNetworkPolicy`` changed the semantic of the empty non-nil slice.
+  For an Ingress CNP, an empty slice in one of the fields ``fromEndpoints``, ``fromCIDR``,
+  ``fromCIDRSet`` and ``fromEntities`` will not select any identity, thus falling back
+  to default deny for an allow policy. Similarly, for an Egress CNP, an empty slice in
+  one of the fields ``toEndpoints``, ``toCIDR``, ``toCIDRSet`` and ``toEntities`` will
+  not select any identity either.
 
 .. _upgrade_cilium_cli_helm_mode:
 
@@ -373,6 +382,13 @@ Removed Options
   ``tunnel=disabled``). To configure the tunneling protocol, set
   ``tunnel-protocol=vxlan|geneve`` (previously ``tunnel=vxlan|geneve``).
 
+* The long defunct and undocumented ``single-cluster-route`` flag has been removed.
+
+* The ``dnsproxy-lock-count`` and ``dnsproxy-lock-timeout`` flags no longer have
+  any effect and are deprecated. They will be removed in v1.16.
+
+* Deprecated options ``enable-k8s-event-handover`` and ``cnp-status-update-interval`` has been removed.
+
 Helm Options
 ~~~~~~~~~~~~
 
@@ -393,6 +409,8 @@ Helm Options
 
 * Value ``tunnel`` was deprecated in Cilium 1.14 in favor of ``routingMode`` and
   ``tunnelProtocol``, and has been removed.
+
+* Values  ``enableK8sEventHandover`` and ``enableCnpStatusUpdates`` have been removed.
 
 Added Metrics
 ~~~~~~~~~~~~~

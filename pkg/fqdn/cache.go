@@ -11,9 +11,10 @@ import (
 	"sort"
 	"unsafe"
 
+	"k8s.io/apimachinery/pkg/util/sets"
+
 	"github.com/cilium/cilium/pkg/fqdn/matchpattern"
 	"github.com/cilium/cilium/pkg/fqdn/re"
-	ippkg "github.com/cilium/cilium/pkg/ip"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/slices"
@@ -69,17 +70,17 @@ type ipEntries map[netip.Addr]*cacheEntry
 // but the key is a DNS name.
 type nameEntries map[string]*cacheEntry
 
-// getIPs returns a sorted list of non-expired unique IPs.
+// getIPs returns an unsorted list of non-expired unique IPs.
 // This needs a read-lock
-func (s ipEntries) getIPs(now time.Time) []net.IP {
-	ips := make([]net.IP, 0, len(s)) // worst case size
+func (s ipEntries) getIPs(now time.Time) []netip.Addr {
+	ips := make([]netip.Addr, 0, len(s)) // worst case size
 	for ip, entry := range s {
 		if entry != nil && !entry.isExpiredBy(now) {
-			ips = append(ips, ip.Unmap().AsSlice())
+			ips = append(ips, ip.Unmap())
 		}
 	}
 
-	return ippkg.KeepUniqueIPs(ips) // sorts IPs
+	return ips
 }
 
 // DNSCache manages DNS data that will expire after a certain TTL. Information
@@ -396,8 +397,8 @@ func (c *DNSCache) ReplaceFromCacheByNames(namesToUpdate []string, updates ...*D
 
 // Lookup returns a set of unique IPs that are currently unexpired for name, if
 // any exist. An empty list indicates no valid records exist. The IPs are
-// returned sorted.
-func (c *DNSCache) Lookup(name string) (ips []net.IP) {
+// returned unsorted.
+func (c *DNSCache) Lookup(name string) (ips []netip.Addr) {
 	c.RLock()
 	defer c.RUnlock()
 
@@ -406,7 +407,7 @@ func (c *DNSCache) Lookup(name string) (ips []net.IP) {
 
 // lookupByTime takes a timestamp for expiration comparisons, and is only
 // intended for testing.
-func (c *DNSCache) lookupByTime(now time.Time, name string) (ips []net.IP) {
+func (c *DNSCache) lookupByTime(now time.Time, name string) (ips []netip.Addr) {
 	entries, found := c.forward[name]
 	if !found {
 		return nil
@@ -417,14 +418,14 @@ func (c *DNSCache) lookupByTime(now time.Time, name string) (ips []net.IP) {
 
 // LookupByRegexp returns all non-expired cache entries that match re as a map
 // of name -> IPs
-func (c *DNSCache) LookupByRegexp(re *regexp.Regexp) (matches map[string][]net.IP) {
+func (c *DNSCache) LookupByRegexp(re *regexp.Regexp) (matches map[string][]netip.Addr) {
 	return c.lookupByRegexpByTime(c.lastCleanup, re)
 }
 
 // lookupByRegexpByTime takes a timestamp for expiration comparisons, and is
 // only intended for testing.
-func (c *DNSCache) lookupByRegexpByTime(now time.Time, re *regexp.Regexp) (matches map[string][]net.IP) {
-	matches = make(map[string][]net.IP)
+func (c *DNSCache) lookupByRegexpByTime(now time.Time, re *regexp.Regexp) (matches map[string][]netip.Addr) {
+	matches = make(map[string][]netip.Addr)
 
 	c.RLock()
 	defer c.RUnlock()
@@ -432,7 +433,7 @@ func (c *DNSCache) lookupByRegexpByTime(now time.Time, re *regexp.Regexp) (match
 	for name, entry := range c.forward {
 		if re.MatchString(name) {
 			if ips := entry.getIPs(now); len(ips) > 0 {
-				matches[name] = append(matches[name], ips...)
+				matches[name] = ips
 			}
 		}
 	}
@@ -467,6 +468,12 @@ func (c *DNSCache) lookupIPByTime(now time.Time, ip netip.Addr) (names []string)
 
 	sort.Strings(names)
 	return names
+}
+
+// ipExistsLocked returns true if the IP is known to the cache.
+func (c *DNSCache) ipExistsLocked(ip netip.Addr) bool {
+	_, exists := c.reverse[ip]
+	return exists
 }
 
 // updateWithEntryIPs adds a mapping for every IP found in `entry` to `ipEntries`
@@ -558,6 +565,20 @@ func (c *DNSCache) removeReverse(ip netip.Addr, entry *cacheEntry) {
 	if len(entries) == 0 {
 		delete(c.reverse, ip)
 	}
+}
+
+// GetIPs takes a snapshot of all IPs in the reverse cache.
+func (c *DNSCache) GetIPs() sets.Set[netip.Addr] {
+	c.RWMutex.RLock()
+	defer c.RWMutex.RUnlock()
+
+	out := make(sets.Set[netip.Addr], len(c.reverse))
+
+	for ip := range c.reverse {
+		out.Insert(ip)
+	}
+
+	return out
 }
 
 // ForceExpire is used to clear entries from the cache before their TTL is

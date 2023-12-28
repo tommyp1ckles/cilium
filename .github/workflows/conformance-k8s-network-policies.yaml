@@ -1,15 +1,16 @@
 name: Cyclonus Network Policy Test
 
 on:
-  schedule:
-    # run once a day at midnight
-    - cron: '0 0 * * *'
+  push:
+    branches:
+      - main
+      - ft/main/**
+    paths-ignore:
+      - 'Documentation/**'
 
 permissions: read-all
 
 env:
-  # renovate: datasource=github-releases depName=cilium/cilium-cli
-  cilium_cli_version: v0.15.14
   cilium_cli_ci_version:
   # renovate: datasource=github-releases depName=kubernetes-sigs/kind
   KIND_VERSION: v0.20.0
@@ -34,6 +35,8 @@ jobs:
           diff \
              -I '^[ ]\{2\}name: cilium.*' \
              -I '^Keep file in sync with.*' \
+             -I '^  {{- with .Values.annotations }}$' \
+             -I '^  {{- with .Values.preflight.annotations }}$' \
              -I '{{- if.*' \
              cilium-agent/clusterrole.yaml \
              cilium-preflight/clusterrole.yaml
@@ -124,9 +127,10 @@ jobs:
 
       - name: Install Cilium CLI
         if: ${{ failure() }}
-        uses: cilium/cilium-cli@446392499db483906bcc3ade85f023912a79e5ee # v0.15.14
+        uses: cilium/cilium-cli@32109b32259a487c803648a3c9463cdcafa4c0c3 # v0.15.19
         with:
-          release-version: ${{ env.cilium_cli_version }}
+          repository: ${{ env.CILIUM_CLI_RELEASE_REPO }}
+          release-version: ${{ env.CILIUM_CLI_VERSION }}
           ci-version: ${{ env.cilium_cli_ci_version }}
 
       - name: Report cluster failure status and capture cilium-sysdump

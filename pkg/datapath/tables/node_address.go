@@ -14,6 +14,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
+	"golang.org/x/sys/unix"
 	"k8s.io/apimachinery/pkg/util/sets"
 
 	"github.com/cilium/cilium/pkg/cidr"
@@ -22,6 +23,7 @@ import (
 	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/hive/job"
 	"github.com/cilium/cilium/pkg/ip"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/rate"
 	"github.com/cilium/cilium/pkg/statedb"
@@ -58,6 +60,24 @@ func (n *NodeAddress) String() string {
 	return fmt.Sprintf("%s (%s)", n.Addr, n.DeviceName)
 }
 
+func (n NodeAddress) TableHeader() []string {
+	return []string{
+		"Address",
+		"NodePort",
+		"Primary",
+		"DeviceName",
+	}
+}
+
+func (n NodeAddress) TableRow() []string {
+	return []string{
+		n.Addr.String(),
+		fmt.Sprintf("%v", n.NodePort),
+		fmt.Sprintf("%v", n.Primary),
+		n.DeviceName,
+	}
+}
+
 type NodeAddressConfig struct {
 	NodePortAddresses []*cidr.CIDR `mapstructure:"nodeport-addresses"`
 }
@@ -72,10 +92,8 @@ var (
 		FromObject: func(a NodeAddress) index.KeySet {
 			return index.NewKeySet(index.NetIPAddr(a.Addr))
 		},
-		FromKey: func(addr netip.Addr) []byte {
-			return index.NetIPAddr(addr)
-		},
-		Unique: true,
+		FromKey: index.NetIPAddr,
+		Unique:  true,
 	}
 
 	NodeAddressDeviceNameIndex = statedb.Index[NodeAddress, string]{
@@ -204,7 +222,7 @@ func (n *nodeAddressController) register() {
 				// Do an immediate update to populate the table before it is read from.
 				devices, _ := n.Devices.All(txn)
 				for dev, _, ok := devices.Next(); ok; dev, _, ok = devices.Next() {
-					n.update(txn, nil, n.getAddressesFromDevice(dev), nil)
+					n.update(txn, nil, n.getAddressesFromDevice(dev), nil, dev.Name)
 				}
 				txn.Commit()
 
@@ -225,13 +243,15 @@ func (n *nodeAddressController) run(ctx context.Context, reporter cell.HealthRep
 	for {
 		txn := n.DB.WriteTxn(n.NodeAddresses)
 		process := func(dev *Device, deleted bool, rev statedb.Revision) error {
+			// Note: prefix match! existing may contain node addresses from devices with names
+			// prefixed by dev. See https://github.com/cilium/cilium/issues/29324.
 			addrIter, _ := n.NodeAddresses.Get(txn, NodeAddressDeviceNameIndex.Query(dev.Name))
 			existing := statedb.CollectSet[NodeAddress](addrIter)
 			var new sets.Set[NodeAddress]
 			if !deleted {
 				new = n.getAddressesFromDevice(dev)
 			}
-			n.update(txn, existing, new, reporter)
+			n.update(txn, existing, new, reporter, dev.Name)
 			return nil
 		}
 		var watch <-chan struct{}
@@ -249,8 +269,10 @@ func (n *nodeAddressController) run(ctx context.Context, reporter cell.HealthRep
 	}
 }
 
-func (n *nodeAddressController) update(txn statedb.WriteTxn, existing, new sets.Set[NodeAddress], reporter cell.HealthReporter) {
+// updates the node addresses of a single device.
+func (n *nodeAddressController) update(txn statedb.WriteTxn, existing, new sets.Set[NodeAddress], reporter cell.HealthReporter, device string) {
 	updated := false
+	prefixLen := len(device)
 
 	// Insert new addresses that did not exist.
 	for addr := range new {
@@ -262,6 +284,12 @@ func (n *nodeAddressController) update(txn statedb.WriteTxn, existing, new sets.
 
 	// Remove addresses that were not part of the new set.
 	for addr := range existing {
+		// Ensure full device name match. 'device' may be a prefix of DeviceName, and we don't want
+		// to delete node addresses of `cilium_host` because they are not on `cilium`.
+		if prefixLen != len(addr.DeviceName) {
+			continue
+		}
+
 		if !new.Has(addr) {
 			updated = true
 			n.NodeAddresses.Delete(txn, addr)
@@ -270,7 +298,7 @@ func (n *nodeAddressController) update(txn statedb.WriteTxn, existing, new sets.
 
 	if updated {
 		addrs := showAddresses(new)
-		n.Log.WithField("node-addresses", addrs).Info("Node addresses updated")
+		n.Log.WithFields(logrus.Fields{"node-addresses": addrs, logfields.Device: device}).Info("Node addresses updated")
 		if reporter != nil {
 			reporter.OK(addrs)
 		}
@@ -284,10 +312,9 @@ func (n *nodeAddressController) getAddressesFromDevice(dev *Device) (addrs sets.
 		return
 	}
 
-	// Skip obviously uninteresting devices.
-	// We include the HostDevice as its IP addresses are consider node addresses
-	// and added to e.g. ipcache as HOST_IDs.
 	if dev.Name != defaults.HostDevice {
+		// Skip obviously uninteresting devices. We include the HostDevice as its IP addresses are
+		// considered node addresses and added to e.g. ipcache as HOST_IDs.
 		for _, prefix := range defaults.ExcludedDevicePrefixes {
 			if strings.HasPrefix(dev.Name, prefix) {
 				return
@@ -302,30 +329,36 @@ func (n *nodeAddressController) getAddressesFromDevice(dev *Device) (addrs sets.
 	for _, addr := range sortedAddresses(dev.Addrs) {
 		// We keep the scope-based address filtering as was introduced
 		// in 080857bdedca67d58ec39f8f96c5f38b22f6dc0b.
-		if addr.Scope > uint8(n.AddressScopeMax) || addr.Addr.IsLoopback() {
+		skip := addr.Scope > uint8(n.AddressScopeMax) || addr.Addr.IsLoopback()
+
+		// Always include LINK scope'd addresses for cilium_host device, regardless
+		// of what the maximum scope is.
+		skip = skip && !(dev.Name == defaults.HostDevice && addr.Scope == unix.RT_SCOPE_LINK)
+
+		if skip {
 			continue
 		}
 
 		// Figure out if the address is usable for NodePort.
 		nodePort := false
 		primary := false
-		if dev.Selected && len(n.Config.NodePortAddresses) == 0 {
+		if len(n.Config.NodePortAddresses) == 0 {
 			// The user has not specified IP ranges to filter on IPs on which to serve NodePort.
 			// Thus the default behavior is to use the primary IPv4 and IPv6 addresses of each
 			// device.
 			if addr.Addr.Is4() && !ipv4Found {
 				ipv4Found = true
-				nodePort = true
+				nodePort = dev.Selected
 				primary = true
 			}
 			if addr.Addr.Is6() && !ipv6Found {
 				ipv6Found = true
-				nodePort = true
+				nodePort = dev.Selected
 				primary = true
 			}
 		} else if ip.NetsContainsAny(n.Config.getNets(), []*net.IPNet{ip.IPToPrefix(addr.AsIP())}) {
 			// User specified --nodeport-addresses and this address was within the range.
-			nodePort = true
+			nodePort = dev.Selected
 			if addr.Addr.Is4() && !ipv4Found {
 				primary = true
 				ipv4Found = true

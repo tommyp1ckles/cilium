@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-
 	"slices"
 
 	"github.com/cilium/workerpool"
@@ -28,6 +27,7 @@ import (
 	ipcacheTypes "github.com/cilium/cilium/pkg/ipcache/types"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/metrics/metric"
 	"github.com/cilium/cilium/pkg/node"
@@ -78,6 +78,7 @@ type Configuration interface {
 	TunnelingEnabled() bool
 	RemoteNodeIdentitiesEnabled() bool
 	NodeEncryptionEnabled() bool
+	IsLocalRouterIP(string) bool
 }
 
 var _ Notifier = (*manager)(nil)
@@ -448,7 +449,13 @@ func (m *manager) nodeIdentityLabels(n nodeTypes.Node) (nodeLabels labels.Labels
 // the node. If an update or addition has occurred, NodeUpdate() of the datapath
 // interface is invoked.
 func (m *manager) NodeUpdated(n nodeTypes.Node) {
-	log.Debugf("Received node update event from %s: %#v", n.Source, n)
+	log.WithFields(logrus.Fields{
+		logfields.ClusterName: n.Cluster,
+		logfields.NodeName:    n.Name,
+	}).Info("Node updated")
+	if log.Logger.IsLevelEnabled(logrus.DebugLevel) {
+		log.WithField(logfields.Node, n.LogRepr()).Debugf("Received node update event from %s", n.Source)
+	}
 
 	nodeIdentifier := n.Identity()
 	dpUpdate := true
@@ -493,12 +500,17 @@ func (m *manager) NodeUpdated(n nodeTypes.Node) {
 		// rest as it is the strongest source, i.e. only trigger datapath
 		// updates if the information we receive takes priority.
 		//
-		// The only exception are kube-apiserver entries. In that case,
-		// we still want to inform subscribers about changes in auxiliary
-		// data such as for example the health endpoint.
+		// There are two exceptions to the rules above:
+		// * kube-apiserver entries - in that case,
+		//   we still want to inform subscribers about changes in auxiliary
+		//   data such as for example the health endpoint.
+		// * CiliumInternal IP addresses that match configured local router IP.
+		//   In that case, we still want to inform subscribers about a new node
+		//   even when IP addresses may seem repeated across the nodes.
 		existing := m.ipcache.GetMetadataByPrefix(prefix).Source()
 		overwrite := source.AllowOverwrite(existing, n.Source)
-		if !overwrite && existing != source.KubeAPIServer {
+		if !overwrite && existing != source.KubeAPIServer &&
+			!(address.Type == addressing.NodeCiliumInternalIP && m.conf.IsLocalRouterIP(address.ToString())) {
 			dpUpdate = false
 		}
 
@@ -707,9 +719,15 @@ func (m *manager) removeNodeFromIPCache(oldNode nodeTypes.Node, resource ipcache
 // origins from. If the node was removed, NodeDelete() is invoked of the
 // datapath interface.
 func (m *manager) NodeDeleted(n nodeTypes.Node) {
-	m.metrics.EventsReceived.WithLabelValues("delete", string(n.Source)).Inc()
+	log.WithFields(logrus.Fields{
+		logfields.ClusterName: n.Cluster,
+		logfields.NodeName:    n.Name,
+	}).Info("Node deleted")
+	if log.Logger.IsLevelEnabled(logrus.DebugLevel) {
+		log.Debugf("Received node delete event from %s", n.Source)
+	}
 
-	log.Debugf("Received node delete event from %s", n.Source)
+	m.metrics.EventsReceived.WithLabelValues("delete", string(n.Source)).Inc()
 
 	nodeIdentifier := n.Identity()
 

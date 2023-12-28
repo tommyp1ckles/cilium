@@ -29,7 +29,7 @@ import (
 
 var (
 	ciliumBasePath  = flag.String("cilium-base-path", "", "Cilium checkout base path")
-	ciKernelVersion = flag.String("ci-kernel-version", "", "CI kernel version to assume for verifier tests (supported values: 419, 54, 510, netnext)")
+	ciKernelVersion = flag.String("ci-kernel-version", "", "CI kernel version to assume for verifier tests (supported values: 419, 54, 510, 61, netnext)")
 )
 
 func getCIKernelVersion(t *testing.T) (string, string) {
@@ -54,6 +54,8 @@ func getCIKernelVersion(t *testing.T) (string, string) {
 		ciKernel = "54"
 	case strings.HasPrefix(release, "5.10"):
 		ciKernel = "510"
+	case strings.HasPrefix(release, "6.1"):
+		ciKernel = "61"
 	case strings.HasPrefix(release, "bpf-next"):
 		ciKernel = "netnext"
 	default:
@@ -114,12 +116,6 @@ func TestVerifier(t *testing.T) {
 	kernelVersion, source := getCIKernelVersion(t)
 	t.Logf("CI kernel version: %s (%s)", kernelVersion, source)
 
-	cmd := exec.Command("make", "-C", "bpf/", "clean")
-	cmd.Dir = *ciliumBasePath
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("Failed to clean bpf objects: %v\ncommand output: %s", err, out)
-	}
-
 	for _, bpfProgram := range []struct {
 		name      string
 		macroName string
@@ -144,6 +140,10 @@ func TestVerifier(t *testing.T) {
 			name:      "bpf_sock",
 			macroName: "MAX_LB_OPTIONS",
 		},
+		{
+			name:      "bpf_network",
+			macroName: "BPF_SIMPLE_OPTIONS",
+		},
 	} {
 		t.Run(bpfProgram.name, func(t *testing.T) {
 			initObjFile := path.Join(*ciliumBasePath, "bpf", fmt.Sprintf("%s.o", bpfProgram.name))
@@ -161,17 +161,20 @@ func TestVerifier(t *testing.T) {
 					datapathConfig := readDatapathConfig(t, file)
 
 					name := fmt.Sprintf("%s_%s", bpfProgram.name, configName)
-					cmd = exec.Command("make", "-C", "bpf", fmt.Sprintf("%s.o", bpfProgram.name))
+					cmd := exec.Command("make", "-C", "bpf", "clean", fmt.Sprintf("%s.o", bpfProgram.name))
 					cmd.Dir = *ciliumBasePath
 					cmd.Env = append(cmd.Env,
 						fmt.Sprintf("%s=%s", bpfProgram.macroName, datapathConfig),
 						fmt.Sprintf("KERNEL=%s", kernelVersion),
 					)
+					t.Logf("Compiling with %q", cmd.Args)
+					t.Logf("Env is %q", cmd.Env)
 					if out, err := cmd.CombinedOutput(); err != nil {
-						t.Fatalf("Failed to compile bpf objects: %v\ncommand output: %s", err, out)
+						t.Logf("Command output:\n%s", string(out))
+						t.Fatalf("Failed to compile bpf objects: %v", err)
 					}
 
-					objFile := path.Join(*ciliumBasePath, "bpf", name+".o")
+					objFile := filepath.Join("./", name+".o")
 					// Rename object file to avoid subsequent runs to overwrite it,
 					// so we can keep it for CI's artifact upload.
 					if err = os.Rename(initObjFile, objFile); err != nil {
@@ -234,7 +237,7 @@ func TestVerifier(t *testing.T) {
 						// of the program that triggered the verifier error.
 						// ebpf.VerifierError only contains the return code and verifier log
 						// buffer.
-						t.Fatalf("Error: %v\nVerifier error tail: %-10v\nDatapath build config: %s", err, ve, datapathConfig)
+						t.Fatalf("Error: %v\nVerifier error tail: %-10v", err, ve)
 					}
 					if err != nil {
 						t.Fatal(err)

@@ -39,6 +39,8 @@ Fastabend
 Fosdem
 Freescale
 Fsnotify
+GCP
+GKE
 Gartrell
 Gbit
 GiB
@@ -370,6 +372,7 @@ internalTrafficPolicy
 intra
 io
 ip
+ipBlock
 ipam
 ipcache
 ipmasq
@@ -578,6 +581,7 @@ rebase
 rebased
 rebasing
 recompiles
+reconfigurations
 recv
 regenerations
 regexes

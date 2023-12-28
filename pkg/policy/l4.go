@@ -476,9 +476,9 @@ type entryCallback func(key Key, value *MapStateEntry) bool
 
 // ChangeState allows caller to revert changes made by (multiple) toMapState call(s)
 type ChangeState struct {
-	Adds    Keys     // Added or modified keys, if not nil
-	Deletes Keys     // deleted keys, if not nil
-	Old     MapState // Old values of all modified or deleted keys, if not nil
+	Adds    Keys                  // Added or modified keys, if not nil
+	Deletes Keys                  // deleted keys, if not nil
+	Old     map[Key]MapStateEntry // Old values of all modified or deleted keys, if not nil
 }
 
 // toMapState converts a single filter into a MapState entries added to 'p.PolicyMapState'.
@@ -487,7 +487,7 @@ type ChangeState struct {
 // AuthType, and L7 redirection (e.g., for visibility purposes), the mapstate entries are added to
 // 'p.PolicyMapState' using denyPreferredInsertWithChanges().
 // Keys and old values of any added or deleted entries are added to 'changes'.
-// The implementation of 'identities' is also in a locked state.
+// SelectorCache is also in read-locked state during this call.
 func (l4Filter *L4Filter) toMapState(p *EndpointPolicy, features policyFeatures, entryCb entryCallback, changes ChangeState) {
 	port := uint16(l4Filter.Port)
 	proto := uint8(l4Filter.U8Proto)
@@ -818,7 +818,7 @@ func createL4Filter(policyCtx PolicyContext, peerEndpoints api.EndpointSelectorS
 				ns = ""
 			default:
 			}
-			l4.Listener = api.ResourceQualifiedName(ns, resource.Name, pr.Listener.Name, api.ForceNamespace)
+			l4.Listener, _ = api.ResourceQualifiedName(ns, resource.Name, pr.Listener.Name, api.ForceNamespace)
 			forceRedirect = true
 		}
 	}
@@ -987,7 +987,8 @@ func (l4 *L4Filter) matchesLabels(labels labels.LabelArray) (bool, bool) {
 	var selected bool
 	for sel, rule := range l4.PerSelectorPolicies {
 		// slow, but OK for tracing
-		if idSel, ok := sel.(*labelIdentitySelector); ok && idSel.xxxMatches(labels) {
+		idSel := sel.(*identitySelector)
+		if lis, ok := idSel.source.(*labelIdentitySelector); ok && lis.xxxMatches(labels) {
 			isDeny := rule != nil && rule.IsDeny
 			selected = true
 			if isDeny {

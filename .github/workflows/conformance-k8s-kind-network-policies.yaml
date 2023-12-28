@@ -24,12 +24,10 @@ env:
   # renovate: datasource=github-releases depName=kubernetes-sigs/kind
   kind_version: v0.20.0
   cluster_name: cilium-testing
-  # renovate: datasource=github-releases depName=cilium/cilium-cli
-  cilium_cli_version: v0.15.14
   cilium_cli_ci_version:
   CILIUM_CLI_MODE: helm
   # renovate: datasource=docker depName=quay.io/cilium/kindest-node
-  k8s_version: v1.28.3
+  k8s_version: v1.29.0-rc.1
 
 jobs:
   kubernetes-e2e-net-conformance:
@@ -144,9 +142,10 @@ jobs:
           echo sha=${{ steps.default_vars.outputs.sha }} >> $GITHUB_OUTPUT
 
       - name: Install Cilium CLI
-        uses: cilium/cilium-cli@446392499db483906bcc3ade85f023912a79e5ee # v0.15.14
+        uses: cilium/cilium-cli@32109b32259a487c803648a3c9463cdcafa4c0c3 # v0.15.19
         with:
-          release-version: ${{ env.cilium_cli_version }}
+          repository: ${{ env.CILIUM_CLI_RELEASE_REPO }}
+          release-version: ${{ env.CILIUM_CLI_VERSION }}
           ci-version: ${{ env.cilium_cli_ci_version }}
 
       - name: Checkout code
@@ -197,7 +196,7 @@ jobs:
           export E2E_REPORT_DIR=${PWD}/_artifacts
           /usr/local/bin/ginkgo --nodes=5                \
             --focus="(HostPort.*\[Conformance\].*|Services.*\[Conformance\].*|Net.*ol.*)"     \
-            --skip="(Legacy|HostPort.validates.that.there.is.no.conflict.between.pods.with.same.hostPort.but.different.hostIP.and.protocol|should.allow.egress.access.to.server.in.CIDR.block|should.enforce.except.clause.while.egress.access.to.server.in.CIDR.block|should.ensure.an.IP.overlapping.both.IPBlock.CIDR.and.IPBlock.Except.is.allowed|Feature:SCTPConnectivity)" \
+            --skip="(Legacy|HostPort.validates.that.there.is.no.conflict.between.pods.with.same.hostPort.but.different.hostIP.and.protocol|should.allow.egress.access.to.server.in.CIDR.block|should.enforce.except.clause.while.egress.access.to.server.in.CIDR.block|should.ensure.an.IP.overlapping.both.IPBlock.CIDR.and.IPBlock.Except.is.allowed|Feature:SCTPConnectivity|should.serve.endpoints.on.same.port.and.different.protocols)" \
             /usr/local/bin/e2e.test                       \
             --                                            \
             --kubeconfig=${PWD}/_artifacts/kubeconfig.conf     \

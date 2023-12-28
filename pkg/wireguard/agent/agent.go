@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"strconv"
@@ -27,6 +28,7 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
 	"github.com/cilium/cilium/api/v1/models"
+	"github.com/cilium/cilium/pkg/annotation"
 	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/clustermesh"
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
@@ -96,7 +98,13 @@ func NewAgent(privKeyPath string, localNodeStore *node.LocalNodeStore) (*Agent, 
 	optOut := false
 	localNodeStore.Update(func(localNode *node.LocalNode) {
 		optOut = localNode.OptOutNodeEncryption
+		localNode.EncryptionKey = types.StaticEncryptKey
 		localNode.WireguardPubKey = key.PublicKey().String()
+
+		// Create a clone, so that we don't mutate the current annotations,
+		// as LocalNodeStore.Update emits a shallow copy of the whole object.
+		localNode.Annotations = maps.Clone(localNode.Annotations)
+		localNode.Annotations[annotation.WireguardPubKey] = localNode.WireguardPubKey
 	})
 
 	return &Agent{
@@ -191,7 +199,7 @@ func (a *Agent) initUserspaceDevice(linkMTU int) (netlink.Link, error) {
 }
 
 // Init creates and configures the local WireGuard tunnel device.
-func (a *Agent) Init(ipcache *ipcache.IPCache, mtuConfig mtu.Configuration) error {
+func (a *Agent) Init(ipcache *ipcache.IPCache, mtuConfig mtu.MTU) error {
 	addIPCacheListener := false
 	a.Lock()
 	a.ipCache = ipcache
@@ -579,11 +587,6 @@ func (a *Agent) OnIPIdentityCacheChange(modType ipcache.CacheModification, cidrC
 				Error("Failed to update WireGuard peer after ipcache update")
 		}
 	}
-}
-
-// OnIPIdentityCacheGC implements ipcache.IPIdentityMappingListener
-func (a *Agent) OnIPIdentityCacheGC() {
-	// ignored
 }
 
 // Status returns the state of the WireGuard tunnel managed by this instance.
