@@ -427,7 +427,13 @@ Users (Alphabetically)
       U: Pod networking (CNI, IPAM, Host-reachable Services), Hubble, Cluster-mesh. TBD: Network Policy, Transparent Encryption (WG), Host Firewall.
       L: https://mux.com
       Q: @dilyevsky
-
+      
+    * N: NetBird
+      D: NetBird uses Cilium to compile BPF to Go for cross-platform DNS management and NAT traversal
+      U: bpf2go to compile a C source file into eBPF bytecode and then to Go
+      L: https://netbird.io/knowledge-hub/using-xdp-ebpf-to-share-default-dns-port-between-resolvers
+      Q: @braginini
+      
     * N: NETWAYS Web Services
       D: NETWAYS Web Services offers Cilium to their clients as CNI option for their Managed Kubernetes clusters.
       U: Networking (CNI), Observability (Hubble)
@@ -729,6 +735,11 @@ Users (Alphabetically)
       D: ungleich is using Cilium as part of IPv6-only Kubernetes deployments.
       U: CNI, IPv6 only networking, BGP, eBPF
       Q: @Nico Schottelius, @nico:ungleich.ch (Matrix)
+
+    * N: Veepee
+      D: Veepee is using Cilium on their on-premise Kubernetes clusters, hosting majority of their applications.
+      U. CNI, BGP, eBPF, Hubble, DirectRouting (via kube-router)
+      Q: @nerzhul
 
     * N: Wildlife Studios
       D: Wildlife Studios is using Cilium in AWS for all their game production clusters (self hosted k8s)
