@@ -115,11 +115,31 @@ spec:
                                   - IPv6
                                   type: string
                                 type:
-                                  description: Type is a ICMP-type. It should be 0-255
-                                    (8bit).
-                                  maximum: 255
-                                  minimum: 0
-                                  type: integer
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  description: 'Type is a ICMP-type. It should be
+                                    an 8bit code (0-255), or it''s CamelCase name
+                                    (for example, "EchoReply"). Allowed ICMP types
+                                    are: Ipv4: EchoReply | DestinationUnreachable
+                                    | Redirect | Echo | EchoRequest | RouterAdvertisement
+                                    | RouterSelection | TimeExceeded | ParameterProblem
+                                    | Timestamp | TimestampReply | Photuris | ExtendedEcho
+                                    Request | ExtendedEcho Reply Ipv6: DestinationUnreachable
+                                    | PacketTooBig | TimeExceeded | ParameterProblem
+                                    | EchoRequest | EchoReply | MulticastListenerQuery|
+                                    MulticastListenerReport | MulticastListenerDone
+                                    | RouterSolicitation | RouterAdvertisement | NeighborSolicitation
+                                    | NeighborAdvertisement | RedirectMessage | RouterRenumbering
+                                    | ICMPNodeInformationQuery | ICMPNodeInformationResponse
+                                    | InverseNeighborDiscoverySolicitation | InverseNeighborDiscoveryAdvertisement
+                                    | HomeAgentAddressDiscoveryRequest | HomeAgentAddressDiscoveryReply
+                                    | MobilePrefixSolicitation | MobilePrefixAdvertisement
+                                    | DuplicateAddressRequestCodeSuffix | DuplicateAddressConfirmationCodeSuffix
+                                    | ExtendedEchoRequest | ExtendedEchoReply'
+                                  pattern: ^([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5]|EchoReply|DestinationUnreachable|Redirect|Echo|RouterAdvertisement|RouterSelection|TimeExceeded|ParameterProblem|Timestamp|TimestampReply|Photuris|ExtendedEchoRequest|ExtendedEcho
+                                    Reply|PacketTooBig|ParameterProblem|EchoRequest|MulticastListenerQuery|MulticastListenerReport|MulticastListenerDone|RouterSolicitation|RouterAdvertisement|NeighborSolicitation|NeighborAdvertisement|RedirectMessage|RouterRenumbering|ICMPNodeInformationQuery|ICMPNodeInformationResponse|InverseNeighborDiscoverySolicitation|InverseNeighborDiscoveryAdvertisement|HomeAgentAddressDiscoveryRequest|HomeAgentAddressDiscoveryReply|MobilePrefixSolicitation|MobilePrefixAdvertisement|DuplicateAddressRequestCodeSuffix|DuplicateAddressConfirmationCodeSuffix)$
+                                  x-kubernetes-int-or-string: true
                               required:
                               - type
                               type: object
@@ -331,8 +351,8 @@ spec:
                         and the rule can select by multiple sub directives: \n Example:
                         toGroups: - aws: securityGroupsIds: - 'sg-XXXXXXXXXXXXX'"
                       items:
-                        description: ToGroups structure to store all kinds of new
-                          integrations that needs a new derivative policy.
+                        description: Groups structure to store all kinds of new integrations
+                          that needs a new derivative policy.
                         properties:
                           aws:
                             description: AWSGroup is an structure that can be used
@@ -1056,11 +1076,31 @@ spec:
                                   - IPv6
                                   type: string
                                 type:
-                                  description: Type is a ICMP-type. It should be 0-255
-                                    (8bit).
-                                  maximum: 255
-                                  minimum: 0
-                                  type: integer
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  description: 'Type is a ICMP-type. It should be
+                                    an 8bit code (0-255), or it''s CamelCase name
+                                    (for example, "EchoReply"). Allowed ICMP types
+                                    are: Ipv4: EchoReply | DestinationUnreachable
+                                    | Redirect | Echo | EchoRequest | RouterAdvertisement
+                                    | RouterSelection | TimeExceeded | ParameterProblem
+                                    | Timestamp | TimestampReply | Photuris | ExtendedEcho
+                                    Request | ExtendedEcho Reply Ipv6: DestinationUnreachable
+                                    | PacketTooBig | TimeExceeded | ParameterProblem
+                                    | EchoRequest | EchoReply | MulticastListenerQuery|
+                                    MulticastListenerReport | MulticastListenerDone
+                                    | RouterSolicitation | RouterAdvertisement | NeighborSolicitation
+                                    | NeighborAdvertisement | RedirectMessage | RouterRenumbering
+                                    | ICMPNodeInformationQuery | ICMPNodeInformationResponse
+                                    | InverseNeighborDiscoverySolicitation | InverseNeighborDiscoveryAdvertisement
+                                    | HomeAgentAddressDiscoveryRequest | HomeAgentAddressDiscoveryReply
+                                    | MobilePrefixSolicitation | MobilePrefixAdvertisement
+                                    | DuplicateAddressRequestCodeSuffix | DuplicateAddressConfirmationCodeSuffix
+                                    | ExtendedEchoRequest | ExtendedEchoReply'
+                                  pattern: ^([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5]|EchoReply|DestinationUnreachable|Redirect|Echo|RouterAdvertisement|RouterSelection|TimeExceeded|ParameterProblem|Timestamp|TimestampReply|Photuris|ExtendedEchoRequest|ExtendedEcho
+                                    Reply|PacketTooBig|ParameterProblem|EchoRequest|MulticastListenerQuery|MulticastListenerReport|MulticastListenerDone|RouterSolicitation|RouterAdvertisement|NeighborSolicitation|NeighborAdvertisement|RedirectMessage|RouterRenumbering|ICMPNodeInformationQuery|ICMPNodeInformationResponse|InverseNeighborDiscoverySolicitation|InverseNeighborDiscoveryAdvertisement|HomeAgentAddressDiscoveryRequest|HomeAgentAddressDiscoveryReply|MobilePrefixSolicitation|MobilePrefixAdvertisement|DuplicateAddressRequestCodeSuffix|DuplicateAddressConfirmationCodeSuffix)$
+                                  x-kubernetes-int-or-string: true
                               required:
                               - type
                               type: object
@@ -1228,8 +1268,8 @@ spec:
                         and the rule can select by multiple sub directives: \n Example:
                         toGroups: - aws: securityGroupsIds: - 'sg-XXXXXXXXXXXXX'"
                       items:
-                        description: ToGroups structure to store all kinds of new
-                          integrations that needs a new derivative policy.
+                        description: Groups structure to store all kinds of new integrations
+                          that needs a new derivative policy.
                         properties:
                           aws:
                             description: AWSGroup is an structure that can be used
@@ -1509,6 +1549,28 @@ spec:
                       type: array
                   type: object
                 type: array
+              enableDefaultDeny:
+                description: "EnableDefaultDeny determines whether this policy configures
+                  the subject endpoint(s) to have a default deny mode. If enabled,
+                  this causes all traffic not explicitly allowed by a network policy
+                  to be dropped. \n If not specified, the default is true for each
+                  traffic direction that has rules, and false otherwise. For example,
+                  if a policy only has Ingress or IngressDeny rules, then the default
+                  for ingress is true and egress is false. \n If multiple policies
+                  apply to an endpoint, that endpoint's default deny will be enabled
+                  if any policy requests it. \n This is useful for creating broad-based
+                  network policies that will not cause endpoints to enter default-deny
+                  mode."
+                properties:
+                  egress:
+                    description: Whether or not the endpoint should have a default-deny
+                      rule applied to egress traffic.
+                    type: boolean
+                  ingress:
+                    description: Whether or not the endpoint should have a default-deny
+                      rule applied to ingress traffic.
+                    type: boolean
+                type: object
               endpointSelector:
                 description: EndpointSelector selects all endpoints which should be
                   subject to this rule. EndpointSelector and NodeSelector cannot be
@@ -1751,6 +1813,36 @@ spec:
                         - kube-apiserver
                         type: string
                       type: array
+                    fromGroups:
+                      description: "FromGroups is a directive that allows the integration
+                        with multiple outside providers. Currently, only AWS is supported,
+                        and the rule can select by multiple sub directives: \n Example:
+                        FromGroups: - aws: securityGroupsIds: - 'sg-XXXXXXXXXXXXX'"
+                      items:
+                        description: Groups structure to store all kinds of new integrations
+                          that needs a new derivative policy.
+                        properties:
+                          aws:
+                            description: AWSGroup is an structure that can be used
+                              to whitelisting information from AWS integration
+                            properties:
+                              labels:
+                                additionalProperties:
+                                  type: string
+                                type: object
+                              region:
+                                type: string
+                              securityGroupsIds:
+                                items:
+                                  type: string
+                                type: array
+                              securityGroupsNames:
+                                items:
+                                  type: string
+                                type: array
+                            type: object
+                        type: object
+                      type: array
                     fromNodes:
                       description: FromNodes is a list of nodes identified by an EndpointSelector
                         which are allowed to communicate with the endpoint subject
@@ -1896,11 +1988,31 @@ spec:
                                   - IPv6
                                   type: string
                                 type:
-                                  description: Type is a ICMP-type. It should be 0-255
-                                    (8bit).
-                                  maximum: 255
-                                  minimum: 0
-                                  type: integer
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  description: 'Type is a ICMP-type. It should be
+                                    an 8bit code (0-255), or it''s CamelCase name
+                                    (for example, "EchoReply"). Allowed ICMP types
+                                    are: Ipv4: EchoReply | DestinationUnreachable
+                                    | Redirect | Echo | EchoRequest | RouterAdvertisement
+                                    | RouterSelection | TimeExceeded | ParameterProblem
+                                    | Timestamp | TimestampReply | Photuris | ExtendedEcho
+                                    Request | ExtendedEcho Reply Ipv6: DestinationUnreachable
+                                    | PacketTooBig | TimeExceeded | ParameterProblem
+                                    | EchoRequest | EchoReply | MulticastListenerQuery|
+                                    MulticastListenerReport | MulticastListenerDone
+                                    | RouterSolicitation | RouterAdvertisement | NeighborSolicitation
+                                    | NeighborAdvertisement | RedirectMessage | RouterRenumbering
+                                    | ICMPNodeInformationQuery | ICMPNodeInformationResponse
+                                    | InverseNeighborDiscoverySolicitation | InverseNeighborDiscoveryAdvertisement
+                                    | HomeAgentAddressDiscoveryRequest | HomeAgentAddressDiscoveryReply
+                                    | MobilePrefixSolicitation | MobilePrefixAdvertisement
+                                    | DuplicateAddressRequestCodeSuffix | DuplicateAddressConfirmationCodeSuffix
+                                    | ExtendedEchoRequest | ExtendedEchoReply'
+                                  pattern: ^([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5]|EchoReply|DestinationUnreachable|Redirect|Echo|RouterAdvertisement|RouterSelection|TimeExceeded|ParameterProblem|Timestamp|TimestampReply|Photuris|ExtendedEchoRequest|ExtendedEcho
+                                    Reply|PacketTooBig|ParameterProblem|EchoRequest|MulticastListenerQuery|MulticastListenerReport|MulticastListenerDone|RouterSolicitation|RouterAdvertisement|NeighborSolicitation|NeighborAdvertisement|RedirectMessage|RouterRenumbering|ICMPNodeInformationQuery|ICMPNodeInformationResponse|InverseNeighborDiscoverySolicitation|InverseNeighborDiscoveryAdvertisement|HomeAgentAddressDiscoveryRequest|HomeAgentAddressDiscoveryReply|MobilePrefixSolicitation|MobilePrefixAdvertisement|DuplicateAddressRequestCodeSuffix|DuplicateAddressConfirmationCodeSuffix)$
+                                  x-kubernetes-int-or-string: true
                               required:
                               - type
                               type: object
@@ -2372,9 +2484,9 @@ spec:
                     members are set, all of them need to match in order for the rule
                     to take effect. The exception to this rule is FromRequires field;
                     the effects of any Requires field in any rule will apply to all
-                    other rules as well. \n - FromEndpoints, FromCIDR, FromCIDRSet
-                    and FromEntities are mutually exclusive. Only one of these members
-                    may be present within an individual rule."
+                    other rules as well. \n - FromEndpoints, FromCIDR, FromCIDRSet,
+                    FromGroups and FromEntities are mutually exclusive. Only one of
+                    these members may be present within an individual rule."
                   properties:
                     fromCIDR:
                       description: "FromCIDR is a list of IP blocks which the endpoint
@@ -2532,6 +2644,36 @@ spec:
                         - kube-apiserver
                         type: string
                       type: array
+                    fromGroups:
+                      description: "FromGroups is a directive that allows the integration
+                        with multiple outside providers. Currently, only AWS is supported,
+                        and the rule can select by multiple sub directives: \n Example:
+                        FromGroups: - aws: securityGroupsIds: - 'sg-XXXXXXXXXXXXX'"
+                      items:
+                        description: Groups structure to store all kinds of new integrations
+                          that needs a new derivative policy.
+                        properties:
+                          aws:
+                            description: AWSGroup is an structure that can be used
+                              to whitelisting information from AWS integration
+                            properties:
+                              labels:
+                                additionalProperties:
+                                  type: string
+                                type: object
+                              region:
+                                type: string
+                              securityGroupsIds:
+                                items:
+                                  type: string
+                                type: array
+                              securityGroupsNames:
+                                items:
+                                  type: string
+                                type: array
+                            type: object
+                        type: object
+                      type: array
                     fromNodes:
                       description: FromNodes is a list of nodes identified by an EndpointSelector
                         which are allowed to communicate with the endpoint subject
@@ -2677,11 +2819,31 @@ spec:
                                   - IPv6
                                   type: string
                                 type:
-                                  description: Type is a ICMP-type. It should be 0-255
-                                    (8bit).
-                                  maximum: 255
-                                  minimum: 0
-                                  type: integer
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  description: 'Type is a ICMP-type. It should be
+                                    an 8bit code (0-255), or it''s CamelCase name
+                                    (for example, "EchoReply"). Allowed ICMP types
+                                    are: Ipv4: EchoReply | DestinationUnreachable
+                                    | Redirect | Echo | EchoRequest | RouterAdvertisement
+                                    | RouterSelection | TimeExceeded | ParameterProblem
+                                    | Timestamp | TimestampReply | Photuris | ExtendedEcho
+                                    Request | ExtendedEcho Reply Ipv6: DestinationUnreachable
+                                    | PacketTooBig | TimeExceeded | ParameterProblem
+                                    | EchoRequest | EchoReply | MulticastListenerQuery|
+                                    MulticastListenerReport | MulticastListenerDone
+                                    | RouterSolicitation | RouterAdvertisement | NeighborSolicitation
+                                    | NeighborAdvertisement | RedirectMessage | RouterRenumbering
+                                    | ICMPNodeInformationQuery | ICMPNodeInformationResponse
+                                    | InverseNeighborDiscoverySolicitation | InverseNeighborDiscoveryAdvertisement
+                                    | HomeAgentAddressDiscoveryRequest | HomeAgentAddressDiscoveryReply
+                                    | MobilePrefixSolicitation | MobilePrefixAdvertisement
+                                    | DuplicateAddressRequestCodeSuffix | DuplicateAddressConfirmationCodeSuffix
+                                    | ExtendedEchoRequest | ExtendedEchoReply'
+                                  pattern: ^([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5]|EchoReply|DestinationUnreachable|Redirect|Echo|RouterAdvertisement|RouterSelection|TimeExceeded|ParameterProblem|Timestamp|TimestampReply|Photuris|ExtendedEchoRequest|ExtendedEcho
+                                    Reply|PacketTooBig|ParameterProblem|EchoRequest|MulticastListenerQuery|MulticastListenerReport|MulticastListenerDone|RouterSolicitation|RouterAdvertisement|NeighborSolicitation|NeighborAdvertisement|RedirectMessage|RouterRenumbering|ICMPNodeInformationQuery|ICMPNodeInformationResponse|InverseNeighborDiscoverySolicitation|InverseNeighborDiscoveryAdvertisement|HomeAgentAddressDiscoveryRequest|HomeAgentAddressDiscoveryReply|MobilePrefixSolicitation|MobilePrefixAdvertisement|DuplicateAddressRequestCodeSuffix|DuplicateAddressConfirmationCodeSuffix)$
+                                  x-kubernetes-int-or-string: true
                               required:
                               - type
                               type: object
@@ -2895,11 +3057,32 @@ spec:
                                     - IPv6
                                     type: string
                                   type:
-                                    description: Type is a ICMP-type. It should be
-                                      0-255 (8bit).
-                                    maximum: 255
-                                    minimum: 0
-                                    type: integer
+                                    anyOf:
+                                    - type: integer
+                                    - type: string
+                                    description: 'Type is a ICMP-type. It should be
+                                      an 8bit code (0-255), or it''s CamelCase name
+                                      (for example, "EchoReply"). Allowed ICMP types
+                                      are: Ipv4: EchoReply | DestinationUnreachable
+                                      | Redirect | Echo | EchoRequest | RouterAdvertisement
+                                      | RouterSelection | TimeExceeded | ParameterProblem
+                                      | Timestamp | TimestampReply | Photuris | ExtendedEcho
+                                      Request | ExtendedEcho Reply Ipv6: DestinationUnreachable
+                                      | PacketTooBig | TimeExceeded | ParameterProblem
+                                      | EchoRequest | EchoReply | MulticastListenerQuery|
+                                      MulticastListenerReport | MulticastListenerDone
+                                      | RouterSolicitation | RouterAdvertisement |
+                                      NeighborSolicitation | NeighborAdvertisement
+                                      | RedirectMessage | RouterRenumbering | ICMPNodeInformationQuery
+                                      | ICMPNodeInformationResponse | InverseNeighborDiscoverySolicitation
+                                      | InverseNeighborDiscoveryAdvertisement | HomeAgentAddressDiscoveryRequest
+                                      | HomeAgentAddressDiscoveryReply | MobilePrefixSolicitation
+                                      | MobilePrefixAdvertisement | DuplicateAddressRequestCodeSuffix
+                                      | DuplicateAddressConfirmationCodeSuffix | ExtendedEchoRequest
+                                      | ExtendedEchoReply'
+                                    pattern: ^([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5]|EchoReply|DestinationUnreachable|Redirect|Echo|RouterAdvertisement|RouterSelection|TimeExceeded|ParameterProblem|Timestamp|TimestampReply|Photuris|ExtendedEchoRequest|ExtendedEcho
+                                      Reply|PacketTooBig|ParameterProblem|EchoRequest|MulticastListenerQuery|MulticastListenerReport|MulticastListenerDone|RouterSolicitation|RouterAdvertisement|NeighborSolicitation|NeighborAdvertisement|RedirectMessage|RouterRenumbering|ICMPNodeInformationQuery|ICMPNodeInformationResponse|InverseNeighborDiscoverySolicitation|InverseNeighborDiscoveryAdvertisement|HomeAgentAddressDiscoveryRequest|HomeAgentAddressDiscoveryReply|MobilePrefixSolicitation|MobilePrefixAdvertisement|DuplicateAddressRequestCodeSuffix|DuplicateAddressConfirmationCodeSuffix)$
+                                    x-kubernetes-int-or-string: true
                                 required:
                                 - type
                                 type: object
@@ -3113,7 +3296,7 @@ spec:
                           supported, and the rule can select by multiple sub directives:
                           \n Example: toGroups: - aws: securityGroupsIds: - 'sg-XXXXXXXXXXXXX'"
                         items:
-                          description: ToGroups structure to store all kinds of new
+                          description: Groups structure to store all kinds of new
                             integrations that needs a new derivative policy.
                           properties:
                             aws:
@@ -3851,11 +4034,32 @@ spec:
                                     - IPv6
                                     type: string
                                   type:
-                                    description: Type is a ICMP-type. It should be
-                                      0-255 (8bit).
-                                    maximum: 255
-                                    minimum: 0
-                                    type: integer
+                                    anyOf:
+                                    - type: integer
+                                    - type: string
+                                    description: 'Type is a ICMP-type. It should be
+                                      an 8bit code (0-255), or it''s CamelCase name
+                                      (for example, "EchoReply"). Allowed ICMP types
+                                      are: Ipv4: EchoReply | DestinationUnreachable
+                                      | Redirect | Echo | EchoRequest | RouterAdvertisement
+                                      | RouterSelection | TimeExceeded | ParameterProblem
+                                      | Timestamp | TimestampReply | Photuris | ExtendedEcho
+                                      Request | ExtendedEcho Reply Ipv6: DestinationUnreachable
+                                      | PacketTooBig | TimeExceeded | ParameterProblem
+                                      | EchoRequest | EchoReply | MulticastListenerQuery|
+                                      MulticastListenerReport | MulticastListenerDone
+                                      | RouterSolicitation | RouterAdvertisement |
+                                      NeighborSolicitation | NeighborAdvertisement
+                                      | RedirectMessage | RouterRenumbering | ICMPNodeInformationQuery
+                                      | ICMPNodeInformationResponse | InverseNeighborDiscoverySolicitation
+                                      | InverseNeighborDiscoveryAdvertisement | HomeAgentAddressDiscoveryRequest
+                                      | HomeAgentAddressDiscoveryReply | MobilePrefixSolicitation
+                                      | MobilePrefixAdvertisement | DuplicateAddressRequestCodeSuffix
+                                      | DuplicateAddressConfirmationCodeSuffix | ExtendedEchoRequest
+                                      | ExtendedEchoReply'
+                                    pattern: ^([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5]|EchoReply|DestinationUnreachable|Redirect|Echo|RouterAdvertisement|RouterSelection|TimeExceeded|ParameterProblem|Timestamp|TimestampReply|Photuris|ExtendedEchoRequest|ExtendedEcho
+                                      Reply|PacketTooBig|ParameterProblem|EchoRequest|MulticastListenerQuery|MulticastListenerReport|MulticastListenerDone|RouterSolicitation|RouterAdvertisement|NeighborSolicitation|NeighborAdvertisement|RedirectMessage|RouterRenumbering|ICMPNodeInformationQuery|ICMPNodeInformationResponse|InverseNeighborDiscoverySolicitation|InverseNeighborDiscoveryAdvertisement|HomeAgentAddressDiscoveryRequest|HomeAgentAddressDiscoveryReply|MobilePrefixSolicitation|MobilePrefixAdvertisement|DuplicateAddressRequestCodeSuffix|DuplicateAddressConfirmationCodeSuffix)$
+                                    x-kubernetes-int-or-string: true
                                 required:
                                 - type
                                 type: object
@@ -4024,7 +4228,7 @@ spec:
                           supported, and the rule can select by multiple sub directives:
                           \n Example: toGroups: - aws: securityGroupsIds: - 'sg-XXXXXXXXXXXXX'"
                         items:
-                          description: ToGroups structure to store all kinds of new
+                          description: Groups structure to store all kinds of new
                             integrations that needs a new derivative policy.
                           properties:
                             aws:
@@ -4309,6 +4513,28 @@ spec:
                         type: array
                     type: object
                   type: array
+                enableDefaultDeny:
+                  description: "EnableDefaultDeny determines whether this policy configures
+                    the subject endpoint(s) to have a default deny mode. If enabled,
+                    this causes all traffic not explicitly allowed by a network policy
+                    to be dropped. \n If not specified, the default is true for each
+                    traffic direction that has rules, and false otherwise. For example,
+                    if a policy only has Ingress or IngressDeny rules, then the default
+                    for ingress is true and egress is false. \n If multiple policies
+                    apply to an endpoint, that endpoint's default deny will be enabled
+                    if any policy requests it. \n This is useful for creating broad-based
+                    network policies that will not cause endpoints to enter default-deny
+                    mode."
+                  properties:
+                    egress:
+                      description: Whether or not the endpoint should have a default-deny
+                        rule applied to egress traffic.
+                      type: boolean
+                    ingress:
+                      description: Whether or not the endpoint should have a default-deny
+                        rule applied to ingress traffic.
+                      type: boolean
+                  type: object
                 endpointSelector:
                   description: EndpointSelector selects all endpoints which should
                     be subject to this rule. EndpointSelector and NodeSelector cannot
@@ -4553,6 +4779,36 @@ spec:
                           - kube-apiserver
                           type: string
                         type: array
+                      fromGroups:
+                        description: "FromGroups is a directive that allows the integration
+                          with multiple outside providers. Currently, only AWS is
+                          supported, and the rule can select by multiple sub directives:
+                          \n Example: FromGroups: - aws: securityGroupsIds: - 'sg-XXXXXXXXXXXXX'"
+                        items:
+                          description: Groups structure to store all kinds of new
+                            integrations that needs a new derivative policy.
+                          properties:
+                            aws:
+                              description: AWSGroup is an structure that can be used
+                                to whitelisting information from AWS integration
+                              properties:
+                                labels:
+                                  additionalProperties:
+                                    type: string
+                                  type: object
+                                region:
+                                  type: string
+                                securityGroupsIds:
+                                  items:
+                                    type: string
+                                  type: array
+                                securityGroupsNames:
+                                  items:
+                                    type: string
+                                  type: array
+                              type: object
+                          type: object
+                        type: array
                       fromNodes:
                         description: FromNodes is a list of nodes identified by an
                           EndpointSelector which are allowed to communicate with the
@@ -4699,11 +4955,32 @@ spec:
                                     - IPv6
                                     type: string
                                   type:
-                                    description: Type is a ICMP-type. It should be
-                                      0-255 (8bit).
-                                    maximum: 255
-                                    minimum: 0
-                                    type: integer
+                                    anyOf:
+                                    - type: integer
+                                    - type: string
+                                    description: 'Type is a ICMP-type. It should be
+                                      an 8bit code (0-255), or it''s CamelCase name
+                                      (for example, "EchoReply"). Allowed ICMP types
+                                      are: Ipv4: EchoReply | DestinationUnreachable
+                                      | Redirect | Echo | EchoRequest | RouterAdvertisement
+                                      | RouterSelection | TimeExceeded | ParameterProblem
+                                      | Timestamp | TimestampReply | Photuris | ExtendedEcho
+                                      Request | ExtendedEcho Reply Ipv6: DestinationUnreachable
+                                      | PacketTooBig | TimeExceeded | ParameterProblem
+                                      | EchoRequest | EchoReply | MulticastListenerQuery|
+                                      MulticastListenerReport | MulticastListenerDone
+                                      | RouterSolicitation | RouterAdvertisement |
+                                      NeighborSolicitation | NeighborAdvertisement
+                                      | RedirectMessage | RouterRenumbering | ICMPNodeInformationQuery
+                                      | ICMPNodeInformationResponse | InverseNeighborDiscoverySolicitation
+                                      | InverseNeighborDiscoveryAdvertisement | HomeAgentAddressDiscoveryRequest
+                                      | HomeAgentAddressDiscoveryReply | MobilePrefixSolicitation
+                                      | MobilePrefixAdvertisement | DuplicateAddressRequestCodeSuffix
+                                      | DuplicateAddressConfirmationCodeSuffix | ExtendedEchoRequest
+                                      | ExtendedEchoReply'
+                                    pattern: ^([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5]|EchoReply|DestinationUnreachable|Redirect|Echo|RouterAdvertisement|RouterSelection|TimeExceeded|ParameterProblem|Timestamp|TimestampReply|Photuris|ExtendedEchoRequest|ExtendedEcho
+                                      Reply|PacketTooBig|ParameterProblem|EchoRequest|MulticastListenerQuery|MulticastListenerReport|MulticastListenerDone|RouterSolicitation|RouterAdvertisement|NeighborSolicitation|NeighborAdvertisement|RedirectMessage|RouterRenumbering|ICMPNodeInformationQuery|ICMPNodeInformationResponse|InverseNeighborDiscoverySolicitation|InverseNeighborDiscoveryAdvertisement|HomeAgentAddressDiscoveryRequest|HomeAgentAddressDiscoveryReply|MobilePrefixSolicitation|MobilePrefixAdvertisement|DuplicateAddressRequestCodeSuffix|DuplicateAddressConfirmationCodeSuffix)$
+                                    x-kubernetes-int-or-string: true
                                 required:
                                 - type
                                 type: object
@@ -5185,8 +5462,8 @@ spec:
                       to match in order for the rule to take effect. The exception
                       to this rule is FromRequires field; the effects of any Requires
                       field in any rule will apply to all other rules as well. \n
-                      - FromEndpoints, FromCIDR, FromCIDRSet and FromEntities are
-                      mutually exclusive. Only one of these members may be present
+                      - FromEndpoints, FromCIDR, FromCIDRSet, FromGroups and FromEntities
+                      are mutually exclusive. Only one of these members may be present
                       within an individual rule."
                     properties:
                       fromCIDR:
@@ -5346,6 +5623,36 @@ spec:
                           - kube-apiserver
                           type: string
                         type: array
+                      fromGroups:
+                        description: "FromGroups is a directive that allows the integration
+                          with multiple outside providers. Currently, only AWS is
+                          supported, and the rule can select by multiple sub directives:
+                          \n Example: FromGroups: - aws: securityGroupsIds: - 'sg-XXXXXXXXXXXXX'"
+                        items:
+                          description: Groups structure to store all kinds of new
+                            integrations that needs a new derivative policy.
+                          properties:
+                            aws:
+                              description: AWSGroup is an structure that can be used
+                                to whitelisting information from AWS integration
+                              properties:
+                                labels:
+                                  additionalProperties:
+                                    type: string
+                                  type: object
+                                region:
+                                  type: string
+                                securityGroupsIds:
+                                  items:
+                                    type: string
+                                  type: array
+                                securityGroupsNames:
+                                  items:
+                                    type: string
+                                  type: array
+                              type: object
+                          type: object
+                        type: array
                       fromNodes:
                         description: FromNodes is a list of nodes identified by an
                           EndpointSelector which are allowed to communicate with the
@@ -5492,11 +5799,32 @@ spec:
                                     - IPv6
                                     type: string
                                   type:
-                                    description: Type is a ICMP-type. It should be
-                                      0-255 (8bit).
-                                    maximum: 255
-                                    minimum: 0
-                                    type: integer
+                                    anyOf:
+                                    - type: integer
+                                    - type: string
+                                    description: 'Type is a ICMP-type. It should be
+                                      an 8bit code (0-255), or it''s CamelCase name
+                                      (for example, "EchoReply"). Allowed ICMP types
+                                      are: Ipv4: EchoReply | DestinationUnreachable
+                                      | Redirect | Echo | EchoRequest | RouterAdvertisement
+                                      | RouterSelection | TimeExceeded | ParameterProblem
+                                      | Timestamp | TimestampReply | Photuris | ExtendedEcho
+                                      Request | ExtendedEcho Reply Ipv6: DestinationUnreachable
+                                      | PacketTooBig | TimeExceeded | ParameterProblem
+                                      | EchoRequest | EchoReply | MulticastListenerQuery|
+                                      MulticastListenerReport | MulticastListenerDone
+                                      | RouterSolicitation | RouterAdvertisement |
+                                      NeighborSolicitation | NeighborAdvertisement
+                                      | RedirectMessage | RouterRenumbering | ICMPNodeInformationQuery
+                                      | ICMPNodeInformationResponse | InverseNeighborDiscoverySolicitation
+                                      | InverseNeighborDiscoveryAdvertisement | HomeAgentAddressDiscoveryRequest
+                                      | HomeAgentAddressDiscoveryReply | MobilePrefixSolicitation
+                                      | MobilePrefixAdvertisement | DuplicateAddressRequestCodeSuffix
+                                      | DuplicateAddressConfirmationCodeSuffix | ExtendedEchoRequest
+                                      | ExtendedEchoReply'
+                                    pattern: ^([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5]|EchoReply|DestinationUnreachable|Redirect|Echo|RouterAdvertisement|RouterSelection|TimeExceeded|ParameterProblem|Timestamp|TimestampReply|Photuris|ExtendedEchoRequest|ExtendedEcho
+                                      Reply|PacketTooBig|ParameterProblem|EchoRequest|MulticastListenerQuery|MulticastListenerReport|MulticastListenerDone|RouterSolicitation|RouterAdvertisement|NeighborSolicitation|NeighborAdvertisement|RedirectMessage|RouterRenumbering|ICMPNodeInformationQuery|ICMPNodeInformationResponse|InverseNeighborDiscoverySolicitation|InverseNeighborDiscoveryAdvertisement|HomeAgentAddressDiscoveryRequest|HomeAgentAddressDiscoveryReply|MobilePrefixSolicitation|MobilePrefixAdvertisement|DuplicateAddressRequestCodeSuffix|DuplicateAddressConfirmationCodeSuffix)$
+                                    x-kubernetes-int-or-string: true
                                 required:
                                 - type
                                 type: object

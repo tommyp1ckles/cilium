@@ -368,6 +368,10 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 			// always runs with "hostNetwork: true".
 			cDefinesMap["HOST_NETNS_COOKIE"] = fmt.Sprintf("%d", cookie)
 		}
+
+		if option.Config.EnableLocalRedirectPolicy {
+			cDefinesMap["ENABLE_LOCAL_REDIRECT_POLICY"] = "1"
+		}
 	}
 
 	cDefinesMap["NAT_46X64_PREFIX_0"] = "0"
@@ -584,12 +588,6 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 
 		a := byteorder.NetIPv4ToHost32(nodeAddress)
 		cDefinesMap["IPV4_ENCRYPT_IFACE"] = fmt.Sprintf("%d", a)
-		if iface := option.Config.EncryptInterface; len(iface) != 0 {
-			link, err := netlink.LinkByName(iface[0])
-			if err == nil {
-				cDefinesMap["ENCRYPT_IFACE"] = fmt.Sprintf("%d", link.Attrs().Index)
-			}
-		}
 	}
 
 	if option.Config.EnableNodePort {

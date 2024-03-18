@@ -92,8 +92,7 @@ type ProgramHelper struct {
 }
 
 type miscFeatures struct {
-	HaveLargeInsnLimit bool
-	HaveFibIfindex     bool
+	HaveFibIfindex bool
 }
 
 type FeatureProbes struct {
@@ -550,6 +549,44 @@ func HaveSKBAdjustRoomL2RoomMACSupport() (err error) {
 	return nil
 }
 
+// HaveDeadCodeElim tests whether the kernel supports dead code elimination.
+func HaveDeadCodeElim() error {
+	spec := ebpf.ProgramSpec{
+		Name: "test",
+		Type: ebpf.XDP,
+		Instructions: asm.Instructions{
+			asm.Mov.Imm(asm.R1, 0),
+			asm.JEq.Imm(asm.R1, 1, "else"),
+			asm.Mov.Imm(asm.R0, 2),
+			asm.Ja.Label("end"),
+			asm.Mov.Imm(asm.R0, 3).WithSymbol("else"),
+			asm.Return().WithSymbol("end"),
+		},
+	}
+
+	prog, err := ebpf.NewProgram(&spec)
+	if err != nil {
+		return fmt.Errorf("loading program: %w", err)
+	}
+
+	info, err := prog.Info()
+	if err != nil {
+		return fmt.Errorf("get prog info: %w", err)
+	}
+	infoInst, err := info.Instructions()
+	if err != nil {
+		return fmt.Errorf("get instructions: %w", err)
+	}
+
+	for _, inst := range infoInst {
+		if inst.OpCode.Class().IsJump() && inst.OpCode.JumpOp() != asm.Exit {
+			return fmt.Errorf("Jump instruction found in the final program, no dead code elimination performed")
+		}
+	}
+
+	return nil
+}
+
 // HaveIPv6Support tests whether kernel can open an IPv6 socket. This will
 // also implicitly auto-load IPv6 kernel module if available and not yet
 // loaded.
@@ -636,7 +673,6 @@ func ExecuteHeaderProbes() *FeatureProbes {
 		probes.ProgramHelpers[ph] = (HaveProgramHelper(ph.Program, ph.Helper) == nil)
 	}
 
-	probes.Misc.HaveLargeInsnLimit = (HaveLargeInstructionLimit() == nil)
 	probes.Misc.HaveFibIfindex = (HaveFibIfindex() == nil)
 
 	return &probes
@@ -654,11 +690,10 @@ func writeCommonHeader(writer io.Writer, probes *FeatureProbes) error {
 			probes.ProgramHelpers[ProgramHelper{ebpf.XDP, asm.FnJiffies64}],
 		"HAVE_SOCKET_LOOKUP": probes.ProgramHelpers[ProgramHelper{ebpf.CGroupSockAddr, asm.FnSkLookupTcp}] &&
 			probes.ProgramHelpers[ProgramHelper{ebpf.CGroupSockAddr, asm.FnSkLookupUdp}],
-		"HAVE_CGROUP_ID":        probes.ProgramHelpers[ProgramHelper{ebpf.CGroupSockAddr, asm.FnGetCurrentCgroupId}],
-		"HAVE_LARGE_INSN_LIMIT": probes.Misc.HaveLargeInsnLimit,
-		"HAVE_SET_RETVAL":       probes.ProgramHelpers[ProgramHelper{ebpf.CGroupSock, asm.FnSetRetval}],
-		"HAVE_FIB_NEIGH":        probes.ProgramHelpers[ProgramHelper{ebpf.SchedCLS, asm.FnRedirectNeigh}],
-		"HAVE_FIB_IFINDEX":      probes.Misc.HaveFibIfindex,
+		"HAVE_CGROUP_ID":   probes.ProgramHelpers[ProgramHelper{ebpf.CGroupSockAddr, asm.FnGetCurrentCgroupId}],
+		"HAVE_SET_RETVAL":  probes.ProgramHelpers[ProgramHelper{ebpf.CGroupSock, asm.FnSetRetval}],
+		"HAVE_FIB_NEIGH":   probes.ProgramHelpers[ProgramHelper{ebpf.SchedCLS, asm.FnRedirectNeigh}],
+		"HAVE_FIB_IFINDEX": probes.Misc.HaveFibIfindex,
 	}
 
 	return writeFeatureHeader(writer, features, true)

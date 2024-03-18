@@ -342,13 +342,13 @@ func purgeCtEntry6(m *Map, key CtKey, entry *CtEntry, natMap *nat.Map) error {
 	t := key.GetTupleKey()
 	tupleType := t.GetFlags()
 
-	if tupleType == tuple.TUPLE_F_IN && entry.isDsrEntry() {
+	if tupleType == tuple.TUPLE_F_IN && entry.isDsrInternalEntry() {
 		// To delete NAT entries created by legacy DSR
 		nat.DeleteSwappedMapping6(natMap, t.(*tuple.TupleKey6Global))
 	}
 
 	if tupleType == tuple.TUPLE_F_OUT {
-		if entry.isDsrEntry() {
+		if entry.isDsrInternalEntry() {
 			// To delete NAT entries created by DSR
 			nat.DeleteSwappedMapping6(natMap, t.(*tuple.TupleKey6Global))
 		} else {
@@ -461,13 +461,13 @@ func purgeCtEntry4(m *Map, key CtKey, entry *CtEntry, natMap *nat.Map) error {
 	t := key.GetTupleKey()
 	tupleType := t.GetFlags()
 
-	if tupleType == tuple.TUPLE_F_IN && entry.isDsrEntry() {
+	if tupleType == tuple.TUPLE_F_IN && entry.isDsrInternalEntry() {
 		// To delete NAT entries created by legacy DSR
 		nat.DeleteSwappedMapping4(natMap, t.(*tuple.TupleKey4Global))
 	}
 
 	if tupleType == tuple.TUPLE_F_OUT {
-		if entry.isDsrEntry() {
+		if entry.isDsrInternalEntry() {
 			// To delete NAT entries created by DSR
 			nat.DeleteSwappedMapping4(natMap, t.(*tuple.TupleKey4Global))
 		} else {
@@ -597,19 +597,21 @@ func (f *GCFilter) doFiltering(srcIP, dstIP netip.Addr, srcPort, dstPort uint16,
 	return noAction
 }
 
-func doGC(m *Map, filter *GCFilter) int {
+func doGC(m *Map, filter *GCFilter) (int, error) {
 	if m.mapType.isIPv6() {
-		return int(doGC6(m, filter).deleted)
+		stats := doGC6(m, filter)
+		return int(stats.deleted), stats.dumpError
 	} else if m.mapType.isIPv4() {
-		return int(doGC4(m, filter).deleted)
+		stats := doGC4(m, filter)
+		return int(stats.deleted), stats.dumpError
 	}
 	log.Fatalf("Unsupported ct map type: %s", m.mapType.String())
-	return 0
+	return 0, fmt.Errorf("unsupported ct map type: %s", m.mapType.String())
 }
 
 // GC runs garbage collection for map m with name mapType with the given filter.
 // It returns how many items were deleted from m.
-func GC(m *Map, filter *GCFilter) int {
+func GC(m *Map, filter *GCFilter) (int, error) {
 	if filter.RemoveExpired {
 		t, _ := timestamp.GetCTCurTime(timestamp.GetClockSourceFromOptions())
 		filter.Time = uint32(t)
@@ -686,7 +688,7 @@ func PurgeOrphanNATEntries(ctMapTCP, ctMapAny *Map) *NatGCStats {
 			}
 		} else if natKey.GetFlags()&tuple.TUPLE_F_OUT == tuple.TUPLE_F_OUT {
 			checkDsr := func(entry *CtEntry) bool {
-				return entry.isDsrEntry()
+				return entry.isDsrInternalEntry()
 			}
 
 			ingressCTKey := ingressCTKeyFromEgressNatKey(natKey)
@@ -718,10 +720,11 @@ func PurgeOrphanNATEntries(ctMapTCP, ctMapAny *Map) *NatGCStats {
 // Flush runs garbage collection for map m with the name mapType, deleting all
 // entries. The specified map must be already opened using bpf.OpenMap().
 func (m *Map) Flush() int {
-	return doGC(m, &GCFilter{
+	d, _ := doGC(m, &GCFilter{
 		RemoveExpired: true,
 		Time:          MaxTime,
 	})
+	return d
 }
 
 // DeleteIfUpgradeNeeded attempts to open the conntrack maps associated with
@@ -864,25 +867,31 @@ var cachedGCInterval time.Duration
 
 // GetInterval returns the interval adjusted based on the deletion ratio of the
 // last run
-func GetInterval(maxDeleteRatio float64) time.Duration {
+func GetInterval(actualPrevInterval time.Duration, maxDeleteRatio float64) time.Duration {
 	if val := option.Config.ConntrackGCInterval; val != time.Duration(0) {
 		return val
 	}
 
-	prevInterval := cachedGCInterval
-	if prevInterval == time.Duration(0) {
-		prevInterval = defaults.ConntrackGCStartingInterval
+	expectedPrevInterval := cachedGCInterval
+	adjustedDeleteRatio := maxDeleteRatio
+	if expectedPrevInterval == time.Duration(0) {
+		expectedPrevInterval = defaults.ConntrackGCStartingInterval
+	} else if actualPrevInterval < expectedPrevInterval && actualPrevInterval > 0 {
+		adjustedDeleteRatio *= float64(expectedPrevInterval) / float64(actualPrevInterval)
 	}
 
-	newInterval := calculateInterval(prevInterval, maxDeleteRatio)
+	newInterval := calculateInterval(expectedPrevInterval, adjustedDeleteRatio)
 	if val := option.Config.ConntrackGCMaxInterval; val != time.Duration(0) && newInterval > val {
 		newInterval = val
 	}
 
-	if newInterval != prevInterval {
+	if newInterval != expectedPrevInterval {
 		log.WithFields(logrus.Fields{
-			"newInterval": newInterval,
-			"deleteRatio": maxDeleteRatio,
+			"expectedPrevInterval": expectedPrevInterval,
+			"actualPrevInterval":   actualPrevInterval,
+			"newInterval":          newInterval,
+			"deleteRatio":          maxDeleteRatio,
+			"adjustedDeleteRatio":  adjustedDeleteRatio,
 		}).Info("Conntrack garbage collector interval recalculated")
 	}
 

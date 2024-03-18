@@ -11,6 +11,8 @@ import (
 	. "github.com/cilium/checkmate"
 	"github.com/cilium/proxy/pkg/policy/api/kafka"
 
+	"k8s.io/apimachinery/pkg/util/intstr"
+
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/checker"
 	"github.com/cilium/cilium/pkg/identity"
@@ -989,84 +991,84 @@ func (ds *PolicyTestSuite) TestL3Policy(c *C) {
 	c.Assert(err, IsNil)
 
 	// Must be parsable, make sure Validate fails when not.
-	err = api.Rule{
+	err = (&api.Rule{
 		EndpointSelector: api.NewESFromLabels(labels.ParseSelectLabel("bar")),
 		Ingress: []api.IngressRule{{
 			IngressCommonRule: api.IngressCommonRule{
 				FromCIDR: []api.CIDR{"10.0.1..0/24"},
 			},
 		}},
-	}.Sanitize()
+	}).Sanitize()
 	c.Assert(err, Not(IsNil))
 
 	// Test CIDRRule with no provided CIDR or ExceptionCIDR.
 	// Should fail as CIDR is required.
-	err = api.Rule{
+	err = (&api.Rule{
 		EndpointSelector: api.NewESFromLabels(labels.ParseSelectLabel("bar")),
 		Ingress: []api.IngressRule{{
 			IngressCommonRule: api.IngressCommonRule{
 				FromCIDRSet: []api.CIDRRule{{Cidr: "", ExceptCIDRs: nil}},
 			},
 		}},
-	}.Sanitize()
+	}).Sanitize()
 	c.Assert(err, Not(IsNil))
 
 	// Test CIDRRule with only CIDR provided; should not fail, as ExceptionCIDR
 	// is optional.
-	err = api.Rule{
+	err = (&api.Rule{
 		EndpointSelector: api.NewESFromLabels(labels.ParseSelectLabel("bar")),
 		Ingress: []api.IngressRule{{
 			IngressCommonRule: api.IngressCommonRule{
 				FromCIDRSet: []api.CIDRRule{{Cidr: "10.0.1.0/24", ExceptCIDRs: nil}},
 			},
 		}},
-	}.Sanitize()
+	}).Sanitize()
 	c.Assert(err, IsNil)
 
 	// Cannot provide just an IP to a CIDRRule; Cidr must be of format
 	// <IP>/<prefix>.
-	err = api.Rule{
+	err = (&api.Rule{
 		EndpointSelector: api.NewESFromLabels(labels.ParseSelectLabel("bar")),
 		Ingress: []api.IngressRule{{
 			IngressCommonRule: api.IngressCommonRule{
 				FromCIDRSet: []api.CIDRRule{{Cidr: "10.0.1.32", ExceptCIDRs: nil}},
 			},
 		}},
-	}.Sanitize()
+	}).Sanitize()
 	c.Assert(err, Not(IsNil))
 
 	// Cannot exclude a range that is not part of the CIDR.
-	err = api.Rule{
+	err = (&api.Rule{
 		EndpointSelector: api.NewESFromLabels(labels.ParseSelectLabel("bar")),
 		Ingress: []api.IngressRule{{
 			IngressCommonRule: api.IngressCommonRule{
 				FromCIDRSet: []api.CIDRRule{{Cidr: "10.0.0.0/10", ExceptCIDRs: []api.CIDR{"10.64.0.0/11"}}},
 			},
 		}},
-	}.Sanitize()
+	}).Sanitize()
 	c.Assert(err, Not(IsNil))
 
 	// Must have a contiguous mask, make sure Validate fails when not.
-	err = api.Rule{
+	err = (&api.Rule{
 		EndpointSelector: api.NewESFromLabels(labels.ParseSelectLabel("bar")),
 		Ingress: []api.IngressRule{{
 			IngressCommonRule: api.IngressCommonRule{
 				FromCIDR: []api.CIDR{"10.0.1.0/128.0.0.128"},
 			},
 		}},
-	}.Sanitize()
+	}).Sanitize()
 	c.Assert(err, Not(IsNil))
 
 	// Prefix length must be in range for the address, make sure
 	// Validate fails if given prefix length is out of range.
-	err = api.Rule{
+	err = (&api.Rule{
 		EndpointSelector: api.NewESFromLabels(labels.ParseSelectLabel("bar")),
 		Ingress: []api.IngressRule{{
 			IngressCommonRule: api.IngressCommonRule{
 				FromCIDR: []api.CIDR{"10.0.1.0/34"},
 			},
 		}},
-	}.Sanitize()
+	}).Sanitize()
 	c.Assert(err, Not(IsNil))
 }
 
@@ -1076,6 +1078,7 @@ func (ds *PolicyTestSuite) TestICMPPolicy(c *C) {
 	fromBar := &SearchContext{From: labels.ParseSelectLabelArray("bar")}
 
 	// A rule for ICMP
+	icmpV4Type := intstr.FromInt(8)
 	rule1 := &rule{
 		Rule: api.Rule{
 			EndpointSelector: api.NewESFromLabels(labels.ParseSelectLabel("bar")),
@@ -1083,7 +1086,7 @@ func (ds *PolicyTestSuite) TestICMPPolicy(c *C) {
 				{
 					ICMPs: api.ICMPRules{{
 						Fields: []api.ICMPField{{
-							Type: 8,
+							Type: &icmpV4Type,
 						}},
 					}},
 				},
@@ -1092,7 +1095,7 @@ func (ds *PolicyTestSuite) TestICMPPolicy(c *C) {
 				{
 					ICMPs: api.ICMPRules{{
 						Fields: []api.ICMPField{{
-							Type: 8,
+							Type: &icmpV4Type,
 						}},
 					}},
 				},
@@ -1159,7 +1162,7 @@ func (ds *PolicyTestSuite) TestICMPPolicy(c *C) {
 					}},
 					ICMPs: api.ICMPRules{{
 						Fields: []api.ICMPField{{
-							Type: 8,
+							Type: &icmpV4Type,
 						}},
 					}},
 				},
@@ -1206,6 +1209,7 @@ func (ds *PolicyTestSuite) TestICMPPolicy(c *C) {
 	expected.Detach(testSelectorCache)
 
 	// A rule for ICMPv6
+	icmpV6Type := intstr.FromInt(128)
 	rule3 := &rule{
 		Rule: api.Rule{
 			EndpointSelector: api.NewESFromLabels(labels.ParseSelectLabel("bar")),
@@ -1214,7 +1218,7 @@ func (ds *PolicyTestSuite) TestICMPPolicy(c *C) {
 					ICMPs: api.ICMPRules{{
 						Fields: []api.ICMPField{{
 							Family: "IPv6",
-							Type:   128,
+							Type:   &icmpV6Type,
 						}},
 					}},
 				},

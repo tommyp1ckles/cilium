@@ -183,21 +183,6 @@ struct {
 	__uint(max_entries, 1);
 } ENCRYPT_MAP __section_maps_btf;
 
-struct node_key {
-	__u16 pad1;
-	__u8 pad2;
-	__u8 family;
-	union {
-		struct {
-			__u32 ip4;
-			__u32 pad4;
-			__u32 pad5;
-			__u32 pad6;
-		};
-		union v6addr    ip6;
-	};
-};
-
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, struct node_key);
@@ -318,13 +303,13 @@ struct {
 static __always_inline void ep_tail_call(struct __ctx_buff *ctx __maybe_unused,
 					 const __u32 index __maybe_unused)
 {
-	tail_call_static(ctx, &CALLS_MAP, index);
+	tail_call_static(ctx, CALLS_MAP, index);
 }
 
 static __always_inline __must_check int
 tail_call_internal(struct __ctx_buff *ctx, const __u32 index, __s8 *ext_err)
 {
-	tail_call_static(ctx, &CALLS_MAP, index);
+	tail_call_static(ctx, CALLS_MAP, index);
 
 	if (ext_err)
 		*ext_err = (__s8)index;

@@ -262,6 +262,9 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 	flags.Bool(option.EnableNat46X64Gateway, false, "Enable NAT46 and NAT64 gateway")
 	option.BindEnv(vp, option.EnableNat46X64Gateway)
 
+	flags.Bool(option.EnableIPIPTermination, false, "Enable plain IPIP/IP6IP6 termination")
+	option.BindEnv(vp, option.EnableIPIPTermination)
+
 	flags.Bool(option.EnableIPv6NDPName, defaults.EnableIPv6NDP, "Enable IPv6 NDP support")
 	option.BindEnv(vp, option.EnableIPv6NDPName)
 
@@ -344,6 +347,15 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 	flags.Bool(option.EnableL7Proxy, defaults.EnableL7Proxy, "Enable L7 proxy for L7 policy enforcement")
 	option.BindEnv(vp, option.EnableL7Proxy)
 
+	flags.Bool(option.BPFEventsDropEnabled, defaults.BPFEventsDropEnabled, "Expose 'drop' events for Cilium monitor and/or Hubble")
+	option.BindEnv(vp, option.BPFEventsDropEnabled)
+
+	flags.Bool(option.BPFEventsPolicyVerdictEnabled, defaults.BPFEventsPolicyVerdictEnabled, "Expose 'policy verdict' events for Cilium monitor and/or Hubble")
+	option.BindEnv(vp, option.BPFEventsPolicyVerdictEnabled)
+
+	flags.Bool(option.BPFEventsTraceEnabled, defaults.BPFEventsTraceEnabled, "Expose 'trace' events for Cilium monitor and/or Hubble")
+	option.BindEnv(vp, option.BPFEventsTraceEnabled)
+
 	flags.Bool(option.EnableTracing, false, "Enable tracing while determining policy (debugging)")
 	option.BindEnv(vp, option.EnableTracing)
 
@@ -352,9 +364,6 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 
 	flags.Bool(option.EnableWellKnownIdentities, defaults.EnableWellKnownIdentities, "Enable well-known identities for known Kubernetes components")
 	option.BindEnv(vp, option.EnableWellKnownIdentities)
-
-	flags.String(option.EnvoyLog, "", "Path to a separate Envoy log file, if any")
-	option.BindEnv(vp, option.EnvoyLog)
 
 	flags.Bool(option.EnableIPSecName, defaults.EnableIPSec, "Enable IPSec support")
 	option.BindEnv(vp, option.EnableIPSecName)
@@ -400,51 +409,6 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 
 	flags.Bool(option.EncryptionStrictModeAllowRemoteNodeIdentities, false, "Allows unencrypted traffic from pods to remote node identities within the strict mode CIDR. This is required when tunneling is used or direct routing is used and the node CIDR and pod CIDR overlap.")
 	option.BindEnv(vp, option.EncryptionStrictModeAllowRemoteNodeIdentities)
-
-	flags.Bool(option.HTTPNormalizePath, true, "Use Envoy HTTP path normalization options, which currently includes RFC 3986 path normalization, Envoy merge slashes option, and unescaping and redirecting for paths that contain escaped slashes. These are necessary to keep path based access control functional, and should not interfere with normal operation. Set this to false only with caution.")
-	option.BindEnv(vp, option.HTTPNormalizePath)
-
-	flags.String(option.HTTP403Message, "", "Message returned in proxy L7 403 body")
-	flags.MarkHidden(option.HTTP403Message)
-	option.BindEnv(vp, option.HTTP403Message)
-
-	flags.Uint(option.HTTPRequestTimeout, 60*60, "Time after which a forwarded HTTP request is considered failed unless completed (in seconds); Use 0 for unlimited")
-	option.BindEnv(vp, option.HTTPRequestTimeout)
-
-	flags.Uint(option.HTTPIdleTimeout, 0, "Time after which a non-gRPC HTTP stream is considered failed unless traffic in the stream has been processed (in seconds); defaults to 0 (unlimited)")
-	option.BindEnv(vp, option.HTTPIdleTimeout)
-
-	flags.Uint(option.HTTPMaxGRPCTimeout, 0, "Time after which a forwarded gRPC request is considered failed unless completed (in seconds). A \"grpc-timeout\" header may override this with a shorter value; defaults to 0 (unlimited)")
-	option.BindEnv(vp, option.HTTPMaxGRPCTimeout)
-
-	flags.Uint(option.HTTPRetryCount, 3, "Number of retries performed after a forwarded request attempt fails")
-	option.BindEnv(vp, option.HTTPRetryCount)
-
-	flags.Uint(option.HTTPRetryTimeout, 0, "Time after which a forwarded but uncompleted request is retried (connection failures are retried immediately); defaults to 0 (never)")
-	option.BindEnv(vp, option.HTTPRetryTimeout)
-
-	flags.Uint(option.ProxyConnectTimeout, 2, "Time after which a TCP connect attempt is considered failed unless completed (in seconds)")
-	option.BindEnv(vp, option.ProxyConnectTimeout)
-
-	flags.Uint(option.ProxyGID, 1337, "Group ID for proxy control plane sockets.")
-	option.BindEnv(vp, option.ProxyGID)
-
-	flags.Int(option.ProxyPrometheusPort, 0, "Port to serve Envoy metrics on. Default 0 (disabled).")
-	option.BindEnv(vp, option.ProxyPrometheusPort)
-
-	flags.Int(option.ProxyMaxRequestsPerConnection, 0, "Set Envoy HTTP option max_requests_per_connection. Default 0 (disable)")
-	option.BindEnv(vp, option.ProxyMaxRequestsPerConnection)
-
-	flags.Int64(option.ProxyMaxConnectionDuration, 0, "Set Envoy HTTP option max_connection_duration seconds. Default 0 (disable)")
-	option.BindEnv(vp, option.ProxyMaxConnectionDuration)
-
-	flags.Int64(option.ProxyIdleTimeout, 60, "Set Envoy upstream HTTP idle connection timeout seconds. Does not apply to connections with pending requests. Default 60s")
-	option.BindEnv(vp, option.ProxyIdleTimeout)
-
-	flags.Bool(option.DisableEnvoyVersionCheck, false, "Do not perform Envoy binary version check on startup")
-	flags.MarkHidden(option.DisableEnvoyVersionCheck)
-	// Disable version check if Envoy build is disabled
-	option.BindEnvWithLegacyEnvFallback(vp, option.DisableEnvoyVersionCheck, "CILIUM_DISABLE_ENVOY_BUILD")
 
 	flags.Var(option.NewNamedMapOptions(option.FixedIdentityMapping, &option.Config.FixedIdentityMapping, option.Config.FixedIdentityMappingValidator),
 		option.FixedIdentityMapping, "Key-value for the fixed identity mapping which allows to use reserved label for fixed identities, e.g. 128=kv-store,129=kube-dns")
@@ -517,9 +481,6 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 
 	flags.Duration(option.KVstoreConnectivityTimeout, defaults.KVstoreConnectivityTimeout, "Time after which an incomplete kvstore operation  is considered failed")
 	option.BindEnv(vp, option.KVstoreConnectivityTimeout)
-
-	flags.Duration(option.IPAllocationTimeout, defaults.IPAllocationTimeout, "Time after which an incomplete CIDR allocation is considered failed")
-	option.BindEnv(vp, option.IPAllocationTimeout)
 
 	flags.Var(option.NewNamedMapOptions(option.KVStoreOpt, &option.Config.KVStoreOpt, nil),
 		option.KVStoreOpt, "Key-value store options e.g. etcd.address=127.0.0.1:4001")
@@ -681,10 +642,6 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 	flags.Bool(option.EnableMasqueradeRouteSource, false, "Masquerade packets to the source IP provided from the routing layer rather than interface address")
 	option.BindEnv(vp, option.EnableMasqueradeRouteSource)
 
-	flags.String(option.DeriveMasqIPAddrFromDevice, "", "Device name from which Cilium derives the IP addr for BPF masquerade")
-	flags.MarkHidden(option.DeriveMasqIPAddrFromDevice)
-	option.BindEnv(vp, option.DeriveMasqIPAddrFromDevice)
-
 	flags.Bool(option.EnableIPMasqAgent, false, "Enable BPF ip-masq-agent")
 	option.BindEnv(vp, option.EnableIPMasqAgent)
 
@@ -693,9 +650,6 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 
 	flags.Bool(option.EnableEnvoyConfig, false, "Enable Envoy Config CRDs")
 	option.BindEnv(vp, option.EnableEnvoyConfig)
-
-	flags.Duration(option.EnvoyConfigTimeout, defaults.EnvoyConfigTimeout, "Timeout duration for Envoy Config acknowledgements")
-	option.BindEnv(vp, option.EnvoyConfigTimeout)
 
 	flags.String(option.IPMasqAgentConfigPath, "/etc/config/ip-masq-agent", "ip-masq-agent configuration file path")
 	option.BindEnv(vp, option.IPMasqAgentConfigPath)
@@ -1321,9 +1275,9 @@ func initEnv(vp *viper.Viper) {
 
 	option.Config.Opts.SetBool(option.Debug, debugDatapath)
 	option.Config.Opts.SetBool(option.DebugLB, debugDatapath)
-	option.Config.Opts.SetBool(option.DropNotify, true)
-	option.Config.Opts.SetBool(option.TraceNotify, true)
-	option.Config.Opts.SetBool(option.PolicyVerdictNotify, true)
+	option.Config.Opts.SetBool(option.DropNotify, option.Config.BPFEventsDropEnabled)
+	option.Config.Opts.SetBool(option.PolicyVerdictNotify, option.Config.BPFEventsPolicyVerdictEnabled)
+	option.Config.Opts.SetBool(option.TraceNotify, option.Config.BPFEventsTraceEnabled)
 	option.Config.Opts.SetBool(option.PolicyTracing, option.Config.EnableTracing)
 	option.Config.Opts.SetBool(option.ConntrackAccounting, false)
 	option.Config.Opts.SetBool(option.ConntrackLocal, false)
@@ -1873,6 +1827,9 @@ func startDaemon(d *Daemon, restoredEndpoints *endpointRestoreState, cleaner *da
 	if err != nil {
 		log.WithError(err).Warn("Failed to send agent start monitor message")
 	}
+
+	// Watches for node neighbors link updates.
+	d.nodeDiscovery.Manager.StartNodeNeighborLinkUpdater(d.datapath.NodeNeighbors())
 
 	if option.Config.DatapathMode != datapathOption.DatapathModeLBOnly {
 		if !d.datapath.NodeNeighbors().NodeNeighDiscoveryEnabled() {

@@ -4,6 +4,13 @@
 package bgpv2
 
 import (
+	"context"
+	"sync"
+
+	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/watch"
+	k8sTesting "k8s.io/client-go/testing"
+
 	"github.com/cilium/cilium/pkg/hive"
 	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/hive/job"
@@ -25,29 +32,65 @@ var (
 type fixture struct {
 	hive          *hive.Hive
 	fakeClientSet *k8s_client.FakeClientset
-	bgppClient    cilium_client_v2alpha1.CiliumBGPPeeringPolicyInterface
 	bgpcClient    cilium_client_v2alpha1.CiliumBGPClusterConfigInterface
 	nodeClient    cilium_client_v2.CiliumNodeInterface
 	bgpncoClient  cilium_client_v2alpha1.CiliumBGPNodeConfigOverrideInterface
-	bgppcClient   cilium_client_v2alpha1.CiliumBGPPeerConfigInterface
-	bgpaClient    cilium_client_v2alpha1.CiliumBGPAdvertisementInterface
 
 	// for validations
 	bgpnClient cilium_client_v2alpha1.CiliumBGPNodeConfigInterface
 }
 
-func newFixture() *fixture {
-	f := &fixture{}
+func newFixture(ctx context.Context, req *require.Assertions) (*fixture, func()) {
+	var (
+		onceCN, onceBGPCC   sync.Once
+		cnWatch, bgpccWatch = make(chan struct{}), make(chan struct{})
+	)
 
+	f := &fixture{}
 	f.fakeClientSet, _ = k8s_client.NewFakeClientset()
 
-	f.bgppClient = f.fakeClientSet.CiliumFakeClientset.CiliumV2alpha1().CiliumBGPPeeringPolicies()
+	watchReactorFn := func(action k8sTesting.Action) (handled bool, ret watch.Interface, err error) {
+		w := action.(k8sTesting.WatchAction)
+		gvr := w.GetResource()
+		ns := w.GetNamespace()
+		watch, err := f.fakeClientSet.CiliumFakeClientset.Tracker().Watch(gvr, ns)
+		if err != nil {
+			return false, nil, err
+		}
+
+		switch w.GetResource().Resource {
+		case "ciliumnodes":
+			onceCN.Do(func() { close(cnWatch) })
+		case "ciliumbgpclusterconfigs":
+			onceBGPCC.Do(func() { close(bgpccWatch) })
+		default:
+			return false, watch, nil
+		}
+
+		return true, watch, nil
+	}
+
+	// make sure watchers are initialized before the test starts
+	watchersReadyFn := func() {
+		select {
+		case <-cnWatch:
+		case <-ctx.Done():
+			req.Fail("cilium node watcher is not initialized")
+		}
+
+		select {
+		case <-bgpccWatch:
+		case <-ctx.Done():
+			req.Fail("cilium bgp cluster config watcher is not initialized")
+		}
+	}
+
 	f.bgpcClient = f.fakeClientSet.CiliumFakeClientset.CiliumV2alpha1().CiliumBGPClusterConfigs()
 	f.nodeClient = f.fakeClientSet.CiliumFakeClientset.CiliumV2().CiliumNodes()
 	f.bgpnClient = f.fakeClientSet.CiliumFakeClientset.CiliumV2alpha1().CiliumBGPNodeConfigs()
 	f.bgpncoClient = f.fakeClientSet.CiliumFakeClientset.CiliumV2alpha1().CiliumBGPNodeConfigOverrides()
-	f.bgppcClient = f.fakeClientSet.CiliumFakeClientset.CiliumV2alpha1().CiliumBGPPeerConfigs()
-	f.bgpaClient = f.fakeClientSet.CiliumFakeClientset.CiliumV2alpha1().CiliumBGPAdvertisements()
+
+	f.fakeClientSet.CiliumFakeClientset.PrependWatchReactor("*", watchReactorFn)
 
 	f.hive = hive.New(
 		cell.Provide(func(lc cell.Lifecycle, c k8s_client.Clientset) resource.Resource[*cilium_api_v2alpha1.CiliumBGPClusterConfig] {
@@ -57,15 +100,6 @@ func newFixture() *fixture {
 				),
 			)
 		}),
-
-		cell.Provide(func(lc cell.Lifecycle, c k8s_client.Clientset) resource.Resource[*cilium_api_v2alpha1.CiliumBGPPeeringPolicy] {
-			return resource.New[*cilium_api_v2alpha1.CiliumBGPPeeringPolicy](
-				lc, utils.ListerWatcherFromTyped[*cilium_api_v2alpha1.CiliumBGPPeeringPolicyList](
-					c.CiliumV2alpha1().CiliumBGPPeeringPolicies(),
-				),
-			)
-		}),
-
 		cell.Provide(func(lc cell.Lifecycle, c k8s_client.Clientset) resource.Resource[*cilium_api_v2alpha1.CiliumBGPNodeConfig] {
 			return resource.New[*cilium_api_v2alpha1.CiliumBGPNodeConfig](
 				lc, utils.ListerWatcherFromTyped[*cilium_api_v2alpha1.CiliumBGPNodeConfigList](
@@ -78,22 +112,6 @@ func newFixture() *fixture {
 			return resource.New[*cilium_api_v2alpha1.CiliumBGPNodeConfigOverride](
 				lc, utils.ListerWatcherFromTyped[*cilium_api_v2alpha1.CiliumBGPNodeConfigOverrideList](
 					c.CiliumV2alpha1().CiliumBGPNodeConfigOverrides(),
-				),
-			)
-		}),
-
-		cell.Provide(func(lc cell.Lifecycle, c k8s_client.Clientset) resource.Resource[*cilium_api_v2alpha1.CiliumBGPAdvertisement] {
-			return resource.New[*cilium_api_v2alpha1.CiliumBGPAdvertisement](
-				lc, utils.ListerWatcherFromTyped[*cilium_api_v2alpha1.CiliumBGPAdvertisementList](
-					c.CiliumV2alpha1().CiliumBGPAdvertisements(),
-				),
-			)
-		}),
-
-		cell.Provide(func(lc cell.Lifecycle, c k8s_client.Clientset) resource.Resource[*cilium_api_v2alpha1.CiliumBGPPeerConfig] {
-			return resource.New[*cilium_api_v2alpha1.CiliumBGPPeerConfig](
-				lc, utils.ListerWatcherFromTyped[*cilium_api_v2alpha1.CiliumBGPPeerConfigList](
-					c.CiliumV2alpha1().CiliumBGPPeerConfigs(),
 				),
 			)
 		}),
@@ -124,5 +142,5 @@ func newFixture() *fixture {
 	// enable BGPv2
 	hive.AddConfigOverride(f.hive, func(cfg *Config) { cfg.BGPv2Enabled = true })
 
-	return f
+	return f, watchersReadyFn
 }

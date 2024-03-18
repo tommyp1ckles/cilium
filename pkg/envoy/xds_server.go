@@ -73,6 +73,7 @@ const (
 	ingressClusterName    = "ingress-cluster"
 	ingressTLSClusterName = "ingress-cluster-tls"
 	metricsListenerName   = "envoy-prometheus-metrics-listener"
+	adminListenerName     = "envoy-admin-listener"
 )
 
 type Listener struct {
@@ -91,6 +92,8 @@ type Listener struct {
 type XDSServer interface {
 	// AddListener adds a listener to a running Envoy proxy.
 	AddListener(name string, kind policy.L7ParserType, port uint16, isIngress bool, mayUseOriginalSourceAddr bool, wg *completion.WaitGroup)
+	// AddAdminListener adds an Admin API listener to Envoy.
+	AddAdminListener(port uint16, wg *completion.WaitGroup)
 	// AddMetricsListener adds a prometheus metrics listener to Envoy.
 	AddMetricsListener(port uint16, wg *completion.WaitGroup)
 	// RemoveListener removes an existing Envoy Listener.
@@ -132,6 +135,8 @@ type xdsServer struct {
 
 	// accessLogPath is the path to the L7 access logs
 	accessLogPath string
+
+	config xdsServerConfig
 
 	// mutex protects accesses to the configuration resources below.
 	mutex lock.RWMutex
@@ -195,14 +200,27 @@ func toAny(pb proto.Message) *anypb.Any {
 	return a
 }
 
+type xdsServerConfig struct {
+	envoySocketDir     string
+	proxyGID           int
+	httpRequestTimeout int
+	httpIdleTimeout    int
+	httpMaxGRPCTimeout int
+	httpRetryCount     int
+	httpRetryTimeout   int
+	httpNormalizePath  bool
+}
+
 // newXDSServer creates a new xDS GRPC server.
-func newXDSServer(envoySocketDir string, ipCache IPCacheEventSource, localEndpointStore *LocalEndpointStore) (*xdsServer, error) {
+func newXDSServer(ipCache IPCacheEventSource, localEndpointStore *LocalEndpointStore, config xdsServerConfig) (*xdsServer, error) {
 	return &xdsServer{
-		socketPath:         getXDSSocketPath(envoySocketDir),
-		accessLogPath:      getAccessLogSocketPath(envoySocketDir),
-		ipCache:            ipCache,
 		listeners:          make(map[string]*Listener),
+		ipCache:            ipCache,
 		localEndpointStore: localEndpointStore,
+
+		socketPath:    getXDSSocketPath(config.envoySocketDir),
+		accessLogPath: getAccessLogSocketPath(config.envoySocketDir),
+		config:        config,
 	}, nil
 }
 
@@ -304,7 +322,7 @@ func (s *xdsServer) newSocketListener() (*net.UnixListener, error) {
 		return nil, fmt.Errorf("failed to change mode of xDS listen socket at %s: %w", s.socketPath, err)
 	}
 	// Change the group to ProxyGID allowing access from any process from that group.
-	if err = os.Chown(s.socketPath, -1, option.Config.ProxyGID); err != nil {
+	if err = os.Chown(s.socketPath, -1, s.config.proxyGID); err != nil {
 		log.WithError(err).Warningf("Envoy: Failed to change the group of xDS listen socket at %s, sidecar proxies may not work", s.socketPath)
 	}
 	return socketListener, nil
@@ -332,11 +350,11 @@ func GetCiliumHttpFilter() *envoy_config_http.HttpFilter {
 }
 
 func (s *xdsServer) getHttpFilterChainProto(clusterName string, tls bool) *envoy_config_listener.FilterChain {
-	requestTimeout := int64(option.Config.HTTPRequestTimeout) // seconds
-	idleTimeout := int64(option.Config.HTTPIdleTimeout)       // seconds
-	maxGRPCTimeout := int64(option.Config.HTTPMaxGRPCTimeout) // seconds
-	numRetries := uint32(option.Config.HTTPRetryCount)
-	retryTimeout := int64(option.Config.HTTPRetryTimeout) // seconds
+	requestTimeout := int64(s.config.httpRequestTimeout) // seconds
+	idleTimeout := int64(s.config.httpIdleTimeout)       // seconds
+	maxGRPCTimeout := int64(s.config.httpMaxGRPCTimeout) // seconds
+	numRetries := uint32(s.config.httpRetryCount)
+	retryTimeout := int64(s.config.httpRetryTimeout) // seconds
 
 	hcmConfig := &envoy_config_http.HttpConnectionManager{
 		StatPrefix:       "proxy",
@@ -402,7 +420,7 @@ func (s *xdsServer) getHttpFilterChainProto(clusterName string, tls bool) *envoy
 		},
 	}
 
-	if option.Config.HTTPNormalizePath {
+	if s.config.httpNormalizePath {
 		hcmConfig.NormalizePath = &wrapperspb.BoolValue{Value: true}
 		hcmConfig.MergeSlashes = true
 		hcmConfig.PathWithEscapedSlashesAction = envoy_config_http.HttpConnectionManager_UNESCAPE_AND_REDIRECT
@@ -583,6 +601,73 @@ func GetLocalListenerAddresses(port uint16, ipv4, ipv6 bool) (*envoy_config_core
 	return &envoy_config_core.Address{
 		Address: addresses[0],
 	}, additionalAddress
+}
+
+func (s *xdsServer) AddAdminListener(port uint16, wg *completion.WaitGroup) {
+	if port == 0 {
+		return // 0 == disabled
+	}
+	log.WithField(logfields.Port, port).Debug("Envoy: AddAdminListener")
+
+	s.addListener(adminListenerName, func() *envoy_config_listener.Listener {
+		hcmConfig := &envoy_config_http.HttpConnectionManager{
+			StatPrefix:       adminListenerName,
+			UseRemoteAddress: &wrapperspb.BoolValue{Value: true},
+			SkipXffAppend:    true,
+			HttpFilters: []*envoy_config_http.HttpFilter{{
+				Name: "envoy.filters.http.router",
+				ConfigType: &envoy_config_http.HttpFilter_TypedConfig{
+					TypedConfig: toAny(&envoy_extensions_filters_http_router_v3.Router{}),
+				},
+			}},
+			StreamIdleTimeout: &durationpb.Duration{}, // 0 == disabled
+			RouteSpecifier: &envoy_config_http.HttpConnectionManager_RouteConfig{
+				RouteConfig: &envoy_config_route.RouteConfiguration{
+					VirtualHosts: []*envoy_config_route.VirtualHost{{
+						Name:    "admin_listener_route",
+						Domains: []string{"*"},
+						Routes: []*envoy_config_route.Route{{
+							Match: &envoy_config_route.RouteMatch{
+								PathSpecifier: &envoy_config_route.RouteMatch_Prefix{Prefix: "/"},
+							},
+							Action: &envoy_config_route.Route_Route{
+								Route: &envoy_config_route.RouteAction{
+									ClusterSpecifier: &envoy_config_route.RouteAction_Cluster{
+										Cluster: adminClusterName,
+									},
+								},
+							},
+						}},
+					}},
+				},
+			},
+		}
+
+		addr, additionalAddr := GetLocalListenerAddresses(port, option.Config.IPv4Enabled(), option.Config.IPv6Enabled())
+		listenerConf := &envoy_config_listener.Listener{
+			Name:                adminListenerName,
+			Address:             addr,
+			AdditionalAddresses: additionalAddr,
+			FilterChains: []*envoy_config_listener.FilterChain{{
+				Filters: []*envoy_config_listener.Filter{{
+					Name: "envoy.filters.network.http_connection_manager",
+					ConfigType: &envoy_config_listener.Filter_TypedConfig{
+						TypedConfig: toAny(hcmConfig),
+					},
+				}},
+			}},
+		}
+
+		return listenerConf
+	}, wg, func(err error) {
+		if err != nil {
+			log.WithField(logfields.Port, port).WithError(err).Debug("Envoy: Adding admin listener failed")
+			// Remove the added listener in case of a failure
+			s.removeListener(adminListenerName, nil, false)
+		} else {
+			log.WithField(logfields.Port, port).Info("Envoy: Listening for Admin API")
+		}
+	}, false)
 }
 
 func (s *xdsServer) AddMetricsListener(port uint16, wg *completion.WaitGroup) {

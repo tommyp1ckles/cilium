@@ -247,6 +247,7 @@ func (l *loader) reinitializeOverlay(ctx context.Context, tunnelConfig tunnel.Co
 	}
 	if option.Config.EnableNodePort {
 		opts = append(opts, "-DDISABLE_LOOPBACK_LB")
+		opts = append(opts, fmt.Sprintf("-DNATIVE_DEV_IFINDEX=%d", link.Attrs().Index))
 	}
 	if option.Config.IsDualStack() {
 		opts = append(opts, fmt.Sprintf("-DSECLABEL_IPV4=%d", identity.ReservedIdentityWorldIPv4))
@@ -336,7 +337,7 @@ func (l *loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 		return fmt.Errorf("failed to setup base devices: %w", err)
 	}
 
-	if option.Config.EnableHealthDatapath {
+	if option.Config.EnableHealthDatapath || option.Config.EnableIPIPTermination {
 		sysSettings = append(
 			sysSettings,
 			tables.Sysctl{
@@ -344,7 +345,7 @@ func (l *loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 			},
 		)
 		if err := setupIPIPDevices(l.sysctl, option.Config.IPv4Enabled(), option.Config.IPv6Enabled()); err != nil {
-			return fmt.Errorf("unable to create ipip encapsulation devices for health datapath")
+			return fmt.Errorf("unable to create ipip devices: %w", err)
 		}
 	}
 

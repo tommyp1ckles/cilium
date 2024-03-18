@@ -771,11 +771,6 @@ func newDaemon(ctx context.Context, cleaner *daemonCleanup, params *daemonParams
 			log.Error("BPF masquerading does not yet support masquerading to source IP from routing layer")
 			return nil, nil, fmt.Errorf("BPF masquerading to route source (--%s=\"true\") currently not supported with BPF-based masquerading (--%s=\"true\")", option.EnableMasqueradeRouteSource, option.EnableBPFMasquerade)
 		}
-		// TODO(brb) nodeport constraints will be lifted once the SNAT BPF code has been refactored
-		if err := node.InitBPFMasqueradeAddrs(option.Config.GetDevices()); err != nil {
-			log.WithError(err).Error("failed to determine BPF masquerade addrs")
-			return nil, nil, fmt.Errorf("failed to determine BPF masquerade addrs: %w", err)
-		}
 	} else if option.Config.EnableIPMasqAgent {
 		log.WithError(err).Errorf("BPF ip-masq-agent requires (--%s=\"true\" or --%s=\"true\") and --%s=\"true\"", option.EnableIPv4Masquerade, option.EnableIPv6Masquerade, option.EnableBPFMasquerade)
 		return nil, nil, fmt.Errorf("BPF ip-masq-agent requires (--%s=\"true\" or --%s=\"true\") and --%s=\"true\"", option.EnableIPv4Masquerade, option.EnableIPv6Masquerade, option.EnableBPFMasquerade)
@@ -793,12 +788,6 @@ func newDaemon(ctx context.Context, cleaner *daemonCleanup, params *daemonParams
 			msg := "External facing device for high-scale IPcache could not be determined. Use --%s to specify."
 			log.WithError(err).Errorf(msg, option.Devices)
 			return nil, nil, fmt.Errorf(msg, option.Devices)
-		}
-	}
-	if option.Config.EnableSCTP {
-		if probes.HaveLargeInstructionLimit() != nil {
-			log.WithError(err).Error("SCTP support needs kernel 5.2 or newer")
-			return nil, nil, fmt.Errorf("SCTP support needs kernel 5.2 or newer")
 		}
 	}
 

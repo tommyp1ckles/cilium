@@ -55,11 +55,10 @@ concurrency:
 env:
   clusterName: ${{ github.repository_owner }}-${{ github.event.repository.name }}-${{ github.run_id }}-${{ github.run_attempt }}
   cilium_cli_ci_version:
-  CILIUM_CLI_MODE: helm
   # renovate: datasource=github-releases depName=eksctl-io/eksctl
-  eksctl_version: v0.172.0
+  eksctl_version: v0.174.0
   # renovate: datasource=github-releases depName=kubernetes/kubernetes
-  kubectl_version: v1.29.2
+  kubectl_version: v1.29.3
 
 jobs:
   commit-status-start:
@@ -151,7 +150,7 @@ jobs:
           # cilium-cli which is setting it to 'eni' because it auto-detects
           # the cluster as being EKS.
           CILIUM_INSTALL_DEFAULTS="${{ steps.default_vars.outputs.cilium_install_defaults }} \
-            --cluster-name=${{ env.clusterName }} \
+            --helm-set=cluster.name=${{ env.clusterName }} \
             --helm-set=hubble.relay.enabled=true \
             --helm-set=enableIPv4Masquerade=false \
             --helm-set=cni.chainingMode=aws-cni \
@@ -170,7 +169,7 @@ jobs:
           echo owner=${OWNER} >> $GITHUB_OUTPUT
 
       - name: Install Cilium CLI
-        uses: cilium/cilium-cli@7306e3cdc6caee738157f08e3e1ba26179f104e5 # v0.15.23
+        uses: cilium/cilium-cli@ca0d5a23b842d78ce3b5c79a80d546867493daf7 # v0.16.0
         with:
           repository: ${{ env.CILIUM_CLI_RELEASE_REPO }}
           release-version: ${{ env.CILIUM_CLI_VERSION }}

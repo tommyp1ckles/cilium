@@ -9,6 +9,9 @@ import (
 
 	. "github.com/cilium/checkmate"
 	"github.com/cilium/proxy/pkg/policy/api/kafka"
+	"github.com/stretchr/testify/assert"
+
+	"k8s.io/apimachinery/pkg/util/intstr"
 
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	"github.com/cilium/cilium/pkg/labels"
@@ -922,8 +925,9 @@ func (s *PolicyAPITestSuite) TestTooManyICMPFields(c *C) {
 	var fields []ICMPField
 
 	for i := 1; i <= 1+maxICMPFields; i++ {
+		icmpType := intstr.FromInt(i)
 		fields = append(fields, ICMPField{
-			Type: uint8(i),
+			Type: &icmpType,
 		})
 	}
 
@@ -945,6 +949,7 @@ func (s *PolicyAPITestSuite) TestTooManyICMPFields(c *C) {
 }
 
 func (s *PolicyAPITestSuite) TestWrongICMPFieldFamily(c *C) {
+	icmpType := intstr.FromInt(0)
 	wrongFamilyICMPRule := Rule{
 		EndpointSelector: WildcardEndpointSelector,
 		Ingress: []IngressRule{
@@ -955,7 +960,7 @@ func (s *PolicyAPITestSuite) TestWrongICMPFieldFamily(c *C) {
 				ICMPs: ICMPRules{{
 					Fields: []ICMPField{{
 						Family: "hoge",
-						Type:   0,
+						Type:   &icmpType,
 					}},
 				}},
 			},
@@ -966,6 +971,7 @@ func (s *PolicyAPITestSuite) TestWrongICMPFieldFamily(c *C) {
 }
 
 func (s *PolicyAPITestSuite) TestICMPRuleWithOtherRuleFailed(c *C) {
+	icmpType := intstr.FromInt(8)
 	ingressICMPWithPort := Rule{
 		EndpointSelector: WildcardEndpointSelector,
 		Ingress: []IngressRule{
@@ -980,7 +986,7 @@ func (s *PolicyAPITestSuite) TestICMPRuleWithOtherRuleFailed(c *C) {
 				}},
 				ICMPs: ICMPRules{{
 					Fields: []ICMPField{{
-						Type: 8,
+						Type: &icmpType,
 					}},
 				}},
 			},
@@ -1001,7 +1007,7 @@ func (s *PolicyAPITestSuite) TestICMPRuleWithOtherRuleFailed(c *C) {
 				}},
 				ICMPs: ICMPRules{{
 					Fields: []ICMPField{{
-						Type: 8,
+						Type: &icmpType,
 					}},
 				}},
 			},
@@ -1085,5 +1091,73 @@ func BenchmarkCIDRSanitize(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func TestSanitizeDefaultDeny(t *testing.T) {
+	for _, tc := range []struct {
+		before      Rule
+		wantIngress bool
+		wantEgress  bool
+	}{
+		{
+			before: Rule{},
+		},
+		{
+			before: Rule{
+				Ingress: []IngressRule{{}},
+			},
+			wantIngress: true,
+		},
+		{
+			before: Rule{
+				IngressDeny: []IngressDenyRule{{}},
+			},
+			wantIngress: true,
+		},
+		{
+			before: Rule{
+				Ingress:     []IngressRule{{}},
+				IngressDeny: []IngressDenyRule{{}},
+			},
+			wantIngress: true,
+		},
+		{
+			before: Rule{
+				Egress:     []EgressRule{{}},
+				EgressDeny: []EgressDenyRule{{}},
+			},
+			wantEgress: true,
+		}, {
+			before: Rule{
+				EgressDeny: []EgressDenyRule{{}},
+			},
+			wantEgress: true,
+		},
+		{
+			before: Rule{
+				Egress: []EgressRule{{}},
+			},
+			wantEgress: true,
+		},
+		{
+			before: Rule{
+				Egress:  []EgressRule{{}},
+				Ingress: []IngressRule{{}},
+			},
+			wantEgress:  true,
+			wantIngress: true,
+		},
+	} {
+		b := tc.before
+		b.EndpointSelector = EndpointSelector{LabelSelector: &slim_metav1.LabelSelector{}}
+
+		err := b.Sanitize()
+		assert.Nil(t, err)
+		assert.NotNil(t, b.EnableDefaultDeny.Egress)
+		assert.NotNil(t, b.EnableDefaultDeny.Ingress)
+
+		assert.Equal(t, tc.wantEgress, *b.EnableDefaultDeny.Egress, "Rule.EnableDefaultDeny.Egress should match")
+		assert.Equal(t, tc.wantIngress, *b.EnableDefaultDeny.Ingress, "Rule.EnableDefaultDeny.Ingress should match")
 	}
 }

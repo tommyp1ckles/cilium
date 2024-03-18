@@ -87,7 +87,6 @@ var (
 )
 
 func Test_NodeLabels(t *testing.T) {
-	req := require.New(t)
 	tests := []struct {
 		description        string
 		node               *cilium_api_v2.CiliumNode
@@ -251,10 +250,15 @@ func Test_NodeLabels(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.description, func(t *testing.T) {
-			f := newFixture()
+			req := require.New(t)
+
+			f, watcherReady := newFixture(ctx, req)
 
 			f.hive.Start(ctx)
 			defer f.hive.Stop(ctx)
+
+			// blocking till all watchers are ready
+			watcherReady()
 
 			// setup node
 			upsertNode(req, ctx, f, tt.node)
@@ -263,33 +267,27 @@ func Test_NodeLabels(t *testing.T) {
 			upsertBGPCC(req, ctx, f, tt.clusterConfig)
 
 			// validate node configs
-			assert.Eventually(t, func() bool {
+			assert.EventuallyWithT(t, func(c *assert.CollectT) {
 				nodeConfigs, err := f.bgpnClient.List(ctx, meta_v1.ListOptions{})
-				req.NoError(err)
+				if err != nil {
+					assert.NoError(c, err)
+					return
+				}
 
 				if tt.expectedNodeConfig == nil {
-					if len(nodeConfigs.Items) == 0 {
-						return true
-					} else {
-						return false
-					}
+					assert.Len(c, nodeConfigs.Items, 0)
+					return
 				}
 
 				nodeConfig, err := f.bgpnClient.Get(ctx, tt.expectedNodeConfig.Name, meta_v1.GetOptions{})
-				if err != nil && k8sErrors.IsNotFound(err) {
-					return false
-				}
-				req.NoError(err)
-
-				if !isSameOwner(tt.expectedNodeConfig.GetOwnerReferences(), nodeConfig.GetOwnerReferences()) {
-					return false
+				if err != nil {
+					assert.NoError(c, err)
+					return
 				}
 
-				if !tt.expectedNodeConfig.Spec.DeepEqual(&nodeConfig.Spec) {
-					return false
-				}
+				assert.True(c, isSameOwner(tt.expectedNodeConfig.GetOwnerReferences(), nodeConfig.GetOwnerReferences()))
+				assert.Equal(c, tt.expectedNodeConfig.Spec, nodeConfig.Spec)
 
-				return true
 			}, TestTimeout, 50*time.Millisecond)
 		})
 	}
@@ -297,8 +295,6 @@ func Test_NodeLabels(t *testing.T) {
 
 // Test_ClusterConfigSteps is step based test to validate the BGP node config controller
 func Test_ClusterConfigSteps(t *testing.T) {
-	req := require.New(t)
-
 	steps := []struct {
 		description         string
 		clusterConfig       *cilium_api_v2alpha1.CiliumBGPClusterConfig
@@ -515,64 +511,70 @@ func Test_ClusterConfigSteps(t *testing.T) {
 		},
 	}
 
-	f := newFixture()
 	ctx, cancel := context.WithTimeout(context.Background(), TestTimeout)
 	defer cancel()
+
+	f, watchersReady := newFixture(ctx, require.New(t))
 
 	f.hive.Start(ctx)
 	defer f.hive.Stop(ctx)
 
+	watchersReady()
+
 	for _, step := range steps {
-		// setup nodes
-		for _, node := range step.nodes {
-			upsertNode(req, ctx, f, node)
-		}
+		t.Run(step.description, func(t *testing.T) {
+			req := require.New(t)
 
-		// upsert BGP cluster config
-		upsertBGPCC(req, ctx, f, step.clusterConfig)
-
-		// upsert node overrides
-		for _, nodeOverride := range step.nodeOverrides {
-			upsertNodeOverrides(req, ctx, f, nodeOverride)
-		}
-
-		// validate node configs
-		assert.Eventually(t, func() bool {
-			nodes, err := f.bgpnClient.List(ctx, meta_v1.ListOptions{})
-			assert.NoError(t, err)
-			if len(step.expectedNodeConfigs) != len(nodes.Items) {
-				return false
+			// setup nodes
+			for _, node := range step.nodes {
+				upsertNode(req, ctx, f, node)
 			}
 
-			for _, expectedNodeConfig := range step.expectedNodeConfigs {
-				nodeConfig, err := f.bgpnClient.Get(ctx, expectedNodeConfig.Name, meta_v1.GetOptions{})
-				if err != nil && k8sErrors.IsNotFound(err) {
-					return false
-				}
-				req.NoError(err)
+			// upsert BGP cluster config
+			upsertBGPCC(req, ctx, f, step.clusterConfig)
 
-				if expectedNodeConfig.OwnerReferences[0].Name != nodeConfig.OwnerReferences[0].Name {
-					return false
-				}
-
-				if !expectedNodeConfig.Spec.DeepEqual(&nodeConfig.Spec) {
-					return false
-				}
+			// upsert node overrides
+			for _, nodeOverride := range step.nodeOverrides {
+				upsertNodeOverrides(req, ctx, f, nodeOverride)
 			}
-			return true
-		}, TestTimeout, 50*time.Millisecond)
+
+			// validate node configs
+			assert.EventuallyWithT(t, func(c *assert.CollectT) {
+				nodes, err := f.bgpnClient.List(ctx, meta_v1.ListOptions{})
+				if err != nil {
+					assert.NoError(c, err)
+					return
+				}
+
+				assert.Equal(c, len(step.expectedNodeConfigs), len(nodes.Items))
+
+				for _, expectedNodeConfig := range step.expectedNodeConfigs {
+					nodeConfig, err := f.bgpnClient.Get(ctx, expectedNodeConfig.Name, meta_v1.GetOptions{})
+					if err != nil {
+						assert.NoError(c, err)
+						return
+					}
+
+					assert.Equal(c, expectedNodeConfig.Name, nodeConfig.Name)
+					assert.Equal(c, expectedNodeConfig.Spec, nodeConfig.Spec)
+				}
+			}, TestTimeout, 50*time.Millisecond)
+		})
 	}
 }
 
 func Test_Cleanup(t *testing.T) {
 	// initialization
-	req := require.New(t)
-	f := newFixture()
 	ctx, cancel := context.WithTimeout(context.Background(), TestTimeout)
 	defer cancel()
 
+	req := require.New(t)
+	f, watcherReady := newFixture(ctx, req)
+
 	f.hive.Start(ctx)
 	defer f.hive.Stop(ctx)
+
+	watcherReady()
 
 	// create new resource
 	upsertNode(req, ctx, f, &cilium_api_v2.CiliumNode{
@@ -610,24 +612,29 @@ func Test_Cleanup(t *testing.T) {
 	})
 
 	// check for existence
-	assert.Eventually(t, func() bool {
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
 		nodes, err := f.bgpnClient.List(ctx, meta_v1.ListOptions{})
-		assert.NoError(t, err)
-
+		if err != nil {
+			assert.NoError(c, err)
+			return
+		}
 		// expected 2 node configs
-		return 2 == len(nodes.Items)
-	}, TestTimeout, time.Second)
+		assert.Len(c, nodes.Items, 2)
+	}, TestTimeout, 50*time.Millisecond)
 
 	// delete resource
 	deleteBGPCC(req, ctx, f, "bgp-cluster-config")
 
 	// check for non-existence
-	assert.Eventually(t, func() bool {
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
 		nodes, err := f.bgpnClient.List(ctx, meta_v1.ListOptions{})
-		assert.NoError(t, err)
+		if err != nil {
+			assert.NoError(c, err)
+			return
+		}
 
 		// expected 0 node configs
-		return 0 == len(nodes.Items)
+		assert.Len(c, nodes.Items, 0)
 	}, TestTimeout, 50*time.Millisecond)
 }
 

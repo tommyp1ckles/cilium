@@ -68,10 +68,17 @@ func (n *FakeNodeHandler) NodeNeighDiscoveryEnabled() bool {
 	return false
 }
 
-func (n *FakeNodeHandler) NodeNeighborRefresh(ctx context.Context, node nodeTypes.Node) {
+func (n *FakeNodeHandler) NodeNeighborRefresh(ctx context.Context, node nodeTypes.Node, refresh bool) error {
+	return nil
 }
 
 func (n *FakeNodeHandler) NodeCleanNeighbors(migrateOnly bool) {
+}
+
+func (n *FakeNodeHandler) InsertMiscNeighbor(newNode *nodeTypes.Node) {
+}
+
+func (n *FakeNodeHandler) DeleteMiscNeighbor(oldNode *nodeTypes.Node) {
 }
 
 func (n *FakeNodeHandler) GetNodeIP(_ uint16) string {
