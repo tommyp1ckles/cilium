@@ -87,6 +87,7 @@ import (
 	"github.com/cilium/cilium/pkg/node"
 	nodeManager "github.com/cilium/cilium/pkg/node/manager"
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
+	"github.com/cilium/cilium/pkg/nodediscovery"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/pidfile"
 	"github.com/cilium/cilium/pkg/policy"
@@ -282,10 +283,6 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 	flags.String(option.IPv6MCastDevice, "", "Device that joins a Solicited-Node multicast group for IPv6")
 	option.BindEnv(vp, option.IPv6MCastDevice)
 
-	flags.Bool(option.EnableRemoteNodeIdentity, defaults.EnableRemoteNodeIdentity, "Enable use of remote node identity")
-	flags.MarkDeprecated(option.EnableRemoteNodeIdentity, "Remote Node Identity is needed for various other features to work or work fully, including EgressGateway and Policies. There is no benefit to having it turned off. It will be removed in v1.16.")
-	option.BindEnv(vp, option.EnableRemoteNodeIdentity)
-
 	flags.String(option.EncryptInterface, "", "Transparent encryption interface")
 	option.BindEnv(vp, option.EncryptInterface)
 
@@ -376,6 +373,9 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 
 	flags.Bool(option.EnableIPsecKeyWatcher, defaults.EnableIPsecKeyWatcher, "Enable watcher for IPsec key. If disabled, a restart of the agent will be necessary on key rotations.")
 	option.BindEnv(vp, option.EnableIPsecKeyWatcher)
+
+	flags.Bool(option.EnableIPSecEncryptedOverlay, defaults.EnableIPSecEncryptedOverlay, "Enable IPSec encrypted overlay. If enabled tunnel traffic will be encrypted before leaving the host.")
+	option.BindEnv(vp, option.EnableIPSecEncryptedOverlay)
 
 	flags.Bool(option.EnableWireguard, false, "Enable WireGuard")
 	option.BindEnv(vp, option.EnableWireguard)
@@ -1349,11 +1349,16 @@ func initEnv(vp *viper.Viper) {
 		}
 	}
 
+	if option.Config.EnableIPSecEncryptedOverlay && !option.Config.EnableIPSec {
+		log.Warn("IPSec encrypted overlay is enabled but IPSec is not. Ignoring option.")
+	}
+
 	// IPAMENI IPSec is configured from Reinitialize() to pull in devices
 	// that may be added or removed at runtime.
 	if option.Config.EnableIPSec &&
 		!option.Config.TunnelingEnabled() &&
 		len(option.Config.EncryptInterface) == 0 &&
+		len(option.Config.GetDevices()) == 0 &&
 		option.Config.IPAM != ipamOption.IPAMENI {
 		link, err := linuxdatapath.NodeDeviceNameWithDefaultRoute()
 		if err != nil {
@@ -1378,17 +1383,6 @@ func initEnv(vp *viper.Viper) {
 		if option.Config.EnableIPSec {
 			log.Fatal("IPSec cannot be used with the host firewall.")
 		}
-		if option.Config.EnableEndpointRoutes && !option.Config.EnableRemoteNodeIdentity {
-			log.Fatalf("The host firewall requires remote-node identities (%s) when running with %s",
-				option.EnableRemoteNodeIdentity, option.EnableEndpointRoutes)
-		}
-	}
-
-	if option.Config.EnableIPv6Masquerade && option.Config.EnableBPFMasquerade && option.Config.EnableHostFirewall {
-		// We should be able to support this, but we first need to
-		// check how this plays in the datapath if BPF-masquerading is
-		// enabled for IPv4 only or IPv6 only.
-		log.Fatal("IPv6 BPF masquerade is not supported along with the host firewall.")
 	}
 
 	if option.Config.EnableHighScaleIPcache {
@@ -1642,6 +1636,7 @@ type daemonParams struct {
 	Sysctl              sysctl.Sysctl
 	SyncHostIPs         *syncHostIPs
 	LRPManager          *redirectpolicy.Manager
+	NodeDiscovery       *nodediscovery.NodeDiscovery
 }
 
 func newDaemonPromise(params daemonParams) promise.Promise[*Daemon] {
@@ -1818,7 +1813,7 @@ func startDaemon(d *Daemon, restoredEndpoints *endpointRestoreState, cleaner *da
 
 	d.startAgentHealthHTTPService()
 	if option.Config.KubeProxyReplacementHealthzBindAddr != "" {
-		if option.Config.KubeProxyReplacement != option.KubeProxyReplacementDisabled {
+		if option.Config.KubeProxyReplacement != option.KubeProxyReplacementFalse {
 			d.startKubeProxyHealthzHTTPService(option.Config.KubeProxyReplacementHealthzBindAddr)
 		}
 	}

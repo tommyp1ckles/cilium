@@ -289,7 +289,7 @@ jobs:
           echo kind_svc_cidr_2=${KIND_SVC_CIDR_2} >> $GITHUB_OUTPUT
 
       - name: Install Cilium CLI
-        uses: cilium/cilium-cli@ca0d5a23b842d78ce3b5c79a80d546867493daf7 # v0.16.0
+        uses: cilium/cilium-cli@a9579d1afc528b085930c5237a69ee77b2c2be76 # v0.16.4
         with:
           repository: ${{ env.CILIUM_CLI_RELEASE_REPO }}
           release-version: ${{ env.CILIUM_CLI_VERSION }}
@@ -424,7 +424,7 @@ jobs:
             --helm-set clustermesh.apiserver.tls.authMode=${{ matrix.cm-auth-mode-1 }} \
             ${{ steps.kvstore.outputs.cilium_install_kvstore }} \
             ${{ steps.clustermesh-vars.outputs.cilium_install_clustermesh }} \
-            --nodes-without-cilium=${{ env.clusterName1 }}-worker2
+            --nodes-without-cilium
 
       - name: Copy the Cilium CA secret to cluster2, as they must match
         run: |
@@ -498,8 +498,8 @@ jobs:
           kubectl get pods --all-namespaces -o wide
           cilium sysdump --output-filename cilium-sysdump-context2-final-${{ join(matrix.*, '-') }}
 
-          kubectl --context ${{ env.contextName1 }} logs -n kube-system -l k8s-app=kube-dns --prefix --timestamps
-          kubectl --context ${{ env.contextName2 }} logs -n kube-system -l k8s-app=kube-dns --prefix --timestamps
+          kubectl --context ${{ env.contextName1 }} logs -n kube-system -l k8s-app=kube-dns --prefix --timestamps --tail=-1
+          kubectl --context ${{ env.contextName2 }} logs -n kube-system -l k8s-app=kube-dns --prefix --timestamps --tail=-1
 
           if [ "${{ matrix.mode }}" == "external" ]; then
             for i in {1..2}; do

@@ -30,6 +30,7 @@ DTrace
 Dangaard
 Datadog
 Dataplane
+Deconfigure
 Dinan
 Dockerfile
 Dockerfiles
@@ -137,6 +138,7 @@ Yunsong
 Zannoni
 Zhou
 aarch
+addr
 alibabacloud
 allocatable
 allocateLoadBalancerNodePorts
@@ -150,6 +152,7 @@ api
 apiKey
 apiKeys
 apiserver
+ariane
 arithmetics
 artii
 asm
@@ -381,6 +384,7 @@ impactful
 ingressing
 init
 initContainer
+initialDelaySeconds
 inlined
 inlines
 inlining
@@ -509,6 +513,7 @@ mountPath
 mov
 mtk
 mul
+multicast
 multicore
 multihoming
 musl
@@ -733,6 +738,7 @@ unix
 unlabel
 unmanaged
 unmigrated
+unselect
 unsettable
 untriaged
 untrusted
