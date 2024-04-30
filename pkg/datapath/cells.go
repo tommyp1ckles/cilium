@@ -7,6 +7,8 @@ import (
 	"log"
 	"path/filepath"
 
+	"github.com/cilium/hive/cell"
+
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/datapath/agentliveness"
 	"github.com/cilium/cilium/pkg/datapath/garp"
@@ -24,11 +26,11 @@ import (
 	"github.com/cilium/cilium/pkg/datapath/linux/utime"
 	"github.com/cilium/cilium/pkg/datapath/loader"
 	loaderTypes "github.com/cilium/cilium/pkg/datapath/loader/types"
+	"github.com/cilium/cilium/pkg/datapath/orchestrator"
+	"github.com/cilium/cilium/pkg/datapath/prefilter"
 	"github.com/cilium/cilium/pkg/datapath/tables"
 	"github.com/cilium/cilium/pkg/datapath/tunnel"
 	"github.com/cilium/cilium/pkg/datapath/types"
-	"github.com/cilium/cilium/pkg/defaults"
-	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/maps"
 	"github.com/cilium/cilium/pkg/maps/eventsmap"
 	"github.com/cilium/cilium/pkg/maps/nodemap"
@@ -36,6 +38,7 @@ import (
 	"github.com/cilium/cilium/pkg/mtu"
 	nodeManager "github.com/cilium/cilium/pkg/node/manager"
 	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/statedb"
 	wg "github.com/cilium/cilium/pkg/wireguard/agent"
 	wgTypes "github.com/cilium/cilium/pkg/wireguard/types"
 )
@@ -110,26 +113,22 @@ var Cell = cell.Module(
 	// MTU provides the MTU configuration of the node.
 	mtu.Cell,
 
-	cell.Provide(func(dp types.Datapath) types.NodeIDHandler {
-		return dp.NodeIDs()
-	}),
+	orchestrator.Cell,
 
 	// DevicesController manages the devices and routes tables
 	linuxdatapath.DevicesControllerCell,
-	cell.Provide(func(cfg *option.DaemonConfig) linuxdatapath.DevicesConfig {
-		// Provide the configured devices to the devices controller.
-		// This is temporary until DevicesController takes ownership of the
-		// device-related configuration options.
-		return linuxdatapath.DevicesConfig{
-			Devices: cfg.GetDevices(),
-		}
-	}),
 
 	// Synchronizes the userspace ipcache with the corresponding BPF map.
 	ipcache.Cell,
 
 	// Provides the loader, which compiles and loads the datapath programs.
 	loader.Cell,
+
+	// Provides prefilter, a means of configuring XDP pre-filters for DDoS-mitigation.
+	prefilter.Cell,
+
+	// Provides node handler, which handles node events.
+	cell.Provide(linuxdatapath.NewNodeHandler),
 )
 
 func newWireguardAgent(lc cell.Lifecycle, sysctl sysctl.Sysctl) *wg.Agent {
@@ -161,11 +160,6 @@ func newWireguardAgent(lc cell.Lifecycle, sysctl sysctl.Sysctl) *wg.Agent {
 }
 
 func newDatapath(params datapathParams) types.Datapath {
-	datapathConfig := linuxdatapath.DatapathConfiguration{
-		HostDevice:   defaults.HostDevice,
-		TunnelDevice: params.TunnelConfig.DeviceName(),
-	}
-
 	datapath := linuxdatapath.NewDatapath(linuxdatapath.DatapathParams{
 		ConfigWriter:   params.ConfigWriter,
 		RuleManager:    params.IptablesManager,
@@ -175,7 +169,13 @@ func newDatapath(params datapathParams) types.Datapath {
 		BWManager:      params.BandwidthManager,
 		Loader:         params.Loader,
 		NodeManager:    params.NodeManager,
-	}, datapathConfig)
+		DB:             params.DB,
+		Devices:        params.Devices,
+		Orchestrator:   params.Orchestrator,
+		NodeHandler:    params.NodeHandler,
+		NodeIDHandler:  params.NodeIDHandler,
+		NodeNeighbors:  params.NodeNeighbors,
+	})
 
 	params.LC.Append(cell.Hook{
 		OnStart: func(cell.HookContext) error {
@@ -197,7 +197,7 @@ type datapathParams struct {
 	// Some of the entries in this slice may be nil.
 	BpfMaps []bpf.BpfMap `group:"bpf-maps"`
 
-	NodeMap nodemap.Map
+	NodeMap nodemap.MapV2
 
 	NodeAddressing types.NodeAddressing
 
@@ -205,6 +205,8 @@ type datapathParams struct {
 	// This is required until option.Config.GetDevices() has been removed and
 	// uses of it converted to Table[Device].
 	DeviceManager *linuxdatapath.DeviceManager
+	DB            *statedb.DB
+	Devices       statedb.Table[*tables.Device]
 
 	BandwidthManager types.BandwidthManager
 
@@ -219,4 +221,12 @@ type datapathParams struct {
 	Loader loaderTypes.Loader
 
 	NodeManager nodeManager.NodeManager
+
+	Orchestrator types.Orchestrator
+
+	NodeHandler types.NodeHandler
+
+	NodeIDHandler types.NodeIDHandler
+
+	NodeNeighbors types.NodeNeighbors
 }

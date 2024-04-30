@@ -95,14 +95,14 @@ Ubuntu_                    >= 20.04
           GitHub issue or by creating a pull request that updates this guide.
 
 
-Flatcar
-~~~~~~~
+Flatcar on AWS EKS in ENI mode
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Flatcar is known to manipulate network interfaces created and managed by
-Cilium. This is especially true in the official Flatcar image for AWS EKS, and
-causes connectivity issues and potentially prevents the Cilium agent from
-booting when Cilium is running in ENI mode. To avoid this, disable DHCP on
-these interfaces and mark them as unmanaged by adding
+Cilium. When running the official Flatcar image for AWS EKS nodes in ENI
+mode, this may cause connectivity issues and potentially prevent the Cilium
+agent from booting. To avoid this, disable DHCP on the ENI interfaces and mark
+them as unmanaged by adding
 
 .. code-block:: text
 
@@ -332,7 +332,7 @@ to enable health monitoring. If the firewall does not permit either of these
 methods, Cilium will still operate fine but will not be able to provide health
 information.
 
-For IPSec enabled Cilium deployments, you need to ensure that the firewall
+For IPsec enabled Cilium deployments, you need to ensure that the firewall
 allows ESP traffic through. For example, AWS Security Groups doesn't allow ESP
 traffic by default.
 

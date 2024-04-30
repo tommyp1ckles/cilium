@@ -16,6 +16,7 @@
     - [EventTypeFilter](#flow-EventTypeFilter)
     - [Flow](#flow-Flow)
     - [FlowFilter](#flow-FlowFilter)
+    - [FlowFilter.Experimental](#flow-FlowFilter-Experimental)
     - [HTTP](#flow-HTTP)
     - [HTTPHeader](#flow-HTTPHeader)
     - [ICMPv4](#flow-ICMPv4)
@@ -299,6 +300,8 @@ EventTypeFilter is a filter describing a particular event type.
 | extensions | [google.protobuf.Any](#google-protobuf-Any) |  | extensions can be used to add arbitrary additional metadata to flows. This can be used to extend functionality for other Hubble compatible APIs, or experiment with new functionality without needing to change the public API. |
 | egress_allowed_by | [Policy](#flow-Policy) | repeated | The CiliumNetworkPolicies allowing the egress of the flow. |
 | ingress_allowed_by | [Policy](#flow-Policy) | repeated | The CiliumNetworkPolicies allowing the ingress of the flow. |
+| egress_denied_by | [Policy](#flow-Policy) | repeated | The CiliumNetworkPolicies denying the egress of the flow. |
+| ingress_denied_by | [Policy](#flow-Policy) | repeated | The CiliumNetworkPolicies denying the ingress of the flow. |
 
 
 
@@ -329,6 +332,7 @@ multiple fields are set, then all fields must match for the filter to match.
 | destination_workload | [Workload](#flow-Workload) | repeated | destination_workload filters by a list of destination workload. |
 | traffic_direction | [TrafficDirection](#flow-TrafficDirection) | repeated | traffic_direction filters flow by direction of the connection, e.g. ingress or egress. |
 | verdict | [Verdict](#flow-Verdict) | repeated | only return Flows that were classified with a particular verdict. |
+| drop_reason_desc | [DropReason](#flow-DropReason) | repeated | only applicable to Verdict = DROPPED (e.g. &#34;POLICY_DENIED&#34;, &#34;UNSUPPORTED_L3_PROTOCOL&#34;) |
 | event_type | [EventTypeFilter](#flow-EventTypeFilter) | repeated | event_type is the list of event types to filter on |
 | http_status_code | [string](#string) | repeated | http_status_code is a list of string prefixes (e.g. &#34;4&#43;&#34;, &#34;404&#34;, &#34;5&#43;&#34;) to filter on the HTTP status code |
 | protocol | [string](#string) | repeated | protocol filters flows by L4 or L7 protocol, e.g. (e.g. &#34;tcp&#34;, &#34;http&#34;) |
@@ -346,6 +350,23 @@ multiple fields are set, then all fields must match for the filter to match.
 | node_name | [string](#string) | repeated | node_name is a list of patterns to filter on the node name, e.g. &#34;k8s*&#34;, &#34;test-cluster/*.domain.com&#34;, &#34;cluster-name/&#34; etc. |
 | ip_version | [IPVersion](#flow-IPVersion) | repeated | filter based on IP version (ipv4 or ipv6) |
 | trace_id | [string](#string) | repeated | trace_id filters flows by trace ID |
+| experimental | [FlowFilter.Experimental](#flow-FlowFilter-Experimental) |  | experimental contains filters that are not stable yet. Support for experimental features is always optional and subject to change. |
+
+
+
+
+
+
+<a name="flow-FlowFilter-Experimental"></a>
+
+### FlowFilter.Experimental
+Experimental contains filters that are not stable yet. Support for
+experimental features is always optional and subject to change.
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| cel_expression | [string](#string) | repeated | cel_expression takes a common expression language (CEL) expression returning a boolean to determine if the filter matched or not. You can use the `_flow` variable to access fields on the flow using the flow.Flow protobuf field names. See https://github.com/google/cel-spec/blob/v0.14.0/doc/intro.md#introduction for more details on CEL and accessing the protobuf fields in CEL. Using CEL has performance cost compared to other filters, so prefer using non-CEL filters when possible, and try to specify CEL filters last in the list of FlowFilters. |
 
 
 
@@ -1006,6 +1027,7 @@ here.
 | IGMP_SUBSCRIBED | 200 |  |
 | MULTICAST_HANDLED | 201 |  |
 | DROP_HOST_NOT_READY | 202 | A BPF program wants to tail call into bpf_host, but the host datapath hasn&#39;t been loaded yet. |
+| DROP_EP_NOT_READY | 203 | A BPF program wants to tail call some endpoint&#39;s policy program in the POLICY_CALL_MAP, but the program is not available. |
 
 
 

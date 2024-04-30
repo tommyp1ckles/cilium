@@ -111,7 +111,7 @@ func (c *TimeoutConfig) Validate() error {
 func WithTimeout(body func() bool, msg string, config *TimeoutConfig) error {
 	err := RepeatUntilTrue(body, config)
 	if err != nil {
-		return fmt.Errorf("%s: %s", msg, err)
+		return fmt.Errorf("%s: %w", msg, err)
 	}
 
 	return nil
@@ -415,7 +415,7 @@ func getK8sSupportedConstraints(ciliumVersion string) (semver.Range, error) {
 	}
 	switch {
 	case IsCiliumV1_16(cst):
-		return versioncheck.MustCompile(">=1.16.0 <1.30.0"), nil
+		return versioncheck.MustCompile(">=1.16.0 <1.31.0"), nil
 	case IsCiliumV1_15(cst):
 		return versioncheck.MustCompile(">=1.16.0 <1.30.0"), nil
 	case IsCiliumV1_14(cst):

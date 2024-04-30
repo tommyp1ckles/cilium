@@ -27,16 +27,22 @@ import (
 	"github.com/cilium/cilium/pkg/datapath/linux/ipsec"
 	"github.com/cilium/cilium/pkg/datapath/linux/linux_defaults"
 	"github.com/cilium/cilium/pkg/datapath/linux/route"
+	"github.com/cilium/cilium/pkg/datapath/tables"
+	dpTunnel "github.com/cilium/cilium/pkg/datapath/tunnel"
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
+	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/idpool"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/maps/nodemap"
 	"github.com/cilium/cilium/pkg/maps/tunnel"
+	"github.com/cilium/cilium/pkg/mtu"
 	"github.com/cilium/cilium/pkg/node"
+	"github.com/cilium/cilium/pkg/node/manager"
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/statedb"
 	"github.com/cilium/cilium/pkg/time"
 )
 
@@ -70,7 +76,7 @@ type linuxNodeHandler struct {
 	neighByNextHop         map[string]*netlink.Neigh // key = string(net.IP)
 	neighLastPingByNextHop map[string]time.Time      // key = string(net.IP)
 
-	nodeMap nodemap.Map
+	nodeMap nodemap.MapV2
 	// Pool of available IDs for nodes.
 	nodeIDs *idpool.IDPool
 	// Node-scoped unique IDs for the nodes.
@@ -84,6 +90,9 @@ type linuxNodeHandler struct {
 	prefixClusterMutatorFn func(node *nodeTypes.Node) []cmtypes.PrefixClusterOpts
 	enableEncapsulation    func(node *nodeTypes.Node) bool
 	nodeNeighborQueue      datapath.NodeNeighborEnqueuer
+
+	db      *statedb.DB
+	devices statedb.Table[*tables.Device]
 }
 
 var (
@@ -95,13 +104,37 @@ var (
 // NewNodeHandler returns a new node handler to handle node events and
 // implement the implications in the Linux datapath
 func NewNodeHandler(
+	tunnelConfig dpTunnel.Config,
+	nodeAddressing datapath.NodeAddressing,
+	nodeMap nodemap.MapV2,
+	mtu mtu.MTU,
+	nodeManager manager.NodeManager,
+	db *statedb.DB,
+	devices statedb.Table[*tables.Device],
+) (datapath.NodeHandler, datapath.NodeIDHandler, datapath.NodeNeighbors) {
+	datapathConfig := DatapathConfiguration{
+		HostDevice:   defaults.HostDevice,
+		TunnelDevice: tunnelConfig.DeviceName(),
+	}
+
+	handler := newNodeHandler(datapathConfig, nodeAddressing, nodeMap, mtu, nodeManager, db, devices)
+	return handler, handler, handler
+}
+
+// newNodeHandler returns a new node handler to handle node events and
+// implement the implications in the Linux datapath
+func newNodeHandler(
 	datapathConfig DatapathConfiguration,
 	nodeAddressing datapath.NodeAddressing,
-	nodeMap nodemap.Map,
+	nodeMap nodemap.MapV2,
 	mtu datapath.MTUConfiguration,
 	nbq datapath.NodeNeighborEnqueuer,
+	db *statedb.DB,
+	devices statedb.Table[*tables.Device],
 ) *linuxNodeHandler {
 	return &linuxNodeHandler{
+		db:                     db,
+		devices:                devices,
 		nodeAddressing:         nodeAddressing,
 		datapathConfig:         datapathConfig,
 		nodeConfig:             datapath.LocalNodeConfiguration{MtuConfig: mtu},
@@ -275,7 +308,7 @@ func createDirectRouteSpec(CIDR *cidr.CIDR, nodeIP net.IP) (routeSpec *netlink.R
 
 		routes, err = netlink.RouteListFiltered(family, filter, netlink.RT_FILTER_DST|netlink.RT_FILTER_TABLE)
 		if err != nil {
-			err = fmt.Errorf("unable to find local route for destination %s: %s", nodeIP, err)
+			err = fmt.Errorf("unable to find local route for destination %s: %w", nodeIP, err)
 			return
 		}
 
@@ -668,6 +701,7 @@ func (n *linuxNodeHandler) insertNeighborCommon(ctx context.Context, nextHop Nex
 			HardwareAddr: nil,
 		}
 		if err := netlink.NeighSet(&neighInit); err != nil {
+			// EINVAL is expected (see above)
 			errs = errors.Join(errs, fmt.Errorf("next hop insert failed for %+v: %w", neighInit, err))
 		}
 	}
@@ -944,7 +978,7 @@ func (n *linuxNodeHandler) nodeUpdate(oldNode, newNode *nodeTypes.Node, firstAdd
 		oldKey, newKey                           uint8
 		isLocalNode                              = false
 	)
-	remoteNodeID, err := n.allocateIDForNode(newNode)
+	remoteNodeID, err := n.allocateIDForNode(oldNode, newNode)
 	if err != nil {
 		errs = errors.Join(errs, fmt.Errorf("failed to allocate ID for node %s: %w", newNode.Name, err))
 	}
@@ -1085,10 +1119,10 @@ func (n *linuxNodeHandler) nodeDelete(oldNode *nodeTypes.Node) error {
 	var errs error
 	if n.nodeConfig.EnableAutoDirectRouting && !n.enableEncapsulation(oldNode) {
 		if err := n.deleteDirectRoute(oldNode.IPv4AllocCIDR, oldIP4); err != nil {
-			errs = errors.Join(errs, fmt.Errorf("failed to remove old direct routing: deleting old routes %w", err))
+			errs = errors.Join(errs, fmt.Errorf("failed to remove old direct routing: deleting old routes: %w", err))
 		}
 		if err := n.deleteDirectRoute(oldNode.IPv6AllocCIDR, oldIP6); err != nil {
-			errs = errors.Join(errs, fmt.Errorf("failed to remove old direct routing: deleting old routes %w", err))
+			errs = errors.Join(errs, fmt.Errorf("failed to remove old direct routing: deleting old routes: %w", err))
 		}
 	}
 
@@ -1188,7 +1222,9 @@ func (n *linuxNodeHandler) NodeConfigurationChanged(newConfig datapath.LocalNode
 				return fmt.Errorf("direct routing device is required, but not defined")
 			}
 
-			devices := option.Config.GetDevices()
+			nativeDevices, _ := tables.SelectedDevices(n.devices, n.db.ReadTxn())
+			devices := tables.DeviceNames(nativeDevices)
+
 			targetDevices := make([]string, 0, len(devices)+1)
 			targetDevices = append(targetDevices, option.Config.DirectRoutingDevice)
 			targetDevices = append(targetDevices, devices...)
@@ -1496,7 +1532,8 @@ func (n *linuxNodeHandler) NodeCleanNeighbors(migrateOnly bool) {
 		if err != nil {
 			// If the link is not found we don't need to keep retrying cleaning
 			// up the neihbor entries so we can keep successClean=true
-			if _, ok := err.(netlink.LinkNotFoundError); !ok {
+			var linkNotFoundError netlink.LinkNotFoundError
+			if !errors.As(err, &linkNotFoundError) {
 				log.WithError(err).WithFields(logrus.Fields{
 					logfields.Device: linkName,
 				}).Error("Unable to remove PERM neighbor entries of network device")

@@ -74,7 +74,7 @@ func clearCiliumVeths() error {
 	})
 
 	if err != nil {
-		return fmt.Errorf("unable to retrieve host network interfaces: %s", err)
+		return fmt.Errorf("unable to retrieve host network interfaces: %w", err)
 	}
 
 	for _, v := range leftVeths {
@@ -104,11 +104,6 @@ func clearCiliumVeths() error {
 		}
 	}
 	return nil
-}
-
-// SetPrefilter sets the preftiler for the given daemon.
-func (d *Daemon) SetPrefilter(preFilter datapath.PreFilter) {
-	d.preFilter = preFilter
 }
 
 // EndpointMapManager is a wrapper around an endpointmanager as well as the

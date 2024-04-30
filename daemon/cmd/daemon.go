@@ -47,7 +47,7 @@ import (
 	"github.com/cilium/cilium/pkg/envoy"
 	"github.com/cilium/cilium/pkg/eventqueue"
 	"github.com/cilium/cilium/pkg/fqdn"
-	"github.com/cilium/cilium/pkg/hive/cell"
+	"github.com/cilium/cilium/pkg/healthv2/types"
 	"github.com/cilium/cilium/pkg/hubble/observer"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/identity/identitymanager"
@@ -60,7 +60,6 @@ import (
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	"github.com/cilium/cilium/pkg/k8s/watchers"
-	"github.com/cilium/cilium/pkg/l2announcer"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging"
@@ -131,7 +130,7 @@ type Daemon struct {
 
 	// Used to synchronize generation of daemon's BPF programs and endpoint BPF
 	// programs.
-	compilationMutex *lock.RWMutex
+	compilationLock datapath.CompilationLock
 
 	clustermesh *clustermesh.ClusterMesh
 
@@ -201,16 +200,13 @@ type Daemon struct {
 	// just used to tie together some status reporting
 	cniConfigManager cni.CNIConfigManager
 
-	l2announcer *l2announcer.L2Announcer
-
 	// authManager for reporting the status of the auth system certificate provider
 	authManager *auth.AuthManager
 
 	// read-only map of all the hive settings
 	settings cellSettings
 
-	// enable modules health support
-	healthProvider cell.Health
+	healthV2Provider types.Provider
 
 	// Tunnel-related configuration
 	tunnelConfig tunnel.Config
@@ -234,8 +230,8 @@ func (d *Daemon) GetOptions() *option.IntOptions {
 
 // GetCompilationLock returns the mutex responsible for synchronizing compilation
 // of BPF programs.
-func (d *Daemon) GetCompilationLock() *lock.RWMutex {
-	return d.compilationMutex
+func (d *Daemon) GetCompilationLock() datapath.CompilationLock {
+	return d.compilationLock
 }
 
 func (d *Daemon) init() error {
@@ -249,7 +245,7 @@ func (d *Daemon) init() error {
 	}
 
 	if !option.Config.DryMode {
-		if err := d.Datapath().Loader().Reinitialize(d.ctx, d, d.tunnelConfig, d.mtuConfig.GetDeviceMTU(), d.Datapath(), d.l7Proxy); err != nil {
+		if err := d.Datapath().Orchestrator().Reinitialize(d.ctx); err != nil {
 			return fmt.Errorf("failed while reinitializing datapath: %w", err)
 		}
 
@@ -419,7 +415,7 @@ func newDaemon(ctx context.Context, cleaner *daemonCleanup, params *daemonParams
 		clientset:         params.Clientset,
 		db:                params.DB,
 		buildEndpointSem:  semaphore.NewWeighted(int64(numWorkerThreads())),
-		compilationMutex:  new(lock.RWMutex),
+		compilationLock:   params.CompilationLock,
 		mtuConfig:         params.MTU,
 		datapath:          params.Datapath,
 		deviceManager:     params.DeviceManager,
@@ -441,23 +437,23 @@ func newDaemon(ctx context.Context, cleaner *daemonCleanup, params *daemonParams
 		cniConfigManager:     params.CNIConfigManager,
 		clustermesh:          params.ClusterMesh,
 		monitorAgent:         params.MonitorAgent,
-		l2announcer:          params.L2Announcer,
 		svc:                  params.ServiceManager,
 		l7Proxy:              params.L7Proxy,
 		envoyXdsServer:       params.EnvoyXdsServer,
 		authManager:          params.AuthManager,
 		settings:             params.Settings,
-		healthProvider:       params.HealthProvider,
+		healthV2Provider:     params.HealthV2Provider,
 		bigTCPConfig:         params.BigTCPConfig,
 		tunnelConfig:         params.TunnelConfig,
 		bwManager:            params.BandwidthManager,
 		lrpManager:           params.LRPManager,
+		preFilter:            params.Prefilter,
 	}
 
 	d.configModifyQueue = eventqueue.NewEventQueueBuffered("config-modify-queue", ConfigModifyQueueSize)
 	d.configModifyQueue.Run()
 
-	d.rec, err = recorder.NewRecorder(d.ctx, &d)
+	d.rec, err = recorder.NewRecorder(d.ctx, params.Datapath.Loader())
 	if err != nil {
 		log.WithError(err).Error("error while initializing BPF pcap recorder")
 		return nil, nil, fmt.Errorf("error while initializing BPF pcap recorder: %w", err)
@@ -727,9 +723,7 @@ func newDaemon(ctx context.Context, cleaner *daemonCleanup, params *daemonParams
 	// which can be modified after the device detection.
 	var devices []string
 	if d.deviceManager != nil {
-		if detected, err := d.deviceManager.Detect(params.Clientset.IsEnabled()); err == nil {
-			devices = append(devices, detected...)
-		} else {
+		if devices, err = d.deviceManager.Detect(params.Clientset.IsEnabled()); err != nil {
 			if option.Config.AreDevicesRequired() {
 				// Fail hard if devices are required to function.
 				return nil, nil, fmt.Errorf("failed to detect devices: %w", err)
@@ -739,11 +733,8 @@ func newDaemon(ctx context.Context, cleaner *daemonCleanup, params *daemonParams
 		}
 	}
 
-	if d.l2announcer != nil {
-		d.l2announcer.DevicesChanged(devices)
-	}
-
-	if err := finishKubeProxyReplacementInit(params.Sysctl); err != nil {
+	nativeDevices, _ := datapathTables.SelectedDevices(d.devices, d.db.ReadTxn())
+	if err := finishKubeProxyReplacementInit(params.Sysctl, nativeDevices); err != nil {
 		log.WithError(err).Error("failed to finalise LB initialization")
 		return nil, nil, fmt.Errorf("failed to finalise LB initialization: %w", err)
 	}
@@ -783,7 +774,7 @@ func newDaemon(ctx context.Context, cleaner *daemonCleanup, params *daemonParams
 		log.Error("IPv4 and IPv6 masquerading are both disabled, BPF masquerading requires at least one to be enabled")
 		return nil, nil, fmt.Errorf("BPF masquerade requires (--%s=\"true\" or --%s=\"true\")", option.EnableIPv4Masquerade, option.EnableIPv6Masquerade)
 	}
-	if len(option.Config.GetDevices()) == 0 {
+	if len(devices) == 0 {
 		if option.Config.EnableHostFirewall {
 			msg := "Host firewall's external facing device could not be determined. Use --%s to specify."
 			log.WithError(err).Errorf(msg, option.Devices)
@@ -802,9 +793,15 @@ func newDaemon(ctx context.Context, cleaner *daemonCleanup, params *daemonParams
 	if params.Clientset.IsEnabled() {
 		bootstrapStats.k8sInit.Start()
 
+		// Launch the policy K8s watcher
+		if params.PolicyK8sWatcher != nil {
+			params.PolicyK8sWatcher.WatchK8sPolicyResources(d.ctx, &d)
+		}
+
 		// Launch the K8s watchers in parallel as we continue to process other
 		// daemon options.
-		d.k8sWatcher.InitK8sSubsystem(d.ctx, params.CacheStatus)
+		resources, cacheOnly := d.k8sWatcher.ResourceGroups()
+		d.k8sWatcher.InitK8sSubsystem(d.ctx, resources, cacheOnly, params.CacheStatus)
 		bootstrapStats.k8sInit.End(true)
 	} else {
 		close(params.CacheStatus)
@@ -878,10 +875,7 @@ func newDaemon(ctx context.Context, cleaner *daemonCleanup, params *daemonParams
 	// restore endpoints before any IPs are allocated to avoid eventual IP
 	// conflicts later on, otherwise any IP conflict will result in the
 	// endpoint not being able to be restored.
-	err = d.restoreOldEndpoints(restoredEndpoints, true)
-	if err != nil {
-		log.WithError(err).Error("Unable to restore existing endpoints")
-	}
+	d.restoreOldEndpoints(restoredEndpoints)
 	bootstrapStats.restore.End(true)
 
 	// We must do this after IPAM because we must wait until the
@@ -1021,8 +1015,8 @@ func (d *Daemon) Close() {
 // endpoints may or may not have successfully regenerated.
 func (d *Daemon) TriggerReloadWithoutCompile(reason string) (*sync.WaitGroup, error) {
 	log.Debugf("BPF reload triggered from %s", reason)
-	if err := d.Datapath().Loader().Reinitialize(d.ctx, d, d.tunnelConfig, d.mtuConfig.GetDeviceMTU(), d.Datapath(), d.l7Proxy); err != nil {
-		return nil, fmt.Errorf("unable to recompile base programs from %s: %s", reason, err)
+	if err := d.Datapath().Orchestrator().Reinitialize(d.ctx); err != nil {
+		return nil, fmt.Errorf("unable to recompile base programs from %s: %w", reason, err)
 	}
 
 	regenRequest := &regeneration.ExternalRegenerationMetadata{

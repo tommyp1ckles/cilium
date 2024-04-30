@@ -105,7 +105,7 @@ func (d *Daemon) validateEndpoint(ep *endpoint.Endpoint) (valid bool, err error)
 
 	if !ep.DatapathConfiguration.ExternalIpam {
 		if err := d.allocateIPsLocked(ep); err != nil {
-			return false, fmt.Errorf("Failed to re-allocate IP of endpoint: %s", err)
+			return false, fmt.Errorf("Failed to re-allocate IP of endpoint: %w", err)
 		}
 	}
 
@@ -117,12 +117,8 @@ func (d *Daemon) getPodForEndpoint(ep *endpoint.Endpoint) error {
 		pod *slim_corev1.Pod
 		err error
 	)
-	if option.Config.EnableHighScaleIPcache {
-		pod, _, _, _, _, err = d.fetchK8sMetadataForEndpoint(ep.K8sNamespace, ep.K8sPodName)
-	} else {
-		d.k8sWatcher.WaitForCacheSync(resources.K8sAPIGroupPodV1Core)
-		pod, err = d.k8sWatcher.GetCachedPod(ep.K8sNamespace, ep.K8sPodName)
-	}
+	d.k8sWatcher.WaitForCacheSync(resources.K8sAPIGroupPodV1Core)
+	pod, err = d.k8sWatcher.GetCachedPod(ep.K8sNamespace, ep.K8sPodName)
 	if err != nil && k8serrors.IsNotFound(err) {
 		return fmt.Errorf("Kubernetes pod %s/%s does not exist", ep.K8sNamespace, ep.K8sPodName)
 	} else if err == nil && pod.Spec.NodeName != nodeTypes.GetName() {
@@ -180,10 +176,8 @@ func (d *Daemon) fetchOldEndpoints(dir string) (*endpointRestoreState, error) {
 // allocating their existing IPs out of the CIDR block and then inserting the
 // endpoints into the endpoints list. It needs to be followed by a call to
 // regenerateRestoredEndpoints() once the endpoint builder is ready.
-//
-// If clean is true, endpoints which cannot be associated with a container
-// workloads are deleted.
-func (d *Daemon) restoreOldEndpoints(state *endpointRestoreState, clean bool) error {
+// Endpoints which cannot be associated with a container workload are deleted.
+func (d *Daemon) restoreOldEndpoints(state *endpointRestoreState) {
 	failed := 0
 	defer func() {
 		state.possible = nil
@@ -191,15 +185,10 @@ func (d *Daemon) restoreOldEndpoints(state *endpointRestoreState, clean bool) er
 
 	if !option.Config.RestoreState {
 		log.Info("Endpoint restore is disabled, skipping restore step")
-		return nil
+		return
 	}
 
-	var emf endpointMetadataFetcher
-	if option.Config.EnableHighScaleIPcache {
-		emf = &uncachedEndpointMetadataFetcher{slimcli: d.clientset.Slim()}
-	} else {
-		emf = &cachedEndpointMetadataFetcher{k8sWatcher: d.k8sWatcher}
-	}
+	emf := &cachedEndpointMetadataFetcher{k8sWatcher: d.k8sWatcher}
 	d.endpointMetadataFetcher = emf
 
 	log.Info("Restoring endpoints...")
@@ -243,16 +232,14 @@ func (d *Daemon) restoreOldEndpoints(state *endpointRestoreState, clean bool) er
 			}
 		}
 		if !restore {
-			if clean {
-				state.toClean = append(state.toClean, ep)
-			}
+			state.toClean = append(state.toClean, ep)
 			continue
 		}
 
 		scopedLog.Debug("Restoring endpoint")
 		ep.LogStatusOK(endpoint.Other, "Restoring endpoint from previous cilium instance")
 
-		ep.SetDefaultConfiguration(true)
+		ep.SetDefaultConfiguration()
 		ep.SetProxy(d.l7Proxy)
 		ep.SkipStateClean()
 
@@ -278,8 +265,6 @@ func (d *Daemon) restoreOldEndpoints(state *endpointRestoreState, clean bool) er
 			}
 		}
 	}
-
-	return nil
 }
 
 func (d *Daemon) regenerateRestoredEndpoints(state *endpointRestoreState, endpointsRegenerator *endpoint.Regenerator) {

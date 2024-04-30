@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/cilium/lumberjack/v2"
 	"github.com/sirupsen/logrus"
@@ -40,15 +41,21 @@ func NewExporter(
 	opts := exporteroption.Default // start with defaults
 	for _, opt := range options {
 		if err := opt(&opts); err != nil {
-			return nil, fmt.Errorf("failed to apply option: %v", err)
+			return nil, fmt.Errorf("failed to apply option: %w", err)
 		}
 	}
 	logger.WithField("options", opts).Info("Configuring Hubble event exporter")
-	writer := &lumberjack.Logger{
-		Filename:   opts.Path,
-		MaxSize:    opts.MaxSizeMB,
-		MaxBackups: opts.MaxBackups,
-		Compress:   opts.Compress,
+	var writer io.WriteCloser
+	// If hubble-export-file-path is set to "stdout", use os.Stdout as the writer.
+	if opts.Path == "stdout" {
+		writer = os.Stdout
+	} else {
+		writer = &lumberjack.Logger{
+			Filename:   opts.Path,
+			MaxSize:    opts.MaxSizeMB,
+			MaxBackups: opts.MaxBackups,
+			Compress:   opts.Compress,
+		}
 	}
 	return newExporter(ctx, logger, writer, opts)
 }

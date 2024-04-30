@@ -62,9 +62,9 @@ in order to effectively contribute to Cilium:
 +===================================================================+==============================+=================================================================+
 |  git                                                              | latest                       | N/A (OS-specific)                                               |
 +-------------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
-|  clang                                                            | >= 10.0 (latest recommended) | N/A (OS-specific)                                               |
+|  clang                                                            | >= 17.0 (latest recommended) | N/A (OS-specific)                                               |
 +-------------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
-|  llvm                                                             | >= 10.0 (latest recommended) | N/A (OS-specific)                                               |
+|  llvm                                                             | >= 17.0 (latest recommended) | N/A (OS-specific)                                               |
 +-------------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
 | `go <https://golang.org/dl/>`_                                    | |GO_RELEASE|                 | N/A (OS-specific)                                               |
 +-------------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
@@ -789,9 +789,9 @@ Minor version
    are up to date with these changes.
 
 #. Update documentation files:
-   - Documentation/contributing/testing/e2e.rst
-   - Documentation/network/kubernetes/compatibility.rst
-   - Documentation/network/kubernetes/requirements.rst
+   - ``Documentation/contributing/testing/e2e.rst``
+   - ``Documentation/network/kubernetes/compatibility.rst``
+   - ``Documentation/network/kubernetes/requirements.rst``
 
 #. Update the Kubernetes version with the newer version in ``test/Vagrantfile``,
    ``test/test_suite_test.go`` and ``test/vagrant-local-start.sh``.

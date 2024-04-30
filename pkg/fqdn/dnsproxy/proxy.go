@@ -212,7 +212,7 @@ func (p *DNSProxy) checkRestored(endpointID uint64, destPortProto restore.PortPr
 
 	for i := range ipRules {
 		ipRule := ipRules[i]
-		if _, exists := ipRule.IPs[destIP]; exists || ipRule.IPs == nil {
+		if _, exists := ipRule.IPs[destIP]; exists || len(ipRule.IPs) == 0 {
 			if ipRule.regex != nil && ipRule.regex.MatchString(name) {
 				return true
 			}
@@ -1013,7 +1013,7 @@ func (p *DNSProxy) ServeDNS(w dns.ResponseWriter, request *dns.Msg) {
 	}
 
 	dialer := net.Dialer{
-		Timeout: 2 * time.Second,
+		Timeout: ProxyForwardTimeout,
 		Control: func(network, address string, c syscall.RawConn) error {
 			var soerr error
 			if err := c.Control(func(su uintptr) {

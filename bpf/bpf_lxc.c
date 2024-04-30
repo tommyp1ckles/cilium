@@ -97,7 +97,7 @@ static __always_inline int __per_packet_lb_svc_xlate_4(void *ctx, struct iphdr *
 
 	lb4_fill_key(&key, &tuple);
 
-	svc = lb4_lookup_service(&key, is_defined(ENABLE_NODEPORT), false);
+	svc = lb4_lookup_service(&key, is_defined(ENABLE_NODEPORT));
 	if (svc) {
 #if defined(ENABLE_L7_LB)
 		if (lb4_svc_is_l7loadbalancer(svc)) {
@@ -154,7 +154,7 @@ static __always_inline int __per_packet_lb_svc_xlate_6(void *ctx, struct ipv6hdr
 	 * the CT entry for destination endpoints where we can't encode the
 	 * state in the address.
 	 */
-	svc = lb6_lookup_service(&key, is_defined(ENABLE_NODEPORT), false);
+	svc = lb6_lookup_service(&key, is_defined(ENABLE_NODEPORT));
 	if (svc) {
 #if defined(ENABLE_L7_LB)
 		if (lb6_svc_is_l7loadbalancer(svc)) {
@@ -599,7 +599,9 @@ ct_recreate6:
 	 */
 	if (*dst_sec_identity == HOST_ID) {
 		ctx_store_meta(ctx, CB_FROM_HOST, 0);
-		tail_call_static(ctx, POLICY_CALL_MAP, HOST_EP_ID);
+		ret = tail_call_policy_static(ctx, HOST_EP_ID);
+
+		/* return fine-grained error: */
 		return DROP_HOST_NOT_READY;
 	}
 #endif /* ENABLE_HOST_FIREWALL && !ENABLE_ROUTING */
@@ -706,7 +708,8 @@ pass_to_stack:
 #ifndef TUNNEL_MODE
 # ifdef ENABLE_IPSEC
 	if (encrypt_key && tunnel_endpoint) {
-		ret = set_ipsec_encrypt(ctx, encrypt_key, tunnel_endpoint, SECLABEL_IPV6, false);
+		ret = set_ipsec_encrypt(ctx, encrypt_key, tunnel_endpoint,
+					SECLABEL_IPV6, false, false);
 		if (unlikely(ret != CTX_ACT_OK))
 			return ret;
 	} else
@@ -1076,7 +1079,9 @@ ct_recreate4:
 	 */
 	if (*dst_sec_identity == HOST_ID) {
 		ctx_store_meta(ctx, CB_FROM_HOST, 0);
-		tail_call_static(ctx, POLICY_CALL_MAP, HOST_EP_ID);
+		ret = tail_call_policy_static(ctx, HOST_EP_ID);
+
+		/* report fine-grained error: */
 		return DROP_HOST_NOT_READY;
 	}
 #endif /* ENABLE_HOST_FIREWALL && !ENABLE_ROUTING */
@@ -1138,6 +1143,9 @@ ct_recreate4:
 
 #ifdef ENABLE_EGRESS_GATEWAY_COMMON
 	{
+		struct endpoint_info *gateway_node_ep;
+		__be32 gateway_ip = 0;
+
 		/* If the packet is destined to an entity inside the cluster,
 		 * either EP or node, it should not be forwarded to an egress
 		 * gateway since only traffic leaving the cluster is supposed to
@@ -1146,20 +1154,25 @@ ct_recreate4:
 		if (identity_is_cluster(*dst_sec_identity))
 			goto skip_egress_gateway;
 
-		if (egress_gw_request_needs_redirect_hook(tuple, ct_status, &tunnel_endpoint)) {
-			if (tunnel_endpoint == EGRESS_GATEWAY_NO_GATEWAY) {
-				/* Special case for no gateway to drop the traffic */
-				return DROP_NO_EGRESS_GATEWAY;
-			}
-			/* Send the packet to egress gateway node through a tunnel. */
-			ret = __encap_and_redirect_lxc(ctx, tunnel_endpoint, 0,
-						       SECLABEL_IPV4,
-						       *dst_sec_identity, &trace);
-			if (ret == CTX_ACT_OK)
-				goto encrypt_to_stack;
+		ret = egress_gw_request_needs_redirect_hook(tuple, ct_status, &gateway_ip);
+		if (IS_ERR(ret))
+			return DROP_NO_EGRESS_GATEWAY;
 
-			return ret;
-		}
+		if (ret == CTX_ACT_OK)
+			goto skip_egress_gateway;
+
+		/* If the gateway node is the local node, then just let the
+		 * packet go through, as it will be SNATed later on by
+		 * handle_nat_fwd().
+		 */
+		gateway_node_ep = __lookup_ip4_endpoint(gateway_ip);
+		if (gateway_node_ep && (gateway_node_ep->flags & ENDPOINT_F_HOST))
+			goto skip_egress_gateway;
+
+		/* Send the packet to egress gateway node through a tunnel. */
+		return __encap_and_redirect_lxc(ctx, gateway_ip, 0,
+						SECLABEL_IPV4,
+						*dst_sec_identity, &trace);
 	}
 skip_egress_gateway:
 #endif
@@ -1286,7 +1299,8 @@ pass_to_stack:
 #ifndef TUNNEL_MODE
 # ifdef ENABLE_IPSEC
 	if (encrypt_key && tunnel_endpoint) {
-		ret = set_ipsec_encrypt(ctx, encrypt_key, tunnel_endpoint, SECLABEL_IPV4, false);
+		ret = set_ipsec_encrypt(ctx, encrypt_key, tunnel_endpoint,
+					SECLABEL_IPV4, false, false);
 		if (unlikely(ret != CTX_ACT_OK))
 			return ret;
 	} else
@@ -1303,7 +1317,7 @@ pass_to_stack:
 #endif
 	}
 
-#if defined(TUNNEL_MODE) || defined(ENABLE_EGRESS_GATEWAY_COMMON) || defined(ENABLE_HIGH_SCALE_IPCACHE)
+#if defined(TUNNEL_MODE) || defined(ENABLE_HIGH_SCALE_IPCACHE)
 encrypt_to_stack:
 #endif
 	send_trace_notify(ctx, TRACE_TO_STACK, SECLABEL_IPV4, *dst_sec_identity, 0, 0,
@@ -1372,10 +1386,10 @@ static __always_inline int __tail_handle_ipv4(struct __ctx_buff *ctx,
 	}
 
 	if (IN_MULTICAST(bpf_ntohl(ip4->daddr))) {
-		if (mcast_lookup_subscriber_map(&ip4->daddr)) {
-			ep_tail_call(ctx, CILIUM_CALL_MULTICAST_EP_DELIVERY);
-			return DROP_MISSED_TAIL_CALL;
-		}
+		if (mcast_lookup_subscriber_map(&ip4->daddr))
+			return tail_call_internal(ctx,
+						  CILIUM_CALL_MULTICAST_EP_DELIVERY,
+						  ext_err);
 	}
 #endif /* ENABLE_MULTICAST */
 
@@ -1615,7 +1629,6 @@ skip_policy_enforcement:
 		ct_state_new.src_sec_id = src_label;
 		ct_state_new.from_tunnel = from_tunnel;
 		ct_state_new.proxy_redirect = *proxy_port > 0;
-		ct_state_new.from_l7lb = false;
 
 		/* ext_err may contain a value from __policy_can_access, and
 		 * ct_create6 overwrites it only if it returns an error itself.
@@ -1974,7 +1987,6 @@ skip_policy_enforcement:
 		ct_state_new.src_sec_id = src_label;
 		ct_state_new.from_tunnel = from_tunnel;
 		ct_state_new.proxy_redirect = *proxy_port > 0;
-		ct_state_new.from_l7lb = false;
 
 		/* ext_err may contain a value from __policy_can_access, and
 		 * ct_create4 overwrites it only if it returns an error itself.
@@ -2405,10 +2417,9 @@ int cil_to_container(struct __ctx_buff *ctx)
 		trace = TRACE_FROM_PROXY;
 #if defined(ENABLE_L7_LB)
 	else if (magic == MARK_MAGIC_PROXY_EGRESS_EPID) {
-		tail_call_dynamic(ctx, &POLICY_EGRESSCALL_MAP, identity);
+		ret = tail_call_egress_policy(ctx, (__u16)identity);
 		return send_drop_notify(ctx, identity, sec_label, LXC_ID,
-					DROP_MISSED_TAIL_CALL, CTX_ACT_DROP,
-					METRIC_INGRESS);
+					ret, CTX_ACT_DROP, METRIC_INGRESS);
 	}
 #endif
 
@@ -2427,7 +2438,8 @@ int cil_to_container(struct __ctx_buff *ctx)
 	if (identity == HOST_ID) {
 		ctx_store_meta(ctx, CB_FROM_HOST, 1);
 		ctx_store_meta(ctx, CB_DST_ENDPOINT_ID, LXC_ID);
-		tail_call_static(ctx, POLICY_CALL_MAP, HOST_EP_ID);
+
+		ret = tail_call_policy_static(ctx, HOST_EP_ID);
 		return send_drop_notify(ctx, identity, sec_label, LXC_ID,
 					DROP_HOST_NOT_READY, CTX_ACT_DROP,
 					METRIC_INGRESS);

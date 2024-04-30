@@ -308,8 +308,22 @@ Annotations:
 
 * Cilium Envoy DaemonSet is now enabled by default, and existing in-container installs
   will be changed to DaemonSet mode unless specifically opted out of. This can be done by
-  disabling it manually by setting ``envoy.enabled=false`` accordingly.
-
+  disabling it manually by setting ``envoy.enabled=false`` accordingly. This change adds
+  one additional Pod per Node, therefore Nodes at maximum Pod capacity will face an
+  eviction of a single non-system critical Pod after upgrading.
+* The ``cilium-dbg status --verbose`` command health data may now show health reported on a non-leaf
+  component under a leaf named ``reporter``. Health data tree branches will now also be sorted by
+  the fully qualified health status identifier.
+* L7 network policy with terminatingTLS will not load the key ``ca.crt`` even if it is present in the
+  secret. This prevents Envoy from incorrectly requiring client certificates from pods when using TLS
+  termination. To retain old behaviour for bug compatibility, please set ``--use-full-tls-context=true``.
+* The built-in WireGuard userspace-mode fallback (Helm ``wireguard.userspaceFallback``) has been
+  deprecated and will be removed in a future version of Cilium. Users of WireGuard transparent
+  encryption are required to use a Linux kernel with WireGuard support going forward.
+* Local Redirect Policy, when enabled with socket-based load-balancing, redirects traffic
+  from policy-selected node-local backends destined to the policy's frontend, back to the
+  node-local backends. To override this behavior, which is enabled by default, create
+  local redirect policies with the ``skipRedirectFromBackend`` flag set to ``false``.
 
 Removed Options
 ~~~~~~~~~~~~~~~
@@ -322,6 +336,7 @@ Removed Options
   now always happens asynchronously, therefore making this timeout obsolete.
 * The deprecated flag ``enable-remote-node-identity`` has been removed.
   More information can be found in the following Helm upgrade notes.
+* The deprecated flag ``install-egress-gateway-routes`` has been removed.
 
 Helm Options
 ~~~~~~~~~~~~
@@ -338,6 +353,9 @@ Helm Options
 * The deprecated Helm option ``remoteNodeIdentity`` has been removed. This should have no impact on users who used the previous default
   value of ``true``: Remote nodes will now always use ``remote-node`` identity. If you have network policies based on
   ``enable-remote-node-identity=false`` make sure to update them.
+* The clustermesh-apiserver ``podSecurityContext`` and ``securityContext`` settings now
+  default to drop all capabilities and run as non-root user.
+* Deprecated Helm option ``containerRuntime.integration`` is removed. If you are using crio, please check :ref:`crio-instructions`.
 
 Added Metrics
 ~~~~~~~~~~~~~

@@ -84,7 +84,7 @@ option is set in the ``scrape_configs`` section:
           regex: true
         - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
           action: replace
-          regex: (.+):(?:\d+);(\d+)
+          regex: ([^:]+)(?::\d+)?;(\d+)
           replacement: ${1}:${2}
           target_label: __address__
 
@@ -291,6 +291,7 @@ Services
 Name                                       Labels                                             Default    Description
 ========================================== ================================================== ========== ========================================================
 ``services_events_total``                                                                     Enabled    Number of services events labeled by action type
+``service_implementation_delay``           ``action``                                         Enabled    Duration in seconds to propagate the data plane programming of a service, its network and endpoints from the time the service or the service pod was changed excluding the event queue latency
 ========================================== ================================================== ========== ========================================================
 
 Cluster health
@@ -340,7 +341,7 @@ Name                                          Labels                            
 ``datapath_conntrack_gc_duration_seconds``    ``status``                                         Enabled    Duration in seconds of the garbage collector process
 ============================================= ================================================== ========== ========================================================
 
-IPSec
+IPsec
 ~~~~~
 
 ============================================= ================================================== ========== ===========================================================
@@ -584,6 +585,21 @@ Name                                           Labels                           
 ``api_limiter_wait_duration_seconds``          ``api_call``, ``value``                    Enabled    Mean, min, and max wait duration
 ``api_limiter_wait_history_duration_seconds``  ``api_call``                               Disabled   Histogram of wait duration per API call processed
 ============================================== ========================================== ========== ========================================================
+
+.. _metrics_bgp_control_plane:
+
+BGP Control Plane
+~~~~~~~~~~~~~~~~~
+
+====================== ============================================= ======== ===================================================================
+Name                   Labels                                        Default  Description
+====================== ============================================= ======== ===================================================================
+``session_state``      ``vrouter``, ``neighbor``                     Enabled  Current state of the BGP session with the peer, Up = 1 or Down = 0
+``advertised_routes``  ``vrouter``, ``neighbor``, ``afi``, ``safi``  Enabled  Number of routes advertised to the peer
+``received_routes``    ``vrouter``, ``neighbor``, ``afi``, ``safi``  Enabled  Number of routes received from the peer
+====================== ============================================= ======== ===================================================================
+
+All metrics are enabled only when the BGP Control Plane is enabled.
 
 cilium-operator
 ---------------

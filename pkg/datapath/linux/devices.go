@@ -4,14 +4,14 @@
 package linux
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"strings"
 
+	"github.com/cilium/hive/cell"
+
 	"github.com/cilium/cilium/pkg/datapath/tables"
 	"github.com/cilium/cilium/pkg/hive"
-	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/statedb"
@@ -29,26 +29,9 @@ type DeviceManager struct {
 }
 
 func (dm *DeviceManager) Detect(k8sEnabled bool) ([]string, error) {
-	hasWildcard := false
-	userDevices := option.Config.GetDevices()
-	for _, name := range userDevices {
-		hasWildcard = hasWildcard || strings.HasSuffix(name, "+")
-	}
-
-	if len(userDevices) == 0 && !option.Config.AreDevicesRequired() {
-		return nil, nil
-	}
-
 	rxn := dm.params.DB.ReadTxn()
 	devs, _ := tables.SelectedDevices(dm.params.DeviceTable, rxn)
 	names := tables.DeviceNames(devs)
-
-	if len(names) == 0 && hasWildcard {
-		// Fail if user provided a device wildcard which didn't match anything.
-		return nil, fmt.Errorf("No device found matching %v", userDevices)
-	}
-
-	option.Config.SetDevices(names)
 	dm.initialDevices = names
 
 	// Look up the device that holds the node IP. Used as fallback for direct-routing
@@ -116,10 +99,4 @@ type devicesManagerParams struct {
 // Dummy dependency to *devicesController to make sure devices table is populated.
 func newDeviceManager(p devicesManagerParams, _ *devicesController) *DeviceManager {
 	return &DeviceManager{params: p, hive: nil}
-}
-
-func (dm *DeviceManager) Stop() {
-	if dm.hive != nil {
-		dm.hive.Stop(context.TODO())
-	}
 }

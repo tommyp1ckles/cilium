@@ -6,9 +6,10 @@ package modules
 import (
 	"fmt"
 
+	"github.com/cilium/hive/cell"
+
 	"github.com/cilium/cilium/pkg/command/exec"
 	"github.com/cilium/cilium/pkg/defaults"
-	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/slices"
 )
 
@@ -39,7 +40,7 @@ func (m *Manager) FindOrLoadModules(expectedNames ...string) error {
 		if _, err := exec.WithTimeout(
 			defaults.ExecTimeout, moduleLoader(), unloadedModule).CombinedOutput(
 			nil, false); err != nil {
-			return fmt.Errorf("could not load module %s: %s",
+			return fmt.Errorf("could not load module %s: %w",
 				unloadedModule, err)
 		}
 	}

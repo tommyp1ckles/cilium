@@ -39,6 +39,26 @@ struct bpf_elf_map __section_maps POLICY_CALL_MAP = {
 	.pinning	= PIN_GLOBAL_NS,
 	.max_elem	= POLICY_PROG_MAP_SIZE,
 };
+
+static __always_inline __must_check int
+tail_call_policy_dynamic(struct __ctx_buff *ctx, __u16 endpoint_id)
+{
+	tail_call_dynamic(ctx, &POLICY_CALL_MAP, endpoint_id);
+	/* When forwarding from a BPF program to some endpoint,
+	 * there are inherent races that can result in the endpoint's
+	 * policy program being unavailable (eg. if the endpoint is
+	 * terminating).
+	 */
+	return DROP_EP_NOT_READY;
+}
+
+static __always_inline __must_check int
+tail_call_policy_static(struct __ctx_buff *ctx, __u16 endpoint_id)
+{
+	tail_call_static(ctx, POLICY_CALL_MAP, endpoint_id);
+	/* see above */
+	return DROP_EP_NOT_READY;
+}
 #endif /* SKIP_POLICY_MAP */
 
 #ifdef ENABLE_L7_LB
@@ -51,6 +71,15 @@ struct bpf_elf_map __section_maps POLICY_EGRESSCALL_MAP = {
 	.pinning	= PIN_GLOBAL_NS,
 	.max_elem	= POLICY_PROG_MAP_SIZE,
 };
+
+static __always_inline __must_check int
+tail_call_egress_policy(struct __ctx_buff *ctx, __u16 endpoint_id)
+{
+	tail_call_dynamic(ctx, &POLICY_EGRESSCALL_MAP, endpoint_id);
+	/* same issue as for the POLICY_CALL_MAP calls */
+	return DROP_EP_NOT_READY;
+}
+
 #endif
 
 #ifdef ENABLE_BANDWIDTH_MANAGER
@@ -192,6 +221,21 @@ struct {
 	__uint(map_flags, BPF_F_NO_PREALLOC);
 } NODE_MAP __section_maps_btf;
 
+struct node_value {
+	__u16 id;
+	__u8  spi;
+	__u8  pad;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, struct node_key);
+	__type(value, struct node_value);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
+	__uint(max_entries, NODE_MAP_SIZE);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+} NODE_MAP_V2 __section_maps_btf;
+
 struct l2_responder_v4_key {
 	__u32 ip4;
 	__u32 ifindex;
@@ -299,13 +343,6 @@ struct {
 #endif /* ENABLE_HIGH_SCALE_IPCACHE */
 
 #ifndef SKIP_CALLS_MAP
-/* Deprecated, use tail_call_internal() instead. */
-static __always_inline void ep_tail_call(struct __ctx_buff *ctx __maybe_unused,
-					 const __u32 index __maybe_unused)
-{
-	tail_call_static(ctx, CALLS_MAP, index);
-}
-
 static __always_inline __must_check int
 tail_call_internal(struct __ctx_buff *ctx, const __u32 index, __s8 *ext_err)
 {

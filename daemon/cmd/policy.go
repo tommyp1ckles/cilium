@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"sync"
 
+	"github.com/cilium/hive/cell"
 	"github.com/cilium/stream"
 	"github.com/go-openapi/runtime/middleware"
 	"github.com/google/uuid"
@@ -26,7 +27,6 @@ import (
 	"github.com/cilium/cilium/pkg/endpointmanager"
 	"github.com/cilium/cilium/pkg/envoy"
 	"github.com/cilium/cilium/pkg/eventqueue"
-	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/identity/cache"
 	"github.com/cilium/cilium/pkg/ipcache"
@@ -234,7 +234,7 @@ func (d *Daemon) PolicyAdd(rules policyAPI.Rules, opts *policy.AddOptions) (newR
 	polAddEvent := eventqueue.NewEvent(p)
 	resChan, err := d.policy.RepositoryChangeQueue.Enqueue(polAddEvent)
 	if err != nil {
-		return 0, fmt.Errorf("enqueue of PolicyAddEvent failed: %s", err)
+		return 0, fmt.Errorf("enqueue of PolicyAddEvent failed: %w", err)
 	}
 
 	res, ok := <-resChan
@@ -506,7 +506,7 @@ func (d *Daemon) PolicyDelete(labels labels.LabelArray, opts *policy.DeleteOptio
 	policyDeleteEvent := eventqueue.NewEvent(p)
 	resChan, err := d.policy.RepositoryChangeQueue.Enqueue(policyDeleteEvent)
 	if err != nil {
-		return 0, fmt.Errorf("enqueue of PolicyDeleteEvent failed: %s", err)
+		return 0, fmt.Errorf("enqueue of PolicyDeleteEvent failed: %w", err)
 	}
 
 	res, ok := <-resChan

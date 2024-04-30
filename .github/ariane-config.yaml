@@ -21,6 +21,7 @@ triggers:
     - tests-clustermesh-upgrade.yaml
     - tests-datapath-verifier.yaml
     - tests-l4lb.yaml
+    - tests-e2e-upgrade.yaml
     - tests-ipsec-upgrade.yaml
   /ci-aks:
     workflows:
@@ -112,7 +113,7 @@ workflows:
   tests-datapath-verifier.yaml:
     paths-regex: (bpf|test/verifier|vendor|images)/
   tests-l4lb.yaml:
-    paths-regex: (bpf|daemon|images|pkg|test/l4lb|vendor)/
+    paths-regex: (bpf|daemon|images|pkg|test/l4lb|test/nat46x64|vendor)/
   tests-e2e-upgrade.yaml:
     paths-ignore-regex: (test|Documentation)/
   tests-ipsec-upgrade.yaml:

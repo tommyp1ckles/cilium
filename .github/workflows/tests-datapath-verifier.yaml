@@ -52,9 +52,18 @@ concurrency:
 
 env:
   # renovate: datasource=golang-version depName=go
-  go-version: 1.22.1
+  go-version: 1.22.2
 
 jobs:
+  echo-inputs:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    name: Echo Workflow Dispatch Inputs
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Echo Workflow Dispatch Inputs
+        run: |
+          echo '${{ tojson(inputs) }}'
+
   commit-status-start:
     name: Commit Status Start
     runs-on: ubuntu-latest
@@ -91,6 +100,11 @@ jobs:
             ci-kernel: 'netnext'
     timeout-minutes: 60
     steps:
+      - name: Collect Workflow Telemetry
+        uses: catchpoint/workflow-telemetry-action@94c3c3d9567a0205de6da68a76c428ce4e769af1 # v2.0.0
+        with:
+          comment_on_pr: false
+
       # Warning: since this is a privileged workflow, subsequent workflow job
       # steps must take care not to execute untrusted code.
       - name: Checkout pull request branch (NOT TRUSTED)
@@ -113,10 +127,18 @@ jobs:
 
             git config --global --add safe.directory /host
             uname -a
+
             # The LVH image might ship with an arbitrary Go toolchain version,
             # install the same Go toolchain version as current HEAD.
             CGO_ENABLED=0 GOPROXY=direct GOSUMDB= go install golang.org/dl/go${{ env.go-version }}@latest
             go${{ env.go-version }} download
+
+            # The LVH image ships with LLVM taken from a release Cilium version.
+            # Replace it with the one extracted from the cilium-builder image.
+            /bootstrap/deb-docker.sh # Install docker first.
+            /host/contrib/scripts/extract-llvm.sh /tmp/llvm
+            mv /tmp/llvm/usr/local/bin/{clang,llc} /bin/
+            rm -r /tmp/llvm
 
       - name: Run verifier tests
         uses: cilium/little-vm-helper@a4311c6d054de3008bdf9195b0fabf6ee60d8bdd # v0.0.17
@@ -139,7 +161,7 @@ jobs:
 
       - name: Upload artifacts
         if: ${{ !success() }}
-        uses: actions/upload-artifact@5d5d22a31266ced268874388b861e4b58bb5c2f3 # v4.3.1
+        uses: actions/upload-artifact@1746f4ab65b179e0ea60a494b83293b640dd5bba # v4.3.2
         with:
           name: datapath-verifier_${{ matrix.kernel }}
           path: datapath-verifier

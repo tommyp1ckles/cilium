@@ -15,7 +15,6 @@ import (
 
 	"github.com/go-openapi/runtime/middleware"
 	"github.com/sirupsen/logrus"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/cilium/cilium/api/v1/models"
 	. "github.com/cilium/cilium/api/v1/server/restapi/endpoint"
@@ -32,7 +31,6 @@ import (
 	k8sConst "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 	"github.com/cilium/cilium/pkg/k8s/client"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
-	slimclientset "github.com/cilium/cilium/pkg/k8s/slim/k8s/client/clientset/versioned"
 	"github.com/cilium/cilium/pkg/k8s/watchers"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/labelsfilter"
@@ -137,7 +135,8 @@ func deleteEndpointHandler(d *Daemon, params DeleteEndpointParams) middleware.Re
 	defer r.Done()
 
 	if nerr, err := d.deleteEndpointByContainerID(params.Endpoint.ContainerID); err != nil {
-		if apierr, ok := err.(*api.APIError); ok {
+		apierr := &api.APIError{}
+		if errors.As(err, &apierr) {
 			r.Error(err, apierr.GetCode())
 			return apierr
 		}
@@ -202,22 +201,6 @@ func (cemf *cachedEndpointMetadataFetcher) Fetch(nsName, podName string) (*slim_
 		return nil, nil, err
 	}
 	ns, err := cemf.k8sWatcher.GetCachedNamespace(nsName)
-	if err != nil {
-		return nil, nil, err
-	}
-	return ns, p, err
-}
-
-type uncachedEndpointMetadataFetcher struct {
-	slimcli slimclientset.Interface
-}
-
-func (uemf *uncachedEndpointMetadataFetcher) Fetch(nsName, podName string) (*slim_corev1.Namespace, *slim_corev1.Pod, error) {
-	p, err := uemf.slimcli.CoreV1().Pods(nsName).Get(context.TODO(), podName, metav1.GetOptions{})
-	if err != nil {
-		return nil, nil, err
-	}
-	ns, err := uemf.slimcli.CoreV1().Namespaces().Get(context.TODO(), nsName, metav1.GetOptions{})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -389,7 +372,7 @@ func (d *Daemon) createEndpoint(ctx context.Context, owner regeneration.Owner, e
 
 	ep, err := endpoint.NewEndpointFromChangeModel(d.ctx, owner, d, d.ipcache, d.l7Proxy, d.identityAllocator, epTemplate)
 	if err != nil {
-		return invalidDataError(ep, fmt.Errorf("unable to parse endpoint parameters: %s", err))
+		return invalidDataError(ep, fmt.Errorf("unable to parse endpoint parameters: %w", err))
 	}
 
 	oldEp := d.endpointManager.LookupCiliumID(ep.ID)
@@ -506,7 +489,7 @@ func (d *Daemon) createEndpoint(ctx context.Context, owner regeneration.Owner, e
 	// e.ID assigned here
 	err = d.endpointManager.AddEndpoint(owner, ep, "Create endpoint from API PUT")
 	if err != nil {
-		return d.errorDuringCreation(ep, fmt.Errorf("unable to insert endpoint into manager: %s", err))
+		return d.errorDuringCreation(ep, fmt.Errorf("unable to insert endpoint into manager: %w", err))
 	}
 
 	var regenTriggered bool
@@ -824,6 +807,11 @@ func (d *Daemon) EndpointCreated(ep *endpoint.Endpoint) {
 	d.SendNotification(monitorAPI.EndpointCreateMessage(ep))
 }
 
+// EndpointRestored implements endpointmanager.Subscriber.
+func (d *Daemon) EndpointRestored(ep *endpoint.Endpoint) {
+	// No-op
+}
+
 func deleteEndpointIDHandler(d *Daemon, params DeleteEndpointIDParams) middleware.Responder {
 	log.WithField(logfields.Params, logfields.Repr(params)).Debug("DELETE /endpoint/{id} request")
 
@@ -834,7 +822,8 @@ func deleteEndpointIDHandler(d *Daemon, params DeleteEndpointIDParams) middlewar
 	defer r.Done()
 
 	if nerr, err := d.DeleteEndpoint(params.ID); err != nil {
-		if apierr, ok := err.(*api.APIError); ok {
+		apierr := &api.APIError{}
+		if errors.As(err, &apierr) {
 			r.Error(err, apierr.GetCode())
 			return apierr
 		}
@@ -859,12 +848,11 @@ func (d *Daemon) EndpointUpdate(id string, cfg *models.EndpointConfigurationSpec
 	}
 
 	if err := ep.Update(cfg); err != nil {
-		switch err.(type) {
-		case endpoint.UpdateValidationError:
+		var updateValidationError endpoint.UpdateValidationError
+		if errors.As(err, &updateValidationError) {
 			return api.Error(PatchEndpointIDConfigInvalidCode, err)
-		default:
-			return api.Error(PatchEndpointIDConfigFailedCode, err)
 		}
+		return api.Error(PatchEndpointIDConfigFailedCode, err)
 	}
 	if err := d.endpointManager.UpdateReferences(ep); err != nil {
 		return api.Error(PatchEndpointIDNotFoundCode, err)
@@ -883,7 +871,8 @@ func patchEndpointIDConfigHandler(d *Daemon, params PatchEndpointIDConfigParams)
 	defer r.Done()
 
 	if err := d.EndpointUpdate(params.ID, params.EndpointConfiguration); err != nil {
-		if apierr, ok := err.(*api.APIError); ok {
+		apierr := &api.APIError{}
+		if errors.As(err, &apierr) {
 			r.Error(err, apierr.GetCode())
 			return apierr
 		}

@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"slices"
 
+	"github.com/cilium/hive/cell"
 	"github.com/cilium/workerpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
@@ -19,7 +20,6 @@ import (
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/datapath/iptables/ipset"
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
-	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/ip"
@@ -127,15 +127,16 @@ type manager struct {
 	ipcache IPCache
 
 	// ipsetMgr is the ipset cluster nodes configuration manager
-	ipsetMgr    ipset.Manager
-	ipsetFilter IPSetFilterFn
+	ipsetMgr         ipset.Manager
+	ipsetInitializer ipset.Initializer
+	ipsetFilter      IPSetFilterFn
 
 	// controllerManager manages the controllers that are launched within the
 	// Manager.
 	controllerManager *controller.Manager
 
-	// healthScope reports on the current health status of the node manager module.
-	healthScope cell.Scope
+	// health reports on the current health status of the node manager module.
+	health cell.Health
 
 	// nodeNeighborQueue tracks node neighbor link updates.
 	nodeNeighborQueue queue[nodeQueueEntry]
@@ -261,7 +262,7 @@ func NewNodeMetrics() *nodeMetrics {
 }
 
 // New returns a new node manager
-func New(c *option.DaemonConfig, ipCache IPCache, ipsetMgr ipset.Manager, ipsetFilter IPSetFilterFn, nodeMetrics *nodeMetrics, healthScope cell.Scope) (*manager, error) {
+func New(c *option.DaemonConfig, ipCache IPCache, ipsetMgr ipset.Manager, ipsetFilter IPSetFilterFn, nodeMetrics *nodeMetrics, health cell.Health) (*manager, error) {
 	if ipsetFilter == nil {
 		ipsetFilter = func(*nodeTypes.Node) bool { return false }
 	}
@@ -273,9 +274,10 @@ func New(c *option.DaemonConfig, ipCache IPCache, ipsetMgr ipset.Manager, ipsetF
 		nodeHandlers:      map[datapath.NodeHandler]struct{}{},
 		ipcache:           ipCache,
 		ipsetMgr:          ipsetMgr,
+		ipsetInitializer:  ipsetMgr.NewInitializer(),
 		ipsetFilter:       ipsetFilter,
 		metrics:           nodeMetrics,
-		healthScope:       healthScope,
+		health:            health,
 	}
 
 	return m, nil
@@ -378,7 +380,7 @@ func (m *manager) backgroundSync(ctx context.Context) error {
 			m.metrics.DatapathValidations.Inc()
 		}
 
-		hr := cell.GetHealthReporter(m.healthScope, "background-sync")
+		hr := m.health.NewScope("background-sync")
 		if errs != nil {
 			hr.Degraded("Failed to apply node validation", errs)
 		} else {
@@ -471,6 +473,7 @@ func (m *manager) NodeUpdated(n nodeTypes.Node) {
 	log.WithFields(logrus.Fields{
 		logfields.ClusterName: n.Cluster,
 		logfields.NodeName:    n.Name,
+		logfields.SPI:         n.EncryptionKey,
 	}).Info("Node updated")
 	if log.Logger.IsLevelEnabled(logrus.DebugLevel) {
 		log.WithField(logfields.Node, n.LogRepr()).Debugf("Received node update event from %s", n.Source)
@@ -625,7 +628,7 @@ func (m *manager) NodeUpdated(n nodeTypes.Node) {
 				}
 			})
 
-			hr := cell.GetHealthReporter(m.healthScope, "nodes-update")
+			hr := m.health.NewScope("nodes-update")
 			if errs != nil {
 				hr.Degraded("Failed to update nodes", errs)
 			} else {
@@ -658,7 +661,7 @@ func (m *manager) NodeUpdated(n nodeTypes.Node) {
 			})
 		}
 		entry.mutex.Unlock()
-		hr := cell.GetHealthReporter(m.healthScope, "nodes-add")
+		hr := m.health.NewScope("nodes-add")
 		if errs != nil {
 			hr.Degraded("Failed to add nodes", errs)
 		} else {
@@ -818,12 +821,19 @@ func (m *manager) NodeDeleted(n nodeTypes.Node) {
 	})
 	entry.mutex.Unlock()
 
-	hr := cell.GetHealthReporter(m.healthScope, "nodes-delete")
+	hr := m.health.NewScope("nodes-delete")
 	if errs != nil {
 		hr.Degraded("Failed to delete nodes", errs)
 	} else {
 		hr.OK("Node deletions successful")
 	}
+}
+
+// NodeSync signals the manager that the initial nodes listing (either from k8s or kvstore)
+// has been completed. This allows the manager to initiate the deletion of possible stale entries
+// in the kernel IP sets managed by Cilium.
+func (m *manager) NodeSync() {
+	m.ipsetInitializer.InitDone()
 }
 
 // GetNodeIdentities returns a list of all node identities store in node
@@ -862,7 +872,7 @@ func (m *manager) GetNodes() map[nodeTypes.Identity]nodeTypes.Node {
 // that responsibility lies on the publishers.
 // This controller also provides for module health to be reported in a single central location.
 func (m *manager) StartNodeNeighborLinkUpdater(nh datapath.NodeNeighbors) {
-	sc := cell.GetSubScope(m.healthScope, "neighbor-link-updater")
+	sc := m.health.NewScope("neighbor-link-updater")
 	controller.NewManager().UpdateController(
 		"node-neighbor-link-updater",
 		controller.ControllerParams{
@@ -880,7 +890,7 @@ func (m *manager) StartNodeNeighborLinkUpdater(nh datapath.NodeNeighbors) {
 					}
 
 					log.Debugf("Refreshing node neighbor link for %s", e.node.Name)
-					hr := cell.GetHealthReporter(sc, e.node.Name)
+					hr := sc.NewScope(e.node.Name)
 					if errs = errors.Join(errs, nh.NodeNeighborRefresh(ctx, *e.node, e.refresh)); errs != nil {
 						hr.Degraded("Failed node neighbor link update", errs)
 					} else {

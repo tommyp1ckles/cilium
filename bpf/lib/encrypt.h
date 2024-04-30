@@ -50,14 +50,16 @@ static __always_inline __u16
 lookup_ip4_node_id(__u32 ip4)
 {
 	struct node_key node_ip = {};
-	__u16 *node_id;
+	struct node_value *node_value = NULL;
 
 	node_ip.family = ENDPOINT_KEY_IPV4;
 	node_ip.ip4 = ip4;
-	node_id = map_lookup_elem(&NODE_MAP, &node_ip);
-	if (!node_id)
+	node_value = map_lookup_elem(&NODE_MAP_V2, &node_ip);
+	if (!node_value)
 		return 0;
-	return *node_id;
+	if (!node_value->id)
+		return 0;
+	return node_value->id;
 }
 # endif /* ENABLE_IPV4 */
 
@@ -66,14 +68,16 @@ static __always_inline __u16
 lookup_ip6_node_id(const union v6addr *ip6)
 {
 	struct node_key node_ip = {};
-	__u16 *node_id;
+	struct node_value *node_value = NULL;
 
 	node_ip.family = ENDPOINT_KEY_IPV6;
 	node_ip.ip6 = *ip6;
-	node_id = map_lookup_elem(&NODE_MAP, &node_ip);
-	if (!node_id)
+	node_value = map_lookup_elem(&NODE_MAP_V2, &node_ip);
+	if (!node_value)
 		return 0;
-	return *node_id;
+	if (!node_value->id)
+		return 0;
+	return node_value->id;
 }
 # endif /* ENABLE_IPV6 */
 
@@ -85,8 +89,8 @@ set_ipsec_decrypt_mark(struct __ctx_buff *ctx, __u16 node_id)
 }
 
 static __always_inline int
-set_ipsec_encrypt(struct __ctx_buff *ctx, __u8 key, __u32 tunnel_endpoint,
-		  __u32 seclabel, bool use_meta)
+set_ipsec_encrypt(struct __ctx_buff *ctx, __u8 spi, __u32 tunnel_endpoint,
+		  __u32 seclabel, bool use_meta, bool use_spi_from_map)
 {
 	/* IPSec is performed by the stack on any packets with the
 	 * MARK_MAGIC_ENCRYPT bit set. During the process though we
@@ -97,19 +101,22 @@ set_ipsec_encrypt(struct __ctx_buff *ctx, __u8 key, __u32 tunnel_endpoint,
 	 */
 
 	struct node_key node_ip = {};
-	__u16 *node_id;
+	struct node_value *node_value = NULL;
 
 	node_ip.family = ENDPOINT_KEY_IPV4;
 	node_ip.ip4 = tunnel_endpoint;
-	node_id = map_lookup_elem(&NODE_MAP, &node_ip);
-	if (!node_id)
+	node_value = map_lookup_elem(&NODE_MAP_V2, &node_ip);
+	if (!node_value || !node_value->id)
 		return DROP_NO_NODE_ID;
+
+	if (use_spi_from_map)
+		spi = get_min_encrypt_key(node_value->spi);
 
 	set_identity_meta(ctx, seclabel);
 	if (use_meta)
-		set_encrypt_key_meta(ctx, key, *node_id);
+		set_encrypt_key_meta(ctx, spi, node_value->id);
 	else
-		set_encrypt_key_mark(ctx, key, *node_id);
+		set_encrypt_key_mark(ctx, spi, node_value->id);
 	return CTX_ACT_OK;
 }
 
@@ -213,7 +220,6 @@ encrypt_overlay_and_redirect(struct __ctx_buff *ctx, void *data,
 {
 	struct endpoint_info *ep_info = NULL;
 	struct iphdr *inner_ipv4 = NULL;
-	__u8 encrypt_key = 0;
 	__u8 dst_mac = 0;
 	int ret = 0;
 
@@ -228,8 +234,8 @@ encrypt_overlay_and_redirect(struct __ctx_buff *ctx, void *data,
 	/*
 	 * this is a vxlan packet so ip4->daddr is the tunnel endpoint
 	 */
-	ret = set_ipsec_encrypt(ctx, encrypt_key, ip4->daddr, ep_info->sec_id,
-				false);
+	ret = set_ipsec_encrypt(ctx, 0, ip4->daddr, ep_info->sec_id, false,
+				true);
 	if (ret != CTX_ACT_OK)
 		return ret;
 

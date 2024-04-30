@@ -55,7 +55,7 @@
 
 #if defined(ENCAP_IFINDEX) || defined(ENABLE_EGRESS_GATEWAY_COMMON) || \
     (defined(ENABLE_DSR) && DSR_ENCAP_MODE == DSR_ENCAP_GENEVE)
-#define HAVE_ENCAP
+#define HAVE_ENCAP	1
 
 /* NOT_VTEP_DST is passed to an encapsulation function when the
  * destination of the tunnel is not a VTEP.
@@ -665,6 +665,7 @@ enum {
 #define DROP_IGMP_SUBSCRIBED    -200
 #define DROP_MULTICAST_HANDLED  -201
 #define DROP_HOST_NOT_READY	-202
+#define DROP_EP_NOT_READY	-203
 
 #define NAT_PUNT_TO_STACK	DROP_NAT_NOT_NEEDED
 #define NAT_NEEDED		CTX_ACT_OK
@@ -727,6 +728,7 @@ enum metric_dir {
 #define MARK_MAGIC_IDENTITY		0x0F00 /* mark carries identity */
 #define MARK_MAGIC_TO_PROXY		0x0200
 #define MARK_MAGIC_SNAT_DONE		0x0300
+#define MARK_MAGIC_OVERLAY		0x0400
 
 #define MARK_MAGIC_KEY_MASK		0xFF00
 
@@ -1240,6 +1242,21 @@ struct lpm_v6_key {
 struct lpm_val {
 	/* Just dummy for now. */
 	__u8 flags;
+};
+
+struct skip_lb4_key {
+	__u64 netns_cookie;     /* Source pod netns cookie */
+	__u32 address;          /* Destination service virtual IPv4 address */
+	__u16 port;             /* Destination service virtual layer4 port */
+	__u16 pad;
+};
+
+struct skip_lb6_key {
+	__u64 netns_cookie;     /* Source pod netns cookie */
+	union v6addr address;   /* Destination service virtual IPv6 address */
+	__u32 pad;
+	__u16 port;             /* Destination service virtual layer4 port */
+	__u16 pad2;
 };
 
 /* Older kernels don't support the larger tunnel key structure and we don't

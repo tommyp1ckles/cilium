@@ -7,6 +7,9 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/cilium/hive/cell"
+	"github.com/sirupsen/logrus"
+
 	"github.com/cilium/cilium/api/v1/models"
 	restapi "github.com/cilium/cilium/api/v1/server/restapi/bgp"
 	"github.com/cilium/cilium/pkg/bgpv1/agent"
@@ -15,14 +18,11 @@ import (
 	"github.com/cilium/cilium/pkg/bgpv1/manager/reconciler"
 	"github.com/cilium/cilium/pkg/bgpv1/manager/reconcilerv2"
 	"github.com/cilium/cilium/pkg/bgpv1/types"
-	"github.com/cilium/cilium/pkg/hive/cell"
 	v2api "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	v2alpha1api "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
-
-	"github.com/sirupsen/logrus"
 )
 
 var (
@@ -162,17 +162,17 @@ func (m *BGPRouterManager) ConfigurePeers(ctx context.Context,
 
 	if len(rd.register) > 0 {
 		if err := m.register(ctx, rd); err != nil {
-			return fmt.Errorf("encountered error adding new BGP Servers: %v", err)
+			return fmt.Errorf("encountered error adding new BGP Servers: %w", err)
 		}
 	}
 	if len(rd.withdraw) > 0 {
 		if err := m.withdraw(ctx, rd); err != nil {
-			return fmt.Errorf("encountered error removing existing BGP Servers: %v", err)
+			return fmt.Errorf("encountered error removing existing BGP Servers: %w", err)
 		}
 	}
 	if len(rd.reconcile) > 0 {
 		if err := m.reconcile(ctx, rd); err != nil {
-			return fmt.Errorf("encountered error reconciling existing BGP Servers: %v", err)
+			return fmt.Errorf("encountered error reconciling existing BGP Servers: %w", err)
 		}
 	}
 	return nil
@@ -220,7 +220,7 @@ func (m *BGPRouterManager) registerBGPServer(ctx context.Context,
 
 	annoMap, err := agent.NewAnnotationMap(ciliumNode.Annotations)
 	if err != nil {
-		return fmt.Errorf("unable to parse local node's annotations: %v", err)
+		return fmt.Errorf("unable to parse local node's annotations: %w", err)
 	}
 
 	// resolve local port from kubernetes annotations

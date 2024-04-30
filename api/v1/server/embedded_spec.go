@@ -847,31 +847,6 @@ func init() {
         }
       }
     },
-    "/health": {
-      "get": {
-        "description": "Returns modules health and status information of the Cilium daemon.\n",
-        "tags": [
-          "daemon"
-        ],
-        "summary": "Get modules health of Cilium daemon",
-        "parameters": [
-          {
-            "type": "boolean",
-            "description": "Brief is a brief representation of the Cilium status.\n",
-            "name": "brief",
-            "in": "header"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success",
-            "schema": {
-              "$ref": "#/definitions/ModulesHealth"
-            }
-          }
-        }
-      }
-    },
     "/healthz": {
       "get": {
         "description": "Returns health and status information of the Cilium daemon and related\ncomponents such as the local container runtime, connected datastore,\nKubernetes integration and Hubble.\n",
@@ -2942,6 +2917,10 @@ func init() {
           "description": "MAC address",
           "type": "string"
         },
+        "netns-cookie": {
+          "description": "Network namespace cookie",
+          "type": "string"
+        },
         "pid": {
           "description": "Process ID of the workload belonging to this endpoint",
           "type": "integer"
@@ -3394,20 +3373,6 @@ func init() {
           "enum": [
             "Disabled",
             "Enabled"
-          ]
-        }
-      }
-    },
-    "HostRouting": {
-      "description": "Status of host routing\n\n+k8s:deepcopy-gen=true",
-      "type": "object",
-      "properties": {
-        "mode": {
-          "description": "Datapath routing mode",
-          "type": "string",
-          "enum": [
-            "BPF",
-            "Legacy"
           ]
         }
       }
@@ -4230,43 +4195,6 @@ func init() {
         }
       }
     },
-    "ModuleHealth": {
-      "description": "Report module health status",
-      "properties": {
-        "last-ok": {
-          "description": "Time at which the last OK check occurred",
-          "type": "string"
-        },
-        "last-updated": {
-          "description": "Time of last health update",
-          "type": "string"
-        },
-        "level": {
-          "description": "Describes the health status level",
-          "type": "string"
-        },
-        "message": {
-          "description": "Reports the associated health message",
-          "type": "string"
-        },
-        "module-id": {
-          "description": "Describes the module identitier",
-          "type": "string"
-        }
-      }
-    },
-    "ModulesHealth": {
-      "description": "Reports health status of agent's modules",
-      "properties": {
-        "modules": {
-          "description": "List out modules health status",
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/ModuleHealth"
-          }
-        }
-      }
-    },
     "MonitorStatus": {
       "description": "Status of the node monitor",
       "properties": {
@@ -4854,6 +4782,32 @@ func init() {
         }
       }
     },
+    "Routing": {
+      "description": "Status of routing\n\n+k8s:deepcopy-gen=true",
+      "type": "object",
+      "properties": {
+        "inter-host-routing-mode": {
+          "description": "Datapath routing mode for cross-cluster connectivity",
+          "type": "string",
+          "enum": [
+            "Native",
+            "Tunnel"
+          ]
+        },
+        "intra-host-routing-mode": {
+          "description": "Datapath routing mode for connectivity within the host",
+          "type": "string",
+          "enum": [
+            "BPF",
+            "Legacy"
+          ]
+        },
+        "tunnel-protocol": {
+          "description": "Tunnel protocol in use for cross-cluster connectivity",
+          "type": "string"
+        }
+      }
+    },
     "SelectorCache": {
       "description": "cache of which identities match selectors in the policy repository",
       "type": "array",
@@ -5135,10 +5089,6 @@ func init() {
           "description": "Status of the host firewall",
           "$ref": "#/definitions/HostFirewall"
         },
-        "host-routing": {
-          "description": "Status of host routing",
-          "$ref": "#/definitions/HostRouting"
-        },
         "hubble": {
           "description": "Status of Hubble server",
           "$ref": "#/definitions/HubbleStatus"
@@ -5182,6 +5132,10 @@ func init() {
         "proxy": {
           "description": "Status of proxy",
           "$ref": "#/definitions/ProxyStatus"
+        },
+        "routing": {
+          "description": "Status of routing",
+          "$ref": "#/definitions/Routing"
         },
         "srv6": {
           "description": "Status of SRv6",
@@ -6508,31 +6462,6 @@ func init() {
             "description": "Invalid request (error parsing parameters)",
             "schema": {
               "$ref": "#/definitions/Error"
-            }
-          }
-        }
-      }
-    },
-    "/health": {
-      "get": {
-        "description": "Returns modules health and status information of the Cilium daemon.\n",
-        "tags": [
-          "daemon"
-        ],
-        "summary": "Get modules health of Cilium daemon",
-        "parameters": [
-          {
-            "type": "boolean",
-            "description": "Brief is a brief representation of the Cilium status.\n",
-            "name": "brief",
-            "in": "header"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success",
-            "schema": {
-              "$ref": "#/definitions/ModulesHealth"
             }
           }
         }
@@ -8811,6 +8740,10 @@ func init() {
           "description": "MAC address",
           "type": "string"
         },
+        "netns-cookie": {
+          "description": "Network namespace cookie",
+          "type": "string"
+        },
         "pid": {
           "description": "Process ID of the workload belonging to this endpoint",
           "type": "integer"
@@ -9263,20 +9196,6 @@ func init() {
           "enum": [
             "Disabled",
             "Enabled"
-          ]
-        }
-      }
-    },
-    "HostRouting": {
-      "description": "Status of host routing\n\n+k8s:deepcopy-gen=true",
-      "type": "object",
-      "properties": {
-        "mode": {
-          "description": "Datapath routing mode",
-          "type": "string",
-          "enum": [
-            "BPF",
-            "Legacy"
           ]
         }
       }
@@ -10493,43 +10412,6 @@ func init() {
         }
       }
     },
-    "ModuleHealth": {
-      "description": "Report module health status",
-      "properties": {
-        "last-ok": {
-          "description": "Time at which the last OK check occurred",
-          "type": "string"
-        },
-        "last-updated": {
-          "description": "Time of last health update",
-          "type": "string"
-        },
-        "level": {
-          "description": "Describes the health status level",
-          "type": "string"
-        },
-        "message": {
-          "description": "Reports the associated health message",
-          "type": "string"
-        },
-        "module-id": {
-          "description": "Describes the module identitier",
-          "type": "string"
-        }
-      }
-    },
-    "ModulesHealth": {
-      "description": "Reports health status of agent's modules",
-      "properties": {
-        "modules": {
-          "description": "List out modules health status",
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/ModuleHealth"
-          }
-        }
-      }
-    },
     "MonitorStatus": {
       "description": "Status of the node monitor",
       "properties": {
@@ -11117,6 +10999,32 @@ func init() {
         }
       }
     },
+    "Routing": {
+      "description": "Status of routing\n\n+k8s:deepcopy-gen=true",
+      "type": "object",
+      "properties": {
+        "inter-host-routing-mode": {
+          "description": "Datapath routing mode for cross-cluster connectivity",
+          "type": "string",
+          "enum": [
+            "Native",
+            "Tunnel"
+          ]
+        },
+        "intra-host-routing-mode": {
+          "description": "Datapath routing mode for connectivity within the host",
+          "type": "string",
+          "enum": [
+            "BPF",
+            "Legacy"
+          ]
+        },
+        "tunnel-protocol": {
+          "description": "Tunnel protocol in use for cross-cluster connectivity",
+          "type": "string"
+        }
+      }
+    },
     "SelectorCache": {
       "description": "cache of which identities match selectors in the policy repository",
       "type": "array",
@@ -11466,10 +11374,6 @@ func init() {
           "description": "Status of the host firewall",
           "$ref": "#/definitions/HostFirewall"
         },
-        "host-routing": {
-          "description": "Status of host routing",
-          "$ref": "#/definitions/HostRouting"
-        },
         "hubble": {
           "description": "Status of Hubble server",
           "$ref": "#/definitions/HubbleStatus"
@@ -11513,6 +11417,10 @@ func init() {
         "proxy": {
           "description": "Status of proxy",
           "$ref": "#/definitions/ProxyStatus"
+        },
+        "routing": {
+          "description": "Status of routing",
+          "$ref": "#/definitions/Routing"
         },
         "srv6": {
           "description": "Status of SRv6",

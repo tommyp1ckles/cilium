@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/cilium/hive/cell"
 	"golang.org/x/exp/maps"
 
 	agentK8s "github.com/cilium/cilium/daemon/k8s"
-	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/k8s"
 	v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
@@ -95,6 +95,9 @@ func (ini *localNodeSynchronizer) initFromConfig(ctx context.Context, n *node.Lo
 	n.Cluster = ini.Config.ClusterName
 	n.ClusterID = ini.Config.ClusterID
 	n.Name = nodeTypes.GetName()
+
+	n.IPv4NativeRoutingCIDR = ini.Config.IPv4NativeRoutingCIDR
+	n.IPv6NativeRoutingCIDR = ini.Config.IPv6NativeRoutingCIDR
 
 	// If there is one device specified, use it to derive better default
 	// allocation prefixes

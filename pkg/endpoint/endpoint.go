@@ -4,7 +4,6 @@
 package endpoint
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -18,7 +17,9 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/cilium/hive/cell"
 	"github.com/sirupsen/logrus"
+	"github.com/vishvananda/netlink"
 	k8sTypes "k8s.io/apimachinery/pkg/types"
 
 	"github.com/cilium/cilium/api/v1/models"
@@ -34,7 +35,6 @@ import (
 	"github.com/cilium/cilium/pkg/eventqueue"
 	"github.com/cilium/cilium/pkg/fqdn"
 	"github.com/cilium/cilium/pkg/fqdn/restore"
-	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/identity/cache"
 	"github.com/cilium/cilium/pkg/identity/identitymanager"
@@ -48,7 +48,6 @@ import (
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/mac"
 	"github.com/cilium/cilium/pkg/maps/ctmap"
-	"github.com/cilium/cilium/pkg/maps/lxcmap"
 	"github.com/cilium/cilium/pkg/maps/policymap"
 	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/monitor/notifications"
@@ -415,8 +414,11 @@ type Endpoint struct {
 	properties map[string]interface{}
 
 	// Root scope for all of this endpoints reporters.
-	reporterScope       cell.Scope
+	reporterScope       cell.Health
 	closeHealthReporter func()
+
+	// NetNsCookie is the network namespace cookie of the Endpoint.
+	NetNsCookie uint64
 }
 
 func (e *Endpoint) GetRealizedRedirects() (redirects map[string]uint16) {
@@ -426,12 +428,19 @@ func (e *Endpoint) GetRealizedRedirects() (redirects map[string]uint16) {
 	return redirects
 }
 
-func (e *Endpoint) GetReporter(name string) cell.HealthReporter {
-	return cell.GetHealthReporter(e.reporterScope, name)
+func (e *Endpoint) GetReporter(name string) cell.Health {
+	if e.reporterScope == nil {
+		_, h := cell.NewSimpleHealth()
+		return h.NewScope(name)
+	}
+	return e.reporterScope.NewScope(name)
 }
 
-func (e *Endpoint) InitEndpointScope(parent cell.Scope) {
-	s := cell.GetSubScope(parent, fmt.Sprintf("cilium-endpoint-%d (%s)", e.ID, e.GetK8sNamespaceAndPodName()))
+func (e *Endpoint) InitEndpointHealth(parent cell.Health) {
+	if parent == nil {
+		_, parent = cell.NewSimpleHealth()
+	}
+	s := parent.NewScope(fmt.Sprintf("cilium-endpoint-%d (%s)", e.ID, e.GetK8sNamespaceAndPodName()))
 	if s != nil {
 		e.closeHealthReporter = s.Close
 		e.reporterScope = s
@@ -521,7 +530,7 @@ func (e *Endpoint) waitForProxyCompletions(proxyWaitGroup *completion.WaitGroup)
 	e.getLogger().Debug("Waiting for proxy updates to complete...")
 	err = proxyWaitGroup.Wait()
 	if err != nil {
-		return fmt.Errorf("proxy state changes failed: %s", err)
+		return fmt.Errorf("proxy state changes failed: %w", err)
 	}
 	e.getLogger().Debug("Wait time for proxy updates: ", time.Since(start))
 
@@ -718,28 +727,11 @@ func (e *Endpoint) GetNodeMAC() mac.MAC {
 	return e.nodeMAC
 }
 
-// ConntrackName returns the name suffix for the endpoint-specific bpf
-// conntrack map, which is a 5-digit endpoint ID, or "global" when the
-// global map should be used.
-func (e *Endpoint) ConntrackName() string {
-	e.unconditionalRLock()
-	defer e.runlock()
-	return e.conntrackName()
-}
-
 // ConntrackNameLocked returns the name suffix for the endpoint-specific bpf
 // conntrack map, which is a 5-digit endpoint ID, or "global" when the
 // global map should be used.
 // Must be called with the endpoint locked.
 func (e *Endpoint) ConntrackNameLocked() string {
-	return e.conntrackName()
-}
-
-// ConntrackName returns the name suffix for the endpoint-specific bpf
-// conntrack map, which is a 5-digit endpoint ID, or "global" when the
-// global map should be used.
-// Must be called with the endpoint locked.
-func (e *Endpoint) conntrackName() string {
 	if e.ConntrackLocalLocked() {
 		return fmt.Sprintf("%05d", int(e.ID))
 	}
@@ -878,31 +870,11 @@ func (e *Endpoint) ConntrackLocalLocked() bool {
 
 // base64 returns the endpoint in a base64 format.
 func (e *Endpoint) base64() (string, error) {
-	var (
-		jsonBytes []byte
-		err       error
-	)
-
-	jsonBytes, err = json.Marshal(e)
+	jsonBytes, err := e.MarshalJSON()
 	if err != nil {
 		return "", err
 	}
 	return base64.StdEncoding.EncodeToString(jsonBytes), nil
-}
-
-// parseBase64ToEndpoint parses the endpoint stored in the given base64 byte slice.
-func parseBase64ToEndpoint(b []byte, ep *Endpoint) error {
-	jsonBytes := make([]byte, base64.StdEncoding.DecodedLen(len(b)))
-	n, err := base64.StdEncoding.Decode(jsonBytes, b)
-	if err != nil {
-		return err
-	}
-
-	if err := json.Unmarshal(jsonBytes[:n], ep); err != nil {
-		return fmt.Errorf("error unmarshaling serializableEndpoint from base64 representation: %s", err)
-	}
-
-	return nil
 }
 
 // FilterEPDir returns a list of directories' names that possible belong to an endpoint.
@@ -919,25 +891,19 @@ func FilterEPDir(dirFiles []os.DirEntry) []string {
 	return eptsID
 }
 
-// parseEndpoint parses the given bEp which is in the form of:
-// common.CiliumCHeaderPrefix + common.Version + ":" + endpointBase64
+// parseEndpoint parses the JSON representation of an endpoint.
+//
 // Note that the parse'd endpoint's identity is only partially restored. The
 // caller must call `SetIdentity()` to make the returned endpoint's identity useful.
-func parseEndpoint(ctx context.Context, owner regeneration.Owner, policyGetter policyRepoGetter, namedPortsGetter namedPortsGetter, bEp []byte) (*Endpoint, error) {
-	// TODO: Provide a better mechanism to update from old version once we bump
-	// TODO: cilium version.
-	epSlice := bytes.Split(bEp, []byte{':'})
-	if len(epSlice) != 2 {
-		return nil, fmt.Errorf("invalid format %q. Should contain a single ':'", bEp)
-	}
+func parseEndpoint(ctx context.Context, owner regeneration.Owner, policyGetter policyRepoGetter, namedPortsGetter namedPortsGetter, epJSON []byte) (*Endpoint, error) {
 	ep := Endpoint{
 		owner:            owner,
 		namedPortsGetter: namedPortsGetter,
 		policyGetter:     policyGetter,
 	}
 
-	if err := parseBase64ToEndpoint(epSlice[1], &ep); err != nil {
-		return nil, fmt.Errorf("failed to parse restored endpoint: %s", err)
+	if err := ep.UnmarshalJSON(epJSON); err != nil {
+		return nil, fmt.Errorf("failed to parse restored endpoint: %w", err)
 	}
 
 	ep.initDNSHistoryTrigger()
@@ -1102,16 +1068,10 @@ func (e *Endpoint) Update(cfg *models.EndpointConfigurationSpec) error {
 		RegenerationLevel: regeneration.RegenerateWithoutDatapath,
 	}
 
-	// If configuration options are provided, we only regenerate if necessary.
-	// Otherwise always regenerate.
-	if cfg.Options == nil {
-		regenCtx.RegenerationLevel = regeneration.RegenerateWithDatapathRebuild
-		regenCtx.Reason = "endpoint was manually regenerated via API"
-	} else if e.updateAndOverrideEndpointOptions(om) || e.status.CurrentStatus() != OK {
+	// Only regenerate if necessary.
+	if cfg.Options == nil || e.updateAndOverrideEndpointOptions(om) || e.status.CurrentStatus() != OK {
 		regenCtx.RegenerationLevel = regeneration.RegenerateWithDatapathRewrite
-	}
 
-	if regenCtx.RegenerationLevel > regeneration.RegenerateWithoutDatapath {
 		e.getLogger().Debug("need to regenerate endpoint; checking state before" +
 			" attempting to regenerate")
 
@@ -1231,11 +1191,7 @@ type DeleteConfig struct {
 // which depends on kvstore connectivity must be protected by a flag in
 // DeleteConfig and the restore logic must opt-out of it.
 func (e *Endpoint) leaveLocked(proxyWaitGroup *completion.WaitGroup, conf DeleteConfig) []error {
-	errors := []error{}
-
-	if !e.isProperty(PropertyFakeEndpoint) {
-		e.owner.Datapath().Loader().Unload(e.createEpInfoCache(""))
-	}
+	errs := []error{}
 
 	// Remove policy references from shared policy structures
 	e.desiredPolicy.Detach()
@@ -1255,7 +1211,7 @@ func (e *Endpoint) leaveLocked(proxyWaitGroup *completion.WaitGroup, conf Delete
 
 	if e.policyMap != nil {
 		if err := e.policyMap.Close(); err != nil {
-			errors = append(errors, fmt.Errorf("unable to close policymap %s: %s", e.policyMap.String(), err))
+			errs = append(errs, fmt.Errorf("unable to close policymap %s: %w", e.policyMap.String(), err))
 		}
 	}
 
@@ -1272,7 +1228,7 @@ func (e *Endpoint) leaveLocked(proxyWaitGroup *completion.WaitGroup, conf Delete
 
 		_, err := e.allocator.Release(releaseCtx, e.SecurityIdentity, false)
 		if err != nil {
-			errors = append(errors, fmt.Errorf("unable to release identity: %s", err))
+			errs = append(errs, fmt.Errorf("unable to release identity: %w", err))
 		}
 		e.removeNetworkPolicy()
 		e.SecurityIdentity = nil
@@ -1287,7 +1243,7 @@ func (e *Endpoint) leaveLocked(proxyWaitGroup *completion.WaitGroup, conf Delete
 	}
 
 	if e.ConntrackLocalLocked() {
-		ctmap.CloseLocalMaps(e.conntrackName())
+		ctmap.CloseLocalMaps(e.ConntrackNameLocked())
 	} else if !e.isProperty(PropertyFakeEndpoint) {
 		e.scrubIPsInConntrackTableLocked()
 	}
@@ -1297,7 +1253,7 @@ func (e *Endpoint) leaveLocked(proxyWaitGroup *completion.WaitGroup, conf Delete
 	endpointPolicyStatus.Remove(e.ID)
 	e.getLogger().Info("Removed endpoint")
 
-	return errors
+	return errs
 }
 
 // GetK8sNamespace returns the name of the pod if the endpoint represents a
@@ -2130,14 +2086,12 @@ func (e *Endpoint) runIdentityResolver(ctx context.Context, myChangeRev int, blo
 	if blocking || identity.IdentityAllocationIsLocal(newLabels) {
 		scopedLog.Info("Resolving identity labels (blocking)")
 		regenTriggered, err = e.identityLabelsChanged(ctx, myChangeRev)
-		switch err {
-		case ErrNotAlive:
-			scopedLog.Debug("not changing endpoint identity because endpoint is in process of being removed")
-			return false
-		default:
-			if err != nil {
-				scopedLog.WithError(err).Warn("Error changing endpoint identity")
+		if err != nil {
+			if errors.Is(err, ErrNotAlive) {
+				scopedLog.Debug("not changing endpoint identity because endpoint is in process of being removed")
+				return false
 			}
+			scopedLog.WithError(err).Warn("Error changing endpoint identity")
 		}
 	} else {
 		scopedLog.Info("Resolving identity labels (non-blocking)")
@@ -2149,13 +2103,11 @@ func (e *Endpoint) runIdentityResolver(ctx context.Context, myChangeRev int, blo
 			Group: resolveIdentityControllerGroup,
 			DoFunc: func(ctx context.Context) error {
 				_, err := e.identityLabelsChanged(ctx, myChangeRev)
-				switch err {
-				case ErrNotAlive:
+				if errors.Is(err, ErrNotAlive) {
 					e.getLogger().Debug("not changing endpoint identity because endpoint is in process of being removed")
 					return controller.NewExitReason("Endpoint disappeared")
-				default:
-					return err
 				}
+				return err
 			},
 			RunInterval: 5 * time.Minute,
 			Context:     e.aliveCtx,
@@ -2211,7 +2163,7 @@ func (e *Endpoint) identityLabelsChanged(ctx context.Context, myChangeRev int) (
 	notifySelectorCache := true
 	allocatedIdentity, _, err := e.allocator.AllocateIdentity(allocateCtx, newLabels, notifySelectorCache, identity.InvalidIdentity)
 	if err != nil {
-		err = fmt.Errorf("unable to resolve identity: %s", err)
+		err = fmt.Errorf("unable to resolve identity: %w", err)
 		e.LogStatus(Other, Warning, err.Error()+" (will retry)")
 		return false, err
 	}
@@ -2494,17 +2446,6 @@ func (e *Endpoint) Delete(conf DeleteConfig) []error {
 	}
 	e.setState(StateDisconnecting, "Deleting endpoint")
 
-	// If dry mode is enabled, no changes to BPF maps are performed
-	if !e.isProperty(PropertyFakeEndpoint) {
-		if errs2 := lxcmap.DeleteElement(e); errs2 != nil {
-			errs = append(errs, errs2...)
-		}
-
-		if errs2 := e.deleteMaps(); errs2 != nil {
-			errs = append(errs, errs2...)
-		}
-	}
-
 	if option.Config.IPAM == ipamOption.IPAMENI || option.Config.IPAM == ipamOption.IPAMAzure || option.Config.IPAM == ipamOption.IPAMAlibabaCloud {
 		e.getLogger().WithFields(logrus.Fields{
 			"ep":     e.GetID(),
@@ -2516,7 +2457,7 @@ func (e *Endpoint) Delete(conf DeleteConfig) []error {
 		// expected, then the rules will be left as-is because there was
 		// likely manual intervention.
 		if err := linuxrouting.Delete(e.IPv4, option.Config.EgressMultiHomeIPRuleCompat); err != nil {
-			errs = append(errs, fmt.Errorf("unable to delete endpoint routing rules: %s", err))
+			errs = append(errs, fmt.Errorf("unable to delete endpoint routing rules: %w", err))
 		}
 	}
 
@@ -2527,14 +2468,28 @@ func (e *Endpoint) Delete(conf DeleteConfig) []error {
 		}).Debug("Deleting endpoint NOTRACK rules")
 
 		if e.IPv4.IsValid() {
-			if err := e.owner.Datapath().RemoveNoTrackRules(e.IPv4.String(), e.noTrackPort, false); err != nil {
-				errs = append(errs, fmt.Errorf("unable to delete endpoint NOTRACK ipv4 rules: %s", err))
-			}
+			e.owner.Datapath().RemoveNoTrackRules(e.IPv4, e.noTrackPort)
 		}
 		if e.IPv6.IsValid() {
-			if err := e.owner.Datapath().RemoveNoTrackRules(e.IPv6.String(), e.noTrackPort, true); err != nil {
-				errs = append(errs, fmt.Errorf("unable to delete endpoint NOTRACK ipv6 rules: %s", err))
-			}
+			e.owner.Datapath().RemoveNoTrackRules(e.IPv6, e.noTrackPort)
+		}
+	}
+
+	// If dry mode is enabled, no changes to system state are made.
+	if !e.isProperty(PropertyFakeEndpoint) {
+		// Set the Endpoint's interface down to prevent it from passing any traffic
+		// after its tc filters are removed.
+		if err := e.setDown(); err != nil {
+			errs = append(errs, err)
+		}
+
+		// Detach the endpoint program from any tc(x) hooks.
+		e.owner.Datapath().Loader().Unload(e.createEpInfoCache(""))
+
+		// Delete the endpoint's entries from the global cilium_(egress)call_policy
+		// maps and remove per-endpoint cilium_calls_ and cilium_policy_ map pins.
+		if err := e.deleteMaps(); err != nil {
+			errs = append(errs, err...)
 		}
 	}
 
@@ -2546,11 +2501,26 @@ func (e *Endpoint) Delete(conf DeleteConfig) []error {
 
 	err := e.waitForProxyCompletions(proxyWaitGroup)
 	if err != nil {
-		errs = append(errs, fmt.Errorf("unable to remove proxy redirects: %s", err))
+		errs = append(errs, fmt.Errorf("unable to remove proxy redirects: %w", err))
 	}
 	cancel()
 
 	return errs
+}
+
+// setDown sets the Endpoint's underlying interface down. If the interface
+// cannot be retrieved, returns nil.
+func (e *Endpoint) setDown() error {
+	link, err := netlink.LinkByName(e.HostInterface())
+	if errors.As(err, &netlink.LinkNotFoundError{}) {
+		// No interface, nothing to do.
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("setting interface %s down: %w", e.HostInterface(), err)
+	}
+
+	return netlink.LinkSetDown(link)
 }
 
 // WaitForFirstRegeneration waits for the endpoint to complete its first full regeneration.
@@ -2601,14 +2571,14 @@ func (e *Endpoint) WaitForFirstRegeneration(ctx context.Context) error {
 
 // SetDefaultConfiguration sets the default configuration options for its
 // boolean configuration options and for policy enforcement based off of the
-// global policy enforcement configuration options. If restore is true, then
-// the configuration option to keep endpoint configuration during endpoint
-// restore is checked, and if so, this is a no-op.
-func (e *Endpoint) SetDefaultConfiguration(restore bool) {
+// global policy enforcement configuration options. If the configuration option to
+// keep endpoint configuration during endpoint restore is enabled, this is a
+// no-op.
+func (e *Endpoint) SetDefaultConfiguration() {
 	e.unconditionalLock()
 	defer e.unlock()
 
-	if restore && option.Config.KeepConfig {
+	if option.Config.KeepConfig {
 		return
 	}
 	e.setDefaultPolicyConfig()

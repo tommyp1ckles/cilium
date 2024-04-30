@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -26,47 +25,6 @@ import (
 )
 
 var log = logging.DefaultLogger
-
-const (
-	// MaxRetries is the number of times that a loop should iterate until a
-	// specified condition is not met
-	MaxRetries = 30
-)
-
-// BpfLBList returns the output of `cilium bpf lb list -o json` as a map
-// Key will be the frontend address and the value is an array with all backend
-// addresses
-func (s *SSHMeta) BpfLBList(noDuplicates bool) (map[string][]string, error) {
-	var (
-		result map[string][]string
-		res    *CmdRes
-	)
-
-	res = s.ExecCilium("bpf lb list -o json")
-
-	if !res.WasSuccessful() {
-		return nil, fmt.Errorf("cannot get bpf lb list: %s", res.CombineOutput())
-	}
-	err := res.Unmarshal(&result)
-	if err != nil {
-		return nil, err
-	}
-
-	if noDuplicates {
-		for svc, entries := range result {
-			unique := make(map[string]struct{})
-			for _, e := range entries {
-				unique[e] = struct{}{}
-			}
-			result[svc] = make([]string, 0, len(unique))
-			for e := range unique {
-				result[svc] = append(result[svc], e)
-			}
-		}
-	}
-
-	return result, nil
-}
 
 // BpfIPCacheList returns the output of `cilium bpf ipcache list -o json` as a map
 // Key will be the CIDR (address with mask) and the value is the associated numeric security identity
@@ -103,7 +61,7 @@ func (s *SSHMeta) BpfIPCacheList(localScopeOnly bool) (map[string]uint32, error)
 				}
 				nid64, err := strconv.ParseUint(s[idIdx:endIdx], 10, 32)
 				if err != nil {
-					return nil, fmt.Errorf("cannot parse identity from: %s (%s): %s", s, s[idIdx:endIdx], err)
+					return nil, fmt.Errorf("cannot parse identity from: %s (%s): %w", s, s[idIdx:endIdx], err)
 				}
 				nid = uint32(nid64)
 				if localScopeOnly && !identity.NumericIdentity(nid).HasLocalScope() {
@@ -469,40 +427,6 @@ func (s *SSHMeta) GetFullPath(name string) string {
 	return fmt.Sprintf("%s%s", s.ManifestsPath(), name)
 }
 
-// PolicyEndpointsSummary returns the count of whether policy enforcement is
-// enabled, disabled, and the total number of endpoints, and an error if the
-// Cilium endpoint metadata cannot be retrieved via the API.
-func (s *SSHMeta) PolicyEndpointsSummary() (map[string]int, error) {
-	result := map[string]int{
-		Enabled:  0,
-		Disabled: 0,
-		Total:    0,
-	}
-
-	res := s.ListEndpoints()
-	if !res.WasSuccessful() {
-		return nil, fmt.Errorf("was not able to list endpoints: %s", res.CombineOutput().String())
-	}
-
-	endpoints, err := res.Filter("{ [?(@.status.labels.security-relevant[0]!='reserved:health')].status.policy.realized.policy-enabled }")
-
-	if err != nil {
-		return result, fmt.Errorf(`cannot filter for "policy-enabled" from output of "cilium endpoint list"`)
-	}
-	status := strings.Split(endpoints.String(), " ")
-	for _, kind := range status {
-		switch models.EndpointPolicyEnabled(kind) {
-		case models.EndpointPolicyEnabledBoth, models.EndpointPolicyEnabledEgress,
-			models.EndpointPolicyEnabledIngress:
-			result[Enabled]++
-		case OptionNone:
-			result[Disabled]++
-		}
-		result[Total]++
-	}
-	return result, nil
-}
-
 // SetPolicyEnforcement sets the PolicyEnforcement configuration value for the
 // Cilium agent to the provided status.
 func (s *SSHMeta) SetPolicyEnforcement(status string) *CmdRes {
@@ -574,7 +498,7 @@ func (s *SSHMeta) PolicyImportAndWait(path string, timeout time.Duration) (int, 
 
 	revision, err := s.PolicyGetRevision()
 	if err != nil {
-		return -1, fmt.Errorf("cannot get policy revision: %s", err)
+		return -1, fmt.Errorf("cannot get policy revision: %w", err)
 	}
 	s.logger.WithFields(logrus.Fields{
 		logfields.Path:           path,
@@ -645,7 +569,7 @@ func (s *SSHMeta) PolicyRenderAndImport(policy string) (int, error) {
 	err := s.RenderTemplateToFile(filename, policy, os.ModePerm)
 	if err != nil {
 		s.logger.Errorf("PolicyRenderAndImport: cannot create policy file on '%s'", filename)
-		return 0, fmt.Errorf("cannot render the policy:  %s", err)
+		return 0, fmt.Errorf("cannot render the policy: %w", err)
 	}
 	path := s.GetFilePath(filename)
 	s.logger.Debugf("PolicyRenderAndImport: import policy from '%s'", path)
@@ -837,120 +761,6 @@ func (s *SSHMeta) GatherLogs() {
 			s.logger.Errorf("cannot gather files for cmd '%s': %s", cmd, res.CombineOutput())
 		}
 	}
-}
-
-// ServiceAdd creates a new Cilium service with the provided ID, frontend,
-// backends. Returns the result of creating said service.
-func (s *SSHMeta) ServiceAdd(id int, frontend string, backends []string) *CmdRes {
-	cmd := fmt.Sprintf(
-		"service update --frontend '%s' --backends '%s' --id '%d'",
-		frontend, strings.Join(backends, ","), id)
-	return s.ExecCilium(cmd)
-}
-
-// ServiceIsSynced checks that the Cilium service with the specified id has its
-// metadata match that of the load balancer BPF maps
-func (s *SSHMeta) ServiceIsSynced(id int) (bool, error) {
-	var svc *models.Service
-	svcRes := s.ServiceGet(id)
-	if !svcRes.WasSuccessful() {
-		return false, fmt.Errorf("cannot get service id %d: %s", id, svcRes.CombineOutput())
-	}
-	err := svcRes.Unmarshal(&svc)
-	if err != nil {
-		return false, err
-	}
-
-	bpfLB, err := s.BpfLBList(false)
-	if err != nil {
-		return false, err
-	}
-
-	frontendAddr := net.JoinHostPort(
-		svc.Status.Realized.FrontendAddress.IP,
-		fmt.Sprintf("%d", svc.Status.Realized.FrontendAddress.Port))
-	lb, ok := bpfLB[frontendAddr]
-	if !ok {
-		return false, fmt.Errorf(
-			"frontend address from the service %d does not have it's corresponding frontend address(%s) on bpf maps",
-			id, frontendAddr)
-	}
-
-	for _, backendAddr := range svc.Status.Realized.BackendAddresses {
-		result := false
-		backendSVC := net.JoinHostPort(
-			*backendAddr.IP,
-			fmt.Sprintf("%d", backendAddr.Port))
-		target := fmt.Sprintf("%s (%d)", backendSVC, id)
-
-		for _, addr := range lb {
-			if strings.Contains(addr, target) {
-				result = true
-			}
-		}
-		if !result {
-			return false, fmt.Errorf(
-				"backend address %s does not exists on BPF load balancer metadata id=%d", target, id)
-		}
-	}
-	return true, nil
-}
-
-// ServiceList returns the output of  `cilium service list`
-func (s *SSHMeta) ServiceList() *CmdRes {
-	return s.ExecCilium("service list -o json")
-}
-
-// ServiceGet is a wrapper around `cilium service get <id>`. It returns the
-// result of retrieving said service.
-func (s *SSHMeta) ServiceGet(id int) *CmdRes {
-	return s.ExecCilium(fmt.Sprintf("service get '%d' -o json", id))
-}
-
-// ServiceGetFrontendAddress returns a string with the frontend address and
-// port. It returns an error if the ID cannot be retrieved.
-func (s *SSHMeta) ServiceGetFrontendAddress(id int) (string, error) {
-
-	var svc *models.Service
-	res := s.ServiceGet(id)
-	if !res.WasSuccessful() {
-		return "", fmt.Errorf("Cannot get service id %d: %s", id, res.CombineOutput())
-	}
-
-	err := res.Unmarshal(&svc)
-	if err != nil {
-		return "", err
-	}
-
-	frontendAddress := net.JoinHostPort(
-		svc.Status.Realized.FrontendAddress.IP,
-		fmt.Sprintf("%d", svc.Status.Realized.FrontendAddress.Port))
-	return frontendAddress, nil
-}
-
-// ServiceGetIds returns an array with the IDs of all Cilium services. Returns
-// an error if the IDs cannot be retrieved
-func (s *SSHMeta) ServiceGetIds() ([]string, error) {
-	filter := `{range [*]}{@.status.realized.id}{"\n"}{end}`
-	res, err := s.ServiceList().Filter(filter)
-	if err != nil {
-		return nil, err
-	}
-	// trim the trailing \n
-	trimmed := strings.Trim(res.String(), "\n")
-	return strings.Split(trimmed, "\n"), nil
-}
-
-// ServiceDel is a wrapper around `cilium service delete <id>`. It returns the
-// result of deleting said service.
-func (s *SSHMeta) ServiceDel(id int) *CmdRes {
-	return s.ExecCilium(fmt.Sprintf("service delete '%d'", id))
-}
-
-// ServiceDelAll is a wrapper around `cilium service delete --all`. It returns the
-// result of the command.
-func (s *SSHMeta) ServiceDelAll() *CmdRes {
-	return s.ExecCilium("service delete --all")
 }
 
 // SetUpCilium sets up Cilium as a systemd service with a hardcoded set of options. It

@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
 	"github.com/sirupsen/logrus"
 	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -21,9 +23,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
-
-	"github.com/cilium/ebpf"
-	"github.com/cilium/ebpf/asm"
 
 	"github.com/cilium/cilium/pkg/annotation"
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
@@ -163,13 +162,6 @@ func (k *K8sWatcher) podsInit(slimClient slimclientset.Interface, asyncControlle
 			k.k8sAPIGroups.AddAPI(resources.K8sAPIGroupPodV1Core)
 		})
 		return cancel
-	}
-
-	// Disable watching pods if we are in high-scale mode. We don't need to
-	// insert pod IPs into the ipcache.
-	if option.Config.EnableHighScaleIPcache {
-		asyncControllers.Done()
-		return
 	}
 
 	// We will watch for pods on th entire cluster to keep existing

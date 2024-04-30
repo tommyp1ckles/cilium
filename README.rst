@@ -41,11 +41,11 @@ Listed below are the actively maintained release branches along with their lates
 patch release, corresponding image pull tags and their release notes:
 
 +---------------------------------------------------------+------------+------------------------------------+----------------------------------------------------------------------------+
-| `v1.15 <https://github.com/cilium/cilium/tree/v1.15>`__ | 2024-03-26 | ``quay.io/cilium/cilium:v1.15.3``  | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.15.3>`__  |
+| `v1.15 <https://github.com/cilium/cilium/tree/v1.15>`__ | 2024-04-11 | ``quay.io/cilium/cilium:v1.15.4``  | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.15.4>`__  |
 +---------------------------------------------------------+------------+------------------------------------+----------------------------------------------------------------------------+
-| `v1.14 <https://github.com/cilium/cilium/tree/v1.14>`__ | 2024-03-26 | ``quay.io/cilium/cilium:v1.14.9``  | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.14.9>`__  |
+| `v1.14 <https://github.com/cilium/cilium/tree/v1.14>`__ | 2024-04-11 | ``quay.io/cilium/cilium:v1.14.10`` | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.14.10>`__ |
 +---------------------------------------------------------+------------+------------------------------------+----------------------------------------------------------------------------+
-| `v1.13 <https://github.com/cilium/cilium/tree/v1.13>`__ | 2024-03-26 | ``quay.io/cilium/cilium:v1.13.14`` | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.13.14>`__ |
+| `v1.13 <https://github.com/cilium/cilium/tree/v1.13>`__ | 2024-04-11 | ``quay.io/cilium/cilium:v1.13.15`` | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.13.15>`__ |
 +---------------------------------------------------------+------------+------------------------------------+----------------------------------------------------------------------------+
 
 Architectures
@@ -80,7 +80,7 @@ corresponding image pull tags and their release notes where applicable:
 +--------------------------------------------------------------------------------------+------------+----------------------------------------------+-------------------------------------------------------------------------------------------+
 | `main <https://github.com/cilium/cilium/commits/main>`__                             | daily      | ``quay.io/cilium/cilium-ci:latest``          | N/A                                                                                       |
 +--------------------------------------------------------------------------------------+------------+----------------------------------------------+-------------------------------------------------------------------------------------------+
-| `v1.16.0-pre.0 <https://github.com/cilium/cilium/commits/v1.16.0-pre.0>`__           | 2024-03-04 | ``quay.io/cilium/cilium:v1.16.0-pre.0``      | `Release Candidate Notes <https://github.com/cilium/cilium/releases/tag/v1.16.0-pre.0>`__ |
+| `v1.16.0-pre.1 <https://github.com/cilium/cilium/commits/v1.16.0-pre.1>`__           | 2024-04-02 | ``quay.io/cilium/cilium:v1.16.0-pre.1``      | `Release Candidate Notes <https://github.com/cilium/cilium/releases/tag/v1.16.0-pre.1>`__ |
 +--------------------------------------------------------------------------------------+------------+----------------------------------------------+-------------------------------------------------------------------------------------------+
 
 Functionality Overview
@@ -303,7 +303,7 @@ We host a weekly community `YouTube livestream called eCHO <https://www.youtube.
 Governance
 ----------
 The Cilium project is governed by a group of `Maintainers and Committers <https://raw.githubusercontent.com/cilium/cilium/main/MAINTAINERS.md>`__.
-How they are selected and govern is outlined in our `governance document <https://docs.cilium.io/en/latest/community/governance/commit_access/>`__.
+How they are selected and govern is outlined in our `governance document <https://github.com/cilium/community/blob/main/GOVERNANCE.md>`__.
 
 Adopters
 --------

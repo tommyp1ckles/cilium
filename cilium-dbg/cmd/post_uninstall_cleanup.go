@@ -9,11 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/cilium/ebpf"
 	"github.com/spf13/cobra"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
-
-	"github.com/cilium/ebpf"
 
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/common"
@@ -396,7 +395,7 @@ func unmountCgroup() error {
 
 	log.Info("Trying to unmount ", cgroupRoot)
 	if err := unix.Unmount(cgroupRoot, unix.MNT_FORCE); err != nil {
-		return fmt.Errorf("Failed to unmount %s: %s", cgroupRoot, err)
+		return fmt.Errorf("Failed to unmount %s: %w", cgroupRoot, err)
 	}
 	return nil
 }

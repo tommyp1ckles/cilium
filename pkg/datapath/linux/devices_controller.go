@@ -13,25 +13,25 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
+	"github.com/cilium/hive/cell"
 	"github.com/sirupsen/logrus"
+	"github.com/spf13/pflag"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
 	vns "github.com/vishvananda/netns"
-
 	"golang.org/x/sys/unix"
 	"k8s.io/apimachinery/pkg/util/sets"
-
-	"github.com/cilium/ebpf"
-	"github.com/cilium/ebpf/asm"
 
 	"github.com/cilium/cilium/pkg/datapath/linux/probes"
 	"github.com/cilium/cilium/pkg/datapath/tables"
 	"github.com/cilium/cilium/pkg/defaults"
-	"github.com/cilium/cilium/pkg/hive/cell"
 	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/ip"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/netns"
+	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/statedb"
 	"github.com/cilium/cilium/pkg/time"
 )
@@ -56,6 +56,7 @@ var DevicesControllerCell = cell.Module(
 		newDevicesController,
 		newDeviceManager,
 	),
+	cell.Config(DevicesConfig{}),
 
 	// Always construct the devices controller. We provide the
 	// *devicesController for DeviceManager, but once it has been removed,
@@ -63,6 +64,10 @@ var DevicesControllerCell = cell.Module(
 	// controller jobs.
 	cell.Invoke(func(*devicesController) {}),
 )
+
+func (c DevicesConfig) Flags(flags *pflag.FlagSet) {
+	flags.StringSlice(option.Devices, []string{}, "List of devices facing cluster/external network (used for BPF NodePort, BPF masquerading and host firewall); supports '+' as wildcard in device name, e.g. 'eth+'")
+}
 
 var (
 	// batchingDuration is the amount of time to wait for more

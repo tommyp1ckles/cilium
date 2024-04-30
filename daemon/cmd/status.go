@@ -6,7 +6,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"strings"
 
 	"github.com/go-openapi/runtime/middleware"
@@ -16,7 +15,6 @@ import (
 
 	"github.com/cilium/cilium/api/v1/models"
 	. "github.com/cilium/cilium/api/v1/server/restapi/daemon"
-	"github.com/cilium/cilium/pkg/api"
 	"github.com/cilium/cilium/pkg/backoff"
 	"github.com/cilium/cilium/pkg/controller"
 	datapathOption "github.com/cilium/cilium/pkg/datapath/option"
@@ -187,14 +185,22 @@ func (d *Daemon) getBandwidthManagerStatus() *models.BandwidthManager {
 		s.CongestionControl = models.BandwidthManagerCongestionControlBbr
 	}
 
-	s.Devices = option.Config.GetDevices()
+	devs, _ := datapathTables.SelectedDevices(d.devices, d.db.ReadTxn())
+	s.Devices = datapathTables.DeviceNames(devs)
 	return s
 }
 
-func (d *Daemon) getHostRoutingStatus() *models.HostRouting {
-	s := &models.HostRouting{Mode: models.HostRoutingModeBPF}
+func (d *Daemon) getRoutingStatus() *models.Routing {
+	s := &models.Routing{
+		IntraHostRoutingMode: models.RoutingIntraHostRoutingModeBPF,
+		InterHostRoutingMode: models.RoutingInterHostRoutingModeTunnel,
+		TunnelProtocol:       d.tunnelConfig.Protocol().String(),
+	}
 	if option.Config.EnableHostLegacyRouting {
-		s.Mode = models.HostRoutingModeLegacy
+		s.IntraHostRoutingMode = models.RoutingIntraHostRoutingModeLegacy
+	}
+	if option.Config.RoutingMode == option.RoutingModeNative {
+		s.InterHostRoutingMode = models.RoutingInterHostRoutingModeNative
 	}
 	return s
 }
@@ -204,9 +210,10 @@ func (d *Daemon) getHostFirewallStatus() *models.HostFirewall {
 	if option.Config.EnableHostFirewall {
 		mode = models.HostFirewallModeEnabled
 	}
+	devs, _ := datapathTables.SelectedDevices(d.devices, d.db.ReadTxn())
 	return &models.HostFirewall{
 		Mode:    mode,
-		Devices: option.Config.GetDevices(),
+		Devices: datapathTables.DeviceNames(devs),
 	}
 }
 
@@ -422,14 +429,6 @@ func getHealthzHandler(d *Daemon, params GetHealthzParams) middleware.Responder 
 	brief := params.Brief != nil && *params.Brief
 	sr := d.getStatus(brief)
 	return NewGetHealthzOK().WithPayload(&sr)
-}
-
-func getHealthHandler(d *Daemon, params GetHealthParams) middleware.Responder {
-	sr, err := d.getHealthReport()
-	if err != nil {
-		return api.Error(http.StatusInternalServerError, err)
-	}
-	return NewGetHealthOK().WithPayload(&sr)
 }
 
 func (d *Daemon) getNodeStatus() *models.ClusterStatus {
@@ -1073,6 +1072,25 @@ func (d *Daemon) startStatusCollector(cleaner *daemonCleanup) {
 				}
 			},
 		},
+		{
+			Name: "cni-config",
+			Probe: func(ctx context.Context) (interface{}, error) {
+				if d.cniConfigManager == nil {
+					return nil, nil
+				}
+				return d.cniConfigManager.Status(), nil
+			},
+			OnStatusUpdate: func(status status.Status) {
+				d.statusCollectMutex.Lock()
+				defer d.statusCollectMutex.Unlock()
+
+				if status.Err == nil {
+					if s, ok := status.Data.(*models.Status); ok {
+						d.statusResponse.CniFile = s
+					}
+				}
+			},
+		},
 	}
 
 	d.statusResponse.Masquerading = d.getMasqueradingStatus()
@@ -1080,7 +1098,7 @@ func (d *Daemon) startStatusCollector(cleaner *daemonCleanup) {
 	d.statusResponse.IPV4BigTCP = d.getIPV4BigTCPStatus()
 	d.statusResponse.BandwidthManager = d.getBandwidthManagerStatus()
 	d.statusResponse.HostFirewall = d.getHostFirewallStatus()
-	d.statusResponse.HostRouting = d.getHostRoutingStatus()
+	d.statusResponse.Routing = d.getRoutingStatus()
 	d.statusResponse.ClockSource = d.getClockSourceStatus()
 	d.statusResponse.BpfMaps = d.getBPFMapStatus()
 	d.statusResponse.CniChaining = d.getCNIChainingStatus()

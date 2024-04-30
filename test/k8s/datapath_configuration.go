@@ -561,38 +561,6 @@ var _ = Describe("K8sDatapathConfig", func() {
 		})
 	})
 
-	SkipContextIf(func() bool {
-		return helpers.RunsOnGKE() || helpers.RunsWithoutKubeProxy() || helpers.RunsOnAKS()
-	}, "Transparent encryption DirectRouting", func() {
-		var privateIface string
-		BeforeAll(func() {
-			Eventually(func() (string, error) {
-				iface, err := kubectl.GetPrivateIface(helpers.K8s1)
-				privateIface = iface
-				return iface, err
-			}, helpers.MidCommandTimeout, time.Second).ShouldNot(BeEmpty(),
-				"Unable to determine private iface")
-		})
-		SkipItIf(helpers.RunsWithoutKubeProxy, "Check connectivity with transparent encryption and direct routing with bpf_host", func() {
-			defaultIface, err := kubectl.GetDefaultIface(false)
-			Expect(err).Should(BeNil(), "Unable to determine the default interface")
-			devices := fmt.Sprintf(`'{%s,%s}'`, privateIface, defaultIface)
-
-			deploymentManager.Deploy(helpers.CiliumNamespace, IPSecSecret)
-			deploymentManager.DeployCilium(map[string]string{
-				"routingMode":                "native",
-				"autoDirectNodeRoutes":       "true",
-				"encryption.enabled":         "true",
-				"encryption.ipsec.interface": privateIface,
-				"devices":                    devices,
-				"hostFirewall.enabled":       "false",
-				"kubeProxyReplacement":       "false",
-				"bpf.masquerade":             "false",
-			}, DeployCiliumOptionsAndDNS)
-			Expect(testPodConnectivityAcrossNodes(kubectl)).Should(BeTrue(), "Connectivity test between nodes failed")
-		})
-	})
-
 	Context("IPv4Only", func() {
 		It("Check connectivity with IPv6 disabled", func() {
 			deploymentManager.DeployCilium(map[string]string{
@@ -689,9 +657,7 @@ var _ = Describe("K8sDatapathConfig", func() {
 		})
 	})
 
-	SkipContextIf(func() bool {
-		return helpers.SkipQuarantined() || helpers.DoesNotRunOnNetNextKernel()
-	}, "High-scale IPcache", func() {
+	SkipContextIf(helpers.DoesNotRunOnNetNextKernel, "High-scale IPcache", func() {
 		const hsIPcacheFile = "high-scale-ipcache.yaml"
 
 		AfterEach(func() {
@@ -714,6 +680,9 @@ var _ = Describe("K8sDatapathConfig", func() {
 			}
 			if helpers.RunsWithKubeProxy() {
 				options["kubeProxyReplacement"] = "false"
+			} else if helpers.RunsWithKubeProxyReplacement() {
+				options["loadBalancer.mode"] = "dsr"
+				options["loadBalancer.dsrDispatch"] = "geneve"
 			}
 			deploymentManager.DeployCilium(options, DeployCiliumOptionsAndDNS)
 
@@ -728,10 +697,6 @@ var _ = Describe("K8sDatapathConfig", func() {
 			err := kubectl.WaitforPods(helpers.DefaultNamespace, "-l type=client", 2*helpers.HelperTimeout)
 			Expect(err).ToNot(HaveOccurred(), "Client pods not ready after timeout")
 		}
-
-		It("Test ingress policy enforcement with VXLAN and no endpoint routes", func() {
-			testHighScaleIPcache("vxlan", "false")
-		})
 
 		It("Test ingress policy enforcement with GENEVE and endpoint routes", func() {
 			testHighScaleIPcache("geneve", "true")
@@ -1109,7 +1074,7 @@ func checkMonitorOutput(monitorOutput []byte, egressPktCount, ingressPktCount in
 	By("Looking for TCP notifications using the ephemeral port %q", portBytes)
 	port, err := strconv.Atoi(string(portBytes))
 	if err != nil {
-		return fmt.Errorf("ephemeral port %q could not be converted to integer: %s",
+		return fmt.Errorf("ephemeral port %q could not be converted to integer: %w",
 			string(portBytes), err)
 	}
 

@@ -30,21 +30,21 @@ type GenericVethChainer struct{}
 func (f *GenericVethChainer) Add(ctx context.Context, pluginCtx chainingapi.PluginContext, cli *client.Client) (res *cniTypesVer.Result, err error) {
 	err = cniVersion.ParsePrevResult(&pluginCtx.NetConf.NetConf)
 	if err != nil {
-		err = fmt.Errorf("unable to understand network config: %s", err)
+		err = fmt.Errorf("unable to understand network config: %w", err)
 		return
 	}
 
 	var prevRes *cniTypesVer.Result
 	prevRes, err = cniTypesVer.NewResultFromResult(pluginCtx.NetConf.PrevResult)
 	if err != nil {
-		err = fmt.Errorf("unable to get previous network result: %s", err)
+		err = fmt.Errorf("unable to get previous network result: %w", err)
 		return
 	}
 
 	defer func() {
 		if err != nil {
 			pluginCtx.Logger.WithError(err).
-				WithFields(logrus.Fields{"cni-pre-result": pluginCtx.NetConf.PrevResult}).
+				WithField("previousResult", pluginCtx.NetConf.PrevResult).
 				Errorf("Unable to create endpoint")
 		}
 	}()
@@ -56,7 +56,7 @@ func (f *GenericVethChainer) Add(ctx context.Context, pluginCtx chainingapi.Plug
 
 	ns, err := netns.OpenPinned(pluginCtx.Args.Netns)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open netns %q: %s", pluginCtx.Args.Netns, err)
+		return nil, fmt.Errorf("failed to open netns %q: %w", pluginCtx.Args.Netns, err)
 	}
 	defer ns.Close()
 
@@ -68,7 +68,7 @@ func (f *GenericVethChainer) Add(ctx context.Context, pluginCtx chainingapi.Plug
 
 		linkFound := false
 		for _, link := range links {
-			pluginCtx.Logger.Debugf("Found interface in container %+v", link.Attrs())
+			pluginCtx.Logger.Debugf("Found interface in container %s", logfields.Repr(link.Attrs()))
 
 			if link.Type() != "veth" {
 				continue
@@ -84,23 +84,21 @@ func (f *GenericVethChainer) Add(ctx context.Context, pluginCtx chainingapi.Plug
 
 			peerIndex, err = netlink.VethPeerIndex(veth)
 			if err != nil {
-				return fmt.Errorf("unable to retrieve index of veth peer %s: %s", vethHostName, err)
+				return fmt.Errorf("unable to retrieve index of veth peer %s: %w", vethHostName, err)
 			}
 
 			addrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
 			if err == nil && len(addrs) > 0 {
 				vethIP = addrs[0].IPNet.IP.String()
 			} else if err != nil {
-				pluginCtx.Logger.WithError(err).WithFields(logrus.Fields{
-					logfields.Interface: link.Attrs().Name}).Warn("No valid IPv4 address found")
+				pluginCtx.Logger.WithError(err).WithField(logfields.Interface, link.Attrs().Name).Warn("No valid IPv4 address found")
 			}
 
 			addrsv6, err := netlink.AddrList(link, netlink.FAMILY_V6)
 			if err == nil && len(addrsv6) > 0 {
 				vethIPv6 = addrsv6[0].IPNet.IP.String()
 			} else if err != nil {
-				pluginCtx.Logger.WithError(err).WithFields(logrus.Fields{
-					logfields.Interface: link.Attrs().Name}).Warn("No valid IPv6 address found")
+				pluginCtx.Logger.WithError(err).WithField(logfields.Interface, link.Attrs().Name).Warn("No valid IPv6 address found")
 			}
 
 			linkFound = true
@@ -114,7 +112,7 @@ func (f *GenericVethChainer) Add(ctx context.Context, pluginCtx chainingapi.Plug
 		if pluginCtx.NetConf.EnableRouteMTU {
 			routes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
 			if err != nil {
-				err = fmt.Errorf("unable to list the IPv4 routes: %s", err.Error())
+				err = fmt.Errorf("unable to list the IPv4 routes: %w", err)
 				return err
 			}
 			for _, rt := range routes {
@@ -130,7 +128,7 @@ func (f *GenericVethChainer) Add(ctx context.Context, pluginCtx chainingapi.Plug
 
 			routes, err = netlink.RouteList(nil, netlink.FAMILY_V6)
 			if err != nil {
-				err = fmt.Errorf("unable to list the IPv6 routes: %s", err.Error())
+				err = fmt.Errorf("unable to list the IPv6 routes: %w", err)
 				return err
 			}
 			for _, rt := range routes {
@@ -152,7 +150,7 @@ func (f *GenericVethChainer) Add(ctx context.Context, pluginCtx chainingapi.Plug
 
 	peer, err = netlink.LinkByIndex(peerIndex)
 	if err != nil {
-		err = fmt.Errorf("unable to lookup link %d: %s", peerIndex, err)
+		err = fmt.Errorf("unable to lookup link %d: %w", peerIndex, err)
 		return
 	}
 
@@ -218,7 +216,7 @@ func (f *GenericVethChainer) Add(ctx context.Context, pluginCtx chainingapi.Plug
 	newEp, err = cli.EndpointCreate(ep)
 	if err != nil {
 		scopedLog.WithError(err).Warn("Unable to create endpoint")
-		err = fmt.Errorf("unable to create endpoint: %s", err)
+		err = fmt.Errorf("unable to create endpoint: %w", err)
 		return
 	}
 	if newEp != nil && newEp.Status != nil && newEp.Status.Networking != nil && newEp.Status.Networking.Mac != "" &&
@@ -255,7 +253,7 @@ func (f *GenericVethChainer) Delete(ctx context.Context, pluginCtx chainingapi.P
 func (f *GenericVethChainer) Check(ctx context.Context, pluginCtx chainingapi.PluginContext, cli *client.Client) error {
 	// Just confirm that the endpoint is healthy
 	eID := endpointid.NewCNIAttachmentID(pluginCtx.Args.ContainerID, pluginCtx.Args.IfName)
-	pluginCtx.Logger.Debugf("Asking agent for healthz for %s", eID)
+	pluginCtx.Logger.WithField(logfields.EndpointID, eID).Debugf("Asking agent for healthz for %s", eID)
 	epHealth, err := cli.EndpointHealthGet(eID)
 	if err != nil {
 		return cniTypes.NewError(types.CniErrHealthzGet, "HealthzFailed",

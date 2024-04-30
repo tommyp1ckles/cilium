@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/cilium/hive/cell"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/afero"
 	"github.com/stretchr/testify/require"
@@ -30,7 +31,6 @@ import (
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/elf"
-	"github.com/cilium/cilium/pkg/hive/cell"
 	iputil "github.com/cilium/cilium/pkg/ip"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging"
@@ -84,18 +84,30 @@ type loader struct {
 	hostDpInitializedOnce sync.Once
 	hostDpInitialized     chan struct{}
 
-	sysctl    sysctl.Sysctl
-	db        *statedb.DB
-	nodeAddrs statedb.Table[tables.NodeAddress]
+	sysctl          sysctl.Sysctl
+	db              *statedb.DB
+	nodeAddrs       statedb.Table[tables.NodeAddress]
+	devices         statedb.Table[*tables.Device]
+	prefilter       datapath.PreFilter
+	compilationLock datapath.CompilationLock
+	configWriter    datapath.ConfigWriter
+	localNodeConfig datapath.LocalNodeConfiguration
+	nodeHandler     datapath.NodeHandler
 }
 
 type Params struct {
 	cell.In
 
-	Config    Config
-	DB        *statedb.DB
-	NodeAddrs statedb.Table[tables.NodeAddress]
-	Sysctl    sysctl.Sysctl
+	Config          Config
+	DB              *statedb.DB
+	NodeAddrs       statedb.Table[tables.NodeAddress]
+	Sysctl          sysctl.Sysctl
+	Devices         statedb.Table[*tables.Device]
+	Prefilter       datapath.PreFilter
+	CompilationLock datapath.CompilationLock
+	ConfigWriter    datapath.ConfigWriter
+	LocalNodeConfig datapath.LocalNodeConfiguration
+	NodeHandler     datapath.NodeHandler
 }
 
 // newLoader returns a new loader.
@@ -105,35 +117,44 @@ func newLoader(p Params) *loader {
 		db:                p.DB,
 		nodeAddrs:         p.NodeAddrs,
 		sysctl:            p.Sysctl,
+		devices:           p.Devices,
 		hostDpInitialized: make(chan struct{}),
+		prefilter:         p.Prefilter,
+		compilationLock:   p.CompilationLock,
+		configWriter:      p.ConfigWriter,
+		localNodeConfig:   p.LocalNodeConfig,
+		nodeHandler:       p.NodeHandler,
 	}
 }
 
 func NewLoaderForTest(tb testing.TB) *loader {
 	nodeAddrs, err := tables.NewNodeAddressTable()
 	require.NoError(tb, err, "NewNodeAddressTable")
-	db, err := statedb.NewDB([]statedb.TableMeta{nodeAddrs}, statedb.NewMetrics())
+	devices, err := tables.NewDeviceTable()
+	require.NoError(tb, err, "NewDeviceTable")
+	db, err := statedb.NewDB([]statedb.TableMeta{nodeAddrs, devices}, statedb.NewMetrics())
 	require.NoError(tb, err, "NewDB")
 	return newLoader(Params{
 		Config:    DefaultConfig,
 		DB:        db,
 		NodeAddrs: nodeAddrs,
 		Sysctl:    sysctl.NewDirectSysctl(afero.NewOsFs(), "/proc"),
+		Devices:   devices,
 	})
 }
 
 // Init initializes the datapath cache with base program hashes derived from
 // the LocalNodeConfiguration.
-func (l *loader) init(dp datapath.ConfigWriter, nodeCfg *datapath.LocalNodeConfiguration) {
+func (l *loader) init() {
 	l.once.Do(func() {
-		l.templateCache = newObjectCache(dp, nodeCfg, option.Config.StateDir)
+		l.templateCache = newObjectCache(l.configWriter, &l.localNodeConfig, option.Config.StateDir)
 		ignorePrefixes := ignoredELFPrefixes
 		if !option.Config.EnableIPv4 {
 			ignorePrefixes = append(ignorePrefixes, "LXC_IPV4")
 		}
 		elf.IgnoreSymbolPrefixes(ignorePrefixes)
 	})
-	l.templateCache.Update(nodeCfg)
+	l.templateCache.Update(&l.localNodeConfig)
 }
 
 func upsertEndpointRoute(ep datapath.Endpoint, ip net.IPNet) error {
@@ -283,7 +304,7 @@ func (l *loader) patchHostNetdevDatapath(ep datapath.Endpoint, objPath, dstPath,
 	return hostObj.Write(dstPath, opts, strings)
 }
 
-func isObsoleteDev(dev string) bool {
+func isObsoleteDev(dev string, devices []string) bool {
 	// exclude devices we never attach to/from_netdev to.
 	for _, prefix := range defaults.ExcludedDevicePrefixes {
 		if strings.HasPrefix(dev, prefix) {
@@ -292,7 +313,7 @@ func isObsoleteDev(dev string) bool {
 	}
 
 	// exclude devices that will still be managed going forward.
-	for _, d := range option.Config.GetDevices() {
+	for _, d := range devices {
 		if dev == d {
 			return false
 		}
@@ -303,7 +324,7 @@ func isObsoleteDev(dev string) bool {
 
 // removeObsoleteNetdevPrograms removes cil_to_netdev and cil_from_netdev from devices
 // that cilium potentially doesn't manage anymore after a restart, e.g. if the set of
-// devices in option.Config.GetDevices() changes between restarts.
+// devices changes between restarts.
 //
 // This code assumes that the agent was upgraded from a prior version while maintaining
 // the same list of managed physical devices. This ensures that all tc bpf filters get
@@ -311,7 +332,7 @@ func isObsoleteDev(dev string) bool {
 // before 1.13, most filters were named e.g. bpf_host.o:[to-host], to be changed to
 // cilium-<device> in 1.13, then to cil_to_host-<device> in 1.14. As a result, this
 // function only cleans up filters following the current naming scheme.
-func removeObsoleteNetdevPrograms() error {
+func removeObsoleteNetdevPrograms(devices []string) error {
 	links, err := netlink.LinkList()
 	if err != nil {
 		return fmt.Errorf("retrieving all netlink devices: %w", err)
@@ -321,7 +342,7 @@ func removeObsoleteNetdevPrograms() error {
 	ingressDevs := []netlink.Link{}
 	egressDevs := []netlink.Link{}
 	for _, l := range links {
-		if !isObsoleteDev(l.Attrs().Name) {
+		if !isObsoleteDev(l.Attrs().Name, devices) {
 			continue
 		}
 
@@ -371,7 +392,7 @@ func removeObsoleteNetdevPrograms() error {
 // - cilium_host: ingress and egress
 // - cilium_net: ingress
 // - native devices: ingress and (optionally) egress if certain features require it
-func (l *loader) reloadHostDatapath(ctx context.Context, ep datapath.Endpoint, objPath string) error {
+func (l *loader) reloadHostDatapath(ctx context.Context, ep datapath.Endpoint, objPath string, devices []string) error {
 	// Warning: here be dragons. There used to be a single loop over
 	// interfaces+objs+progs here from the iproute2 days, but this was never
 	// correct to begin with. Tail call maps were always reused when possible,
@@ -454,7 +475,7 @@ func (l *loader) reloadHostDatapath(ctx context.Context, ep datapath.Endpoint, o
 	defer finalize()
 
 	// Replace programs on physical devices.
-	for _, device := range option.Config.GetDevices() {
+	for _, device := range devices {
 		iface, err := netlink.LinkByName(device)
 		if err != nil {
 			log.WithError(err).WithField("device", device).Warn("Link does not exist")
@@ -509,7 +530,7 @@ func (l *loader) reloadHostDatapath(ctx context.Context, ep datapath.Endpoint, o
 
 	// call at the end of the function so that we can easily detect if this removes necessary
 	// programs that have just been attached.
-	if err := removeObsoleteNetdevPrograms(); err != nil {
+	if err := removeObsoleteNetdevPrograms(devices); err != nil {
 		log.WithError(err).Error("Failed to remove obsolete netdev programs")
 	}
 
@@ -526,8 +547,16 @@ func (l *loader) reloadDatapath(ctx context.Context, ep datapath.Endpoint, dirs 
 	objPath := path.Join(dirs.Output, endpointObj)
 
 	if ep.IsHost() {
+		// TODO: react to changes (using the currently ignored watch channel)
+		nativeDevices, _ := tables.SelectedDevices(l.devices, l.db.ReadTxn())
+		devices := tables.DeviceNames(nativeDevices)
+
+		if option.Config.NeedBPFHostOnWireGuardDevice() {
+			devices = append(devices, wgTypes.IfaceName)
+		}
+
 		objPath = path.Join(dirs.Output, hostEndpointObj)
-		if err := l.reloadHostDatapath(ctx, ep, objPath); err != nil {
+		if err := l.reloadHostDatapath(ctx, ep, objPath, devices); err != nil {
 			return err
 		}
 	} else {
@@ -616,41 +645,9 @@ func (l *loader) replaceOverlayDatapath(ctx context.Context, cArgs []string, ifa
 	return nil
 }
 
-func (l *loader) compileAndLoad(ctx context.Context, ep datapath.Endpoint, dirs *directoryInfo, stats *metrics.SpanStat) error {
-	stats.BpfCompilation.Start()
-	err := compileDatapath(ctx, dirs, ep.IsHost(), ep.Logger(subsystem))
-	stats.BpfCompilation.End(err == nil)
-	if err != nil {
-		return err
-	}
-
-	stats.BpfLoadProg.Start()
-	err = l.reloadDatapath(ctx, ep, dirs)
-	stats.BpfLoadProg.End(err == nil)
-	return err
-}
-
-// CompileAndLoad compiles the BPF datapath programs for the specified endpoint
-// and loads it onto the interface associated with the endpoint.
-//
-// Expects the caller to have created the directory at the path ep.StateDir().
-func (l *loader) CompileAndLoad(ctx context.Context, ep datapath.Endpoint, stats *metrics.SpanStat) error {
-	if ep == nil {
-		log.Fatalf("LoadBPF() doesn't support non-endpoint load")
-	}
-
-	dirs := directoryInfo{
-		Library: option.Config.BpfDir,
-		Runtime: option.Config.StateDir,
-		State:   ep.StateDir(),
-		Output:  ep.StateDir(),
-	}
-	return l.compileAndLoad(ctx, ep, &dirs, stats)
-}
-
 // CompileOrLoad loads the BPF datapath programs for the specified endpoint.
 //
-// In contrast with CompileAndLoad(), it attempts to find a pre-compiled
+// It attempts to find a pre-compiled
 // template datapath object to use, to avoid a costly compile operation.
 // Only if there is no existing template that has the same configuration
 // parameters as the specified endpoint, this function will compile a new
@@ -662,7 +659,17 @@ func (l *loader) CompileAndLoad(ctx context.Context, ep datapath.Endpoint, stats
 // goroutine completes compilation of the template, all other CompileOrLoad
 // invocations will be released.
 func (l *loader) CompileOrLoad(ctx context.Context, ep datapath.Endpoint, stats *metrics.SpanStat) error {
-	templateFile, _, err := l.templateCache.fetchOrCompile(ctx, ep, stats)
+	dirs := &directoryInfo{
+		Library: option.Config.BpfDir,
+		Runtime: option.Config.StateDir,
+		State:   ep.StateDir(),
+		Output:  ep.StateDir(),
+	}
+	return l.compileOrLoad(ctx, ep, dirs, stats)
+}
+
+func (l *loader) compileOrLoad(ctx context.Context, ep datapath.Endpoint, dirs *directoryInfo, stats *metrics.SpanStat) error {
+	templateFile, _, err := l.templateCache.fetchOrCompile(ctx, ep, dirs, stats)
 	if err != nil {
 		return err
 	}
@@ -740,13 +747,29 @@ func (l *loader) Unload(ep datapath.Endpoint) {
 		}
 	}
 
+	log := log.WithField(logfields.EndpointID, ep.StringID())
+
+	// Remove legacy tc attachments.
+	if err := removeTCFilters(ep.InterfaceName(), netlink.HANDLE_MIN_INGRESS); err != nil {
+		log.WithError(err).Errorf("Removing ingress filter from interface %s", ep.InterfaceName())
+	}
+	if err := removeTCFilters(ep.InterfaceName(), netlink.HANDLE_MIN_EGRESS); err != nil {
+		log.WithError(err).Errorf("Removing egress filter from interface %s", ep.InterfaceName())
+	}
+
 	// If Cilium and the kernel support tcx to attach TC programs to the
 	// endpoint's veth device, its bpf_link object is pinned to a per-endpoint
-	// bpffs directory. When the endpoint gets deleted, removing the whole
-	// directory cleans up any pinned maps and links.
-	bpffsPath := bpffsEndpointDir(bpf.CiliumPath(), ep)
-	if err := bpf.Remove(bpffsPath); err != nil {
-		log.WithError(err).WithField(logfields.EndpointID, ep.StringID())
+	// bpffs directory. When the endpoint gets deleted, we can remove the whole
+	// directory to clean up any leftover pinned links and maps.
+
+	// Remove the links directory first to avoid removing program arrays before
+	// the entrypoints are detached.
+	if err := bpf.Remove(bpffsEndpointLinksDir(bpf.CiliumPath(), ep)); err != nil {
+		log.WithError(err)
+	}
+	// Finally, remove the endpoint's top-level directory.
+	if err := bpf.Remove(bpffsEndpointDir(bpf.CiliumPath(), ep)); err != nil {
+		log.WithError(err)
 	}
 }
 

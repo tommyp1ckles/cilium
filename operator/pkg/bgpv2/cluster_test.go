@@ -7,6 +7,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
@@ -51,7 +52,6 @@ var (
 	}
 
 	nodeOverride1 = cilium_api_v2alpha1.CiliumBGPNodeConfigOverrideSpec{
-		NodeRef: "node-1",
 		BGPInstances: []cilium_api_v2alpha1.CiliumBGPNodeConfigInstanceOverride{
 			{
 				Name:      "cluster-1-instance-65001",
@@ -254,8 +254,9 @@ func Test_NodeLabels(t *testing.T) {
 
 			f, watcherReady := newFixture(ctx, req)
 
-			f.hive.Start(ctx)
-			defer f.hive.Stop(ctx)
+			tlog := hivetest.Logger(t)
+			f.hive.Start(tlog, ctx)
+			defer f.hive.Stop(tlog, ctx)
 
 			// blocking till all watchers are ready
 			watcherReady()
@@ -385,7 +386,7 @@ func Test_ClusterConfigSteps(t *testing.T) {
 			nodeOverrides: []*cilium_api_v2alpha1.CiliumBGPNodeConfigOverride{
 				{
 					ObjectMeta: meta_v1.ObjectMeta{
-						Name: "node-1-override",
+						Name: "node-1",
 					},
 
 					Spec: nodeOverride1,
@@ -516,8 +517,9 @@ func Test_ClusterConfigSteps(t *testing.T) {
 
 	f, watchersReady := newFixture(ctx, require.New(t))
 
-	f.hive.Start(ctx)
-	defer f.hive.Stop(ctx)
+	tlog := hivetest.Logger(t)
+	f.hive.Start(tlog, ctx)
+	defer f.hive.Stop(tlog, ctx)
 
 	watchersReady()
 
@@ -571,8 +573,9 @@ func Test_Cleanup(t *testing.T) {
 	req := require.New(t)
 	f, watcherReady := newFixture(ctx, req)
 
-	f.hive.Start(ctx)
-	defer f.hive.Stop(ctx)
+	tlog := hivetest.Logger(t)
+	f.hive.Start(tlog, ctx)
+	defer f.hive.Stop(tlog, ctx)
 
 	watcherReady()
 

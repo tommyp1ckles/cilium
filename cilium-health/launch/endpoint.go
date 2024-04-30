@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"github.com/spf13/afero"
 	"github.com/vishvananda/netlink"
 
 	"github.com/cilium/cilium/api/v1/models"
@@ -108,13 +109,16 @@ func configureHealthRouting(routes []route.Route, dev string) error {
 }
 
 // configureHealthInterface is meant to be run inside the health service netns
-func configureHealthInterface(ifName string, ip4Addr, ip6Addr *net.IPNet, sysctl sysctl.Sysctl) error {
+func configureHealthInterface(ifName string, ip4Addr, ip6Addr *net.IPNet) error {
 	link, err := netlink.LinkByName(ifName)
 	if err != nil {
 		return err
 	}
 
 	if ip6Addr == nil {
+		// Use the direct sysctl without reconciliation of errors since we're in a different
+		// network namespace and thus can't use the normal sysctl API.
+		sysctl := sysctl.NewDirectSysctl(afero.NewOsFs(), option.Config.ProcFs)
 		name := fmt.Sprintf("net.ipv6.conf.%s.disable_ipv6", ifName)
 		// Ignore the error; if IPv6 is completely disabled
 		// then it's okay if we can't write the sysctl.
@@ -275,7 +279,7 @@ func LaunchAsEndpoint(baseCtx context.Context,
 			bigTCPConfig.GetGROIPv4MaxSize(), bigTCPConfig.GetGSOIPv4MaxSize(),
 			info, sysctl)
 		if err != nil {
-			return nil, fmt.Errorf("Error while creating veth: %s", err)
+			return nil, fmt.Errorf("Error while creating veth: %w", err)
 		}
 
 		if err = netlink.LinkSetNsFd(epLink, int(ns.FD())); err != nil {
@@ -284,9 +288,9 @@ func LaunchAsEndpoint(baseCtx context.Context,
 	}
 
 	if err := ns.Do(func() error {
-		return configureHealthInterface(epIfaceName, ip4Address, ip6Address, sysctl)
+		return configureHealthInterface(epIfaceName, ip4Address, ip6Address)
 	}); err != nil {
-		return nil, fmt.Errorf("failed configure health interface %q: %s", epIfaceName, err)
+		return nil, fmt.Errorf("failed configure health interface %q: %w", epIfaceName, err)
 	}
 
 	pidfile := filepath.Join(option.Config.StateDir, PidfilePath)
@@ -307,7 +311,7 @@ func LaunchAsEndpoint(baseCtx context.Context,
 	// Create the endpoint
 	ep, err := endpoint.NewEndpointFromChangeModel(baseCtx, owner, policyGetter, ipcache, proxy, allocator, info)
 	if err != nil {
-		return nil, fmt.Errorf("Error while creating endpoint model: %s", err)
+		return nil, fmt.Errorf("Error while creating endpoint model: %w", err)
 	}
 
 	// Wait until the cilium-health endpoint is running before setting up routes
@@ -317,7 +321,7 @@ func LaunchAsEndpoint(baseCtx context.Context,
 			log.WithField("pidfile", pidfile).Debug("cilium-health agent running")
 			break
 		} else if time.Now().After(deadline) {
-			return nil, fmt.Errorf("Endpoint failed to run: %s", err)
+			return nil, fmt.Errorf("Endpoint failed to run: %w", err)
 		} else {
 			time.Sleep(1 * time.Second)
 		}
@@ -326,14 +330,14 @@ func LaunchAsEndpoint(baseCtx context.Context,
 	// Set up the endpoint routes.
 	routes, err := getHealthRoutes(node.GetNodeAddressing(), mtuConfig)
 	if err != nil {
-		return nil, fmt.Errorf("Error while getting routes for containername %q: %s", info.ContainerName, err)
+		return nil, fmt.Errorf("Error while getting routes for containername %q: %w", info.ContainerName, err)
 	}
 
 	err = ns.Do(func() error {
 		return configureHealthRouting(routes, epIfaceName)
 	})
 	if err != nil {
-		return nil, fmt.Errorf("Error while configuring routes: %s", err)
+		return nil, fmt.Errorf("Error while configuring routes: %w", err)
 	}
 
 	if option.Config.IPAM == ipamOption.IPAMENI || option.Config.IPAM == ipamOption.IPAMAlibabaCloud {
@@ -345,12 +349,12 @@ func LaunchAsEndpoint(baseCtx context.Context,
 			false,
 		); err != nil {
 
-			return nil, fmt.Errorf("Error while configuring health endpoint rules and routes: %s", err)
+			return nil, fmt.Errorf("Error while configuring health endpoint rules and routes: %w", err)
 		}
 	}
 
 	if err := epMgr.AddEndpoint(owner, ep, "Create cilium-health endpoint"); err != nil {
-		return nil, fmt.Errorf("Error while adding endpoint: %s", err)
+		return nil, fmt.Errorf("Error while adding endpoint: %w", err)
 	}
 
 	// Give the endpoint a security identity
