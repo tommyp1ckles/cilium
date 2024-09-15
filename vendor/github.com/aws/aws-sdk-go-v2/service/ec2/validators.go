@@ -1010,6 +1010,26 @@ func (m *validateOpCopySnapshot) HandleInitialize(ctx context.Context, in middle
 	return next.HandleInitialize(ctx, in)
 }
 
+type validateOpCreateCapacityReservationBySplitting struct {
+}
+
+func (*validateOpCreateCapacityReservationBySplitting) ID() string {
+	return "OperationInputValidation"
+}
+
+func (m *validateOpCreateCapacityReservationBySplitting) HandleInitialize(ctx context.Context, in middleware.InitializeInput, next middleware.InitializeHandler) (
+	out middleware.InitializeOutput, metadata middleware.Metadata, err error,
+) {
+	input, ok := in.Parameters.(*CreateCapacityReservationBySplittingInput)
+	if !ok {
+		return out, metadata, fmt.Errorf("unknown input parameters type %T", in.Parameters)
+	}
+	if err := validateOpCreateCapacityReservationBySplittingInput(input); err != nil {
+		return out, metadata, err
+	}
+	return next.HandleInitialize(ctx, in)
+}
+
 type validateOpCreateCapacityReservationFleet struct {
 }
 
@@ -1345,6 +1365,26 @@ func (m *validateOpCreateInstanceExportTask) HandleInitialize(ctx context.Contex
 		return out, metadata, fmt.Errorf("unknown input parameters type %T", in.Parameters)
 	}
 	if err := validateOpCreateInstanceExportTaskInput(input); err != nil {
+		return out, metadata, err
+	}
+	return next.HandleInitialize(ctx, in)
+}
+
+type validateOpCreateIpamExternalResourceVerificationToken struct {
+}
+
+func (*validateOpCreateIpamExternalResourceVerificationToken) ID() string {
+	return "OperationInputValidation"
+}
+
+func (m *validateOpCreateIpamExternalResourceVerificationToken) HandleInitialize(ctx context.Context, in middleware.InitializeInput, next middleware.InitializeHandler) (
+	out middleware.InitializeOutput, metadata middleware.Metadata, err error,
+) {
+	input, ok := in.Parameters.(*CreateIpamExternalResourceVerificationTokenInput)
+	if !ok {
+		return out, metadata, fmt.Errorf("unknown input parameters type %T", in.Parameters)
+	}
+	if err := validateOpCreateIpamExternalResourceVerificationTokenInput(input); err != nil {
 		return out, metadata, err
 	}
 	return next.HandleInitialize(ctx, in)
@@ -2665,6 +2705,26 @@ func (m *validateOpDeleteInternetGateway) HandleInitialize(ctx context.Context, 
 		return out, metadata, fmt.Errorf("unknown input parameters type %T", in.Parameters)
 	}
 	if err := validateOpDeleteInternetGatewayInput(input); err != nil {
+		return out, metadata, err
+	}
+	return next.HandleInitialize(ctx, in)
+}
+
+type validateOpDeleteIpamExternalResourceVerificationToken struct {
+}
+
+func (*validateOpDeleteIpamExternalResourceVerificationToken) ID() string {
+	return "OperationInputValidation"
+}
+
+func (m *validateOpDeleteIpamExternalResourceVerificationToken) HandleInitialize(ctx context.Context, in middleware.InitializeInput, next middleware.InitializeHandler) (
+	out middleware.InitializeOutput, metadata middleware.Metadata, err error,
+) {
+	input, ok := in.Parameters.(*DeleteIpamExternalResourceVerificationTokenInput)
+	if !ok {
+		return out, metadata, fmt.Errorf("unknown input parameters type %T", in.Parameters)
+	}
+	if err := validateOpDeleteIpamExternalResourceVerificationTokenInput(input); err != nil {
 		return out, metadata, err
 	}
 	return next.HandleInitialize(ctx, in)
@@ -5490,6 +5550,26 @@ func (m *validateOpGetHostReservationPurchasePreview) HandleInitialize(ctx conte
 	return next.HandleInitialize(ctx, in)
 }
 
+type validateOpGetInstanceTpmEkPub struct {
+}
+
+func (*validateOpGetInstanceTpmEkPub) ID() string {
+	return "OperationInputValidation"
+}
+
+func (m *validateOpGetInstanceTpmEkPub) HandleInitialize(ctx context.Context, in middleware.InitializeInput, next middleware.InitializeHandler) (
+	out middleware.InitializeOutput, metadata middleware.Metadata, err error,
+) {
+	input, ok := in.Parameters.(*GetInstanceTpmEkPubInput)
+	if !ok {
+		return out, metadata, fmt.Errorf("unknown input parameters type %T", in.Parameters)
+	}
+	if err := validateOpGetInstanceTpmEkPubInput(input); err != nil {
+		return out, metadata, err
+	}
+	return next.HandleInitialize(ctx, in)
+}
+
 type validateOpGetInstanceTypesFromInstanceRequirements struct {
 }
 
@@ -7510,6 +7590,26 @@ func (m *validateOpMoveByoipCidrToIpam) HandleInitialize(ctx context.Context, in
 	return next.HandleInitialize(ctx, in)
 }
 
+type validateOpMoveCapacityReservationInstances struct {
+}
+
+func (*validateOpMoveCapacityReservationInstances) ID() string {
+	return "OperationInputValidation"
+}
+
+func (m *validateOpMoveCapacityReservationInstances) HandleInitialize(ctx context.Context, in middleware.InitializeInput, next middleware.InitializeHandler) (
+	out middleware.InitializeOutput, metadata middleware.Metadata, err error,
+) {
+	input, ok := in.Parameters.(*MoveCapacityReservationInstancesInput)
+	if !ok {
+		return out, metadata, fmt.Errorf("unknown input parameters type %T", in.Parameters)
+	}
+	if err := validateOpMoveCapacityReservationInstancesInput(input); err != nil {
+		return out, metadata, err
+	}
+	return next.HandleInitialize(ctx, in)
+}
+
 type validateOpProvisionByoipCidr struct {
 }
 
@@ -8930,6 +9030,10 @@ func addOpCopySnapshotValidationMiddleware(stack *middleware.Stack) error {
 	return stack.Initialize.Add(&validateOpCopySnapshot{}, middleware.After)
 }
 
+func addOpCreateCapacityReservationBySplittingValidationMiddleware(stack *middleware.Stack) error {
+	return stack.Initialize.Add(&validateOpCreateCapacityReservationBySplitting{}, middleware.After)
+}
+
 func addOpCreateCapacityReservationFleetValidationMiddleware(stack *middleware.Stack) error {
 	return stack.Initialize.Add(&validateOpCreateCapacityReservationFleet{}, middleware.After)
 }
@@ -8996,6 +9100,10 @@ func addOpCreateInstanceConnectEndpointValidationMiddleware(stack *middleware.St
 
 func addOpCreateInstanceExportTaskValidationMiddleware(stack *middleware.Stack) error {
 	return stack.Initialize.Add(&validateOpCreateInstanceExportTask{}, middleware.After)
+}
+
+func addOpCreateIpamExternalResourceVerificationTokenValidationMiddleware(stack *middleware.Stack) error {
+	return stack.Initialize.Add(&validateOpCreateIpamExternalResourceVerificationToken{}, middleware.After)
 }
 
 func addOpCreateIpamPoolValidationMiddleware(stack *middleware.Stack) error {
@@ -9260,6 +9368,10 @@ func addOpDeleteInstanceEventWindowValidationMiddleware(stack *middleware.Stack)
 
 func addOpDeleteInternetGatewayValidationMiddleware(stack *middleware.Stack) error {
 	return stack.Initialize.Add(&validateOpDeleteInternetGateway{}, middleware.After)
+}
+
+func addOpDeleteIpamExternalResourceVerificationTokenValidationMiddleware(stack *middleware.Stack) error {
+	return stack.Initialize.Add(&validateOpDeleteIpamExternalResourceVerificationToken{}, middleware.After)
 }
 
 func addOpDeleteIpamValidationMiddleware(stack *middleware.Stack) error {
@@ -9826,6 +9938,10 @@ func addOpGetHostReservationPurchasePreviewValidationMiddleware(stack *middlewar
 	return stack.Initialize.Add(&validateOpGetHostReservationPurchasePreview{}, middleware.After)
 }
 
+func addOpGetInstanceTpmEkPubValidationMiddleware(stack *middleware.Stack) error {
+	return stack.Initialize.Add(&validateOpGetInstanceTpmEkPub{}, middleware.After)
+}
+
 func addOpGetInstanceTypesFromInstanceRequirementsValidationMiddleware(stack *middleware.Stack) error {
 	return stack.Initialize.Add(&validateOpGetInstanceTypesFromInstanceRequirements{}, middleware.After)
 }
@@ -10228,6 +10344,10 @@ func addOpMoveAddressToVpcValidationMiddleware(stack *middleware.Stack) error {
 
 func addOpMoveByoipCidrToIpamValidationMiddleware(stack *middleware.Stack) error {
 	return stack.Initialize.Add(&validateOpMoveByoipCidrToIpam{}, middleware.After)
+}
+
+func addOpMoveCapacityReservationInstancesValidationMiddleware(stack *middleware.Stack) error {
+	return stack.Initialize.Add(&validateOpMoveCapacityReservationInstances{}, middleware.After)
 }
 
 func addOpProvisionByoipCidrValidationMiddleware(stack *middleware.Stack) error {
@@ -12217,6 +12337,24 @@ func validateOpCopySnapshotInput(v *CopySnapshotInput) error {
 	}
 }
 
+func validateOpCreateCapacityReservationBySplittingInput(v *CreateCapacityReservationBySplittingInput) error {
+	if v == nil {
+		return nil
+	}
+	invalidParams := smithy.InvalidParamsError{Context: "CreateCapacityReservationBySplittingInput"}
+	if v.SourceCapacityReservationId == nil {
+		invalidParams.Add(smithy.NewErrParamRequired("SourceCapacityReservationId"))
+	}
+	if v.InstanceCount == nil {
+		invalidParams.Add(smithy.NewErrParamRequired("InstanceCount"))
+	}
+	if invalidParams.Len() > 0 {
+		return invalidParams
+	} else {
+		return nil
+	}
+}
+
 func validateOpCreateCapacityReservationFleetInput(v *CreateCapacityReservationFleetInput) error {
 	if v == nil {
 		return nil
@@ -12514,6 +12652,21 @@ func validateOpCreateInstanceExportTaskInput(v *CreateInstanceExportTaskInput) e
 	}
 	if len(v.TargetEnvironment) == 0 {
 		invalidParams.Add(smithy.NewErrParamRequired("TargetEnvironment"))
+	}
+	if invalidParams.Len() > 0 {
+		return invalidParams
+	} else {
+		return nil
+	}
+}
+
+func validateOpCreateIpamExternalResourceVerificationTokenInput(v *CreateIpamExternalResourceVerificationTokenInput) error {
+	if v == nil {
+		return nil
+	}
+	invalidParams := smithy.InvalidParamsError{Context: "CreateIpamExternalResourceVerificationTokenInput"}
+	if v.IpamId == nil {
+		invalidParams.Add(smithy.NewErrParamRequired("IpamId"))
 	}
 	if invalidParams.Len() > 0 {
 		return invalidParams
@@ -13687,6 +13840,21 @@ func validateOpDeleteInternetGatewayInput(v *DeleteInternetGatewayInput) error {
 	invalidParams := smithy.InvalidParamsError{Context: "DeleteInternetGatewayInput"}
 	if v.InternetGatewayId == nil {
 		invalidParams.Add(smithy.NewErrParamRequired("InternetGatewayId"))
+	}
+	if invalidParams.Len() > 0 {
+		return invalidParams
+	} else {
+		return nil
+	}
+}
+
+func validateOpDeleteIpamExternalResourceVerificationTokenInput(v *DeleteIpamExternalResourceVerificationTokenInput) error {
+	if v == nil {
+		return nil
+	}
+	invalidParams := smithy.InvalidParamsError{Context: "DeleteIpamExternalResourceVerificationTokenInput"}
+	if v.IpamExternalResourceVerificationTokenId == nil {
+		invalidParams.Add(smithy.NewErrParamRequired("IpamExternalResourceVerificationTokenId"))
 	}
 	if invalidParams.Len() > 0 {
 		return invalidParams
@@ -15956,6 +16124,27 @@ func validateOpGetHostReservationPurchasePreviewInput(v *GetHostReservationPurch
 	}
 }
 
+func validateOpGetInstanceTpmEkPubInput(v *GetInstanceTpmEkPubInput) error {
+	if v == nil {
+		return nil
+	}
+	invalidParams := smithy.InvalidParamsError{Context: "GetInstanceTpmEkPubInput"}
+	if v.InstanceId == nil {
+		invalidParams.Add(smithy.NewErrParamRequired("InstanceId"))
+	}
+	if len(v.KeyType) == 0 {
+		invalidParams.Add(smithy.NewErrParamRequired("KeyType"))
+	}
+	if len(v.KeyFormat) == 0 {
+		invalidParams.Add(smithy.NewErrParamRequired("KeyFormat"))
+	}
+	if invalidParams.Len() > 0 {
+		return invalidParams
+	} else {
+		return nil
+	}
+}
+
 func validateOpGetInstanceTypesFromInstanceRequirementsInput(v *GetInstanceTypesFromInstanceRequirementsInput) error {
 	if v == nil {
 		return nil
@@ -17630,6 +17819,27 @@ func validateOpMoveByoipCidrToIpamInput(v *MoveByoipCidrToIpamInput) error {
 	}
 	if v.IpamPoolOwner == nil {
 		invalidParams.Add(smithy.NewErrParamRequired("IpamPoolOwner"))
+	}
+	if invalidParams.Len() > 0 {
+		return invalidParams
+	} else {
+		return nil
+	}
+}
+
+func validateOpMoveCapacityReservationInstancesInput(v *MoveCapacityReservationInstancesInput) error {
+	if v == nil {
+		return nil
+	}
+	invalidParams := smithy.InvalidParamsError{Context: "MoveCapacityReservationInstancesInput"}
+	if v.SourceCapacityReservationId == nil {
+		invalidParams.Add(smithy.NewErrParamRequired("SourceCapacityReservationId"))
+	}
+	if v.DestinationCapacityReservationId == nil {
+		invalidParams.Add(smithy.NewErrParamRequired("DestinationCapacityReservationId"))
+	}
+	if v.InstanceCount == nil {
+		invalidParams.Add(smithy.NewErrParamRequired("InstanceCount"))
 	}
 	if invalidParams.Len() > 0 {
 		return invalidParams

@@ -13,8 +13,10 @@ import (
 // Modifies the attributes of your VPC endpoint service configuration. You can
 // change the Network Load Balancers or Gateway Load Balancers for your service,
 // and you can specify whether acceptance is required for requests to connect to
-// your endpoint service through an interface VPC endpoint. If you set or modify
-// the private DNS name, you must prove that you own the private DNS domain name.
+// your endpoint service through an interface VPC endpoint.
+//
+// If you set or modify the private DNS name, you must prove that you own the
+// private DNS domain name.
 func (c *Client) ModifyVpcEndpointServiceConfiguration(ctx context.Context, params *ModifyVpcEndpointServiceConfigurationInput, optFns ...func(*Options)) (*ModifyVpcEndpointServiceConfigurationOutput, error) {
 	if params == nil {
 		params = &ModifyVpcEndpointServiceConfigurationInput{}
@@ -144,6 +146,12 @@ func (c *Client) addOperationModifyVpcEndpointServiceConfigurationMiddlewares(st
 		return err
 	}
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+		return err
+	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
 	if err = addOpModifyVpcEndpointServiceConfigurationValidationMiddleware(stack); err != nil {

@@ -5,11 +5,10 @@ package api
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"k8s.io/utils/strings/slices"
 
 	pb "github.com/cilium/cilium/api/v1/flow"
 	k8sConst "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
@@ -549,7 +548,7 @@ func (o *ContextOptions) Status() string {
 		status = append(status, "destination="+o.Destination.String())
 	}
 
-	sort.Strings(status)
+	slices.Sort(status)
 
 	return strings.Join(status, ",")
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/policy/api"
 	"github.com/cilium/cilium/pkg/policy/trafficdirection"
+	"github.com/cilium/cilium/pkg/u8proto"
 )
 
 func FuzzResolveEgressPolicy(f *testing.F) {
@@ -33,18 +34,19 @@ func FuzzResolveEgressPolicy(f *testing.F) {
 		}
 		rule := &rule{Rule: r}
 		state := traceState{}
-		_, _ = rule.resolveEgressPolicy(testPolicyContext, fromBar, &state, L4PolicyMap{}, nil, nil)
+		td := newTestData()
+		_, _ = rule.resolveEgressPolicy(td.testPolicyContext, fromBar, &state, NewL4PolicyMap(), nil, nil)
 
 	})
 }
 
 func FuzzDenyPreferredInsert(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
-		keys := newMapState(nil)
+		keys := newMapState()
 		key := Key{}
 		entry := MapStateEntry{}
 		ff := fuzz.NewConsumer(data)
-		ff.GenerateStruct(&keys)
+		ff.GenerateStruct(keys)
 		ff.GenerateStruct(&key)
 		ff.GenerateStruct(&entry)
 		keys.denyPreferredInsert(key, entry, nil, allFeatures)
@@ -63,10 +65,11 @@ func FuzzAccumulateMapChange(f *testing.F) {
 		if err != nil {
 			t.Skip()
 		}
-		proto, err := ff.GetByte()
+		protoUint8, err := ff.GetByte()
 		if err != nil {
 			t.Skip()
 		}
+		proto := u8proto.U8proto(protoUint8)
 		dir := trafficdirection.Ingress
 		redirect, err := ff.GetBool()
 		if err != nil {
@@ -80,9 +83,9 @@ func FuzzAccumulateMapChange(f *testing.F) {
 		if redirect {
 			proxyPort = 1
 		}
-		key := Key{DestPort: port, Nexthdr: proto, TrafficDirection: dir.Uint8()}
+		key := KeyForDirection(dir).WithPortProto(proto, port)
 		value := NewMapStateEntry(csFoo, nil, proxyPort, "", 0, deny, DefaultAuthType, AuthTypeDisabled)
 		policyMaps := MapChanges{}
-		policyMaps.AccumulateMapChanges(csFoo, adds, deletes, key, value)
+		policyMaps.AccumulateMapChanges(csFoo, adds, deletes, []Key{key}, value)
 	})
 }

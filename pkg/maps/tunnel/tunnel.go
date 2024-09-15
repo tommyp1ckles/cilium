@@ -9,11 +9,11 @@ import (
 	"sync"
 
 	"github.com/sirupsen/logrus"
+	"go4.org/netipx"
 
 	"github.com/cilium/cilium/pkg/bpf"
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	"github.com/cilium/cilium/pkg/ebpf"
-	ippkg "github.com/cilium/cilium/pkg/ip"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/types"
 )
@@ -33,12 +33,18 @@ var (
 
 // SetTunnelMap sets the tunnel map. Only used for testing.
 func SetTunnelMap(m *Map) {
+	if tunnelMap != nil {
+		tunnelMap.UnpinIfExists()
+	}
+
 	tunnelMap = m
 }
 
 func TunnelMap() *Map {
 	tunnelMapInit.Do(func() {
-		tunnelMap = NewTunnelMap(MapName)
+		if tunnelMap == nil {
+			tunnelMap = NewTunnelMap(MapName)
+		}
 	})
 	return tunnelMap
 }
@@ -79,7 +85,7 @@ type TunnelKey struct {
 func (k TunnelKey) String() string {
 	if ip := k.toIP(); ip != nil {
 		addrCluster := cmtypes.AddrClusterFrom(
-			ippkg.MustAddrFromIP(ip),
+			netipx.MustFromStdIP(ip),
 			uint32(k.ClusterID),
 		)
 		return addrCluster.String()

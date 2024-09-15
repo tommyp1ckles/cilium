@@ -7,10 +7,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
-
-	"github.com/cilium/cilium/operator/pkg/model"
 )
 
 // Gateway API Conformance test resources
@@ -33,7 +32,7 @@ var sameNamespaceGateway = gatewayv1beta1.Gateway{
 				TLS:      nil,
 				AllowedRoutes: &gatewayv1beta1.AllowedRoutes{
 					Namespaces: &gatewayv1beta1.RouteNamespaces{
-						From: model.AddressOf(gatewayv1beta1.NamespacesFromSame),
+						From: ptr.To(gatewayv1beta1.NamespacesFromSame),
 					},
 				},
 			},
@@ -61,11 +60,11 @@ var sameNamespaceTLSGateway = gatewayv1beta1.Gateway{
 				Protocol: gatewayv1beta1.TLSProtocolType,
 				AllowedRoutes: &gatewayv1beta1.AllowedRoutes{
 					Namespaces: &gatewayv1beta1.RouteNamespaces{
-						From: model.AddressOf(gatewayv1beta1.NamespacesFromSame),
+						From: ptr.To(gatewayv1beta1.NamespacesFromSame),
 					},
 				},
 				TLS: &gatewayv1beta1.GatewayTLSConfig{
-					Mode: model.AddressOf(gatewayv1beta1.TLSModePassthrough),
+					Mode: ptr.To(gatewayv1beta1.TLSModePassthrough),
 				},
 			},
 		},
@@ -84,7 +83,7 @@ var sameNamespaceTLSRoute = gatewayv1alpha2.TLSRoute{
 			ParentRefs: []gatewayv1beta1.ParentReference{
 				{
 					Name:      "gateway-tlsroute",
-					Namespace: model.AddressOf[gatewayv1beta1.Namespace]("gateway-conformance-infra"),
+					Namespace: ptr.To[gatewayv1beta1.Namespace]("gateway-conformance-infra"),
 				},
 			},
 		},
@@ -97,7 +96,7 @@ var sameNamespaceTLSRoute = gatewayv1alpha2.TLSRoute{
 					{
 						BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 							Name: "tls-backend",
-							Port: model.AddressOf[gatewayv1beta1.PortNumber](443),
+							Port: ptr.To[gatewayv1beta1.PortNumber](443),
 						},
 					},
 				},
@@ -121,7 +120,7 @@ var sameNamespaceTLSRoute = gatewayv1alpha2.TLSRoute{
 //				TLS:      nil,
 //				AllowedRoutes: &gatewayv1beta1.AllowedRoutes{
 //					Namespaces: &gatewayv1beta1.RouteNamespaces{
-//						From: model.AddressOf(gatewayv1beta1.NamespacesFromAll),
+//						From: ptr.To(gatewayv1beta1.NamespacesFromAll),
 //					},
 //				},
 //			},
@@ -184,6 +183,7 @@ var infraBackEndV1Service = corev1.Service{
 		},
 	},
 }
+
 var infraBackEndV2Service = corev1.Service{
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "infra-backend-v2",
@@ -202,6 +202,7 @@ var infraBackEndV2Service = corev1.Service{
 		},
 	},
 }
+
 var infraBackEndV3Service = corev1.Service{
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "infra-backend-v3",
@@ -220,6 +221,7 @@ var infraBackEndV3Service = corev1.Service{
 		},
 	},
 }
+
 var appBackEndV1Service = corev1.Service{
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "app-backend-v1",
@@ -238,6 +240,7 @@ var appBackEndV1Service = corev1.Service{
 		},
 	},
 }
+
 var appBackEndV2Service = corev1.Service{
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "app-backend-v2",
@@ -256,6 +259,7 @@ var appBackEndV2Service = corev1.Service{
 		},
 	},
 }
+
 var webBackendService = corev1.Service{
 	ObjectMeta: metav1.ObjectMeta{
 		Name:      "web-backend",
@@ -306,7 +310,7 @@ var crossNamespaceHTTPRoute = gatewayv1beta1.HTTPRoute{
 			ParentRefs: []gatewayv1beta1.ParentReference{
 				{
 					Name:      "backend-namespaces",
-					Namespace: model.AddressOf[gatewayv1beta1.Namespace]("gateway-conformance-infra"),
+					Namespace: ptr.To[gatewayv1beta1.Namespace]("gateway-conformance-infra"),
 				},
 			},
 		},
@@ -317,7 +321,7 @@ var crossNamespaceHTTPRoute = gatewayv1beta1.HTTPRoute{
 						BackendRef: gatewayv1beta1.BackendRef{
 							BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 								Name: "web-backend",
-								Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+								Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 							},
 						},
 					},
@@ -347,8 +351,8 @@ var exactPathMatchingHTTPRoute = gatewayv1beta1.HTTPRoute{
 				Matches: []gatewayv1beta1.HTTPRouteMatch{
 					{
 						Path: &gatewayv1beta1.HTTPPathMatch{
-							Type:  model.AddressOf(gatewayv1beta1.PathMatchExact),
-							Value: model.AddressOf("/one"),
+							Type:  ptr.To(gatewayv1beta1.PathMatchExact),
+							Value: ptr.To("/one"),
 						},
 					},
 				},
@@ -357,7 +361,7 @@ var exactPathMatchingHTTPRoute = gatewayv1beta1.HTTPRoute{
 						BackendRef: gatewayv1beta1.BackendRef{
 							BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 								Name: "infra-backend-v1",
-								Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+								Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 							},
 						},
 					},
@@ -367,8 +371,8 @@ var exactPathMatchingHTTPRoute = gatewayv1beta1.HTTPRoute{
 				Matches: []gatewayv1beta1.HTTPRouteMatch{
 					{
 						Path: &gatewayv1beta1.HTTPPathMatch{
-							Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
-							Value: model.AddressOf("/two"),
+							Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
+							Value: ptr.To("/two"),
 						},
 					},
 				},
@@ -377,7 +381,7 @@ var exactPathMatchingHTTPRoute = gatewayv1beta1.HTTPRoute{
 						BackendRef: gatewayv1beta1.BackendRef{
 							BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 								Name: "infra-backend-v2",
-								Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+								Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 							},
 						},
 					},
@@ -419,7 +423,7 @@ var headerMatchingHTTPRoute = gatewayv1beta1.HTTPRoute{
 						BackendRef: gatewayv1beta1.BackendRef{
 							BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 								Name: "infra-backend-v1",
-								Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+								Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 							},
 						},
 					},
@@ -441,7 +445,7 @@ var headerMatchingHTTPRoute = gatewayv1beta1.HTTPRoute{
 						BackendRef: gatewayv1beta1.BackendRef{
 							BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 								Name: "infra-backend-v2",
-								Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+								Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 							},
 						},
 					},
@@ -467,7 +471,7 @@ var headerMatchingHTTPRoute = gatewayv1beta1.HTTPRoute{
 						BackendRef: gatewayv1beta1.BackendRef{
 							BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 								Name: "infra-backend-v1",
-								Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+								Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 							},
 						},
 					},
@@ -497,7 +501,7 @@ var headerMatchingHTTPRoute = gatewayv1beta1.HTTPRoute{
 						BackendRef: gatewayv1beta1.BackendRef{
 							BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 								Name: "infra-backend-v1",
-								Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+								Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 							},
 						},
 					},
@@ -527,7 +531,7 @@ var headerMatchingHTTPRoute = gatewayv1beta1.HTTPRoute{
 						BackendRef: gatewayv1beta1.BackendRef{
 							BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 								Name: "infra-backend-v2",
-								Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+								Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 							},
 						},
 					},
@@ -549,40 +553,41 @@ var hostnameIntersectionGateway = &gatewayv1beta1.Gateway{
 		Listeners: []gatewayv1beta1.Listener{
 			{
 				Name:     "listener-1",
-				Hostname: model.AddressOf[gatewayv1beta1.Hostname]("very.specific.com"),
+				Hostname: ptr.To[gatewayv1beta1.Hostname]("very.specific.com"),
 				Port:     80,
 				Protocol: "HTTP",
 				AllowedRoutes: &gatewayv1beta1.AllowedRoutes{
 					Namespaces: &gatewayv1beta1.RouteNamespaces{
-						From: model.AddressOf(gatewayv1beta1.NamespacesFromSame),
+						From: ptr.To(gatewayv1beta1.NamespacesFromSame),
 					},
 				},
 			},
 			{
 				Name:     "listener-2",
-				Hostname: model.AddressOf[gatewayv1beta1.Hostname]("*.wildcard.io"),
+				Hostname: ptr.To[gatewayv1beta1.Hostname]("*.wildcard.io"),
 				Port:     80,
 				Protocol: "HTTP",
 				AllowedRoutes: &gatewayv1beta1.AllowedRoutes{
 					Namespaces: &gatewayv1beta1.RouteNamespaces{
-						From: model.AddressOf(gatewayv1beta1.NamespacesFromSame),
+						From: ptr.To(gatewayv1beta1.NamespacesFromSame),
 					},
 				},
 			},
 			{
 				Name:     "listener-3",
-				Hostname: model.AddressOf[gatewayv1beta1.Hostname]("*.anotherwildcard.io"),
+				Hostname: ptr.To[gatewayv1beta1.Hostname]("*.anotherwildcard.io"),
 				Port:     80,
 				Protocol: "HTTP",
 				AllowedRoutes: &gatewayv1beta1.AllowedRoutes{
 					Namespaces: &gatewayv1beta1.RouteNamespaces{
-						From: model.AddressOf(gatewayv1beta1.NamespacesFromSame),
+						From: ptr.To(gatewayv1beta1.NamespacesFromSame),
 					},
 				},
 			},
 		},
 	},
 }
+
 var hostnameIntersectionHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 	{
 		ObjectMeta: metav1.ObjectMeta{
@@ -594,7 +599,7 @@ var hostnameIntersectionHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 				ParentRefs: []gatewayv1beta1.ParentReference{
 					{
 						Name:      "httproute-hostname-intersection",
-						Namespace: model.AddressOf[gatewayv1beta1.Namespace]("gateway-conformance-infra"),
+						Namespace: ptr.To[gatewayv1beta1.Namespace]("gateway-conformance-infra"),
 					},
 				},
 			},
@@ -608,8 +613,8 @@ var hostnameIntersectionHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
-								Value: model.AddressOf("/s1"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
+								Value: ptr.To("/s1"),
 							},
 						},
 					},
@@ -618,7 +623,7 @@ var hostnameIntersectionHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -637,7 +642,7 @@ var hostnameIntersectionHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 				ParentRefs: []gatewayv1beta1.ParentReference{
 					{
 						Name:      "httproute-hostname-intersection",
-						Namespace: model.AddressOf[gatewayv1beta1.Namespace]("gateway-conformance-infra"),
+						Namespace: ptr.To[gatewayv1beta1.Namespace]("gateway-conformance-infra"),
 					},
 				},
 			},
@@ -646,15 +651,15 @@ var hostnameIntersectionHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 				"wildcard.io",
 				"foo.wildcard.io",     // matches listener-2's wildcard host
 				"bar.wildcard.io",     // matches listener-2's wildcard host
-				"foo.bar.wildcard.io", //matches listener-2's wildcard host
+				"foo.bar.wildcard.io", // matches listener-2's wildcard host
 			},
 			Rules: []gatewayv1beta1.HTTPRouteRule{
 				{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
-								Value: model.AddressOf("/s2"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
+								Value: ptr.To("/s2"),
 							},
 						},
 					},
@@ -663,7 +668,7 @@ var hostnameIntersectionHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v2",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -682,7 +687,7 @@ var hostnameIntersectionHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 				ParentRefs: []gatewayv1beta1.ParentReference{
 					{
 						Name:      "httproute-hostname-intersection",
-						Namespace: model.AddressOf[gatewayv1beta1.Namespace]("gateway-conformance-infra"),
+						Namespace: ptr.To[gatewayv1beta1.Namespace]("gateway-conformance-infra"),
 					},
 				},
 			},
@@ -695,8 +700,8 @@ var hostnameIntersectionHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
-								Value: model.AddressOf("/s3"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
+								Value: ptr.To("/s3"),
 							},
 						},
 					},
@@ -705,7 +710,7 @@ var hostnameIntersectionHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v3",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -724,7 +729,7 @@ var hostnameIntersectionHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 				ParentRefs: []gatewayv1beta1.ParentReference{
 					{
 						Name:      "httproute-hostname-intersection",
-						Namespace: model.AddressOf[gatewayv1beta1.Namespace]("gateway-conformance-infra"),
+						Namespace: ptr.To[gatewayv1beta1.Namespace]("gateway-conformance-infra"),
 					},
 				},
 			},
@@ -736,8 +741,8 @@ var hostnameIntersectionHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
-								Value: model.AddressOf("/s4"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
+								Value: ptr.To("/s4"),
 							},
 						},
 					},
@@ -746,7 +751,7 @@ var hostnameIntersectionHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -765,7 +770,7 @@ var hostnameIntersectionHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 				ParentRefs: []gatewayv1beta1.ParentReference{
 					{
 						Name:      "httproute-hostname-intersection",
-						Namespace: model.AddressOf[gatewayv1beta1.Namespace]("gateway-conformance-infra"),
+						Namespace: ptr.To[gatewayv1beta1.Namespace]("gateway-conformance-infra"),
 					},
 				},
 			},
@@ -778,8 +783,8 @@ var hostnameIntersectionHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
-								Value: model.AddressOf("/s5"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
+								Value: ptr.To("/s5"),
 							},
 						},
 					},
@@ -788,7 +793,7 @@ var hostnameIntersectionHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v2",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -811,51 +816,52 @@ var listenerHostnameMatchingGateway = &gatewayv1beta1.Gateway{
 		Listeners: []gatewayv1beta1.Listener{
 			{
 				Name:     "listener-1",
-				Hostname: model.AddressOf[gatewayv1beta1.Hostname]("bar.com"),
+				Hostname: ptr.To[gatewayv1beta1.Hostname]("bar.com"),
 				Port:     80,
 				Protocol: "HTTP",
 				AllowedRoutes: &gatewayv1beta1.AllowedRoutes{
 					Namespaces: &gatewayv1beta1.RouteNamespaces{
-						From: model.AddressOf(gatewayv1beta1.NamespacesFromSame),
+						From: ptr.To(gatewayv1beta1.NamespacesFromSame),
 					},
 				},
 			},
 			{
 				Name:     "listener-2",
-				Hostname: model.AddressOf[gatewayv1beta1.Hostname]("foo.bar.com"),
+				Hostname: ptr.To[gatewayv1beta1.Hostname]("foo.bar.com"),
 				Port:     80,
 				Protocol: "HTTP",
 				AllowedRoutes: &gatewayv1beta1.AllowedRoutes{
 					Namespaces: &gatewayv1beta1.RouteNamespaces{
-						From: model.AddressOf(gatewayv1beta1.NamespacesFromSame),
+						From: ptr.To(gatewayv1beta1.NamespacesFromSame),
 					},
 				},
 			},
 			{
 				Name:     "listener-3",
-				Hostname: model.AddressOf[gatewayv1beta1.Hostname]("*.bar.com"),
+				Hostname: ptr.To[gatewayv1beta1.Hostname]("*.bar.com"),
 				Port:     80,
 				Protocol: "HTTP",
 				AllowedRoutes: &gatewayv1beta1.AllowedRoutes{
 					Namespaces: &gatewayv1beta1.RouteNamespaces{
-						From: model.AddressOf(gatewayv1beta1.NamespacesFromSame),
+						From: ptr.To(gatewayv1beta1.NamespacesFromSame),
 					},
 				},
 			},
 			{
 				Name:     "listener-4",
-				Hostname: model.AddressOf[gatewayv1beta1.Hostname]("*.foo.com"),
+				Hostname: ptr.To[gatewayv1beta1.Hostname]("*.foo.com"),
 				Port:     80,
 				Protocol: "HTTP",
 				AllowedRoutes: &gatewayv1beta1.AllowedRoutes{
 					Namespaces: &gatewayv1beta1.RouteNamespaces{
-						From: model.AddressOf(gatewayv1beta1.NamespacesFromSame),
+						From: ptr.To(gatewayv1beta1.NamespacesFromSame),
 					},
 				},
 			},
 		},
 	},
 }
+
 var listenerHostnameMatchingHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 	{
 		ObjectMeta: metav1.ObjectMeta{
@@ -867,8 +873,8 @@ var listenerHostnameMatchingHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 				ParentRefs: []gatewayv1beta1.ParentReference{
 					{
 						Name:        "httproute-listener-hostname-matching",
-						Namespace:   model.AddressOf[gatewayv1beta1.Namespace]("gateway-conformance-infra"),
-						SectionName: model.AddressOf[gatewayv1beta1.SectionName]("listener-1"),
+						Namespace:   ptr.To[gatewayv1beta1.Namespace]("gateway-conformance-infra"),
+						SectionName: ptr.To[gatewayv1beta1.SectionName]("listener-1"),
 					},
 				},
 			},
@@ -879,7 +885,7 @@ var listenerHostnameMatchingHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -898,8 +904,8 @@ var listenerHostnameMatchingHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 				ParentRefs: []gatewayv1beta1.ParentReference{
 					{
 						Name:        "httproute-listener-hostname-matching",
-						Namespace:   model.AddressOf[gatewayv1beta1.Namespace]("gateway-conformance-infra"),
-						SectionName: model.AddressOf[gatewayv1beta1.SectionName]("listener-2"),
+						Namespace:   ptr.To[gatewayv1beta1.Namespace]("gateway-conformance-infra"),
+						SectionName: ptr.To[gatewayv1beta1.SectionName]("listener-2"),
 					},
 				},
 			},
@@ -910,7 +916,7 @@ var listenerHostnameMatchingHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v2",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -929,13 +935,13 @@ var listenerHostnameMatchingHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 				ParentRefs: []gatewayv1beta1.ParentReference{
 					{
 						Name:        "httproute-listener-hostname-matching",
-						Namespace:   model.AddressOf[gatewayv1beta1.Namespace]("gateway-conformance-infra"),
-						SectionName: model.AddressOf[gatewayv1beta1.SectionName]("listener-3"),
+						Namespace:   ptr.To[gatewayv1beta1.Namespace]("gateway-conformance-infra"),
+						SectionName: ptr.To[gatewayv1beta1.SectionName]("listener-3"),
 					},
 					{
 						Name:        "httproute-listener-hostname-matching",
-						Namespace:   model.AddressOf[gatewayv1beta1.Namespace]("gateway-conformance-infra"),
-						SectionName: model.AddressOf[gatewayv1beta1.SectionName]("listener-4"),
+						Namespace:   ptr.To[gatewayv1beta1.Namespace]("gateway-conformance-infra"),
+						SectionName: ptr.To[gatewayv1beta1.SectionName]("listener-4"),
 					},
 				},
 			},
@@ -946,7 +952,7 @@ var listenerHostnameMatchingHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v3",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -982,8 +988,8 @@ var matchingAcrossHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
-								Value: model.AddressOf("/"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
+								Value: ptr.To("/"),
 							},
 							Headers: []gatewayv1beta1.HTTPHeaderMatch{
 								{
@@ -998,7 +1004,7 @@ var matchingAcrossHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -1028,8 +1034,8 @@ var matchingAcrossHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
-								Value: model.AddressOf("/v2"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
+								Value: ptr.To("/v2"),
 							},
 							Headers: []gatewayv1beta1.HTTPHeaderMatch{
 								{
@@ -1044,7 +1050,7 @@ var matchingAcrossHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v2",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -1076,8 +1082,8 @@ var matchingHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
-								Value: model.AddressOf("/"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
+								Value: ptr.To("/"),
 							},
 							Headers: []gatewayv1beta1.HTTPHeaderMatch{
 								{
@@ -1092,7 +1098,7 @@ var matchingHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -1102,8 +1108,8 @@ var matchingHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
-								Value: model.AddressOf("/v2"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
+								Value: ptr.To("/v2"),
 							},
 							Headers: []gatewayv1beta1.HTTPHeaderMatch{
 								{
@@ -1118,7 +1124,7 @@ var matchingHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v2",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -1162,7 +1168,7 @@ var queryParamMatchingHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -1184,7 +1190,7 @@ var queryParamMatchingHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v2",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -1218,7 +1224,7 @@ var queryParamMatchingHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v3",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -1250,8 +1256,8 @@ var requestHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
-								Value: model.AddressOf("/set"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
+								Value: ptr.To("/set"),
 							},
 						},
 					},
@@ -1273,7 +1279,7 @@ var requestHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -1283,8 +1289,8 @@ var requestHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
-								Value: model.AddressOf("/add"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
+								Value: ptr.To("/add"),
 							},
 						},
 					},
@@ -1306,7 +1312,7 @@ var requestHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -1316,8 +1322,8 @@ var requestHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
-								Value: model.AddressOf("/remove"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
+								Value: ptr.To("/remove"),
 							},
 						},
 					},
@@ -1336,7 +1342,7 @@ var requestHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -1346,8 +1352,8 @@ var requestHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
-								Value: model.AddressOf("/multiple"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
+								Value: ptr.To("/multiple"),
 							},
 						},
 					},
@@ -1391,7 +1397,7 @@ var requestHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -1401,8 +1407,8 @@ var requestHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
-								Value: model.AddressOf("/case-insensitivity"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
+								Value: ptr.To("/case-insensitivity"),
 							},
 						},
 					},
@@ -1433,7 +1439,7 @@ var requestHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -1464,8 +1470,8 @@ var backendRefsRequestHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
-								Value: model.AddressOf("/set"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
+								Value: ptr.To("/set"),
 							},
 						},
 					},
@@ -1474,7 +1480,7 @@ var backendRefsRequestHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 							Filters: []gatewayv1beta1.HTTPRouteFilter{
@@ -1497,8 +1503,8 @@ var backendRefsRequestHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
-								Value: model.AddressOf("/add"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
+								Value: ptr.To("/add"),
 							},
 						},
 					},
@@ -1508,7 +1514,7 @@ var backendRefsRequestHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 							Filters: []gatewayv1beta1.HTTPRouteFilter{
@@ -1531,8 +1537,8 @@ var backendRefsRequestHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
-								Value: model.AddressOf("/remove"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
+								Value: ptr.To("/remove"),
 							},
 						},
 					},
@@ -1541,7 +1547,7 @@ var backendRefsRequestHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 							Filters: []gatewayv1beta1.HTTPRouteFilter{
@@ -1561,8 +1567,8 @@ var backendRefsRequestHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
-								Value: model.AddressOf("/multiple-backends"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
+								Value: ptr.To("/multiple-backends"),
 							},
 						},
 					},
@@ -1571,7 +1577,7 @@ var backendRefsRequestHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 							Filters: []gatewayv1beta1.HTTPRouteFilter{
@@ -1596,7 +1602,7 @@ var backendRefsRequestHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v2",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 							Filters: []gatewayv1beta1.HTTPRouteFilter{
@@ -1619,8 +1625,8 @@ var backendRefsRequestHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
-								Value: model.AddressOf("/multiple-backends-with-some-not"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchExact),
+								Value: ptr.To("/multiple-backends-with-some-not"),
 							},
 						},
 					},
@@ -1630,7 +1636,7 @@ var backendRefsRequestHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -1638,7 +1644,7 @@ var backendRefsRequestHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v2",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 							Filters: []gatewayv1beta1.HTTPRouteFilter{
@@ -1694,7 +1700,7 @@ var simpleSameNamespaceHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -1725,7 +1731,7 @@ var methodMatchingHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 				{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
-							Method: model.AddressOf[gatewayv1beta1.HTTPMethod]("POST"),
+							Method: ptr.To[gatewayv1beta1.HTTPMethod]("POST"),
 						},
 					},
 					BackendRefs: []gatewayv1beta1.HTTPBackendRef{
@@ -1733,7 +1739,7 @@ var methodMatchingHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -1742,7 +1748,7 @@ var methodMatchingHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 				{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
-							Method: model.AddressOf[gatewayv1beta1.HTTPMethod]("GET"),
+							Method: ptr.To[gatewayv1beta1.HTTPMethod]("GET"),
 						},
 					},
 					BackendRefs: []gatewayv1beta1.HTTPBackendRef{
@@ -1750,7 +1756,7 @@ var methodMatchingHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v2",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -1782,8 +1788,8 @@ var requestRedirectHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
-								Value: model.AddressOf("/hostname-redirect"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
+								Value: ptr.To("/hostname-redirect"),
 							},
 						},
 					},
@@ -1791,7 +1797,7 @@ var requestRedirectHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 						{
 							Type: gatewayv1beta1.HTTPRouteFilterRequestRedirect,
 							RequestRedirect: &gatewayv1beta1.HTTPRequestRedirectFilter{
-								Hostname: model.AddressOf[gatewayv1beta1.PreciseHostname]("example.com"),
+								Hostname: ptr.To[gatewayv1beta1.PreciseHostname]("example.com"),
 							},
 						},
 					},
@@ -1800,7 +1806,7 @@ var requestRedirectHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -1810,8 +1816,8 @@ var requestRedirectHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
-								Value: model.AddressOf("/status-code-301"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
+								Value: ptr.To("/status-code-301"),
 							},
 						},
 					},
@@ -1819,7 +1825,7 @@ var requestRedirectHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 						{
 							Type: gatewayv1beta1.HTTPRouteFilterRequestRedirect,
 							RequestRedirect: &gatewayv1beta1.HTTPRequestRedirectFilter{
-								StatusCode: model.AddressOf(301),
+								StatusCode: ptr.To(301),
 							},
 						},
 					},
@@ -1828,8 +1834,8 @@ var requestRedirectHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
-								Value: model.AddressOf("/host-and-status"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
+								Value: ptr.To("/host-and-status"),
 							},
 						},
 					},
@@ -1837,8 +1843,8 @@ var requestRedirectHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 						{
 							Type: gatewayv1beta1.HTTPRouteFilterRequestRedirect,
 							RequestRedirect: &gatewayv1beta1.HTTPRequestRedirectFilter{
-								Hostname:   model.AddressOf[gatewayv1beta1.PreciseHostname]("example.com"),
-								StatusCode: model.AddressOf(301),
+								Hostname:   ptr.To[gatewayv1beta1.PreciseHostname]("example.com"),
+								StatusCode: ptr.To(301),
 							},
 						},
 					},
@@ -1847,7 +1853,7 @@ var requestRedirectHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -1879,8 +1885,8 @@ var responseHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
-								Value: model.AddressOf("/set"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
+								Value: ptr.To("/set"),
 							},
 						},
 					},
@@ -1902,7 +1908,7 @@ var responseHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -1912,8 +1918,8 @@ var responseHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
-								Value: model.AddressOf("/add"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
+								Value: ptr.To("/add"),
 							},
 						},
 					},
@@ -1935,7 +1941,7 @@ var responseHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -1945,8 +1951,8 @@ var responseHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
-								Value: model.AddressOf("/remove"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
+								Value: ptr.To("/remove"),
 							},
 						},
 					},
@@ -1965,7 +1971,7 @@ var responseHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -1975,8 +1981,8 @@ var responseHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
-								Value: model.AddressOf("/multiple"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
+								Value: ptr.To("/multiple"),
 							},
 						},
 					},
@@ -2020,7 +2026,7 @@ var responseHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -2030,8 +2036,8 @@ var responseHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
-								Value: model.AddressOf("/case-insensitivity"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
+								Value: ptr.To("/case-insensitivity"),
 							},
 						},
 					},
@@ -2078,7 +2084,7 @@ var responseHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -2109,8 +2115,8 @@ var backendRefsResponseHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
-								Value: model.AddressOf("/set"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
+								Value: ptr.To("/set"),
 							},
 						},
 					},
@@ -2120,7 +2126,7 @@ var backendRefsResponseHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 							Filters: []gatewayv1beta1.HTTPRouteFilter{
@@ -2143,8 +2149,8 @@ var backendRefsResponseHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
-								Value: model.AddressOf("/add"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
+								Value: ptr.To("/add"),
 							},
 						},
 					},
@@ -2154,7 +2160,7 @@ var backendRefsResponseHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 							Filters: []gatewayv1beta1.HTTPRouteFilter{
@@ -2177,8 +2183,8 @@ var backendRefsResponseHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
-								Value: model.AddressOf("/remove"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
+								Value: ptr.To("/remove"),
 							},
 						},
 					},
@@ -2188,7 +2194,7 @@ var backendRefsResponseHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 							Filters: []gatewayv1beta1.HTTPRouteFilter{
@@ -2208,8 +2214,8 @@ var backendRefsResponseHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
-								Value: model.AddressOf("/multiple"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
+								Value: ptr.To("/multiple"),
 							},
 						},
 					},
@@ -2219,7 +2225,7 @@ var backendRefsResponseHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 							Filters: []gatewayv1beta1.HTTPRouteFilter{
@@ -2264,8 +2270,8 @@ var backendRefsResponseHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
-								Value: model.AddressOf("/multiple-backends"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
+								Value: ptr.To("/multiple-backends"),
 							},
 						},
 					},
@@ -2274,7 +2280,7 @@ var backendRefsResponseHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 							Filters: []gatewayv1beta1.HTTPRouteFilter{
@@ -2304,7 +2310,7 @@ var backendRefsResponseHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v2",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 							Filters: []gatewayv1beta1.HTTPRouteFilter{
@@ -2334,7 +2340,7 @@ var backendRefsResponseHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v3",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 							Filters: []gatewayv1beta1.HTTPRouteFilter{
@@ -2366,8 +2372,8 @@ var backendRefsResponseHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
-								Value: model.AddressOf("/case-insensitivity"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
+								Value: ptr.To("/case-insensitivity"),
 							},
 						},
 					},
@@ -2376,7 +2382,7 @@ var backendRefsResponseHeaderModifierHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 							Filters: []gatewayv1beta1.HTTPRouteFilter{
@@ -2448,8 +2454,8 @@ var rewriteHostHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
-								Value: model.AddressOf("/one"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
+								Value: ptr.To("/one"),
 							},
 						},
 					},
@@ -2457,7 +2463,7 @@ var rewriteHostHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 						{
 							Type: "URLRewrite",
 							URLRewrite: &gatewayv1beta1.HTTPURLRewriteFilter{
-								Hostname: model.AddressOf[gatewayv1beta1.PreciseHostname]("one.example.org"),
+								Hostname: ptr.To[gatewayv1beta1.PreciseHostname]("one.example.org"),
 							},
 						},
 					},
@@ -2466,7 +2472,7 @@ var rewriteHostHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -2477,7 +2483,7 @@ var rewriteHostHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 						{
 							Type: "URLRewrite",
 							URLRewrite: &gatewayv1beta1.HTTPURLRewriteFilter{
-								Hostname: model.AddressOf[gatewayv1beta1.PreciseHostname]("example.org"),
+								Hostname: ptr.To[gatewayv1beta1.PreciseHostname]("example.org"),
 							},
 						},
 					},
@@ -2486,7 +2492,7 @@ var rewriteHostHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v2",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -2517,8 +2523,8 @@ var rewritePathHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
-								Value: model.AddressOf("/prefix/one"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
+								Value: ptr.To("/prefix/one"),
 							},
 						},
 					},
@@ -2528,7 +2534,7 @@ var rewritePathHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							URLRewrite: &gatewayv1beta1.HTTPURLRewriteFilter{
 								Path: &gatewayv1beta1.HTTPPathModifier{
 									Type:               "ReplacePrefixMatch",
-									ReplacePrefixMatch: model.AddressOf("/one"),
+									ReplacePrefixMatch: ptr.To("/one"),
 								},
 							},
 						},
@@ -2538,7 +2544,7 @@ var rewritePathHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -2548,8 +2554,8 @@ var rewritePathHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
-								Value: model.AddressOf("/full/one"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
+								Value: ptr.To("/full/one"),
 							},
 						},
 					},
@@ -2559,7 +2565,7 @@ var rewritePathHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							URLRewrite: &gatewayv1beta1.HTTPURLRewriteFilter{
 								Path: &gatewayv1beta1.HTTPPathModifier{
 									Type:            "ReplaceFullPath",
-									ReplaceFullPath: model.AddressOf("/one"),
+									ReplaceFullPath: ptr.To("/one"),
 								},
 							},
 						},
@@ -2569,7 +2575,7 @@ var rewritePathHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -2579,8 +2585,8 @@ var rewritePathHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
-								Value: model.AddressOf("/full/rewrite-path-and-modify-headers"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
+								Value: ptr.To("/full/rewrite-path-and-modify-headers"),
 							},
 						},
 					},
@@ -2590,7 +2596,7 @@ var rewritePathHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							URLRewrite: &gatewayv1beta1.HTTPURLRewriteFilter{
 								Path: &gatewayv1beta1.HTTPPathModifier{
 									Type:            "ReplaceFullPath",
-									ReplaceFullPath: model.AddressOf("/test"),
+									ReplaceFullPath: ptr.To("/test"),
 								},
 							},
 						},
@@ -2622,7 +2628,7 @@ var rewritePathHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -2632,8 +2638,8 @@ var rewritePathHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
-								Value: model.AddressOf("/prefix/rewrite-path-and-modify-headers"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
+								Value: ptr.To("/prefix/rewrite-path-and-modify-headers"),
 							},
 						},
 					},
@@ -2643,7 +2649,7 @@ var rewritePathHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							URLRewrite: &gatewayv1beta1.HTTPURLRewriteFilter{
 								Path: &gatewayv1beta1.HTTPPathModifier{
 									Type:               "ReplacePrefixMatch",
-									ReplacePrefixMatch: model.AddressOf("/prefix"),
+									ReplacePrefixMatch: ptr.To("/prefix"),
 								},
 							},
 						},
@@ -2675,7 +2681,7 @@ var rewritePathHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -2706,8 +2712,8 @@ var mirrorPathHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 					Matches: []gatewayv1beta1.HTTPRouteMatch{
 						{
 							Path: &gatewayv1beta1.HTTPPathMatch{
-								Type:  model.AddressOf[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
-								Value: model.AddressOf("/mirror"),
+								Type:  ptr.To[gatewayv1beta1.PathMatchType](gatewayv1beta1.PathMatchPathPrefix),
+								Value: ptr.To("/mirror"),
 							},
 						},
 					},
@@ -2717,8 +2723,8 @@ var mirrorPathHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							RequestMirror: &gatewayv1beta1.HTTPRequestMirrorFilter{
 								BackendRef: gatewayv1beta1.BackendObjectReference{
 									Name:      "infra-backend-v2",
-									Namespace: model.AddressOf[gatewayv1beta1.Namespace]("gateway-conformance-infra"),
-									Port:      model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Namespace: ptr.To[gatewayv1beta1.Namespace]("gateway-conformance-infra"),
+									Port:      ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},
@@ -2728,7 +2734,7 @@ var mirrorPathHTTPRoutes = []gatewayv1beta1.HTTPRoute{
 							BackendRef: gatewayv1beta1.BackendRef{
 								BackendObjectReference: gatewayv1beta1.BackendObjectReference{
 									Name: "infra-backend-v1",
-									Port: model.AddressOf[gatewayv1beta1.PortNumber](8080),
+									Port: ptr.To[gatewayv1beta1.PortNumber](8080),
 								},
 							},
 						},

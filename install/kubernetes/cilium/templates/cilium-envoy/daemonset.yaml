@@ -1,5 +1,5 @@
-{{- if and .Values.envoy.enabled (not .Values.preflight.enabled) }}
-
+{{- $envoyDS := eq (include "envoyDaemonSetEnabled" .) "true" -}}
+{{- if (and $envoyDS (not .Values.preflight.enabled)) }}
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -26,10 +26,6 @@ spec:
   template:
     metadata:
       annotations:
-        {{- if and .Values.envoy.prometheus.enabled (not .Values.envoy.prometheus.serviceMonitor.enabled) }}
-        prometheus.io/port: "{{ .Values.envoy.prometheus.port }}"
-        prometheus.io/scrape: "true"
-        {{- end }}
         {{- if .Values.envoy.rollOutPods }}
         # ensure pods roll when configmap updates
         cilium.io/cilium-envoy-configmap-checksum: {{ include (print $.Template.BasePath "/cilium-envoy/configmap.yaml") . | sha256sum | quote }}
@@ -84,6 +80,8 @@ spec:
         - '--log-level trace'
         {{- else if and (.Values.debug.enabled) (hasKey .Values.debug "verbose") (.Values.debug.verbose) (has "flow" ( splitList " " .Values.debug.verbose )) }}
         - '--log-level debug'
+        {{- else if .Values.envoy.log.defaultLevel }}
+        - '--log-level {{ .Values.envoy.log.defaultLevel }}'
         {{- else }}
         - '--log-level info'
         {{- end }}

@@ -9,6 +9,12 @@
 End-To-End Testing Framework (Legacy)
 =====================================
 
+.. warning::
+   The Ginkgo end-to-end testing framework is deprecated. New end-to-end
+   tests should be implemented using the `cilium-cli
+   <https://github.com/cilium/cilium-cli/#connectivity-check>`_ connectivity
+   testing framework. For more information, see :ref:`testsuite`.
+
 Introduction
 ~~~~~~~~~~~~
 
@@ -39,14 +45,6 @@ Running Tests with GitHub Actions (GHA)
 GitHub Actions provide an alternative mode for running Cilium's end-to-end tests.
 The configuration is set up to closely match the environment used in GHA. Refer
 to the relevant documentation for instructions on running tests using GHA.
-
-Running Tests with Vagrant
-^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-To run tests locally using Vagrant, the test scripts invoke ``vagrant`` to create
-virtual machine(s). These tests utilize the Ginkgo testing framework, leveraging
-its rich capabilities and the benefits of Go's compilation-time checks and
-strong typing.
 
 Running End-To-End Tests
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -174,9 +172,6 @@ usage information.
       # else
       #   ./contrib/scripts/kind.sh "" 1 "" "${kubernetes_image}" "iptables" "${ip_family}"
       # fi
-      ## Some tests using demo-customcalls.yaml are mounting this directoy
-      # mkdir -p /home/vagrant/go/src/github.com/cilium
-      # ln -s /host /home/vagrant/go/src/github.com/cilium/cilium
       # git config --global --add safe.directory /cilium
 
    Verify that kind is running inside the VM:
@@ -552,7 +547,7 @@ Best Practices for Writing Tests
 
 * Provide informative output to console during a test using the `By construct <https://onsi.github.io/ginkgo/#documenting-complex-specs-by>`_. This helps with debugging and gives those who did not write the test a good idea of what is going on. The lower the barrier of entry is for understanding tests, the better our tests will be!
 * Leave the testing environment in the same state that it was in when the test started by deleting resources, resetting configuration, etc.
-* Gather logs in the case that a test fails. If a test fails while running on Jenkins, a postmortem needs to be done to analyze why. So, dumping logs to a location where Jenkins can pick them up is of the highest imperative. Use the following code in an ``AfterFailed`` method:
+* Gather logs in the case that a test fails. If a test fails while running on Ginkgo, a postmortem needs to be done to analyze why. So, dumping logs to a location where Ginkgo can pick them up is of the highest imperative. Use the following code in an ``AfterFailed`` method:
 
 .. code-block:: go
 
@@ -674,7 +669,7 @@ test an exhaustive data will be added.
 	level=info msg=Starting testName=RuntimeKafka
 	level=info msg="Vagrant: running command \"vagrant ssh-config runtime\""
 	cmd: "sudo cilium-dbg status" exitCode: 0
-	 KVStore:            Ok         Consul: 172.17.0.3:8300
+	 KVStore:            Ok         Etcd: 172.17.0.3:4001
 	ContainerRuntime:   Ok
 	Kubernetes:         Disabled
 	Kubernetes APIs:    [""]

@@ -10,9 +10,11 @@ import (
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
 
-// Cancels the deprecation of the specified AMI. For more information, see
-// Deprecate an AMI (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ami-deprecate.html)
-// in the Amazon EC2 User Guide.
+// Cancels the deprecation of the specified AMI.
+//
+// For more information, see [Deprecate an AMI] in the Amazon EC2 User Guide.
+//
+// [Deprecate an AMI]: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ami-deprecate.html
 func (c *Client) DisableImageDeprecation(ctx context.Context, params *DisableImageDeprecationInput, optFns ...func(*Options)) (*DisableImageDeprecationOutput, error) {
 	if params == nil {
 		params = &DisableImageDeprecationInput{}
@@ -108,6 +110,12 @@ func (c *Client) addOperationDisableImageDeprecationMiddlewares(stack *middlewar
 		return err
 	}
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+		return err
+	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
 	if err = addOpDisableImageDeprecationValidationMiddleware(stack); err != nil {

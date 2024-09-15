@@ -192,6 +192,9 @@ spec:
         - --prometheus-serve-addr=:{{ .Values.clustermesh.apiserver.metrics.port }}
         - --controller-group-metrics=all
         {{- end }}
+        {{- if .Values.clustermesh.enableMCSAPISupport }}
+        - --clustermesh-enable-mcs-api
+        {{- end }}
         {{- with .Values.clustermesh.apiserver.extraArgs }}
         {{- toYaml . | trim | nindent 8 }}
         {{- end }}
@@ -207,11 +210,6 @@ spec:
               name: cilium-config
               key: cluster-id
               optional: true
-        - name: IDENTITY_ALLOCATION_MODE
-          valueFrom:
-            configMapKeyRef:
-              name: cilium-config
-              key: identity-allocation-mode
         - name: ENABLE_K8S_ENDPOINT_SLICE
           valueFrom:
             configMapKeyRef:
@@ -398,7 +396,8 @@ spec:
           defaultMode: 0400
       {{- end }}
       - name: etcd-data-dir
-        emptyDir: {}
+        emptyDir:
+          medium: {{ ternary "Memory" "" (eq .Values.clustermesh.apiserver.etcd.storageMedium "Memory") | quote }}
       {{- if .Values.clustermesh.apiserver.kvstoremesh.enabled }}
       - name: kvstoremesh-secrets
         projected:

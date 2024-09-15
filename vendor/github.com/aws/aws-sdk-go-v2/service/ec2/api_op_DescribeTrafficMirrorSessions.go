@@ -37,15 +37,24 @@ type DescribeTrafficMirrorSessionsInput struct {
 	DryRun *bool
 
 	// One or more filters. The possible values are:
+	//
 	//   - description : The Traffic Mirror session description.
+	//
 	//   - network-interface-id : The ID of the Traffic Mirror session network
 	//   interface.
+	//
 	//   - owner-id : The ID of the account that owns the Traffic Mirror session.
+	//
 	//   - packet-length : The assigned number of packets to mirror.
+	//
 	//   - session-number : The assigned session number.
+	//
 	//   - traffic-mirror-filter-id : The ID of the Traffic Mirror filter.
+	//
 	//   - traffic-mirror-session-id : The ID of the Traffic Mirror session.
+	//
 	//   - traffic-mirror-target-id : The ID of the Traffic Mirror target.
+	//
 	//   - virtual-network-id : The virtual network ID of the Traffic Mirror session.
 	Filters []types.Filter
 
@@ -133,6 +142,12 @@ func (c *Client) addOperationDescribeTrafficMirrorSessionsMiddlewares(stack *mid
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
+		return err
+	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opDescribeTrafficMirrorSessions(options.Region), middleware.Before); err != nil {
 		return err
 	}
@@ -153,14 +168,6 @@ func (c *Client) addOperationDescribeTrafficMirrorSessionsMiddlewares(stack *mid
 	}
 	return nil
 }
-
-// DescribeTrafficMirrorSessionsAPIClient is a client that implements the
-// DescribeTrafficMirrorSessions operation.
-type DescribeTrafficMirrorSessionsAPIClient interface {
-	DescribeTrafficMirrorSessions(context.Context, *DescribeTrafficMirrorSessionsInput, ...func(*Options)) (*DescribeTrafficMirrorSessionsOutput, error)
-}
-
-var _ DescribeTrafficMirrorSessionsAPIClient = (*Client)(nil)
 
 // DescribeTrafficMirrorSessionsPaginatorOptions is the paginator options for
 // DescribeTrafficMirrorSessions
@@ -229,6 +236,9 @@ func (p *DescribeTrafficMirrorSessionsPaginator) NextPage(ctx context.Context, o
 	}
 	params.MaxResults = limit
 
+	optFns = append([]func(*Options){
+		addIsPaginatorUserAgent,
+	}, optFns...)
 	result, err := p.client.DescribeTrafficMirrorSessions(ctx, &params, optFns...)
 	if err != nil {
 		return nil, err
@@ -247,6 +257,14 @@ func (p *DescribeTrafficMirrorSessionsPaginator) NextPage(ctx context.Context, o
 
 	return result, nil
 }
+
+// DescribeTrafficMirrorSessionsAPIClient is a client that implements the
+// DescribeTrafficMirrorSessions operation.
+type DescribeTrafficMirrorSessionsAPIClient interface {
+	DescribeTrafficMirrorSessions(context.Context, *DescribeTrafficMirrorSessionsInput, ...func(*Options)) (*DescribeTrafficMirrorSessionsOutput, error)
+}
+
+var _ DescribeTrafficMirrorSessionsAPIClient = (*Client)(nil)
 
 func newServiceMetadataMiddleware_opDescribeTrafficMirrorSessions(region string) *awsmiddleware.RegisterServiceMetadata {
 	return &awsmiddleware.RegisterServiceMetadata{

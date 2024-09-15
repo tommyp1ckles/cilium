@@ -17,6 +17,9 @@ on:
         description: "[JSON object] Arbitrary arguments passed from the trigger comment via regex capture group. Parse with 'fromJson(inputs.extra-args).argName' in workflow."
         required: false
         default: '{}'
+  push:
+    branches:
+      - 'renovate/main-**'
   # Run every 6 hours
   schedule:
     - cron:  '0 1/6 * * *'
@@ -24,6 +27,8 @@ on:
 # By specifying the access of one of the scopes, all of those that are not
 # specified are set to 'none'.
 permissions:
+  # To read actions state with catchpoint/workflow-telemetry-action
+  actions: read
   # To be able to access the repository with actions/checkout
   contents: read
   # To allow retrieving information from the PR API
@@ -45,6 +50,7 @@ concurrency:
     ${{ github.workflow }}
     ${{ github.event_name }}
     ${{
+      (github.event_name == 'push' && github.sha) ||
       (github.event_name == 'schedule' && github.sha) ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.PR-number)
     }}
@@ -79,7 +85,7 @@ jobs:
             SHA="${{ github.sha }}"
             CONTEXT_REF="${{ github.sha }}"
             OWNER="${{ github.ref_name }}"
-            OWNER="${OWNER/./-}"
+            OWNER="${OWNER//[.\/]/-}"
           fi
 
           echo SHA=${SHA} >> $GITHUB_OUTPUT
@@ -108,7 +114,7 @@ jobs:
       # Warning: since this is a privileged workflow, subsequent workflow job
       # steps must take care not to execute untrusted code.
       - name: Checkout pull request branch (NOT TRUSTED)
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
         with:
           ref: ${{ inputs.SHA || github.sha }}
           persist-credentials: false
@@ -123,10 +129,10 @@ jobs:
 
       - name: Install Go
         if: ${{ steps.cache.outputs.cache-hit != 'true' }}
-        uses: actions/setup-go@0c52d547c9bc32b1aa3301fd7a9cb496313a4491 # v5.0.0
+        uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
         with:
           # renovate: datasource=golang-version depName=go
-          go-version: 1.22.2
+          go-version: 1.23.1
 
       - name: Build Ginkgo
         if: ${{ steps.cache.outputs.cache-hit != 'true' }}
@@ -161,7 +167,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout context ref (trusted)
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
         with:
           ref: ${{ inputs.context-ref || github.sha }}
           persist-credentials: false
@@ -169,13 +175,10 @@ jobs:
       - name: Set Environment Variables
         uses: ./.github/actions/set-env-variables
 
-      - name: Wait for images to be available
-        timeout-minutes: 30
-        shell: bash
-        run: |
-          for image in cilium-ci operator-generic-ci hubble-relay-ci ; do
-            until docker manifest inspect quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/$image:${{ needs.setup-vars.outputs.SHA }} &> /dev/null; do sleep 45s; done
-          done
+      - name: Wait for images
+        uses: ./.github/actions/wait-for-images
+        with:
+          SHA: ${{ inputs.SHA }}
 
   generate-matrix:
     name: Generate Job Matrix from YAMLs
@@ -185,7 +188,7 @@ jobs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
       - name: Checkout context ref (trusted)
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
         with:
           ref: ${{ inputs.context-ref || github.sha }}
           persist-credentials: false
@@ -232,8 +235,7 @@ jobs:
 
   setup-and-test:
     needs: [setup-vars, build-ginkgo-binary, generate-matrix, wait-for-images]
-    runs-on:
-      group: ginkgo-runners
+    runs-on: ${{ vars.GH_RUNNER_EXTRA_POWER }}
     timeout-minutes: 45
     name: "E2E Test (${{ matrix.k8s-version }}, ${{matrix.focus}})"
     env:
@@ -250,10 +252,14 @@ jobs:
           comment_on_pr: false
 
       - name: Checkout context ref (trusted)
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
         with:
           ref: ${{ inputs.context-ref || github.sha }}
           persist-credentials: false
+
+      - name: Cleanup Disk space in runner
+        if: runner.name == 'ubuntu-latest'
+        uses: ./.github/actions/disk-cleanup
 
       - name: Set Environment Variables
         uses: ./.github/actions/set-env-variables
@@ -261,17 +267,17 @@ jobs:
       # Warning: since this is a privileged workflow, subsequent workflow job
       # steps must take care not to execute untrusted code.
       - name: Checkout pull request branch (NOT TRUSTED)
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
         with:
           ref: ${{ inputs.SHA || github.sha }}
           persist-credentials: false
 
       - name: Install cilium-cli
-        shell: bash
-        run: |
-          cid=$(docker create quay.io/cilium/cilium-cli-ci:latest ls)
-          docker cp $cid:/usr/local/bin/cilium ./cilium-cli
-          docker rm $cid
+        uses: cilium/cilium-cli@62bd4511031211b50a4623870955a5ad27b43e3b # v0.16.16
+        with:
+          skip-build: ${{ env.CILIUM_CLI_SKIP_BUILD }}
+          ci-version: ${{ env.CILIUM_CLI_VERSION }}
+          binary-dir: '.'
 
       - name: Install helm
         shell: bash
@@ -284,22 +290,25 @@ jobs:
 
       - name: Provision LVH VMs
         id: provision-vh-vms
-        uses: cilium/little-vm-helper@a4311c6d054de3008bdf9195b0fabf6ee60d8bdd # v0.0.17
+        uses: cilium/little-vm-helper@97c89f004bd0ab4caeacfe92ebc956e13e362e6b # v0.0.19
         with:
           test-name: datapath-conformance
           install-dependencies: true
           image-version: ${{ matrix.kernel }}
+          images-folder-parent: "/tmp"
           host-mount: ./
           cpu: 4
           mem: 12G
+          # renovate: datasource=github-tags depName=cilium/little-vm-helper
+          lvh-version: "v0.0.19"
           cmd: |
             git config --global --add safe.directory /host
             mv /host/helm /usr/bin
-            mv /host/cilium-cli /usr/bin
+            mv /host/cilium /usr/bin/cilium-cli
 
       - name: Provision kind
         timeout-minutes: 5
-        uses: cilium/little-vm-helper@a4311c6d054de3008bdf9195b0fabf6ee60d8bdd # v0.0.17
+        uses: cilium/little-vm-helper@97c89f004bd0ab4caeacfe92ebc956e13e362e6b # v0.0.19
         with:
           provision: 'false'
           cmd: |
@@ -312,9 +321,6 @@ jobs:
             else
               ./contrib/scripts/kind.sh "" 1 "" "${{ matrix.kube-image }}" "iptables" "${{ matrix.ip-family }}"
             fi
-            # Some tests using demo-customcalls.yaml are mounting this directoy
-            mkdir -p /home/vagrant/go/src/github.com/cilium
-            ln -s /host /home/vagrant/go/src/github.com/cilium/cilium
             git config --add safe.directory /cilium
 
       # Load Ginkgo build from GitHub
@@ -328,10 +334,10 @@ jobs:
       # Re-build the tests if it was a cache miss.
       - name: Install Go
         if: ${{ steps.cache.outputs.cache-hit != 'true' }}
-        uses: actions/setup-go@0c52d547c9bc32b1aa3301fd7a9cb496313a4491 # v5.0.0
+        uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
         with:
           # renovate: datasource=golang-version depName=go
-          go-version: 1.22.2
+          go-version: 1.23.1
 
       - name: Build Ginkgo
         if: ${{ steps.cache.outputs.cache-hit != 'true' }}
@@ -368,7 +374,7 @@ jobs:
       - name: Run tests
         id: run-tests
         timeout-minutes: 40
-        uses: cilium/little-vm-helper@a4311c6d054de3008bdf9195b0fabf6ee60d8bdd # v0.0.17
+        uses: cilium/little-vm-helper@97c89f004bd0ab4caeacfe92ebc956e13e362e6b # v0.0.19
         with:
           provision: 'false'
           cmd: |
@@ -406,7 +412,7 @@ jobs:
              -cilium.hubble-relay-tag=${{ needs.setup-vars.outputs.SHA }} \
              -cilium.kubeconfig=/root/.kube/config \
              -cilium.provision-k8s=false \
-             -cilium.operator-suffix=-ci"
+             -cilium.operator-suffix=-ci ${{ env.CILIUM_GINKGO_EXTRA_ARGS }}"
 
               ./test.test \
                --ginkgo.focus="${{ matrix.cliFocus }}" \
@@ -422,11 +428,11 @@ jobs:
                -cilium.hubble-relay-tag=${{ needs.setup-vars.outputs.SHA }} \
                -cilium.kubeconfig=/root/.kube/config \
                -cilium.provision-k8s=false \
-               -cilium.operator-suffix=-ci
+               -cilium.operator-suffix=-ci ${{ env.CILIUM_GINKGO_EXTRA_ARGS }}
 
       - name: Fetch artifacts
         if: ${{ !success() && steps.provision-vh-vms.outcome == 'success' }}
-        uses: cilium/little-vm-helper@a4311c6d054de3008bdf9195b0fabf6ee60d8bdd # v0.0.17
+        uses: cilium/little-vm-helper@97c89f004bd0ab4caeacfe92ebc956e13e362e6b # v0.0.19
         with:
           provision: 'false'
           cmd: |
@@ -436,7 +442,7 @@ jobs:
 
       - name: Upload artifacts
         if: ${{ !success() }}
-        uses: actions/upload-artifact@1746f4ab65b179e0ea60a494b83293b640dd5bba # v4.3.2
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: cilium-sysdumps-${{ matrix.k8s-version }}-${{matrix.focus}}
           path: |
@@ -455,7 +461,7 @@ jobs:
 
       - name: Upload JUnits [junit]
         if: ${{ always() }}
-        uses: actions/upload-artifact@1746f4ab65b179e0ea60a494b83293b640dd5bba # v4.3.2
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: cilium-junits-${{ matrix.k8s-version }}-${{matrix.focus}}
           path: cilium-junits/*.xml
@@ -474,7 +480,7 @@ jobs:
     steps:
       - name: Merge Sysdumps
         if: ${{ needs.setup-and-test.result == 'failure' }}
-        uses: actions/upload-artifact/merge@1746f4ab65b179e0ea60a494b83293b640dd5bba # v4.3.2
+        uses: actions/upload-artifact/merge@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: cilium-sysdumps
           pattern: cilium-sysdumps-*
@@ -482,7 +488,7 @@ jobs:
           delete-merged: true
         continue-on-error: true
       - name: Merge JUnits
-        uses: actions/upload-artifact/merge@1746f4ab65b179e0ea60a494b83293b640dd5bba # v4.3.2
+        uses: actions/upload-artifact/merge@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: cilium-junits
           pattern: cilium-junits-*

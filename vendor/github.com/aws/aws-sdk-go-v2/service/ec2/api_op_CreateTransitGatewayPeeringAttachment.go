@@ -13,9 +13,10 @@ import (
 
 // Requests a transit gateway peering attachment between the specified transit
 // gateway (requester) and a peer transit gateway (accepter). The peer transit
-// gateway can be in your account or a different Amazon Web Services account. After
-// you create the peering attachment, the owner of the accepter transit gateway
-// must accept the attachment request.
+// gateway can be in your account or a different Amazon Web Services account.
+//
+// After you create the peering attachment, the owner of the accepter transit
+// gateway must accept the attachment request.
 func (c *Client) CreateTransitGatewayPeeringAttachment(ctx context.Context, params *CreateTransitGatewayPeeringAttachmentInput, optFns ...func(*Options)) (*CreateTransitGatewayPeeringAttachmentOutput, error) {
 	if params == nil {
 		params = &CreateTransitGatewayPeeringAttachmentInput{}
@@ -132,6 +133,12 @@ func (c *Client) addOperationCreateTransitGatewayPeeringAttachmentMiddlewares(st
 		return err
 	}
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+		return err
+	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
 	if err = addOpCreateTransitGatewayPeeringAttachmentValidationMiddleware(stack); err != nil {

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -20,14 +21,12 @@ import (
 	. "github.com/onsi/gomega"
 	"golang.org/x/sys/unix"
 
-	"github.com/cilium/cilium/pkg/rand"
 	"github.com/cilium/cilium/pkg/versioncheck"
 	"github.com/cilium/cilium/test/config"
 	ginkgoext "github.com/cilium/cilium/test/ginkgo-ext"
 )
 
-// ensure that our random numbers are seeded differently on each run
-var randGen = rand.NewSafeRand(time.Now().UnixNano())
+var runningCiliumVersion string
 
 // IsRunningOnJenkins detects if the currently running Ginkgo application is
 // most likely running in a Jenkins environment. Returns true if certain
@@ -44,7 +43,39 @@ func IsRunningOnJenkins() bool {
 			log.Infof("build is not running on Jenkins; environment variable '%v' is not set", varName)
 		}
 	}
+	if result {
+		panic("Jenkins is no longer supported")
+	}
 	return result
+}
+
+// SetCiliumVersion sets the currently running cilium version
+// and returns a function that unsets it.
+func SetRunningCiliumVersion(v string) func() {
+	runningCiliumVersion = v
+	return func() {
+		runningCiliumVersion = ""
+	}
+}
+
+// GetRunningCiliumVersion gets the currently running cilium version.
+func GetRunningCiliumVersion() string {
+	return runningCiliumVersion
+}
+
+// HasNewServiceOutput checks to see if the current running cilium
+// version uses the old style service output (e.g. "0.0.0.0:53") vs
+// the new style (e.g. "0.0.0.0:53/TCP").
+func HasNewServiceOutput(ver string) bool {
+	cst, err := versioncheck.Version(ver)
+	// If the version is not parseable it is probably
+	// someone's custom build  or not set.
+	// Either way, it is probably using the new output
+	// format.
+	if err != nil {
+		return true
+	}
+	return versioncheck.MustCompile(">=1.17.0")(cst)
 }
 
 // Sleep sleeps for the specified duration in seconds
@@ -67,7 +98,7 @@ func CountValues(key string, data []string) (int, int) {
 
 // MakeUID returns a randomly generated string.
 func MakeUID() string {
-	return fmt.Sprintf("%08x", randGen.Uint32())
+	return fmt.Sprintf("%08x", rand.Uint32())
 }
 
 // RenderTemplate renders a text/template string into a buffer.
@@ -203,6 +234,7 @@ func GetAppPods(apps []string, namespace string, kubectl *Kubectl, appFmt string
 		res, err := kubectl.GetPodNames(namespace, fmt.Sprintf("%s=%s", appFmt, v))
 		Expect(err).Should(BeNil())
 		Expect(res).Should(Not(BeNil()))
+		Expect(len(res)).To(BeNumerically(">", 0))
 		appPods[v] = res[0]
 		log.Infof("GetAppPods: pod=%q assigned to %q", res[0], v)
 	}
@@ -414,6 +446,8 @@ func getK8sSupportedConstraints(ciliumVersion string) (semver.Range, error) {
 		return nil, err
 	}
 	switch {
+	case IsCiliumV1_17(cst):
+		return versioncheck.MustCompile(">=1.16.0 <1.32.0"), nil
 	case IsCiliumV1_16(cst):
 		return versioncheck.MustCompile(">=1.16.0 <1.31.0"), nil
 	case IsCiliumV1_15(cst):
@@ -604,10 +638,6 @@ func ExistNodeWithoutCilium() bool {
 // DoesNotExistNodeWithoutCilium is the complement function of ExistNodeWithoutCilium.
 func DoesNotExistNodeWithoutCilium() bool {
 	return !ExistNodeWithoutCilium()
-}
-
-func RunsOnJenkins() bool {
-	return os.Getenv("JENKINS_HOME") != ""
 }
 
 // HasSocketLB returns true if the given Cilium pod has TCP and/or

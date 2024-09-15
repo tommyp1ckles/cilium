@@ -12,9 +12,11 @@ import (
 )
 
 // Describes the specified attribute of the specified volume. You can specify only
-// one attribute at a time. For more information about EBS volumes, see Amazon EBS
-// volumes (https://docs.aws.amazon.com/ebs/latest/userguide/ebs-volumes.html) in
-// the Amazon EBS User Guide.
+// one attribute at a time.
+//
+// For more information about EBS volumes, see [Amazon EBS volumes] in the Amazon EBS User Guide.
+//
+// [Amazon EBS volumes]: https://docs.aws.amazon.com/ebs/latest/userguide/ebs-volumes.html
 func (c *Client) DescribeVolumeAttribute(ctx context.Context, params *DescribeVolumeAttributeInput, optFns ...func(*Options)) (*DescribeVolumeAttributeOutput, error) {
 	if params == nil {
 		params = &DescribeVolumeAttributeInput{}
@@ -121,6 +123,12 @@ func (c *Client) addOperationDescribeVolumeAttributeMiddlewares(stack *middlewar
 		return err
 	}
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+		return err
+	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
 	if err = addOpDescribeVolumeAttributeValidationMiddleware(stack); err != nil {

@@ -21,6 +21,7 @@ var Cell = cell.Module(
 	"node-manager",
 	"Manages the collection of Cilium nodes",
 	cell.Provide(newAllNodeManager),
+	cell.Provide(newGetClusterNodesRestAPIHandler),
 	metrics.Metric(NewNodeMetrics),
 )
 
@@ -59,6 +60,8 @@ type NodeManager interface {
 
 	// NodeSync is called when the store completes the initial nodes listing
 	NodeSync()
+	// MeshNodeSync is called when the store completes the initial nodes listing including meshed nodes
+	MeshNodeSync()
 
 	// ClusterSizeDependantInterval returns a time.Duration that is dependent on
 	// the cluster size, i.e. the number of nodes that have been discovered. This
@@ -83,7 +86,8 @@ func newAllNodeManager(in struct {
 	IPSetFilter IPSetFilterFn `optional:"true"`
 	NodeMetrics *nodeMetrics
 	Health      cell.Health
-}) (NodeManager, error) {
+},
+) (NodeManager, error) {
 	mngr, err := New(option.Config, in.IPCache, in.IPSetMgr, in.IPSetFilter, in.NodeMetrics, in.Health)
 	if err != nil {
 		return nil, err

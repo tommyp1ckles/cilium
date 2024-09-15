@@ -13,11 +13,14 @@ import (
 
 // Get a list of all the CIDR allocations in an IPAM pool. The Region you use
 // should be the IPAM pool locale. The locale is the Amazon Web Services Region
-// where this IPAM pool is available for allocations. If you use this action after
-// AllocateIpamPoolCidr (https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_AllocateIpamPoolCidr.html)
-// or ReleaseIpamPoolAllocation (https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_ReleaseIpamPoolAllocation.html)
-// , note that all EC2 API actions follow an eventual consistency (https://docs.aws.amazon.com/AWSEC2/latest/APIReference/query-api-troubleshooting.html#eventual-consistency)
+// where this IPAM pool is available for allocations.
+//
+// If you use this action after [AllocateIpamPoolCidr] or [ReleaseIpamPoolAllocation], note that all EC2 API actions follow an [eventual consistency]
 // model.
+//
+// [ReleaseIpamPoolAllocation]: https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_ReleaseIpamPoolAllocation.html
+// [AllocateIpamPoolCidr]: https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_AllocateIpamPoolCidr.html
+// [eventual consistency]: https://docs.aws.amazon.com/ec2/latest/devguide/eventual-consistency.html
 func (c *Client) GetIpamPoolAllocations(ctx context.Context, params *GetIpamPoolAllocationsInput, optFns ...func(*Options)) (*GetIpamPoolAllocationsOutput, error) {
 	if params == nil {
 		params = &GetIpamPoolAllocationsInput{}
@@ -46,9 +49,9 @@ type GetIpamPoolAllocationsInput struct {
 	// UnauthorizedOperation .
 	DryRun *bool
 
-	// One or more filters for the request. For more information about filtering, see
-	// Filtering CLI output (https://docs.aws.amazon.com/cli/latest/userguide/cli-usage-filter.html)
-	// .
+	// One or more filters for the request. For more information about filtering, see [Filtering CLI output].
+	//
+	// [Filtering CLI output]: https://docs.aws.amazon.com/cli/latest/userguide/cli-usage-filter.html
 	Filters []types.Filter
 
 	// The ID of the allocation.
@@ -133,6 +136,12 @@ func (c *Client) addOperationGetIpamPoolAllocationsMiddlewares(stack *middleware
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
+		return err
+	}
 	if err = addOpGetIpamPoolAllocationsValidationMiddleware(stack); err != nil {
 		return err
 	}
@@ -156,14 +165,6 @@ func (c *Client) addOperationGetIpamPoolAllocationsMiddlewares(stack *middleware
 	}
 	return nil
 }
-
-// GetIpamPoolAllocationsAPIClient is a client that implements the
-// GetIpamPoolAllocations operation.
-type GetIpamPoolAllocationsAPIClient interface {
-	GetIpamPoolAllocations(context.Context, *GetIpamPoolAllocationsInput, ...func(*Options)) (*GetIpamPoolAllocationsOutput, error)
-}
-
-var _ GetIpamPoolAllocationsAPIClient = (*Client)(nil)
 
 // GetIpamPoolAllocationsPaginatorOptions is the paginator options for
 // GetIpamPoolAllocations
@@ -229,6 +230,9 @@ func (p *GetIpamPoolAllocationsPaginator) NextPage(ctx context.Context, optFns .
 	}
 	params.MaxResults = limit
 
+	optFns = append([]func(*Options){
+		addIsPaginatorUserAgent,
+	}, optFns...)
 	result, err := p.client.GetIpamPoolAllocations(ctx, &params, optFns...)
 	if err != nil {
 		return nil, err
@@ -247,6 +251,14 @@ func (p *GetIpamPoolAllocationsPaginator) NextPage(ctx context.Context, optFns .
 
 	return result, nil
 }
+
+// GetIpamPoolAllocationsAPIClient is a client that implements the
+// GetIpamPoolAllocations operation.
+type GetIpamPoolAllocationsAPIClient interface {
+	GetIpamPoolAllocations(context.Context, *GetIpamPoolAllocationsInput, ...func(*Options)) (*GetIpamPoolAllocationsOutput, error)
+}
+
+var _ GetIpamPoolAllocationsAPIClient = (*Client)(nil)
 
 func newServiceMetadataMiddleware_opGetIpamPoolAllocations(region string) *awsmiddleware.RegisterServiceMetadata {
 	return &awsmiddleware.RegisterServiceMetadata{

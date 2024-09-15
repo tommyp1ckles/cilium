@@ -9,11 +9,12 @@ package endpoint
 import (
 	"context"
 	"fmt"
-	"net/netip"
+	"slices"
 	"sort"
 	"strconv"
 
 	"github.com/sirupsen/logrus"
+	"go4.org/netipx"
 
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/endpoint/regeneration"
@@ -52,14 +53,6 @@ func (e *Endpoint) GetLabelsModel() (*models.LabelConfiguration, error) {
 	return &cfg, nil
 }
 
-func parsePrefixOrAddr(ip string) (netip.Addr, error) {
-	prefix, err := netip.ParsePrefix(ip)
-	if err != nil {
-		return netip.ParseAddr(ip)
-	}
-	return prefix.Addr(), nil
-}
-
 // NewEndpointFromChangeModel creates a new endpoint from a request
 func NewEndpointFromChangeModel(ctx context.Context, owner regeneration.Owner, policyGetter policyRepoGetter, namedPortsGetter namedPortsGetter, proxy EndpointProxy, allocator cache.IdentityAllocator, base *models.EndpointChangeRequest) (*Endpoint, error) {
 	if base == nil {
@@ -79,6 +72,7 @@ func NewEndpointFromChangeModel(ctx context.Context, owner regeneration.Owner, p
 	ep.dockerEndpointID = base.DockerEndpointID
 	ep.K8sPodName = base.K8sPodName
 	ep.K8sNamespace = base.K8sNamespace
+	ep.K8sUID = base.K8sUID
 	ep.disableLegacyIdentifiers = base.DisableLegacyIdentifiers
 
 	if base.Mac != "" {
@@ -114,7 +108,7 @@ func NewEndpointFromChangeModel(ctx context.Context, owner regeneration.Owner, p
 
 	if base.Addressing != nil {
 		if ip := base.Addressing.IPV6; ip != "" {
-			ip6, err := parsePrefixOrAddr(ip)
+			ip6, err := netipx.ParsePrefixOrAddr(ip)
 			if err != nil {
 				return nil, err
 			}
@@ -126,7 +120,7 @@ func NewEndpointFromChangeModel(ctx context.Context, owner regeneration.Owner, p
 		}
 
 		if ip := base.Addressing.IPV4; ip != "" {
-			ip4, err := parsePrefixOrAddr(ip)
+			ip4, err := netipx.ParsePrefixOrAddr(ip)
 			if err != nil {
 				return nil, err
 			}
@@ -346,7 +340,7 @@ func (e *Endpoint) getNamedPortsModel() (np models.NamedPorts) {
 	for name := range k8sPorts {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 
 	np = make(models.NamedPorts, 0, len(k8sPorts))
 	for _, name := range names {
@@ -551,7 +545,7 @@ func (e *Endpoint) ProcessChangeRequest(newEp *Endpoint, validPatchTransitionSta
 	rev := e.replaceIdentityLabels(labels.LabelSourceAny, newEp.OpLabels.IdentityLabels())
 	if rev != 0 {
 		// Run as a goroutine since the runIdentityResolver needs to get the lock
-		go e.runIdentityResolver(e.aliveCtx, rev, false)
+		go e.runIdentityResolver(e.aliveCtx, false)
 	}
 
 	// If desired state is waiting-for-identity but identity is already
@@ -581,8 +575,8 @@ func (e *Endpoint) ProcessChangeRequest(newEp *Endpoint, validPatchTransitionSta
 		default:
 			// Caller skips regeneration if reason == "". Bump the skipped regeneration level so that next
 			// regeneration will realise endpoint changes.
-			if e.skippedRegenerationLevel < regeneration.RegenerateWithDatapathRewrite {
-				e.skippedRegenerationLevel = regeneration.RegenerateWithDatapathRewrite
+			if e.skippedRegenerationLevel < regeneration.RegenerateWithDatapath {
+				e.skippedRegenerationLevel = regeneration.RegenerateWithDatapath
 			}
 		}
 	}

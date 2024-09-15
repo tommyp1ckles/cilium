@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/sirupsen/logrus"
@@ -108,6 +107,10 @@ var (
 	// LabelIngress is the label used for Ingress proxies. See comment
 	// on IDNameIngress.
 	LabelIngress = Labels{IDNameIngress: NewLabel(IDNameIngress, "", LabelSourceReserved)}
+
+	// LabelKeyFixedIdentity is the label that can be used to define a fixed
+	// identity.
+	LabelKeyFixedIdentity = "io.cilium.fixed-identity"
 )
 
 const (
@@ -141,12 +144,14 @@ const (
 	// LabelSourceNode is the label source for remote-nodes.
 	LabelSourceNode = "node"
 
+	// LabelSourceFQDN is the label source for IPs resolved by fqdn lookups
+	LabelSourceFQDN = "fqdn"
+
 	// LabelSourceReservedKeyPrefix is the prefix of a reserved label
 	LabelSourceReservedKeyPrefix = LabelSourceReserved + "."
 
-	// LabelKeyFixedIdentity is the label that can be used to define a fixed
-	// identity.
-	LabelKeyFixedIdentity = "io.cilium.fixed-identity"
+	// LabelSourceDirectory is the label source for policies read from files
+	LabelSourceDirectory = "directory"
 )
 
 // Label is the Cilium's representation of a container label.
@@ -166,6 +171,60 @@ type Label struct {
 // Labels is a map of labels where the map's key is the same as the label's key.
 type Labels map[string]Label
 
+//
+// Convenience functions to use instead of Has(), which iterates through the labels
+//
+
+// HasLabelWithKey returns true if lbls has a label with 'key'
+func (l Labels) HasLabelWithKey(key string) bool {
+	_, ok := l[key]
+	return ok
+}
+
+func (l Labels) HasFixedIdentityLabel() bool {
+	return l.HasLabelWithKey(LabelKeyFixedIdentity)
+}
+
+func (l Labels) HasInitLabel() bool {
+	return l.HasLabelWithKey(IDNameInit)
+}
+
+func (l Labels) HasHealthLabel() bool {
+	return l.HasLabelWithKey(IDNameHealth)
+}
+
+func (l Labels) HasIngressLabel() bool {
+	return l.HasLabelWithKey(IDNameIngress)
+}
+
+func (l Labels) HasHostLabel() bool {
+	return l.HasLabelWithKey(IDNameHost)
+}
+
+func (l Labels) HasKubeAPIServerLabel() bool {
+	return l.HasLabelWithKey(IDNameKubeAPIServer)
+}
+
+func (l Labels) HasRemoteNodeLabel() bool {
+	return l.HasLabelWithKey(IDNameRemoteNode)
+}
+
+func (l Labels) HasWorldIPv6Label() bool {
+	return l.HasLabelWithKey(IDNameWorldIPv6)
+}
+
+func (l Labels) HasWorldIPv4Label() bool {
+	return l.HasLabelWithKey(IDNameWorldIPv4)
+}
+
+func (l Labels) HasNonDualstackWorldLabel() bool {
+	return l.HasLabelWithKey(IDNameWorld)
+}
+
+func (l Labels) HasWorldLabel() bool {
+	return l.HasNonDualstackWorldLabel() || l.HasWorldIPv4Label() || l.HasWorldIPv6Label()
+}
+
 // GetPrintableModel turns the Labels into a sorted list of strings
 // representing the labels.
 func (l Labels) GetPrintableModel() (res []string) {
@@ -184,7 +243,7 @@ func (l Labels) GetPrintableModel() (res []string) {
 		}
 	}
 
-	sort.Strings(res)
+	slices.Sort(res)
 	return res
 }
 
@@ -641,12 +700,7 @@ func (l Labels) FindReserved() Labels {
 
 // IsReserved returns true if any of the labels has a reserved source.
 func (l Labels) IsReserved() bool {
-	for _, lbl := range l {
-		if lbl.Source == LabelSourceReserved {
-			return true
-		}
-	}
-	return false
+	return l.HasSource(LabelSourceReserved)
 }
 
 // Has returns true if l contains the given label.
@@ -657,6 +711,25 @@ func (l Labels) Has(label Label) bool {
 		}
 	}
 	return false
+}
+
+// HasSource returns true if l contains the given label source.
+func (l Labels) HasSource(source string) bool {
+	for _, lbl := range l {
+		if lbl.Source == source {
+			return true
+		}
+	}
+	return false
+}
+
+// CollectSources returns all distinct label sources found in l
+func (l Labels) CollectSources() map[string]struct{} {
+	sources := make(map[string]struct{})
+	for _, lbl := range l {
+		sources[lbl.Source] = struct{}{}
+	}
+	return sources
 }
 
 // parseSource returns the parsed source of the given str. It also returns the next piece

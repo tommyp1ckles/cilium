@@ -1,13 +1,14 @@
 # Copyright Authors of Cilium
 # SPDX-License-Identifier: Apache-2.0
 
-ARG CILIUM_BUILDER_IMAGE=quay.io/cilium/cilium-builder:bcf26b2fb0be1bccdb0bacf0c29fcb5530eb5997@sha256:45e22e685599cfdfbf9d2f0fce9635b3fc599f97c23dc541351d637e9563127c
-ARG CILIUM_RUNTIME_IMAGE=quay.io/cilium/cilium-runtime:0615d2db1a5616db6ebe0d467da69bfc2b552427@sha256:60d433ea2d8cbe9712205323fe00cfd76a210ef0115216dbdd9f22603136e9a4
-ARG CILIUM_ENVOY_IMAGE=quay.io/cilium/cilium-envoy:v1.29.4-174c6af504235ce8f4ce998f98cac88c50202d29@sha256:3c5494946d3d72873d0a40408dba95ed35ee9ed39fbbe46ea031cfbf21c8bc7e
-
+ARG CILIUM_BUILDER_IMAGE=quay.io/cilium/cilium-builder:7b694b39bba39384642c6a174fe01761d022acb8@sha256:f5deee48758307a379db2d0eace398b51869a30c940c56d161930609ddc7b385
+ARG CILIUM_RUNTIME_IMAGE=quay.io/cilium/cilium-runtime:85aff327b358b84ecea2e06e1aebc5f8ad2b0d2b@sha256:7666e657b917f1cc1001ec2aa11f3b65bc67010568f29f0bd183e6efffa761e1
+#
 # cilium-envoy from github.com/cilium/proxy
 #
-FROM ${CILIUM_ENVOY_IMAGE} as cilium-envoy
+ARG CILIUM_ENVOY_IMAGE=quay.io/cilium/cilium-envoy:v1.30.4-1725856146-ae435a5bef3856f4de98fa360ecfa6a0f5b0f7a1@sha256:f9c2a725a702d9fe4a4e038588a79e72955cf46c789914f940d906d65e92527e
+
+FROM ${CILIUM_ENVOY_IMAGE} AS cilium-envoy
 
 #
 # Cilium incremental build. Should be fast given builder-deps is up-to-date!
@@ -19,18 +20,14 @@ FROM ${CILIUM_ENVOY_IMAGE} as cilium-envoy
 # versions to be built while allowing the new versions to make changes
 # that are not backwards compatible.
 #
-FROM --platform=${BUILDPLATFORM} ${CILIUM_BUILDER_IMAGE} as builder
+FROM --platform=${BUILDPLATFORM} ${CILIUM_BUILDER_IMAGE} AS builder
 
 # TARGETOS is an automatic platform ARG enabled by Docker BuildKit.
 ARG TARGETOS
 # TARGETARCH is an automatic platform ARG enabled by Docker BuildKit.
 ARG TARGETARCH
-ARG NOSTRIP
-ARG NOOPT
-ARG LOCKDEBUG
-ARG RACE
-ARG V
-ARG LIBNETWORK_PLUGIN
+# MODIFIERS are extra arguments to be passed to make at build time.
+ARG MODIFIERS
 
 #
 # Please do not add any dependency updates before the 'make install' here,
@@ -38,20 +35,34 @@ ARG LIBNETWORK_PLUGIN
 #
 WORKDIR /go/src/github.com/cilium/cilium
 RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium --mount=target=/root/.cache,type=cache --mount=target=/go/pkg,type=cache \
-    make GOARCH=${TARGETARCH} RACE=${RACE} NOSTRIP=${NOSTRIP} NOOPT=${NOOPT} LOCKDEBUG=${LOCKDEBUG} PKG_BUILD=1 V=${V} LIBNETWORK_PLUGIN=${LIBNETWORK_PLUGIN} \
-    DESTDIR=/tmp/install/${TARGETOS}/${TARGETARCH} build-container install-container-binary
+    make GOARCH=${TARGETARCH} DESTDIR=/tmp/install/${TARGETOS}/${TARGETARCH} PKG_BUILD=1 ${MODIFIERS} \
+    build-container install-container-binary
 
 RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium --mount=target=/root/.cache,type=cache --mount=target=/go/pkg,type=cache \
     # install-bash-completion will execute the bash_completion script. It is
     # fine to run this with same architecture as BUILDARCH since the output of
     # bash_completion is the same for both architectures.
-    make GOARCH=${BUILDARCH} RACE=${RACE} NOSTRIP=${NOSTRIP} NOOPT=${NOOPT} LOCKDEBUG=${LOCKDEBUG} PKG_BUILD=1 V=${V} LIBNETWORK_PLUGIN=${LIBNETWORK_PLUGIN} \
-    DESTDIR=/tmp/install/${TARGETOS}/${TARGETARCH} install-bash-completion licenses-all && \
+    make GOARCH=${BUILDARCH} DESTDIR=/tmp/install/${TARGETOS}/${TARGETARCH} PKG_BUILD=1 ${MODIFIERS} \
+    install-bash-completion licenses-all && \
     mv LICENSE.all /tmp/install/${TARGETOS}/${TARGETARCH}/LICENSE.all && \
     mkdir -p /tmp/hubble/${TARGETOS}/${TARGETARCH} && \
     cd hubble && \
     make GOOS=${TARGETOS} GOARCH=${TARGETARCH} && \
     mv hubble /tmp/hubble/${TARGETOS}/${TARGETARCH}/hubble
+
+# Extract debug symbols to /tmp/debug and strip the binaries if NOSTRIP is not set.
+RUN set -xe && \
+    export D=/tmp/debug/${TARGETOS}/${TARGETARCH} && \
+    mkdir -p $D && \
+    cd /tmp/install/${TARGETOS}/${TARGETARCH} && \
+    find . -type f \
+      -executable \
+      -exec sh -c \
+        'filename=$(basename ${0}) && \
+         objcopy --only-keep-debug ${0} ${0}.debug && \
+         if [ "$NOSTRIP" != "1" ] ; then objcopy --strip-all ${0} && (cd $(dirname ${0}) && objcopy --add-gnu-debuglink=${filename}.debug ${filename}) ; fi && \
+         mv -v ${0}.debug ${D}/${filename}.debug' \
+      {} \;
 
 COPY images/cilium/init-container.sh \
      plugins/cilium-cni/install-plugin.sh \
@@ -68,7 +79,7 @@ COPY images/cilium/init-container.sh \
 # built while allowing the new versions to make changes that are not
 # backwards compatible.
 #
-FROM ${CILIUM_RUNTIME_IMAGE} as release
+FROM ${CILIUM_RUNTIME_IMAGE} AS release
 # TARGETOS is an automatic platform ARG enabled by Docker BuildKit.
 ARG TARGETOS
 # TARGETARCH is an automatic platform ARG enabled by Docker BuildKit.
@@ -96,7 +107,7 @@ CMD ["/usr/bin/cilium-dbg"]
 # image, install delve debugger and wrap the cilium-agent binary calls
 # with a script that automatically provisions the debugger on a
 # dedicated port.
-FROM release as debug
+FROM release AS debug
 # TARGETOS is an automatic platform ARG enabled by Docker BuildKit.
 ARG TARGETOS
 # TARGETARCH is an automatic platform ARG enabled by Docker BuildKit.
@@ -106,3 +117,12 @@ ENV DEBUG_HOLD=${DEBUG_HOLD}
 COPY --from=builder /tmp/install/${TARGETOS}/${TARGETARCH}/usr/bin/cilium-agent /usr/bin/cilium-agent-bin
 COPY --from=builder /go/bin/dlv /usr/bin/dlv
 COPY --from=builder /out/${TARGETOS}/${TARGETARCH}/bin/debug-wrapper /usr/bin/cilium-agent
+
+# Copy in the debug symbols in case the binaries were stripped
+COPY --from=builder /tmp/debug/${TARGETOS}/${TARGETARCH} /usr/lib/debug
+
+# Ensure dlv finds the debug symbols. Due to CGO_ENABLED=0, we have no GNU build-id, so Delve's default search path
+# is insufficient.
+RUN mkdir -p ${HOME}/.config/dlv && \
+    echo 'debug-info-directories: ["/usr/lib/debug/.build-id","/usr/lib/debug"]' > ${HOME}/.config/dlv/config.yml && \
+    ln -s /usr/lib/debug/cilium-agent.debug /usr/lib/debug/cilium-agent-bin.debug

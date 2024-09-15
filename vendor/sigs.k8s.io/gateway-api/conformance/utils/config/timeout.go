@@ -19,6 +19,10 @@ package config
 import "time"
 
 type TimeoutConfig struct {
+	// TestIsolation represents the time block between test cases to enhance test isolation.
+	// Max value for conformant implementation: None
+	TestIsolation time.Duration
+
 	// CreateTimeout represents the maximum time for a Kubernetes object to be created.
 	// Max value for conformant implementation: None
 	CreateTimeout time.Duration
@@ -91,6 +95,9 @@ type TimeoutConfig struct {
 	// Max value for conformant implementation: None
 	LatestObservedGenerationSet time.Duration
 
+	// DefaultTestTimeout is the default amount of time to wait for a test to complete
+	DefaultTestTimeout time.Duration
+
 	// RequiredConsecutiveSuccesses is the number of requests that must succeed in a row
 	// to consider a response "consistent" before making additional assertions on the response body.
 	// If this number is not reached within MaxTimeToConsistency, the test will fail.
@@ -117,6 +124,7 @@ func DefaultTimeoutConfig() TimeoutConfig {
 		NamespacesMustBeReady:              300 * time.Second,
 		RequestTimeout:                     10 * time.Second,
 		LatestObservedGenerationSet:        60 * time.Second,
+		DefaultTestTimeout:                 60 * time.Second,
 		RequiredConsecutiveSuccesses:       3,
 	}
 }
@@ -173,5 +181,8 @@ func SetupTimeoutConfig(timeoutConfig *TimeoutConfig) {
 	}
 	if timeoutConfig.TLSRouteMustHaveCondition == 0 {
 		timeoutConfig.TLSRouteMustHaveCondition = defaultTimeoutConfig.TLSRouteMustHaveCondition
+	}
+	if timeoutConfig.DefaultTestTimeout == 0 {
+		timeoutConfig.DefaultTestTimeout = defaultTimeoutConfig.DefaultTestTimeout
 	}
 }

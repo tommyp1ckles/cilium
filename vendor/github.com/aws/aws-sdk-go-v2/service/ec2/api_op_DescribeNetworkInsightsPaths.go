@@ -36,22 +36,33 @@ type DescribeNetworkInsightsPathsInput struct {
 	DryRun *bool
 
 	// The filters. The following are the possible values:
+	//
 	//   - destination - The ID of the resource.
+	//
 	//   - filter-at-source.source-address - The source IPv4 address at the source.
+	//
 	//   - filter-at-source.source-port-range - The source port range at the source.
+	//
 	//   - filter-at-source.destination-address - The destination IPv4 address at the
 	//   source.
+	//
 	//   - filter-at-source.destination-port-range - The destination port range at the
 	//   source.
+	//
 	//   - filter-at-destination.source-address - The source IPv4 address at the
 	//   destination.
+	//
 	//   - filter-at-destination.source-port-range - The source port range at the
 	//   destination.
+	//
 	//   - filter-at-destination.destination-address - The destination IPv4 address at
 	//   the destination.
+	//
 	//   - filter-at-destination.destination-port-range - The destination port range
 	//   at the destination.
+	//
 	//   - protocol - The protocol.
+	//
 	//   - source - The ID of the resource.
 	Filters []types.Filter
 
@@ -138,6 +149,12 @@ func (c *Client) addOperationDescribeNetworkInsightsPathsMiddlewares(stack *midd
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
+		return err
+	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opDescribeNetworkInsightsPaths(options.Region), middleware.Before); err != nil {
 		return err
 	}
@@ -158,14 +175,6 @@ func (c *Client) addOperationDescribeNetworkInsightsPathsMiddlewares(stack *midd
 	}
 	return nil
 }
-
-// DescribeNetworkInsightsPathsAPIClient is a client that implements the
-// DescribeNetworkInsightsPaths operation.
-type DescribeNetworkInsightsPathsAPIClient interface {
-	DescribeNetworkInsightsPaths(context.Context, *DescribeNetworkInsightsPathsInput, ...func(*Options)) (*DescribeNetworkInsightsPathsOutput, error)
-}
-
-var _ DescribeNetworkInsightsPathsAPIClient = (*Client)(nil)
 
 // DescribeNetworkInsightsPathsPaginatorOptions is the paginator options for
 // DescribeNetworkInsightsPaths
@@ -234,6 +243,9 @@ func (p *DescribeNetworkInsightsPathsPaginator) NextPage(ctx context.Context, op
 	}
 	params.MaxResults = limit
 
+	optFns = append([]func(*Options){
+		addIsPaginatorUserAgent,
+	}, optFns...)
 	result, err := p.client.DescribeNetworkInsightsPaths(ctx, &params, optFns...)
 	if err != nil {
 		return nil, err
@@ -252,6 +264,14 @@ func (p *DescribeNetworkInsightsPathsPaginator) NextPage(ctx context.Context, op
 
 	return result, nil
 }
+
+// DescribeNetworkInsightsPathsAPIClient is a client that implements the
+// DescribeNetworkInsightsPaths operation.
+type DescribeNetworkInsightsPathsAPIClient interface {
+	DescribeNetworkInsightsPaths(context.Context, *DescribeNetworkInsightsPathsInput, ...func(*Options)) (*DescribeNetworkInsightsPathsOutput, error)
+}
+
+var _ DescribeNetworkInsightsPathsAPIClient = (*Client)(nil)
 
 func newServiceMetadataMiddleware_opDescribeNetworkInsightsPaths(region string) *awsmiddleware.RegisterServiceMetadata {
 	return &awsmiddleware.RegisterServiceMetadata{

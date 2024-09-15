@@ -9,6 +9,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/hivetest"
+	"github.com/cilium/statedb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vishvananda/netlink"
@@ -28,7 +31,6 @@ import (
 	"github.com/cilium/cilium/pkg/datapath/tables"
 	"github.com/cilium/cilium/pkg/hive"
 	"github.com/cilium/cilium/pkg/logging"
-	"github.com/cilium/cilium/pkg/statedb"
 	"github.com/cilium/cilium/pkg/testutils"
 	"github.com/cilium/cilium/pkg/testutils/netns"
 )
@@ -83,9 +85,6 @@ func TestDevicesController(t *testing.T) {
 		for _, r := range routes {
 			// undefined IP will stringify as "invalid IP", turn them into "".
 			actualDst, actualSrc, actualGw := r.Dst.String(), addrToString(r.Src), addrToString(r.Gw)
-			/*fmt.Printf("%d %s %s %s -- %d %s %s %s\n",
-			r.LinkIndex, actualDst, actualSrc, actualGw,
-			linkIndex, dst, src, gw)*/
 			if r.LinkIndex == linkIndex && actualDst == dst && actualSrc == src &&
 				actualGw == gw {
 				return true
@@ -322,11 +321,10 @@ func TestDevicesController(t *testing.T) {
 			// Get the new set of devices
 			for {
 				txn := db.ReadTxn()
-				allDevsIter, _ := devicesTable.All(txn)
-				allDevs := statedb.Collect(allDevsIter)
+				allDevs := statedb.Collect(devicesTable.All(txn))
 				devs, devsInvalidated := tables.SelectedDevices(devicesTable, txn)
 
-				routesIter, routesIterInvalidated := routesTable.All(txn)
+				routesIter, routesIterInvalidated := routesTable.AllWatch(txn)
 				routes := statedb.Collect(routesIter)
 
 				// Stop if the test case passes and there are no orphan routes left in the
@@ -388,6 +386,10 @@ func TestDevicesController_Wildcards(t *testing.T) {
 		require.NoError(t, createDummy("dummy0", "192.168.0.1/24", false))
 		require.NoError(t, createDummy("nonviable", "192.168.1.1/24", false))
 
+		// This device satisfies the autodetection rule, but should not be included
+		// because the ForceDeviceDetection option is not enabled
+		require.NoError(t, createDummy("eth0", "1.2.3.4/24", false))
+
 		for {
 			rxn := db.ReadTxn()
 			devs, invalidated := tables.SelectedDevices(devicesTable, rxn)
@@ -410,6 +412,76 @@ func TestDevicesController_Wildcards(t *testing.T) {
 	})
 }
 
+// TestDevicesController_with_ForcedDetection tests the behavior of device detection when forced detection is enabled.
+// It expects all devices matching a specific pattern to be detected will append to detected devices and marked as selected.
+func TestDevicesController_with_ForcedDetection(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	testutils.PrivilegedTest(t)
+	devicesControllerTestSetup(t)
+
+	tlog := hivetest.Logger(t)
+	ns := netns.NewNetNS(t)
+	ns.Do(func() error {
+		var (
+			db           *statedb.DB
+			devicesTable statedb.Table[*tables.Device]
+			h            *hive.Hive
+		)
+
+		// Function to set up the hive and run device detection
+		runDeviceDetection := func(devicePattern string, forceDetection bool) error {
+			h = hive.New(
+				DevicesControllerCell,
+				cell.Provide(func() (*netlinkFuncs, error) { return makeNetlinkFuncs() }),
+				cell.Invoke(func(db_ *statedb.DB, devicesTable_ statedb.Table[*tables.Device]) {
+					db = db_
+					devicesTable = devicesTable_
+				}),
+			)
+			hive.AddConfigOverride(h, func(c *DevicesConfig) {
+				c.Devices = []string{devicePattern}
+				c.ForceDeviceDetection = forceDetection
+			})
+
+			return h.Start(tlog, ctx)
+		}
+
+		// Function to check the expected number of devices
+		testDevices := func(expectedCount int) bool {
+			rxn := db.ReadTxn()
+			devs, invalidated := tables.SelectedDevices(devicesTable, rxn)
+			if len(devs) == expectedCount {
+				return true
+			}
+
+			select {
+			case <-ctx.Done():
+				t.Fatalf("Test timed out while waiting for devices, last seen: %v", devs)
+				return false
+			case <-invalidated:
+				return false
+			}
+		}
+
+		// Create dummy interfaces as per test requirements
+		require.NoError(t, createDummy("dummy0", "192.168.0.1/24", false))
+		require.NoError(t, createDummy("dummy1", "192.168.1.1/24", false))
+
+		// This device does not match the "dummy+" pattern, but should be included
+		// because the ForceDeviceDetection option is enabled
+		require.NoError(t, createDummy("eth0", "1.2.3.4/24", false))
+
+		// Test with forced detection enabled
+		require.NoError(t, runDeviceDetection("dummy+", true))
+		require.True(t, testDevices(3), "Expecting all three devices to be detected")
+		require.NoError(t, h.Stop(tlog, ctx))
+
+		return nil
+	})
+}
+
 func TestDevicesController_Restarts(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -418,8 +490,6 @@ func TestDevicesController_Restarts(t *testing.T) {
 		db           *statedb.DB
 		devicesTable statedb.Table[*tables.Device]
 	)
-
-	logging.SetLogLevelToDebug()
 
 	// Is this the first subscription?
 	var first atomic.Bool
@@ -520,7 +590,7 @@ func TestDevicesController_Restarts(t *testing.T) {
 		},
 	}
 
-	tlog := hivetest.Logger(t)
+	tlog := hivetest.Logger(t, hivetest.LogLevel(slog.LevelDebug))
 	h := hive.New(
 		DevicesControllerCell,
 		cell.Provide(func() *netlinkFuncs { return &funcs }),
@@ -534,7 +604,7 @@ func TestDevicesController_Restarts(t *testing.T) {
 
 	for {
 		rxn := db.ReadTxn()
-		iter, invalidated := devicesTable.All(rxn)
+		iter, invalidated := devicesTable.AllWatch(rxn)
 		devs := statedb.Collect(iter)
 
 		// We expect the 'stale' device to have been flushed by the restart
@@ -554,4 +624,201 @@ func TestDevicesController_Restarts(t *testing.T) {
 	err = h.Stop(tlog, ctx)
 	assert.NoError(t, err)
 
+}
+
+func createLink(linkTemplate netlink.Link, iface, ipAddr string, flagMulticast bool) error {
+	var flags net.Flags
+	if flagMulticast {
+		flags = net.FlagMulticast
+	}
+	*linkTemplate.Attrs() = netlink.LinkAttrs{
+		Name:  iface,
+		Flags: flags,
+	}
+
+	if err := netlink.LinkAdd(linkTemplate); err != nil {
+		return err
+	}
+
+	if ipAddr != "" {
+		if err := addAddr(iface, ipAddr); err != nil {
+			return err
+		}
+	}
+
+	link, err := netlink.LinkByName(iface)
+	if err != nil {
+		return err
+	}
+
+	if err := netlink.LinkSetUp(link); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func deleteLink(name string) error {
+	link, err := netlink.LinkByName(name)
+	if err != nil {
+		return err
+	}
+	return netlink.LinkDel(link)
+}
+
+func createDummy(iface, ipAddr string, flagMulticast bool) error {
+	return createLink(&netlink.Dummy{}, iface, ipAddr, flagMulticast)
+}
+
+func createVeth(iface, ipAddr string, flagMulticast bool) error {
+	return createLink(&netlink.Veth{PeerName: iface + "_"}, iface, ipAddr, flagMulticast)
+}
+
+func createBridge(iface, ipAddr string, flagMulticast bool) error {
+	return createLink(&netlink.Bridge{}, iface, ipAddr, flagMulticast)
+}
+
+func createBond(iface, ipAddr string, flagMulticast bool) error {
+	bond := netlink.NewLinkBond(netlink.LinkAttrs{})
+	bond.Mode = netlink.BOND_MODE_BALANCE_RR
+	return createLink(bond, iface, ipAddr, flagMulticast)
+}
+
+func setLinkUp(iface string) error {
+	link, err := netlink.LinkByName(iface)
+	if err != nil {
+		return err
+	}
+	return netlink.LinkSetUp(link)
+}
+
+func setMaster(iface string, master string) error {
+	masterLink, err := netlink.LinkByName(master)
+	if err != nil {
+		return err
+	}
+	link, err := netlink.LinkByName(iface)
+	if err != nil {
+		return err
+	}
+	return netlink.LinkSetMaster(link, masterLink)
+}
+
+func setBondMaster(iface string, master string) error {
+	masterLink, err := netlink.LinkByName(master)
+	if err != nil {
+		return err
+	}
+	link, err := netlink.LinkByName(iface)
+	if err != nil {
+		return err
+	}
+	netlink.LinkSetDown(link)
+	defer netlink.LinkSetUp(link)
+	return netlink.LinkSetBondSlave(link, masterLink.(*netlink.Bond))
+}
+func addAddr(iface string, cidr string) error {
+	return addAddrScoped(iface, cidr, netlink.SCOPE_SITE, 0)
+}
+
+func addAddrScoped(iface string, cidr string, scope netlink.Scope, flags int) error {
+	ip, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return fmt.Errorf("ParseCIDR: %w", err)
+	}
+	ipnet.IP = ip
+	link, err := netlink.LinkByName(iface)
+	if err != nil {
+		return fmt.Errorf("LinkByName: %w", err)
+	}
+
+	if err := netlink.AddrAdd(link, &netlink.Addr{IPNet: ipnet, Scope: int(scope), Flags: flags}); err != nil {
+		return fmt.Errorf("AddrAdd: %w", err)
+	}
+	return nil
+}
+
+type addRouteParams struct {
+	iface string
+	gw    string
+	src   string
+	dst   string
+	table int
+	scope netlink.Scope
+}
+
+func addRoute(p addRouteParams) error {
+	link, err := netlink.LinkByName(p.iface)
+	if err != nil {
+		return err
+	}
+
+	var dst *net.IPNet
+	if p.dst != "" {
+		_, dst, err = net.ParseCIDR(p.dst)
+		if err != nil {
+			return err
+		}
+	}
+
+	var src net.IP
+	if p.src != "" {
+		src = net.ParseIP(p.src)
+	}
+
+	if p.table == 0 {
+		p.table = unix.RT_TABLE_MAIN
+	}
+
+	route := &netlink.Route{
+		LinkIndex: link.Attrs().Index,
+		Dst:       dst,
+		Src:       src,
+		Gw:        net.ParseIP(p.gw),
+		Table:     p.table,
+		Scope:     p.scope,
+	}
+	if err := netlink.RouteAdd(route); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func delRoute(p addRouteParams) error {
+	link, err := netlink.LinkByName(p.iface)
+	if err != nil {
+		return err
+	}
+
+	var dst *net.IPNet
+	if p.dst != "" {
+		_, dst, err = net.ParseCIDR(p.dst)
+		if err != nil {
+			return err
+		}
+	}
+
+	var src net.IP
+	if p.src != "" {
+		src = net.ParseIP(p.src)
+	}
+
+	if p.table == 0 {
+		p.table = unix.RT_TABLE_MAIN
+	}
+
+	route := &netlink.Route{
+		LinkIndex: link.Attrs().Index,
+		Dst:       dst,
+		Src:       src,
+		Gw:        net.ParseIP(p.gw),
+		Table:     p.table,
+		Scope:     p.scope,
+	}
+	if err := netlink.RouteDel(route); err != nil {
+		return err
+	}
+
+	return nil
 }

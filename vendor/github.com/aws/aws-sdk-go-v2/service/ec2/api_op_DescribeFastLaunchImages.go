@@ -36,8 +36,11 @@ type DescribeFastLaunchImagesInput struct {
 	DryRun *bool
 
 	// Use the following filters to streamline results.
+	//
 	//   - resource-type - The resource type for pre-provisioning.
+	//
 	//   - owner-id - The owner ID for the pre-provisioning resource.
+	//
 	//   - state - The current state of fast launching for the Windows AMI.
 	Filters []types.Filter
 
@@ -46,8 +49,9 @@ type DescribeFastLaunchImagesInput struct {
 
 	// The maximum number of items to return for this request. To get the next page of
 	// items, make another request with the token returned in the output. For more
-	// information, see Pagination (https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Query-Requests.html#api-pagination)
-	// .
+	// information, see [Pagination].
+	//
+	// [Pagination]: https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Query-Requests.html#api-pagination
 	MaxResults *int32
 
 	// The token returned from a previous paginated request. Pagination continues from
@@ -128,6 +132,12 @@ func (c *Client) addOperationDescribeFastLaunchImagesMiddlewares(stack *middlewa
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
+		return err
+	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opDescribeFastLaunchImages(options.Region), middleware.Before); err != nil {
 		return err
 	}
@@ -149,21 +159,14 @@ func (c *Client) addOperationDescribeFastLaunchImagesMiddlewares(stack *middlewa
 	return nil
 }
 
-// DescribeFastLaunchImagesAPIClient is a client that implements the
-// DescribeFastLaunchImages operation.
-type DescribeFastLaunchImagesAPIClient interface {
-	DescribeFastLaunchImages(context.Context, *DescribeFastLaunchImagesInput, ...func(*Options)) (*DescribeFastLaunchImagesOutput, error)
-}
-
-var _ DescribeFastLaunchImagesAPIClient = (*Client)(nil)
-
 // DescribeFastLaunchImagesPaginatorOptions is the paginator options for
 // DescribeFastLaunchImages
 type DescribeFastLaunchImagesPaginatorOptions struct {
 	// The maximum number of items to return for this request. To get the next page of
 	// items, make another request with the token returned in the output. For more
-	// information, see Pagination (https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Query-Requests.html#api-pagination)
-	// .
+	// information, see [Pagination].
+	//
+	// [Pagination]: https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Query-Requests.html#api-pagination
 	Limit int32
 
 	// Set to true if pagination should stop if the service returns a pagination token
@@ -225,6 +228,9 @@ func (p *DescribeFastLaunchImagesPaginator) NextPage(ctx context.Context, optFns
 	}
 	params.MaxResults = limit
 
+	optFns = append([]func(*Options){
+		addIsPaginatorUserAgent,
+	}, optFns...)
 	result, err := p.client.DescribeFastLaunchImages(ctx, &params, optFns...)
 	if err != nil {
 		return nil, err
@@ -243,6 +249,14 @@ func (p *DescribeFastLaunchImagesPaginator) NextPage(ctx context.Context, optFns
 
 	return result, nil
 }
+
+// DescribeFastLaunchImagesAPIClient is a client that implements the
+// DescribeFastLaunchImages operation.
+type DescribeFastLaunchImagesAPIClient interface {
+	DescribeFastLaunchImages(context.Context, *DescribeFastLaunchImagesInput, ...func(*Options)) (*DescribeFastLaunchImagesOutput, error)
+}
+
+var _ DescribeFastLaunchImagesAPIClient = (*Client)(nil)
 
 func newServiceMetadataMiddleware_opDescribeFastLaunchImages(region string) *awsmiddleware.RegisterServiceMetadata {
 	return &awsmiddleware.RegisterServiceMetadata{

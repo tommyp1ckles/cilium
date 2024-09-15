@@ -57,9 +57,10 @@ ifeq ($(DOCKER_IMAGE_TAG),)
     DOCKER_IMAGE_TAG=latest
 endif
 
-ETCD_IMAGE=gcr.io/etcd-development/etcd:v3.5.11@sha256:8eff25cf636711fb48426005b55fc9f4d6ffa4f38f483fa87c8cc82976347bbb
-
-CONSUL_IMAGE=consul:1.7.2
+# renovate: datasource=docker depName=gcr.io/etcd-development/etcd
+ETCD_IMAGE_VERSION = v3.5.15
+ETCD_IMAGE_SHA = sha256:9a01b7da0a3cde485c03fcf58fef9b2a09c81b4926b2b7d7ae6d1e9b20a2a192
+ETCD_IMAGE=gcr.io/etcd-development/etcd:$(ETCD_IMAGE_VERSION)@$(ETCD_IMAGE_SHA)
 
 CILIUM_BUILDER_IMAGE=$(shell cat $(ROOT_DIR)/images/cilium/Dockerfile | grep "ARG CILIUM_BUILDER_IMAGE=" | cut -d"=" -f2)
 
@@ -68,7 +69,7 @@ export KUBECTL ?= kubectl
 
 # Till the self-hosted renovate PR #30185 is merged, we might need to run the below
 # command locally for any version update.
-# make generate-api generate-health-api generate-hubble-api generate-operator-api
+# make generate-api generate-health-api generate-hubble-api generate-operator-api generate-kvstoremesh-api
 # renovate: datasource=docker depName=quay.io/goswagger/swagger
 SWAGGER_VERSION := v0.30.5
 SWAGGER := $(CONTAINER_ENGINE) run -u $(shell id -u):$(shell id -g) --rm -v $(ROOT_DIR):$(ROOT_DIR) -w $(ROOT_DIR) --entrypoint swagger quay.io/goswagger/swagger:$(SWAGGER_VERSION)
@@ -83,6 +84,11 @@ GO_BUILD_LDFLAGS ?=
 # go build/test -tags values
 GO_TAGS_FLAGS += osusergo
 
+# Keep the Go <=1.22 semantics for parsing type aliases.
+# This is needed for code generation (k8s protobuf, deep*) until 'gengo' has been fixed.
+GODEBUG += gotypesalias=0
+export GODEBUG
+
 # This is declared here as it is needed to change the covermode depending on if
 # RACE is specified.
 GOTEST_COVER_OPTS =
@@ -95,22 +101,22 @@ ifneq ($(shell command -v tparse),)
 	GOTEST_COVER_OPTS += -json
 	GOTEST_FORMATTER = tparse
 ifneq ($(V),0)
-	GOTEST_FORMATTER += -progress
+	GOTEST_FORMATTER += -follow
 endif
 endif
 
 # renovate: datasource=docker depName=golangci/golangci-lint
-GOLANGCILINT_WANT_VERSION = v1.57.2
-GOLANGCILINT_IMAGE_SHA = sha256:8f3a60a00a83bb7d599d2e028ac0c3573dc2b9ec0842590f1c2e59781c821da7
+GOLANGCILINT_WANT_VERSION = v1.61.0
+GOLANGCILINT_IMAGE_SHA = sha256:e47065d755ca0afeac9df866d1dabdc99f439653a43fe234e05f50d9c36b6b90
 GOLANGCILINT_VERSION = $(shell golangci-lint version --format short 2>/dev/null)
 
 VERSION = $(shell cat $(dir $(lastword $(MAKEFILE_LIST)))/VERSION)
 VERSION_MAJOR = $(shell cat $(dir $(lastword $(MAKEFILE_LIST)))/VERSION | cut -d. -f1)
 # Use git only if in a Git repo
-ifneq ($(wildcard $(dir $(lastword $(MAKEFILE_LIST)))/.git),)
+ifneq ($(wildcard $(dir $(lastword $(MAKEFILE_LIST)))/.git/HEAD),)
     GIT_VERSION = $(shell git show -s --format='format:%h %aI')
 else
-    GIT_VERSION = $(shell cat $(ROOT_DIR)/GIT_VERSION)
+    GIT_VERSION = $(shell cat 2>/dev/null $(ROOT_DIR)/GIT_VERSION)
 endif
 FULL_BUILD_VERSION = $(VERSION) $(GIT_VERSION)
 GO_BUILD_LDFLAGS += -X "github.com/cilium/cilium/pkg/version.ciliumVersion=$(FULL_BUILD_VERSION)"
@@ -132,7 +138,7 @@ endif
 
 # Use git only if in a Git repo, otherwise find the files from the file system
 BPF_SRCFILES_IGNORE = bpf/.gitignore
-ifneq ($(wildcard $(dir $(lastword $(MAKEFILE_LIST)))/.git),)
+ifneq ($(wildcard $(dir $(lastword $(MAKEFILE_LIST)))/.git/HEAD),)
     BPF_SRCFILES := $(shell git ls-files $(ROOT_DIR)/bpf/ | LC_ALL=C sort | tr "\n" ' ')
 else
     # this line has to be in-sync with bpf/.gitignore, please note usage of make patterns like `%.i`
@@ -142,8 +148,6 @@ endif
 
 # ROOT_DIR can be either `../` or absolute path, each of these need to be stripped
 BPF_SRCFILES := $(filter-out $(BPF_SRCFILES_IGNORE),$(subst ../,,$(subst $(ROOT_DIR)/,,$(BPF_SRCFILES))))
-CILIUM_DATAPATH_SHA256=$(shell cd $(ROOT_DIR); cat $(BPF_SRCFILES) | sha256sum | awk '{print $$1}')
-GO_BUILD_LDFLAGS += -X "github.com/cilium/cilium/pkg/datapath/loader.datapathSHA256=$(CILIUM_DATAPATH_SHA256)"
 
 GO_BUILD_FLAGS += -mod=vendor
 GO_TEST_FLAGS += -mod=vendor -vet=all

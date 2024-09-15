@@ -4,7 +4,9 @@
 package store
 
 import (
-	"golang.org/x/exp/maps"
+	"maps"
+	"slices"
+
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/cilium/cilium/pkg/k8s/resource"
@@ -18,13 +20,13 @@ type fakeDiffStore[T runtime.Object] struct {
 	objects map[resource.Key]T
 
 	changedMu lock.Mutex
-	changed   map[resource.Key]bool
+	changed   map[string]updatedKeysMap // updated keys per caller ID
 }
 
 func NewFakeDiffStore[T runtime.Object]() *fakeDiffStore[T] {
 	return &fakeDiffStore[T]{
 		objects: make(map[resource.Key]T),
-		changed: make(map[resource.Key]bool),
+		changed: make(map[string]updatedKeysMap),
 	}
 }
 
@@ -35,12 +37,23 @@ func InitFakeDiffStore[T runtime.Object](objs []T) *fakeDiffStore[T] {
 	}
 	return mds
 }
-
-func (mds *fakeDiffStore[T]) Diff() (upserted []T, deleted []resource.Key, err error) {
+func (mds *fakeDiffStore[T]) InitDiff(callerID string) {
 	mds.changedMu.Lock()
 	defer mds.changedMu.Unlock()
 
-	for key := range mds.changed {
+	mds.changed[callerID] = make(map[resource.Key]bool)
+}
+
+func (mds *fakeDiffStore[T]) Diff(callerID string) (upserted []T, deleted []resource.Key, err error) {
+	mds.changedMu.Lock()
+	defer mds.changedMu.Unlock()
+
+	changed, ok := mds.changed[callerID]
+	if !ok {
+		return nil, nil, ErrDiffUninitialized
+	}
+
+	for key := range changed {
 		obj, exists, err := mds.GetByKey(key)
 		if err != nil {
 			return nil, nil, err
@@ -53,16 +66,23 @@ func (mds *fakeDiffStore[T]) Diff() (upserted []T, deleted []resource.Key, err e
 	}
 
 	// Reset the changed map
-	mds.changed = make(map[resource.Key]bool)
+	mds.changed[callerID] = make(map[resource.Key]bool)
 
 	return upserted, deleted, nil
+}
+
+func (mds *fakeDiffStore[T]) CleanupDiff(callerID string) {
+	mds.changedMu.Lock()
+	defer mds.changedMu.Unlock()
+
+	delete(mds.changed, callerID)
 }
 
 // List returns all items currently in the store.
 func (mds *fakeDiffStore[T]) List() ([]T, error) {
 	mds.objMu.Lock()
 	defer mds.objMu.Unlock()
-	return maps.Values(mds.objects), nil
+	return slices.Collect(maps.Values(mds.objects)), nil
 }
 
 // GetByKey returns the latest version of the object with given key.
@@ -83,7 +103,9 @@ func (mds *fakeDiffStore[T]) Upsert(obj T) {
 
 	key := resource.NewKey(obj)
 	mds.objects[key] = obj
-	mds.changed[key] = true
+	for _, changed := range mds.changed {
+		changed[key] = true
+	}
 }
 
 func (mds *fakeDiffStore[T]) Delete(key resource.Key) {
@@ -93,5 +115,7 @@ func (mds *fakeDiffStore[T]) Delete(key resource.Key) {
 	defer mds.changedMu.Unlock()
 
 	delete(mds.objects, key)
-	mds.changed[key] = true
+	for _, changed := range mds.changed {
+		changed[key] = true
+	}
 }

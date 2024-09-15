@@ -19,6 +19,8 @@ import (
 	cmk8s "github.com/cilium/cilium/clustermesh-apiserver/clustermesh/k8s"
 	"github.com/cilium/cilium/clustermesh-apiserver/syncstate"
 	operatorWatchers "github.com/cilium/cilium/operator/watchers"
+	"github.com/cilium/cilium/pkg/clustermesh/mcsapi"
+	"github.com/cilium/cilium/pkg/clustermesh/operator"
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	cmutils "github.com/cilium/cilium/pkg/clustermesh/utils"
 	"github.com/cilium/cilium/pkg/hive"
@@ -28,7 +30,6 @@ import (
 	ciliumv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
 	"github.com/cilium/cilium/pkg/k8s/resource"
-	"github.com/cilium/cilium/pkg/k8s/synced"
 	"github.com/cilium/cilium/pkg/k8s/types"
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/kvstore/store"
@@ -77,6 +78,7 @@ type parameters struct {
 	cell.In
 
 	ExternalWorkloadsConfig
+	CfgMCSAPI      operator.MCSAPIConfig
 	ClusterInfo    cmtypes.ClusterInfo
 	Clientset      k8sClient.Clientset
 	Resources      cmk8s.Resources
@@ -97,7 +99,7 @@ func registerHooks(lc cell.Lifecycle, params parameters) error {
 				return err
 			}
 
-			startServer(ctx, params.ClusterInfo, params.EnableExternalWorkloads, params.Clientset, backend, params.Resources, params.StoreFactory, params.SyncState)
+			startServer(ctx, params.ClusterInfo, params.EnableExternalWorkloads, params.Clientset, backend, params.Resources, params.StoreFactory, params.SyncState, params.CfgMCSAPI.ClusterMeshEnableMCSAPI)
 			return nil
 		},
 	})
@@ -352,23 +354,24 @@ func startServer(
 	resources cmk8s.Resources,
 	factory store.Factory,
 	syncState syncstate.SyncState,
+	clusterMeshEnableMCSAPI bool,
 ) {
 	log.WithFields(logrus.Fields{
 		"cluster-name": cinfo.Name,
 		"cluster-id":   cinfo.ID,
 	}).Info("Starting clustermesh-apiserver...")
 
-	synced.SyncCRDs(startCtx, clientset, synced.ClusterMeshAPIServerResourceNames(), &synced.Resources{}, &synced.APIGroups{})
-
 	config := cmtypes.CiliumClusterConfig{
 		ID: cinfo.ID,
 		Capabilities: cmtypes.CiliumClusterConfigCapabilities{
-			SyncedCanaries:       true,
-			MaxConnectedClusters: cinfo.MaxConnectedClusters,
+			SyncedCanaries:        true,
+			MaxConnectedClusters:  cinfo.MaxConnectedClusters,
+			ServiceExportsEnabled: &clusterMeshEnableMCSAPI,
 		},
 	}
 
-	if err := cmutils.SetClusterConfig(context.Background(), cinfo.Name, &config, backend); err != nil {
+	_, err := cmutils.EnforceClusterConfig(context.Background(), cinfo.Name, config, backend, log)
+	if err != nil {
 		log.WithError(err).Fatal("Unable to set local cluster config on kvstore")
 	}
 
@@ -385,6 +388,16 @@ func startServer(
 		SharedOnly:   !allServices,
 		StoreFactory: factory,
 		SyncCallback: syncState.WaitForResource(),
+	})
+	go mcsapi.StartSynchronizingServiceExports(ctx, mcsapi.ServiceExportSyncParameters{
+		ClusterName:             cinfo.Name,
+		ClusterMeshEnableMCSAPI: clusterMeshEnableMCSAPI,
+		Clientset:               clientset,
+		ServiceExports:          resources.ServiceExports,
+		Services:                resources.Services,
+		Backend:                 backend,
+		StoreFactory:            factory,
+		SyncCallback:            syncState.WaitForResource(),
 	})
 	syncState.Stop()
 

@@ -58,8 +58,9 @@ type DescribeCapacityBlockOfferingsInput struct {
 
 	// The maximum number of items to return for this request. To get the next page of
 	// items, make another request with the token returned in the output. For more
-	// information, see Pagination (https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Query-Requests.html#api-pagination)
-	// .
+	// information, see [Pagination].
+	//
+	// [Pagination]: https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Query-Requests.html#api-pagination
 	MaxResults *int32
 
 	// The token to use to retrieve the next page of results.
@@ -141,6 +142,12 @@ func (c *Client) addOperationDescribeCapacityBlockOfferingsMiddlewares(stack *mi
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
+		return err
+	}
 	if err = addOpDescribeCapacityBlockOfferingsValidationMiddleware(stack); err != nil {
 		return err
 	}
@@ -165,21 +172,14 @@ func (c *Client) addOperationDescribeCapacityBlockOfferingsMiddlewares(stack *mi
 	return nil
 }
 
-// DescribeCapacityBlockOfferingsAPIClient is a client that implements the
-// DescribeCapacityBlockOfferings operation.
-type DescribeCapacityBlockOfferingsAPIClient interface {
-	DescribeCapacityBlockOfferings(context.Context, *DescribeCapacityBlockOfferingsInput, ...func(*Options)) (*DescribeCapacityBlockOfferingsOutput, error)
-}
-
-var _ DescribeCapacityBlockOfferingsAPIClient = (*Client)(nil)
-
 // DescribeCapacityBlockOfferingsPaginatorOptions is the paginator options for
 // DescribeCapacityBlockOfferings
 type DescribeCapacityBlockOfferingsPaginatorOptions struct {
 	// The maximum number of items to return for this request. To get the next page of
 	// items, make another request with the token returned in the output. For more
-	// information, see Pagination (https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Query-Requests.html#api-pagination)
-	// .
+	// information, see [Pagination].
+	//
+	// [Pagination]: https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Query-Requests.html#api-pagination
 	Limit int32
 
 	// Set to true if pagination should stop if the service returns a pagination token
@@ -242,6 +242,9 @@ func (p *DescribeCapacityBlockOfferingsPaginator) NextPage(ctx context.Context, 
 	}
 	params.MaxResults = limit
 
+	optFns = append([]func(*Options){
+		addIsPaginatorUserAgent,
+	}, optFns...)
 	result, err := p.client.DescribeCapacityBlockOfferings(ctx, &params, optFns...)
 	if err != nil {
 		return nil, err
@@ -260,6 +263,14 @@ func (p *DescribeCapacityBlockOfferingsPaginator) NextPage(ctx context.Context, 
 
 	return result, nil
 }
+
+// DescribeCapacityBlockOfferingsAPIClient is a client that implements the
+// DescribeCapacityBlockOfferings operation.
+type DescribeCapacityBlockOfferingsAPIClient interface {
+	DescribeCapacityBlockOfferings(context.Context, *DescribeCapacityBlockOfferingsInput, ...func(*Options)) (*DescribeCapacityBlockOfferingsOutput, error)
+}
+
+var _ DescribeCapacityBlockOfferingsAPIClient = (*Client)(nil)
 
 func newServiceMetadataMiddleware_opDescribeCapacityBlockOfferings(region string) *awsmiddleware.RegisterServiceMetadata {
 	return &awsmiddleware.RegisterServiceMetadata{

@@ -4,7 +4,7 @@
 package ciliumendpointslice
 
 import (
-	"math/rand"
+	"math/rand/v2"
 	"strings"
 )
 
@@ -12,7 +12,7 @@ import (
 func randomName(n int) string {
 	b := make([]rune, n)
 	for i := range b {
-		b[i] = sequentialLetters[rand.Intn(len(sequentialLetters))]
+		b[i] = sequentialLetters[rand.IntN(len(sequentialLetters))]
 	}
 	return string(b)
 }
@@ -32,7 +32,7 @@ func uniqueCESliceName(mapping *CESToCEPMapping) string {
 		sb.WriteRune('-')
 		sb.WriteString(rn2)
 		cesName := sb.String()
-		if !mapping.hasCESName(NewCESName(cesName)) {
+		if !mapping.hasCESName(CESName(cesName)) {
 			return cesName
 		}
 	}

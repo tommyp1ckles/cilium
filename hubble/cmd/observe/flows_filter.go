@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -189,6 +190,7 @@ func newFlowFilter() *flowFilter {
 			{"from-pod", "namespace", "all-namespaces"},
 			{"to-service", "namespace", "all-namespaces"},
 			{"from-service", "namespace", "all-namespaces"},
+			{"snat-ip"},
 			{"label", "from-label"},
 			{"label", "to-label"},
 			{"service", "from-service"},
@@ -209,29 +211,22 @@ func newFlowFilter() *flowFilter {
 			{"workload", "to-workload"},
 			{"workload", "from-workload"},
 			{"node-name", "cluster"},
+			{"node-label"},
 			{"tcp-flags"},
 			{"uuid"},
 			{"traffic-direction"},
+			{"cel-expression"},
 		},
 	}
-}
-
-func (of *flowFilter) hasChanged(list []string, name string) bool {
-	for _, c := range list {
-		if c == name {
-			return true
-		}
-	}
-	return false
 }
 
 func (of *flowFilter) checkConflict(t *filterTracker) error {
 	// check for conflicts
 	for _, group := range of.conflicts {
 		for _, flag := range group {
-			if of.hasChanged(t.changed, flag) {
+			if slices.Contains(t.changed, flag) {
 				for _, conflict := range group {
-					if flag != conflict && of.hasChanged(t.changed, conflict) {
+					if flag != conflict && slices.Contains(t.changed, conflict) {
 						return fmt.Errorf(
 							"filters --%s and --%s cannot be combined",
 							flag, conflict,
@@ -423,16 +418,20 @@ func (of *flowFilter) set(f *filterTracker, name, val string, track bool) error 
 			f.DestinationPod = append(f.GetDestinationPod(), val)
 		})
 	// ip filters
+	case "from-ip":
+		f.apply(func(f *flowpb.FlowFilter) {
+			f.SourceIp = append(f.GetSourceIp(), val)
+		})
+	case "snat-ip":
+		f.apply(func(f *flowpb.FlowFilter) {
+			f.SourceIpXlated = append(f.SourceIpXlated, val)
+		})
 	case "ip":
 		f.applyLeft(func(f *flowpb.FlowFilter) {
 			f.SourceIp = append(f.GetSourceIp(), val)
 		})
 		f.applyRight(func(f *flowpb.FlowFilter) {
 			f.DestinationIp = append(f.GetDestinationIp(), val)
-		})
-	case "from-ip":
-		f.apply(func(f *flowpb.FlowFilter) {
-			f.SourceIp = append(f.GetSourceIp(), val)
 		})
 	case "to-ip":
 		f.apply(func(f *flowpb.FlowFilter) {
@@ -683,10 +682,14 @@ func (of *flowFilter) set(f *filterTracker, name, val string, track bool) error 
 			f.DestinationIdentity = append(f.GetDestinationIdentity(), identity.Uint32())
 		})
 
-	// node name filters
+	// node related filters
 	case "node-name":
 		f.apply(func(f *flowpb.FlowFilter) {
 			f.NodeName = append(f.GetNodeName(), val)
+		})
+	case "node-label":
+		f.apply(func(f *flowpb.FlowFilter) {
+			f.NodeLabels = append(f.GetNodeLabels(), val)
 		})
 
 		// cluster Name filters
@@ -719,6 +722,17 @@ func (of *flowFilter) set(f *filterTracker, name, val string, track bool) error 
 		default:
 			return fmt.Errorf("%s: invalid traffic direction, expected ingress or egress", td)
 		}
+	case "cel-expression":
+		f.apply(func(f *flowpb.FlowFilter) {
+			if f.GetExperimental() == nil {
+				f.Experimental = &flowpb.FlowFilter_Experimental{}
+			}
+			f.Experimental.CelExpression = append(f.Experimental.CelExpression, val)
+		})
+	case "interface":
+		f.apply(func(f *flowpb.FlowFilter) {
+			f.Interface = append(f.Interface, &flowpb.NetworkInterface{Name: val})
+		})
 	}
 
 	if err := f.checkNamespaceConflicts(f.left); err != nil {

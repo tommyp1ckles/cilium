@@ -6,12 +6,12 @@ package reconciler
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
 
 	"github.com/cilium/hive/cell"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/exp/maps"
 
 	"github.com/cilium/cilium/pkg/bgpv1/manager/instance"
 	"github.com/cilium/cilium/pkg/bgpv1/manager/store"
@@ -60,6 +60,12 @@ func (r *PodIPPoolReconciler) Name() string {
 func (r *PodIPPoolReconciler) Priority() int {
 	return 50
 }
+
+func (r *PodIPPoolReconciler) Init(_ *instance.ServerWithConfig) error {
+	return nil
+}
+
+func (r *PodIPPoolReconciler) Cleanup(_ *instance.ServerWithConfig) {}
 
 func (r *PodIPPoolReconciler) Reconcile(ctx context.Context, p ReconcileParams) error {
 	lp := r.populateLocalPools(p.CiliumNode)

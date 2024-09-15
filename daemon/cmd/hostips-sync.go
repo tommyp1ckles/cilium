@@ -6,11 +6,14 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"iter"
 	"net"
 	"net/netip"
 
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/job"
+	"github.com/cilium/statedb"
+	"go4.org/netipx"
 
 	"github.com/cilium/cilium/pkg/datapath/tables"
 	"github.com/cilium/cilium/pkg/identity"
@@ -23,7 +26,6 @@ import (
 	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/source"
-	"github.com/cilium/cilium/pkg/statedb"
 	"github.com/cilium/cilium/pkg/time"
 )
 
@@ -91,7 +93,7 @@ func (s *syncHostIPs) loop(ctx context.Context, health cell.Health) error {
 
 	for {
 		txn := s.params.DB.ReadTxn()
-		addrs, watch := s.params.NodeAddresses.All(txn)
+		addrs, watch := s.params.NodeAddresses.AllWatch(txn)
 
 		err := s.sync(addrs)
 		if err != nil {
@@ -118,7 +120,7 @@ func (s *syncHostIPs) loop(ctx context.Context, health cell.Health) error {
 // sync adds local host entries to bpf lxcmap, as well as ipcache, if
 // needed, and also notifies the daemon and network policy hosts cache if
 // changes were made.
-func (s *syncHostIPs) sync(addrs statedb.Iterator[tables.NodeAddress]) error {
+func (s *syncHostIPs) sync(addrs iter.Seq2[tables.NodeAddress, statedb.Revision]) error {
 	type ipIDLabel struct {
 		identity.IPIdentityPair
 		labels.Labels
@@ -136,7 +138,7 @@ func (s *syncHostIPs) sync(addrs statedb.Iterator[tables.NodeAddress]) error {
 		})
 	}
 
-	for addr, _, ok := addrs.Next(); ok; addr, _, ok = addrs.Next() {
+	for addr := range addrs {
 		if addr.DeviceName == tables.WildcardDeviceName {
 			continue
 		}
@@ -192,7 +194,7 @@ func (s *syncHostIPs) sync(addrs statedb.Iterator[tables.NodeAddress]) error {
 
 		lbls := ipIDLblsPair.Labels
 		if ipIDLblsPair.ID.IsWorld() {
-			p := netip.PrefixFrom(ippkg.MustAddrFromIP(ipIDLblsPair.IP), 0)
+			p := netip.PrefixFrom(netipx.MustFromStdIP(ipIDLblsPair.IP), 0)
 			s.params.IPCache.OverrideIdentity(p, lbls, source.Local, daemonResourceID)
 		} else {
 			s.params.IPCache.UpsertLabels(ippkg.IPToNetPrefix(ipIDLblsPair.IP),

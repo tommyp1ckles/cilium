@@ -14,9 +14,11 @@ import (
 
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/hivetest"
+	"github.com/cilium/statedb"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/goleak"
 	"k8s.io/apimachinery/pkg/util/sets"
+	baseclocktest "k8s.io/utils/clock/testing"
 
 	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/datapath/tables"
@@ -25,7 +27,6 @@ import (
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/node/addressing"
 	"github.com/cilium/cilium/pkg/node/types"
-	"github.com/cilium/cilium/pkg/statedb"
 	"github.com/cilium/cilium/pkg/time"
 )
 
@@ -33,6 +34,7 @@ func TestReconciliationLoop(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
 	var (
+		clock   = baseclocktest.NewFakeClock(time.Now())
 		db      *statedb.DB
 		devices statedb.RWTable[*tables.Device]
 		store   *node.LocalNodeStore
@@ -61,6 +63,7 @@ func TestReconciliationLoop(t *testing.T) {
 				db.RegisterTable(devices_)
 				health = health_.NewScope("iptables-reconciler-test")
 				params = &reconcilerParams{
+					clock:          clock,
 					localNodeStore: store_,
 					db:             db_,
 					devices:        devices_,
@@ -87,13 +90,12 @@ func TestReconciliationLoop(t *testing.T) {
 
 		return nil
 	}
-	updateProxyFunc := func(proxyPort uint16, localOnly bool, name string) error {
+	updateProxyFunc := func(proxyPort uint16, name string) error {
 		mu.Lock()
 		defer mu.Unlock()
 		state.proxies[name] = proxyInfo{
-			name:        name,
-			port:        proxyPort,
-			isLocalOnly: localOnly,
+			name: name,
+			port: proxyPort,
 		}
 		return nil
 	}
@@ -205,9 +207,8 @@ func TestReconciliationLoop(t *testing.T) {
 			action: func() {
 				params.proxies <- reconciliationRequest[proxyInfo]{
 					info: proxyInfo{
-						name:        "proxy-test-1",
-						port:        9090,
-						isLocalOnly: true,
+						name: "proxy-test-1",
+						port: 9090,
 					},
 					updated: make(chan struct{}),
 				}
@@ -222,9 +223,8 @@ func TestReconciliationLoop(t *testing.T) {
 				},
 				proxies: map[string]proxyInfo{
 					"proxy-test-1": {
-						name:        "proxy-test-1",
-						port:        9090,
-						isLocalOnly: true,
+						name: "proxy-test-1",
+						port: 9090,
 					},
 				},
 			},
@@ -234,9 +234,8 @@ func TestReconciliationLoop(t *testing.T) {
 			action: func() {
 				params.proxies <- reconciliationRequest[proxyInfo]{
 					info: proxyInfo{
-						name:        "proxy-test-2",
-						port:        9091,
-						isLocalOnly: false,
+						name: "proxy-test-2",
+						port: 9091,
 					},
 					updated: make(chan struct{}),
 				}
@@ -251,14 +250,12 @@ func TestReconciliationLoop(t *testing.T) {
 				},
 				proxies: map[string]proxyInfo{
 					"proxy-test-1": {
-						name:        "proxy-test-1",
-						port:        9090,
-						isLocalOnly: true,
+						name: "proxy-test-1",
+						port: 9090,
 					},
 					"proxy-test-2": {
-						name:        "proxy-test-2",
-						port:        9091,
-						isLocalOnly: false,
+						name: "proxy-test-2",
+						port: 9091,
 					},
 				},
 			},
@@ -291,14 +288,12 @@ func TestReconciliationLoop(t *testing.T) {
 				},
 				proxies: map[string]proxyInfo{
 					"proxy-test-1": {
-						name:        "proxy-test-1",
-						port:        9090,
-						isLocalOnly: true,
+						name: "proxy-test-1",
+						port: 9090,
 					},
 					"proxy-test-2": {
-						name:        "proxy-test-2",
-						port:        9091,
-						isLocalOnly: false,
+						name: "proxy-test-2",
+						port: 9091,
 					},
 				},
 				noTrackPods: sets.New(
@@ -328,14 +323,12 @@ func TestReconciliationLoop(t *testing.T) {
 				},
 				proxies: map[string]proxyInfo{
 					"proxy-test-1": {
-						name:        "proxy-test-1",
-						port:        9090,
-						isLocalOnly: true,
+						name: "proxy-test-1",
+						port: 9090,
 					},
 					"proxy-test-2": {
-						name:        "proxy-test-2",
-						port:        9091,
-						isLocalOnly: false,
+						name: "proxy-test-2",
+						port: 9091,
 					},
 				},
 				noTrackPods: sets.New(
@@ -380,6 +373,11 @@ func TestReconciliationLoop(t *testing.T) {
 
 			// wait for reconciler to react to the update
 			assert.Eventuallyf(t, func() bool {
+				// Advance the clock, to trigger the ticker responsible to perform the update.
+				// This is called for every step to prevent the possibility of race conditions
+				// caused by the ticker channel being selected before the actual event.
+				clock.Step(200 * time.Millisecond)
+
 				mu.Lock()
 				defer mu.Unlock()
 				if err := assertIptablesState(state, tc.expected); err != nil {
@@ -390,6 +388,26 @@ func TestReconciliationLoop(t *testing.T) {
 			}, 10*time.Second, 10*time.Millisecond, "expected state not reached. %v", tc.expected)
 		})
 	}
+
+	// Manually reset the current state, and assert that it eventually converges
+	// back to the desired one thanks to the periodic refresh logic.
+	updateFunc(desiredState{}, false)
+	clock.Step(30 * time.Minute)
+
+	// wait for reconciler to react to the update
+	expected := testCases[len(testCases)-1].expected
+	assert.Eventuallyf(t, func() bool {
+		// Advance the clock, to trigger the ticker responsible to perform the update.
+		clock.Step(200 * time.Millisecond)
+
+		mu.Lock()
+		defer mu.Unlock()
+		if err := assertIptablesState(state, expected); err != nil {
+			t.Logf("assertIptablesState: %s", err)
+			return false
+		}
+		return true
+	}, 10*time.Second, 10*time.Millisecond, "expected state not reached. %v", expected)
 
 	assert.NoError(t, h.Stop(tlog, ctx))
 

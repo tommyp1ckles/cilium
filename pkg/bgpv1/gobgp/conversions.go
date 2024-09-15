@@ -73,6 +73,7 @@ func ToAgentPath(p *gobgp.Path) (*types.Path, error) {
 
 	return &types.Path{
 		NLRI:           nlri,
+		Family:         toAgentFamily(p.Family),
 		PathAttributes: pattrs,
 		AgeNanoseconds: ageNano,
 		Best:           p.Best,
@@ -238,6 +239,13 @@ func toGoBGPPolicyStatement(apiStatement *types.RoutePolicyStatement, name strin
 		definedSets = append(definedSets, ds)
 	}
 
+	// match address families
+	if len(apiStatement.Conditions.MatchFamilies) > 0 {
+		for _, family := range apiStatement.Conditions.MatchFamilies {
+			s.Conditions.AfiSafiIn = append(s.Conditions.AfiSafiIn, toGoBGPFamily(family))
+		}
+	}
+
 	// community actions
 	if len(apiStatement.Actions.AddCommunities) > 0 {
 		s.Actions.Community = &gobgp.CommunityAction{
@@ -282,6 +290,9 @@ func toAgentPolicyStatement(s *gobgp.Statement, definedSets map[string]*gobgp.De
 				}
 			}
 		}
+		for _, family := range s.Conditions.AfiSafiIn {
+			stmt.Conditions.MatchFamilies = append(stmt.Conditions.MatchFamilies, toAgentFamily(family))
+		}
 	}
 	if s.Actions != nil {
 		stmt.Actions.RouteAction = toAgentRouteAction(s.Actions.RouteAction)
@@ -304,11 +315,11 @@ func policyStatementName(policyName string, cnt int) string {
 }
 
 func policyNeighborDefinedSetName(policyStatementName string) string {
-	return fmt.Sprintf(policyStatementName + "-neighbor")
+	return policyStatementName + "-neighbor"
 }
 
 func policyPrefixDefinedSetName(policyStatementName string) string {
-	return fmt.Sprintf(policyStatementName + "-prefix")
+	return policyStatementName + "-prefix"
 }
 
 func toGoBGPRouteAction(a types.RoutePolicyAction) gobgp.RouteAction {
@@ -377,6 +388,13 @@ func toAgentSessionState(s gobgp.PeerState_SessionState) types.SessionState {
 		return types.SessionEstablished
 	default:
 		return types.SessionUnknown
+	}
+}
+
+func toAgentFamily(family *gobgp.Family) types.Family {
+	return types.Family{
+		Afi:  toAgentAfi(family.Afi),
+		Safi: toAgentSafi(family.Safi),
 	}
 }
 

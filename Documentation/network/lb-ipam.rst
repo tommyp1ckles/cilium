@@ -64,25 +64,26 @@ An IP pool can have multiple blocks of IPs. A block can be specified with CIDR
 notation (<prefix>/<bits>) or a range notation with a start and stop IP. As
 pictured in :ref:`lb_ipam_pools`.
 
-CIDRs are often used to specify routable IP ranges. By convention, the first
-and the last IP of a CIDR are reserved. The first IP is the 
+When CIDRs are used to specify routable IP ranges, you might not want to allocate
+the first and the last IP of a CIDR. Typically the first IP is the 
 "network address" and the last IP is the "broadcast address". In some networks
 these IPs are not usable and they do not always play well with all network 
-equipment. LB-IPAM will not assign these by default. Exceptions are /32 and 
-/31 IPv4 CIDRs and /128 and /127 IPv6 CIDRs since these only have 1 or 2 IPs 
-respectively.
+equipment. By default, LB-IPAM uses all IPs in a given CIDR.
 
-If you wish to use the first and last IPs of CIDRs, you can set the 
-``.spec.allowFirstLastIPs`` field to ``yes``.
+If you wish to reserve the first and last IPs of CIDRs, you can set the 
+``.spec.allowFirstLastIPs`` field to ``No``.
 
-Since Ranges are typically used to indicate subsections of routable IP ranges,
-no IPs are reserved.
+This option is ignored for /32 and /31 IPv4 CIDRs and /128 and /127 IPv6 CIDRs 
+since these only have 1 or 2 IPs respectively.
+
+This setting only applies to blocks specified with ``.spec.blocks[].cidr`` and not to
+blocks specified with ``.spec.blocks[].start`` and ``.spec.blocks[].stop``.
 
 .. warning::
 
-  In v1.15, ``.spec.allowFirstLastIPs`` defaults to ``no``. This will change to
-  ``yes`` in v1.16. Please set this field explicitly if you rely on the field
-  being set to ``no``.
+  In v1.15, ``.spec.allowFirstLastIPs`` defaults to ``No``. This has changed to
+  ``Yes`` in v1.16. Please set this field explicitly if you rely on the field
+  being set to ``No``.
 
 Service Selectors
 -----------------
@@ -388,10 +389,33 @@ for allocation (if the feature is enabled):
 loadBalancerClass               Feature
 ------------------------------- ------------------------
 ``io.cilium/bgp-control-plane`` :ref:`bgp_control_plane`
+------------------------------- ------------------------
+``io.cilium/l2-announcer``      :ref:`l2_announcements`
 =============================== ========================
 
 If the ``.spec.loadBalancerClass`` is set to a class which isn't handled by Cilium's LB IPAM, 
 then Cilium's LB IPAM will ignore the service entirely, not even setting a condition in the status. 
+
+By default, if the ``.spec.loadBalancerClass`` field is not set, Cilium's LB IPAM will assume it can 
+allocate IPs for the service from its configured pools. If this isn't the desired behavior, you can 
+configure LB-IPAM to only allocate IPs for services from its configured pools when it has a recognized 
+load balancer class by setting the following configuration in the Helm chart or ConfigMap:
+
+.. tabs::
+    .. group-tab:: Helm
+
+        .. parsed-literal::
+
+            $ helm upgrade cilium |CHART_RELEASE| \\
+               --namespace kube-system \\
+               --reuse-values \\
+               --set LBIPAM.requireLBClass=true
+
+    .. group-tab:: ConfigMap
+
+        .. code-block:: yaml
+
+            lbipam-require-lb-class: true
 
 Requesting IPs
 --------------

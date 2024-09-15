@@ -17,6 +17,7 @@ import (
 	envoy_type_v3 "github.com/cilium/proxy/go/envoy/type/v3"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
+	"k8s.io/utils/ptr"
 
 	"github.com/cilium/cilium/operator/pkg/model"
 	"github.com/cilium/cilium/pkg/math"
@@ -42,6 +43,7 @@ type VirtualHostMutator func(*envoy_config_route_v3.VirtualHost) *envoy_config_r
 //   - Exact Match length
 //   - Regex Match length
 //   - Prefix match length
+//   - Method match
 //   - Number of header matches
 //   - Number of query parameter matches
 //
@@ -81,6 +83,20 @@ func (s SortableRoute) Less(i, j int) bool {
 		return prefixMatch1 > prefixMatch2
 	}
 
+	// Next up, sort by method based on :method header
+	// Give higher priority for the route having method specified
+	method1 := getMethod(s[i].Match.GetHeaders())
+	method2 := getMethod(s[j].Match.GetHeaders())
+	if method1 == nil && method2 != nil {
+		return false
+	}
+	if method1 != nil && method2 == nil {
+		return true
+	}
+	if method1 != nil && *method1 != *method2 {
+		return *method1 < *method2
+	}
+
 	// If that's the same, then sort by header length
 	if headerMatch1 != headerMatch2 {
 		return headerMatch1 > headerMatch2
@@ -88,6 +104,15 @@ func (s SortableRoute) Less(i, j int) bool {
 
 	// lastly, sort by query match length
 	return queryMatch1 > queryMatch2
+}
+
+func getMethod(headers []*envoy_config_route_v3.HeaderMatcher) *string {
+	for _, h := range headers {
+		if h.Name == ":method" {
+			return ptr.To(h.GetStringMatch().GetExact())
+		}
+	}
+	return nil
 }
 
 func (s SortableRoute) Swap(i, j int) {
@@ -307,7 +332,9 @@ func requestMirrorMutation(mirrors []*model.HTTPRequestMirror) routeActionMutati
 				Cluster: fmt.Sprintf("%s:%s:%s", m.Backend.Namespace, m.Backend.Name, m.Backend.Port.GetPort()),
 				RuntimeFraction: &envoy_config_core_v3.RuntimeFractionalPercent{
 					DefaultValue: &envoy_type_v3.FractionalPercent{
-						Numerator: 100,
+						Numerator: uint32(m.Numerator * 100 / m.Denominator),
+						// Normalized to HUNDRED
+						Denominator: envoy_type_v3.FractionalPercent_HUNDRED,
 					},
 				},
 			})
@@ -317,9 +344,43 @@ func requestMirrorMutation(mirrors []*model.HTTPRequestMirror) routeActionMutati
 	}
 }
 
+func retryMutation(retry *model.HTTPRetry) routeActionMutation {
+	return func(route *envoy_config_route_v3.Route_Route) *envoy_config_route_v3.Route_Route {
+		if retry == nil {
+			return route
+		}
+
+		rp := &envoy_config_route_v3.RetryPolicy{
+			RetriableStatusCodes: retry.Codes,
+		}
+
+		if retry.Attempts != nil {
+			rp.NumRetries = wrapperspb.UInt32(uint32(*retry.Attempts))
+		}
+
+		if retry.Backoff != nil {
+			baseInterval := *retry.Backoff
+			rp.RetryBackOff = &envoy_config_route_v3.RetryPolicy_RetryBackOff{
+				BaseInterval: durationpb.New(baseInterval),
+				// By default, the maximum interval is 10 times the base interval, which is
+				// too high for most use cases. Reduce it to 2 times the base interval.
+				MaxInterval: durationpb.New(2 * baseInterval),
+			}
+		}
+
+		route.Route.RetryPolicy = rp
+		return route
+	}
+}
+
 func timeoutMutation(backend *time.Duration, request *time.Duration) routeActionMutation {
 	return func(route *envoy_config_route_v3.Route_Route) *envoy_config_route_v3.Route_Route {
 		if backend == nil && request == nil {
+			route.Route.MaxStreamDuration = &envoy_config_route_v3.RouteAction_MaxStreamDuration{
+				MaxStreamDuration: &durationpb.Duration{
+					Seconds: 0,
+				},
+			}
 			return route
 		}
 		minTimeout := backend
@@ -340,6 +401,7 @@ func getRouteAction(route *model.HTTPRoute, backends []model.Backend, backendHTT
 		pathFullReplaceMutation(rewrite),
 		requestMirrorMutation(mirrors),
 		timeoutMutation(route.Timeout.Backend, route.Timeout.Request),
+		retryMutation(route.Retry),
 	}
 
 	if len(backends) == 1 {

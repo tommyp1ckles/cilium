@@ -56,8 +56,9 @@ const (
 	// TemplatesDir is the default path for the compiled template objects relative to StateDir
 	TemplatesDir = "templates"
 
-	// TemplatePath is the default path for a symlink to a template relative to StateDir/<EPID>
-	TemplatePath = "template.o"
+	// TemplateIDPath is the name of a file which contains the ID (aka hash) of
+	// the template used by the endpoint.
+	TemplateIDPath = "template.txt"
 
 	// BpfDir is the default path for template files relative to LibDir
 	BpfDir = "bpf"
@@ -180,13 +181,29 @@ const (
 	// DNSProxyEnableTransparentMode enables transparent mode for the DNS proxy.
 	DNSProxyEnableTransparentMode = false
 
+	// DNSProxyLockCount is the default array size containing mutexes which protect
+	// against parallel handling of DNS response names.
+	DNSProxyLockCount = 131
+
+	// DNSProxyLockTimeout is the default timeout when acquiring the locks controlled by
+	// DNSProxyLockCount.
+	DNSProxyLockTimeout = 500 * time.Millisecond
+
+	// DNSProxySocketLingerTimeout defines how many seconds we wait for the connection
+	// between the DNS proxy and the upstream server to be closed.
+	DNSProxySocketLingerTimeout = 10
+
 	// IdentityChangeGracePeriod is the default value for
 	// option.IdentityChangeGracePeriod
 	IdentityChangeGracePeriod = 5 * time.Second
 
-	// IdentityRestoreGracePeriod is the default value for
-	// option.IdentityRestoreGracePeriod
-	IdentityRestoreGracePeriod = 10 * time.Minute
+	// IdentityRestoreGracePeriodKvstore is the default value for
+	// option.IdentityRestoreGracePeriod when kvstore is enabled.
+	IdentityRestoreGracePeriodKvstore = 10 * time.Minute
+
+	// IdentityRestoreGracePeriodKvstore is the default value for
+	// option.IdentityRestoreGracePeriod when only k8s is in use
+	IdentityRestoreGracePeriodK8s = 30 * time.Second
 
 	// ExecTimeout is a timeout for executing commands.
 	ExecTimeout = 300 * time.Second
@@ -244,6 +261,10 @@ const (
 	// be necessary on key rotations.
 	EnableIPsecKeyWatcher = true
 
+	// Enable caching for XfrmState for IPSec. Significantly reduces CPU usage
+	// in large clusters.
+	EnableIPSecXfrmStateCaching = true
+
 	// Enable IPSec encrypted overlay
 	//
 	// This feature will encrypt overlay traffic before it leaves the cluster.
@@ -287,6 +308,9 @@ const (
 
 	// EnableAutoDirectRouting is the default value for EnableAutoDirectRouting
 	EnableAutoDirectRouting = false
+
+	// EnableDirectRoutingSkipUnreachable is the default value for EnableDirectRoutingIgnoreUnreachableName
+	EnableDirectRoutingSkipUnreachable = false
 
 	// EnableHealthChecking is the default value for EnableHealthChecking
 	EnableHealthChecking = true
@@ -383,7 +407,7 @@ const (
 	LockLeaseTTL = 25 * time.Second
 
 	// KVstoreLeaseMaxTTL is the upper bound for KVStore lease TTL value.
-	// It is calculated as Min(int64 positive max, etcd MaxLeaseTTL, consul MaxLeaseTTL)
+	// It is calculated as Min(int64 positive max, etcd MaxLeaseTTL)
 	KVstoreLeaseMaxTTL = 86400 * time.Second
 
 	// IPAMPreAllocation is the default value for
@@ -441,13 +465,11 @@ const (
 	// policy updates are invoked.
 	PolicyTriggerInterval = 1 * time.Second
 
-	// K8sClientQPSLimit is the default qps for the k8s client. It is set to 0 because the k8s client
-	// has its own default.
-	K8sClientQPSLimit float32 = 0.0
+	// K8sClientQPSLimit is the default qps for the cilium-agent k8s client.
+	K8sClientQPSLimit float32 = 10.0
 
-	// K8sClientBurst is the default burst for the k8s client. It is set to 0 because the k8s client
-	// has its own default.
-	K8sClientBurst = 0
+	// K8sClientBurst is the default burst for the cilium-agent k8s client.
+	K8sClientBurst = 20
 
 	// K8sServiceCacheSize is the default value for option.K8sServiceCacheSize
 	// which denotes the value of Cilium's K8s service cache size.
@@ -508,11 +530,9 @@ const (
 	// InstallNoConntrackRules instructs Cilium to install Iptables rules to skip netfilter connection tracking on all pod traffic.
 	InstallNoConntrackIptRules = false
 
-	// WireguardSubnetV4 is a default WireGuard tunnel subnet
-	WireguardSubnetV4 = "172.16.43.0/24"
-
-	// WireguardSubnetV6 is a default WireGuard tunnel subnet
-	WireguardSubnetV6 = "fdc9:281f:04d7:9ee9::1/64"
+	// ContainerIPLocalReservedPortsAuto instructs the Cilium CNI plugin to reserve
+	// an auto-generated list of ports in the container network namespace
+	ContainerIPLocalReservedPortsAuto = "auto"
 
 	// ExternalClusterIP enables cluster external access to ClusterIP services.
 	// Defaults to false to retain prior behaviour of not routing external packets to ClusterIPs.
@@ -569,6 +589,12 @@ const (
 
 	// BPFEventsTraceEnabled controls whether the Cilium datapath exposes "trace" events to Cilium monitor and Hubble.
 	BPFEventsTraceEnabled = true
+
+	// EnableEnvoyConfig is the default value for option.EnableEnvoyConfig
+	EnableEnvoyConfig = false
+
+	// NetNsPath is the default path to the mounted network namespaces directory
+	NetNsPath = "/var/run/cilium/netns"
 )
 
 var (

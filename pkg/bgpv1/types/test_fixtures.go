@@ -7,7 +7,7 @@ import (
 	"net/netip"
 
 	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
 
 var (
@@ -71,7 +71,7 @@ var (
 							RouteAction:         RoutePolicyActionNone,
 							AddCommunities:      []string{"65000:100"},
 							AddLargeCommunities: []string{"4294967295:0:100"},
-							SetLocalPreference:  pointer.Int64(150),
+							SetLocalPreference:  ptr.To[int64](150),
 						},
 					},
 				},
@@ -99,11 +99,17 @@ var (
 									PrefixLenMax: 32,
 								},
 							},
+							MatchFamilies: []Family{
+								{
+									Afi:  AfiIPv4,
+									Safi: SafiUnicast,
+								},
+							},
 						},
 						Actions: RoutePolicyActions{
 							RouteAction:        RoutePolicyActionNone,
 							AddCommunities:     []string{"65000:100", "65000:101"},
-							SetLocalPreference: pointer.Int64(150),
+							SetLocalPreference: ptr.To[int64](150),
 						},
 					},
 					{
@@ -121,11 +127,17 @@ var (
 									PrefixLenMax: 32,
 								},
 							},
+							MatchFamilies: []Family{
+								{
+									Afi:  AfiIPv6,
+									Safi: SafiUnicast,
+								},
+							},
 						},
 						Actions: RoutePolicyActions{
 							RouteAction:        RoutePolicyActionNone,
 							AddCommunities:     []string{"65000:100", "65000:101"},
-							SetLocalPreference: pointer.Int64(150),
+							SetLocalPreference: ptr.To[int64](150),
 						},
 					},
 				},
@@ -153,7 +165,7 @@ var (
 						Actions: RoutePolicyActions{
 							RouteAction:        RoutePolicyActionNone,
 							AddCommunities:     []string{"65000:100"},
-							SetLocalPreference: pointer.Int64(150),
+							SetLocalPreference: ptr.To[int64](150),
 						},
 					},
 					// invalid statement - wrong neighbor address

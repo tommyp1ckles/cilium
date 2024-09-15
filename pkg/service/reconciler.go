@@ -10,12 +10,12 @@ import (
 
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/job"
+	"github.com/cilium/statedb"
 	"k8s.io/apimachinery/pkg/util/sets"
 
 	"github.com/cilium/cilium/pkg/backoff"
 	"github.com/cilium/cilium/pkg/datapath/tables"
 	"github.com/cilium/cilium/pkg/inctimer"
-	"github.com/cilium/cilium/pkg/statedb"
 	"github.com/cilium/cilium/pkg/time"
 )
 
@@ -24,7 +24,7 @@ import (
 func registerServiceReconciler(p serviceReconcilerParams) {
 	sr := serviceReconciler(p)
 	g := p.Jobs.NewGroup(p.Health)
-	g.Add(job.OneShot("ServiceReconciler", sr.reconcileLoop))
+	g.Add(job.OneShot("service-reconciler", sr.reconcileLoop))
 	p.Lifecycle.Append(g)
 }
 
@@ -71,10 +71,10 @@ func (sr serviceReconciler) reconcileLoop(ctx context.Context, health cell.Healt
 	defer periodicSyncTicker.Stop()
 
 	for {
-		iter, watch := sr.NodeAddresses.All(sr.DB.ReadTxn())
+		iter, watch := sr.NodeAddresses.AllWatch(sr.DB.ReadTxn())
 
 		// Collect all NodePort addresses
-		newAddrs := statedb.CollectSet(
+		newAddrs := sets.New(statedb.Collect(
 			statedb.Map(
 				statedb.Filter(
 					iter,
@@ -82,7 +82,7 @@ func (sr serviceReconciler) reconcileLoop(ctx context.Context, health cell.Healt
 				),
 				func(addr tables.NodeAddress) netip.Addr { return addr.Addr },
 			),
-		)
+		)...)
 
 		// Refresh the frontends if the set of NodePort addresses changed
 		if !addrs.Equal(newAddrs) {

@@ -104,15 +104,20 @@ type peer struct {
 	policy            *table.RoutingPolicy
 	localRib          *table.TableManager
 	prefixLimitWarned map[bgp.RouteFamily]bool
-	llgrEndChs        []chan struct{}
+	// map of path local identifiers sent for that prefix
+	sentPaths           map[table.PathDestLocalKey]map[uint32]struct{}
+	sendMaxPathFiltered map[table.PathLocalKey]struct{}
+	llgrEndChs          []chan struct{}
 }
 
 func newPeer(g *oc.Global, conf *oc.Neighbor, loc *table.TableManager, policy *table.RoutingPolicy, logger log.Logger) *peer {
 	peer := &peer{
-		localRib:          loc,
-		policy:            policy,
-		fsm:               newFSM(g, conf, logger),
-		prefixLimitWarned: make(map[bgp.RouteFamily]bool),
+		localRib:            loc,
+		policy:              policy,
+		fsm:                 newFSM(g, conf, logger),
+		prefixLimitWarned:   make(map[bgp.RouteFamily]bool),
+		sentPaths:           make(map[table.PathDestLocalKey]map[uint32]struct{}),
+		sendMaxPathFiltered: make(map[table.PathLocalKey]struct{}),
 	}
 	if peer.isRouteServerClient() {
 		peer.tableId = conf.State.NeighborAddress
@@ -136,11 +141,15 @@ func (peer *peer) ID() string {
 	return peer.fsm.pConf.State.NeighborAddress
 }
 
-func (peer *peer) RouterID() string {
+func (peer *peer) routerID() net.IP {
 	peer.fsm.lock.RLock()
 	defer peer.fsm.lock.RUnlock()
-	if peer.fsm.peerInfo.ID != nil {
-		return peer.fsm.peerInfo.ID.String()
+	return peer.fsm.peerInfo.ID
+}
+
+func (peer *peer) RouterID() string {
+	if id := peer.routerID(); id != nil {
+		return id.String()
 	}
 	return ""
 }
@@ -194,6 +203,83 @@ func (peer *peer) isAddPathReceiveEnabled(family bgp.RouteFamily) bool {
 
 func (peer *peer) isAddPathSendEnabled(family bgp.RouteFamily) bool {
 	return (peer.getAddPathMode(family) & bgp.BGP_ADD_PATH_SEND) > 0
+}
+
+func (peer *peer) getAddPathSendMax(family bgp.RouteFamily) uint8 {
+	peer.fsm.lock.RLock()
+	defer peer.fsm.lock.RUnlock()
+	for _, a := range peer.fsm.pConf.AfiSafis {
+		if a.State.Family == family {
+			return a.AddPaths.Config.SendMax
+		}
+	}
+	return 0
+}
+
+func (peer *peer) getRoutesCount(family bgp.RouteFamily, dstPrefix string) uint8 {
+	destLocalKey := table.NewPathDestLocalKey(family, dstPrefix)
+	if identifiers, ok := peer.sentPaths[*destLocalKey]; ok {
+		count := len(identifiers)
+		// the send-max config is uint8, so we need to check for overflow
+		if count > int(^uint8(0)) {
+			return ^uint8(0)
+		}
+		return uint8(count)
+	}
+	return 0
+}
+
+func (peer *peer) updateRoutes(paths ...*table.Path) {
+	if len(paths) == 0 {
+		return
+	}
+	for _, path := range paths {
+		localKey := path.GetLocalKey()
+		destLocalKey := localKey.PathDestLocalKey
+		identifiers, destExists := peer.sentPaths[destLocalKey]
+		if path.IsWithdraw && destExists {
+			delete(identifiers, path.GetNlri().PathLocalIdentifier())
+		} else if !path.IsWithdraw {
+			if !destExists {
+				peer.sentPaths[destLocalKey] = make(map[uint32]struct{})
+			}
+			identifiers := peer.sentPaths[destLocalKey]
+			if len(identifiers) < int(peer.getAddPathSendMax(destLocalKey.Family)) {
+				identifiers[localKey.Id] = struct{}{}
+			}
+		}
+	}
+}
+
+func (peer *peer) isPathSendMaxFiltered(path *table.Path) bool {
+	if path == nil {
+		return false
+	}
+	_, found := peer.sendMaxPathFiltered[path.GetLocalKey()]
+	return found
+}
+
+func (peer *peer) unsetPathSendMaxFiltered(path *table.Path) bool {
+	if path == nil {
+		return false
+	}
+	if _, ok := peer.sendMaxPathFiltered[path.GetLocalKey()]; !ok {
+		return false
+	}
+	delete(peer.sendMaxPathFiltered, path.GetLocalKey())
+	return true
+}
+
+func (peer *peer) hasPathAlreadyBeenSent(path *table.Path) bool {
+	if path == nil {
+		return false
+	}
+	destLocalKey := path.GetDestLocalKey()
+	if _, dstExist := peer.sentPaths[destLocalKey]; !dstExist {
+		return false
+	}
+	_, pathExist := peer.sentPaths[destLocalKey][path.GetNlri().PathLocalIdentifier()]
+	return pathExist
 }
 
 func (peer *peer) isDynamicNeighbor() bool {
@@ -377,7 +463,7 @@ func (peer *peer) filterPathFromSourcePeer(path, old *table.Path) *table.Path {
 	// (whichever is not the new best path), we fail to send a withdraw towards
 	// B, and the route is "stuck".
 	// TODO: considerations for RFC6286
-	if peer.RouterID() != path.GetSource().ID.String() {
+	if !peer.routerID().Equal(path.GetSource().ID) {
 		return path
 	}
 
@@ -403,11 +489,13 @@ func (peer *peer) filterPathFromSourcePeer(path, old *table.Path) *table.Path {
 			return old.Clone(true)
 		}
 	}
-	peer.fsm.logger.Debug("From me, ignore",
-		log.Fields{
-			"Topic": "Peer",
-			"Key":   peer.ID(),
-			"Data":  path})
+	if peer.fsm.logger.GetLevel() >= log.DebugLevel {
+		peer.fsm.logger.Debug("From me, ignore",
+			log.Fields{
+				"Topic": "Peer",
+				"Key":   peer.ID(),
+				"Data":  path})
+	}
 	return nil
 }
 
@@ -434,7 +522,6 @@ func (peer *peer) doPrefixLimit(k bgp.RouteFamily, c *oc.PrefixLimitConfig) *bgp
 		}
 	}
 	return nil
-
 }
 
 func (peer *peer) updatePrefixLimitConfig(c []oc.AfiSafi) error {
@@ -477,13 +564,17 @@ func (peer *peer) updatePrefixLimitConfig(c []oc.AfiSafi) error {
 func (peer *peer) handleUpdate(e *fsmMsg) ([]*table.Path, []bgp.RouteFamily, *bgp.BGPMessage) {
 	m := e.MsgData.(*bgp.BGPMessage)
 	update := m.Body.(*bgp.BGPUpdate)
-	peer.fsm.logger.Debug("received update",
-		log.Fields{
-			"Topic":       "Peer",
-			"Key":         peer.fsm.pConf.State.NeighborAddress,
-			"nlri":        update.NLRI,
-			"withdrawals": update.WithdrawnRoutes,
-			"attributes":  update.PathAttributes})
+
+	if peer.fsm.logger.GetLevel() >= log.DebugLevel {
+		peer.fsm.logger.Debug("received update",
+			log.Fields{
+				"Topic":       "Peer",
+				"Key":         peer.fsm.pConf.State.NeighborAddress,
+				"nlri":        update.NLRI,
+				"withdrawals": update.WithdrawnRoutes,
+				"attributes":  update.PathAttributes})
+	}
+
 	peer.fsm.lock.Lock()
 	peer.fsm.pConf.Timers.State.UpdateRecvTime = time.Now().Unix()
 	peer.fsm.lock.Unlock()

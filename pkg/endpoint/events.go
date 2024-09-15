@@ -15,7 +15,6 @@ import (
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/eventqueue"
 	"github.com/cilium/cilium/pkg/logging/logfields"
-	"github.com/cilium/cilium/pkg/maps/bwmap"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
 )
@@ -162,18 +161,18 @@ func (ev *EndpointNoTrackEvent) Handle(res chan interface{}) {
 		log.Debug("Updating NOTRACK rules")
 		if e.IPv4.IsValid() {
 			if port > 0 {
-				e.owner.Datapath().InstallNoTrackRules(e.IPv4, port)
+				e.owner.IPTablesManager().InstallNoTrackRules(e.IPv4, port)
 			}
 			if e.noTrackPort > 0 {
-				e.owner.Datapath().RemoveNoTrackRules(e.IPv4, e.noTrackPort)
+				e.owner.IPTablesManager().RemoveNoTrackRules(e.IPv4, e.noTrackPort)
 			}
 		}
 		if e.IPv6.IsValid() {
 			if port > 0 {
-				e.owner.Datapath().InstallNoTrackRules(e.IPv6, port)
+				e.owner.IPTablesManager().InstallNoTrackRules(e.IPv6, port)
 			}
 			if e.noTrackPort > 0 {
-				e.owner.Datapath().RemoveNoTrackRules(e.IPv6, e.noTrackPort)
+				e.owner.IPTablesManager().RemoveNoTrackRules(e.IPv6, e.noTrackPort)
 			}
 		}
 		e.noTrackPort = port
@@ -300,10 +299,12 @@ func (ev *EndpointPolicyBandwidthEvent) Handle(res chan interface{}) {
 	if bandwidthEgress != "" {
 		bps, err = bandwidth.GetBytesPerSec(bandwidthEgress)
 		if err == nil {
-			err = bwmap.Update(e.ID, bps)
+			ev.bwm.UpdateBandwidthLimit(e.ID, bps)
+		} else {
+			e.getLogger().WithError(err).Debugf("failed to parse bandwidth limit %q", bandwidthEgress)
 		}
 	} else {
-		err = bwmap.SilentDelete(e.ID)
+		ev.bwm.DeleteBandwidthLimit(e.ID)
 	}
 	if err != nil {
 		res <- &EndpointRegenerationResult{

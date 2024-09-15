@@ -14,19 +14,20 @@ import (
 
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/job"
+	"github.com/cilium/statedb"
+	"github.com/cilium/statedb/index"
+	"github.com/cilium/stream"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
-	"golang.org/x/sys/unix"
 	"k8s.io/apimachinery/pkg/util/sets"
 
 	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/ip"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/rate"
-	"github.com/cilium/cilium/pkg/statedb"
-	"github.com/cilium/cilium/pkg/statedb/index"
 	"github.com/cilium/cilium/pkg/time"
 )
 
@@ -37,6 +38,8 @@ const WildcardDeviceName = "*"
 
 // NodeAddress is an IP address assigned to a network interface on a Cilium node
 // that is considered a "host" IP address.
+//
+// NOTE: Update DeepEqual() when this struct is modified
 type NodeAddress struct {
 	Addr netip.Addr
 
@@ -56,12 +59,25 @@ type NodeAddress struct {
 	DeviceName string
 }
 
+func (n *NodeAddress) DeepEqual(other *NodeAddress) bool {
+	return n.Addr == other.Addr &&
+		n.NodePort == other.NodePort &&
+		n.Primary == other.Primary &&
+		n.DeviceName == other.DeviceName
+}
+
 func (n *NodeAddress) IP() net.IP {
 	return n.Addr.AsSlice()
 }
 
 func (n *NodeAddress) String() string {
 	return fmt.Sprintf("%s (%s)", n.Addr, n.DeviceName)
+}
+
+// GetAddr returns the address. Useful when mapping over NodeAddress's with
+// e.g. statedb.Map.
+func (n NodeAddress) GetAddr() netip.Addr {
+	return n.Addr
 }
 
 func (n NodeAddress) TableHeader() []string {
@@ -149,7 +165,7 @@ var (
 )
 
 func NewNodeAddressTable() (statedb.RWTable[NodeAddress], error) {
-	return statedb.NewTable[NodeAddress](
+	return statedb.NewTable(
 		NodeAddressTableName,
 		NodeAddressIndex,
 		NodeAddressDeviceNameIndex,
@@ -164,8 +180,7 @@ const (
 // AddressScopeMax sets the maximum scope an IP address can have. A scope
 // is defined in rtnetlink(7) as the distance to the destination where a
 // lower number signifies a wider scope with RT_SCOPE_UNIVERSE (0) being
-// the widest. Definitions in Go are in unix package, e.g.
-// unix.RT_SCOPE_UNIVERSE and so on.
+// the widest.
 //
 // This defaults to RT_SCOPE_LINK-1 (defaults.AddressScopeMax) and can be
 // set by the user with --local-max-addr-scope.
@@ -202,13 +217,14 @@ type nodeAddressControllerParams struct {
 	Devices         statedb.Table[*Device]
 	NodeAddresses   statedb.RWTable[NodeAddress]
 	AddressScopeMax AddressScopeMax
+	LocalNode       *node.LocalNodeStore
 }
 
 type nodeAddressController struct {
 	nodeAddressControllerParams
 
-	tracker *statedb.DeleteTracker[*Device]
-
+	deviceChanges     statedb.ChangeIterator[*Device]
+	k8sIPv4, k8sIPv6  netip.Addr
 	fallbackAddresses fallbackAddresses
 }
 
@@ -239,15 +255,18 @@ func (n *nodeAddressController) register() {
 
 				// Start tracking deletions of devices.
 				var err error
-				n.tracker, err = n.Devices.DeleteTracker(txn, "node-addresses")
+				n.deviceChanges, err = n.Devices.Changes(txn)
 				if err != nil {
 					return fmt.Errorf("DeleteTracker: %w", err)
 				}
 
+				if node, err := n.LocalNode.Get(ctx); err == nil {
+					n.updateK8sNodeIPs(node)
+				}
+
 				// Do an immediate update to populate the table before it is read from.
-				devices, _ := n.Devices.All(txn)
-				for dev, _, ok := devices.Next(); ok; dev, _, ok = devices.Next() {
-					n.update(txn, nil, n.getAddressesFromDevice(dev), nil, dev.Name)
+				for dev := range n.Devices.All(txn) {
+					n.update(txn, n.getAddressesFromDevice(dev), nil, dev.Name)
 					n.updateWildcardDevice(txn, dev, false)
 				}
 				txn.Commit()
@@ -261,31 +280,65 @@ func (n *nodeAddressController) register() {
 
 }
 
+func (n *nodeAddressController) updateK8sNodeIPs(node node.LocalNode) (updated bool) {
+	if ip := node.GetNodeIP(true); ip != nil {
+		if newIP, ok := netip.AddrFromSlice(ip); ok {
+			if newIP != n.k8sIPv6 {
+				n.k8sIPv6 = newIP
+				updated = true
+			}
+		}
+	}
+	if ip := node.GetNodeIP(false); ip != nil {
+		if newIP, ok := netip.AddrFromSlice(ip); ok {
+			if newIP != n.k8sIPv4 {
+				n.k8sIPv4 = newIP
+				updated = true
+			}
+		}
+	}
+	return
+}
+
 func (n *nodeAddressController) run(ctx context.Context, reporter cell.Health) error {
-	defer n.tracker.Close()
+	localNodeChanges := stream.ToChannel(ctx, n.LocalNode)
+	n.updateK8sNodeIPs(<-localNodeChanges)
 
 	limiter := rate.NewLimiter(nodeAddressControllerMinInterval, 1)
 	for {
 		txn := n.DB.WriteTxn(n.NodeAddresses)
-		process := func(dev *Device, deleted bool, rev statedb.Revision) {
-			// Note: prefix match! existing may contain node addresses from devices with names
-			// prefixed by dev. See https://github.com/cilium/cilium/issues/29324.
-			addrIter, _ := n.NodeAddresses.Get(txn, NodeAddressDeviceNameIndex.Query(dev.Name))
-			existing := statedb.CollectSet[NodeAddress](addrIter)
-			var new sets.Set[NodeAddress]
-			if !deleted {
+		changes, watch := n.deviceChanges.Next(txn)
+		for change := range changes {
+			dev := change.Object
+
+			var new []NodeAddress
+			if !change.Deleted {
 				new = n.getAddressesFromDevice(dev)
 			}
-			n.update(txn, existing, new, reporter, dev.Name)
-			n.updateWildcardDevice(txn, dev, deleted)
+			n.update(txn, new, reporter, dev.Name)
+			n.updateWildcardDevice(txn, dev, change.Deleted)
 		}
-		watch := n.tracker.Iterate(txn, process)
 		txn.Commit()
 
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-watch:
+		case localNode, ok := <-localNodeChanges:
+			if !ok {
+				localNodeChanges = nil
+				break
+			}
+			if n.updateK8sNodeIPs(localNode) {
+				// Recompute the node addresses as the k8s node IP has changed, which
+				// affects the prioritization.
+				txn := n.DB.WriteTxn(n.NodeAddresses)
+				for dev := range n.Devices.All(txn) {
+					n.update(txn, n.getAddressesFromDevice(dev), nil, dev.Name)
+					n.updateWildcardDevice(txn, dev, false)
+				}
+				txn.Commit()
+			}
 		}
 		if err := limiter.Wait(ctx); err != nil {
 			return err
@@ -297,18 +350,23 @@ func (n *nodeAddressController) run(ctx context.Context, reporter cell.Health) e
 // addresses are the most suitable IPv4 and IPv6 address on any network device, whether it's
 // selected for datapath use or not.
 func (n *nodeAddressController) updateWildcardDevice(txn statedb.WriteTxn, dev *Device, deleted bool) {
+	if strings.HasPrefix(dev.Name, "lxc") {
+		// Always ignore lxc devices.
+		return
+	}
+
 	if !n.updateFallbacks(txn, dev, deleted) {
 		// No changes
 		return
 	}
 
 	// Clear existing fallback addresses.
-	iter, _ := n.NodeAddresses.Get(txn, NodeAddressDeviceNameIndex.Query(WildcardDeviceName))
-	for addr, _, ok := iter.Next(); ok; addr, _, ok = iter.Next() {
+	iter := n.NodeAddresses.List(txn, NodeAddressDeviceNameIndex.Query(WildcardDeviceName))
+	for addr := range iter {
 		n.NodeAddresses.Delete(txn, addr)
 	}
 
-	newAddrs := sets.New[NodeAddress]()
+	newAddrs := []NodeAddress{}
 	for _, fallback := range n.fallbackAddresses.addrs() {
 		if !fallback.IsValid() {
 			continue
@@ -319,7 +377,7 @@ func (n *nodeAddressController) updateWildcardDevice(txn statedb.WriteTxn, dev *
 			Primary:    true,
 			DeviceName: WildcardDeviceName,
 		}
-		newAddrs.Insert(nodeAddr)
+		newAddrs = append(newAddrs, nodeAddr)
 		n.NodeAddresses.Insert(txn, nodeAddr)
 	}
 
@@ -332,12 +390,13 @@ func (n *nodeAddressController) updateFallbacks(txn statedb.ReadTxn, dev *Device
 	}
 
 	fallbacks := &n.fallbackAddresses
-	if deleted && (fallbacks.ipv4.dev == dev || fallbacks.ipv6.dev == dev) {
-		// The device that was used for fallback address was removed.
-		// Clear the fallbacks and reprocess from scratch.
+	if deleted && fallbacks.fromDevice(dev) {
 		fallbacks.clear()
-		devices, _ := n.Devices.All(txn)
-		for dev, _, ok := devices.Next(); ok; dev, _, ok = devices.Next() {
+		for dev := range n.Devices.All(txn) {
+			if strings.HasPrefix(dev.Name, "lxc") {
+				// Never pick the fallback from lxc* devices.
+				continue
+			}
 			fallbacks.update(dev)
 		}
 		return true
@@ -347,30 +406,32 @@ func (n *nodeAddressController) updateFallbacks(txn statedb.ReadTxn, dev *Device
 }
 
 // updates the node addresses of a single device.
-func (n *nodeAddressController) update(txn statedb.WriteTxn, existing, new sets.Set[NodeAddress], reporter cell.Health, device string) {
+func (n *nodeAddressController) update(txn statedb.WriteTxn, new []NodeAddress, reporter cell.Health, device string) {
 	updated := false
-	prefixLen := len(device)
 
-	// Insert new addresses that did not exist.
-	for addr := range new {
-		if !existing.Has(addr) {
+	// Gather the set of currently existing addresses for this device.
+	current := sets.New(statedb.Collect(
+		statedb.Map(
+			n.NodeAddresses.List(txn, NodeAddressDeviceNameIndex.Query(device)),
+			func(addr NodeAddress) netip.Addr {
+				return addr.Addr
+			}))...)
+
+	// Update the new set of addresses for this device. We try to avoid insertions when nothing has changed
+	// to avoid unnecessary wakeups to watchers of the table.
+	for _, addr := range new {
+		old, _, hadOld := n.NodeAddresses.Get(txn, NodeAddressIndex.Query(NodeAddressKey{Addr: addr.Addr, DeviceName: device}))
+		if !hadOld || old != addr {
 			updated = true
 			n.NodeAddresses.Insert(txn, addr)
 		}
+		current.Delete(addr.Addr)
 	}
 
-	// Remove addresses that were not part of the new set.
-	for addr := range existing {
-		// Ensure full device name match. 'device' may be a prefix of DeviceName, and we don't want
-		// to delete node addresses of `cilium_host` because they are not on `cilium`.
-		if prefixLen != len(addr.DeviceName) {
-			continue
-		}
-
-		if !new.Has(addr) {
-			updated = true
-			n.NodeAddresses.Delete(txn, addr)
-		}
+	// Delete the addresses no longer associated with the device.
+	for addr := range current {
+		updated = true
+		n.NodeAddresses.Delete(txn, NodeAddress{DeviceName: device, Addr: addr})
 	}
 
 	if updated {
@@ -382,31 +443,29 @@ func (n *nodeAddressController) update(txn statedb.WriteTxn, existing, new sets.
 	}
 }
 
-func (n *nodeAddressController) getAddressesFromDevice(dev *Device) sets.Set[NodeAddress] {
-	if dev.Flags&net.FlagUp == 0 {
+// whiteListDevices are the devices from which node IPs are taken from regardless
+// of whether they are selected or not.
+var whitelistDevices = []string{
+	defaults.HostDevice,
+	"lo",
+}
+
+func (n *nodeAddressController) getAddressesFromDevice(dev *Device) []NodeAddress {
+	// Don't exclude addresses attached to dummy devices, since they may be setup by
+	// processes like nodelocaldns, and these devices aren't always brought up. See
+	// https://github.com/kubernetes/dns/blob/fa0192f004c9571cf24d8e9868be07f57380fccb/pkg/netif/netif.go#L24-L36
+	// Failure to include these addresses in node addresses will trigger fib_lookup
+	// when bpf host routing is enabled and result in packet drops.
+	if dev.Type != "dummy" && dev.Flags&net.FlagUp == 0 {
 		return nil
 	}
 
-	if dev.Name != defaults.HostDevice {
-		// Only take addresses from the selected devices.
-		if !dev.Selected {
-			return nil
-		}
-
-		// Skip obviously uninteresting devices. We include the HostDevice as its IP addresses are
-		// considered node addresses and added to e.g. ipcache as HOST_IDs.
-		for _, prefix := range defaults.ExcludedDevicePrefixes {
-			if strings.HasPrefix(dev.Name, prefix) {
-				return nil
-			}
-		}
+	// Ignore non-whitelisted & non-selected devices.
+	if !slices.Contains(whitelistDevices, dev.Name) && (!dev.Selected && dev.Type != "dummy") {
+		return nil
 	}
 
 	addrs := make([]NodeAddress, 0, len(dev.Addrs))
-
-	// ipv4Found and ipv6Found are set to true when the primary address is picked
-	// (used for the Primary flag)
-	ipv4Found, ipv6Found := false, false
 
 	// The indexes for the first public and private addresses for picking NodePort
 	// addresses.
@@ -414,45 +473,50 @@ func (n *nodeAddressController) getAddressesFromDevice(dev *Device) sets.Set[Nod
 	ipv6PublicIndex, ipv6PrivateIndex := -1, -1
 
 	// Do a first pass to pick the addresses.
-	for i, addr := range SortedAddresses(dev.Addrs) {
+	for _, addr := range SortedAddresses(dev.Addrs) {
 		// We keep the scope-based address filtering as was introduced
 		// in 080857bdedca67d58ec39f8f96c5f38b22f6dc0b.
-		skip := addr.Scope > uint8(n.AddressScopeMax) || addr.Addr.IsLoopback()
+		skip := addr.Scope > RouteScope(n.AddressScopeMax) || addr.Addr.IsLoopback()
 
 		// Always include LINK scope'd addresses for cilium_host device, regardless
 		// of what the maximum scope is.
-		skip = skip && !(dev.Name == defaults.HostDevice && addr.Scope == unix.RT_SCOPE_LINK)
+		skip = skip && !(dev.Name == defaults.HostDevice && addr.Scope == RT_SCOPE_LINK)
 
 		if skip {
 			continue
 		}
 
+		// index to which this address is appended.
+		index := len(addrs)
+
 		isPublic := ip.IsPublicAddr(addr.Addr.AsSlice())
-		primary := false
 		if addr.Addr.Is4() {
-			if !ipv4Found {
-				ipv4Found = true
-				primary = true
+			if addr.Addr.Unmap() == n.k8sIPv4.Unmap() {
+				// Address matches the K8s Node IP. Force this to be picked.
+				ipv4PublicIndex = index
+				ipv4PrivateIndex = index
 			}
+
 			if ipv4PublicIndex < 0 && isPublic {
-				ipv4PublicIndex = i
+				ipv4PublicIndex = index
 			}
 			if ipv4PrivateIndex < 0 && !isPublic {
-				ipv4PrivateIndex = i
+				ipv4PrivateIndex = index
 			}
 		}
 
 		if addr.Addr.Is6() {
-			if !ipv6Found {
-				ipv6Found = true
-				primary = true
+			if addr.Addr == n.k8sIPv6 {
+				// Address matches the K8s Node IP. Force this to be picked.
+				ipv6PublicIndex = index
+				ipv6PrivateIndex = index
 			}
 
 			if ipv6PublicIndex < 0 && isPublic {
-				ipv6PublicIndex = i
+				ipv6PublicIndex = index
 			}
 			if ipv6PrivateIndex < 0 && !isPublic {
-				ipv6PrivateIndex = i
+				ipv6PrivateIndex = index
 			}
 		}
 
@@ -461,25 +525,23 @@ func (n *nodeAddressController) getAddressesFromDevice(dev *Device) sets.Set[Nod
 		// by the logic following this loop.
 		nodePort := false
 		if len(n.Config.NodePortAddresses) > 0 {
-			nodePort = dev.Selected && ip.NetsContainsAny(n.Config.getNets(), []*net.IPNet{ip.IPToPrefix(addr.AsIP())})
+			nodePort = dev.Name != defaults.HostDevice && ip.NetsContainsAny(n.Config.getNets(), []*net.IPNet{ip.IPToPrefix(addr.AsIP())})
 		}
 		addrs = append(addrs,
 			NodeAddress{
 				Addr:       addr.Addr,
-				Primary:    primary,
 				NodePort:   nodePort,
 				DeviceName: dev.Name,
 			})
 	}
 
-	if len(n.Config.NodePortAddresses) == 0 && dev.Selected {
+	if len(n.Config.NodePortAddresses) == 0 && dev.Name != defaults.HostDevice && dev.Flags&net.FlagUp != 0 {
 		// Pick the NodePort addresses. Prefer private addresses if possible.
 		if ipv4PrivateIndex >= 0 {
 			addrs[ipv4PrivateIndex].NodePort = true
 		} else if ipv4PublicIndex >= 0 {
 			addrs[ipv4PublicIndex].NodePort = true
 		}
-
 		if ipv6PrivateIndex >= 0 {
 			addrs[ipv6PrivateIndex].NodePort = true
 		} else if ipv6PublicIndex >= 0 {
@@ -487,13 +549,25 @@ func (n *nodeAddressController) getAddressesFromDevice(dev *Device) sets.Set[Nod
 		}
 	}
 
-	return sets.New(addrs...)
+	// Pick the primary address. Prefer public over private.
+	if ipv4PublicIndex >= 0 {
+		addrs[ipv4PublicIndex].Primary = true
+	} else if ipv4PrivateIndex >= 0 {
+		addrs[ipv4PrivateIndex].Primary = true
+	}
+	if ipv6PublicIndex >= 0 {
+		addrs[ipv6PublicIndex].Primary = true
+	} else if ipv6PrivateIndex >= 0 {
+		addrs[ipv6PrivateIndex].Primary = true
+	}
+
+	return addrs
 }
 
 // showAddresses formats a Set[NodeAddress] as "1.2.3.4 (primary, nodeport), fe80::1"
-func showAddresses(addrs sets.Set[NodeAddress]) string {
+func showAddresses(addrs []NodeAddress) string {
 	ss := make([]string, 0, len(addrs))
-	for addr := range addrs {
+	for _, addr := range addrs {
 		var extras []string
 		if addr.Primary {
 			extras = append(extras, "primary")
@@ -507,7 +581,7 @@ func showAddresses(addrs sets.Set[NodeAddress]) string {
 			ss = append(ss, addr.Addr.String())
 		}
 	}
-	sort.Strings(ss)
+	slices.Sort(ss)
 	return strings.Join(ss, ", ")
 }
 
@@ -563,7 +637,27 @@ func (f *fallbackAddresses) addrs() []netip.Addr {
 	return []netip.Addr{f.ipv4.addr.Addr, f.ipv6.addr.Addr}
 }
 
+func (f *fallbackAddresses) fromDevice(dev *Device) bool {
+	return (f.ipv4.dev != nil && f.ipv4.dev.Name == dev.Name) ||
+		(f.ipv6.dev != nil && f.ipv6.dev.Name == dev.Name)
+}
+
+func (f *fallbackAddresses) clearDevice(dev *Device) {
+	// Clear the fallbacks if they were from a prior version of this device
+	// as the addresses may have been removed.
+	if f.ipv4.dev != nil && f.ipv4.dev.Name == dev.Name {
+		f.ipv4 = fallbackAddress{}
+	}
+	if f.ipv6.dev != nil && f.ipv6.dev.Name == dev.Name {
+		f.ipv6 = fallbackAddress{}
+	}
+}
+
 func (f *fallbackAddresses) update(dev *Device) (updated bool) {
+	prevIPv4, prevIPv6 := f.ipv4.addr, f.ipv6.addr
+
+	f.clearDevice(dev)
+
 	// Iterate over all addresses to see if any of them make for a better
 	// fallback address.
 	for _, addr := range dev.Addrs {
@@ -578,6 +672,10 @@ func (f *fallbackAddresses) update(dev *Device) (updated bool) {
 		switch {
 		case fa.dev == nil:
 			better = true
+		case dev.Selected && !fa.dev.Selected:
+			better = true
+		case !dev.Selected && fa.dev.Selected:
+			better = false
 		case ip.IsPublicAddr(addr.Addr.AsSlice()) && !ip.IsPublicAddr(fa.addr.Addr.AsSlice()):
 			better = true
 		case !ip.IsPublicAddr(addr.Addr.AsSlice()) && ip.IsPublicAddr(fa.addr.Addr.AsSlice()):
@@ -594,10 +692,44 @@ func (f *fallbackAddresses) update(dev *Device) (updated bool) {
 			better = addr.Addr.Less(fa.addr.Addr)
 		}
 		if better {
-			updated = true
 			fa.dev = dev
 			fa.addr = addr
 		}
 	}
-	return
+	return prevIPv4 != f.ipv4.addr || prevIPv6 != f.ipv6.addr
 }
+
+// Shared test address definitions
+var (
+	TestIPv4InternalAddress = netip.MustParseAddr("10.0.0.2")
+	TestIPv4NodePortAddress = netip.MustParseAddr("10.0.0.3")
+	TestIPv6InternalAddress = netip.MustParseAddr("f00d::1")
+	TestIPv6NodePortAddress = netip.MustParseAddr("f00d::2")
+
+	TestAddresses = []NodeAddress{
+		{
+			Addr:       TestIPv4InternalAddress,
+			NodePort:   true,
+			Primary:    true,
+			DeviceName: "test",
+		},
+		{
+			Addr:       TestIPv4NodePortAddress,
+			NodePort:   true,
+			Primary:    false,
+			DeviceName: "test",
+		},
+		{
+			Addr:       TestIPv6InternalAddress,
+			NodePort:   true,
+			Primary:    true,
+			DeviceName: "test",
+		},
+		{
+			Addr:       TestIPv6NodePortAddress,
+			NodePort:   true,
+			Primary:    false,
+			DeviceName: "test",
+		},
+	}
+)

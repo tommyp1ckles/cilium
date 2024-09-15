@@ -3601,6 +3601,70 @@ func (m *awsEc2query_serializeOpCreateCapacityReservation) HandleSerialize(ctx c
 	return next.HandleSerialize(ctx, in)
 }
 
+type awsEc2query_serializeOpCreateCapacityReservationBySplitting struct {
+}
+
+func (*awsEc2query_serializeOpCreateCapacityReservationBySplitting) ID() string {
+	return "OperationSerializer"
+}
+
+func (m *awsEc2query_serializeOpCreateCapacityReservationBySplitting) HandleSerialize(ctx context.Context, in middleware.SerializeInput, next middleware.SerializeHandler) (
+	out middleware.SerializeOutput, metadata middleware.Metadata, err error,
+) {
+	request, ok := in.Request.(*smithyhttp.Request)
+	if !ok {
+		return out, metadata, &smithy.SerializationError{Err: fmt.Errorf("unknown transport type %T", in.Request)}
+	}
+
+	input, ok := in.Parameters.(*CreateCapacityReservationBySplittingInput)
+	_ = input
+	if !ok {
+		return out, metadata, &smithy.SerializationError{Err: fmt.Errorf("unknown input parameters type %T", in.Parameters)}
+	}
+
+	operationPath := "/"
+	if len(request.Request.URL.Path) == 0 {
+		request.Request.URL.Path = operationPath
+	} else {
+		request.Request.URL.Path = path.Join(request.Request.URL.Path, operationPath)
+		if request.Request.URL.Path != "/" && operationPath[len(operationPath)-1] == '/' {
+			request.Request.URL.Path += "/"
+		}
+	}
+	request.Request.Method = "POST"
+	httpBindingEncoder, err := httpbinding.NewEncoder(request.URL.Path, request.URL.RawQuery, request.Header)
+	if err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+	httpBindingEncoder.SetHeader("Content-Type").String("application/x-www-form-urlencoded")
+
+	bodyWriter := bytes.NewBuffer(nil)
+	bodyEncoder := query.NewEncoder(bodyWriter)
+	body := bodyEncoder.Object()
+	body.Key("Action").String("CreateCapacityReservationBySplitting")
+	body.Key("Version").String("2016-11-15")
+
+	if err := awsEc2query_serializeOpDocumentCreateCapacityReservationBySplittingInput(input, bodyEncoder.Value); err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+
+	err = bodyEncoder.Encode()
+	if err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+
+	if request, err = request.SetStream(bytes.NewReader(bodyWriter.Bytes())); err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+
+	if request.Request, err = httpBindingEncoder.Encode(request.Request); err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+	in.Request = request
+
+	return next.HandleSerialize(ctx, in)
+}
+
 type awsEc2query_serializeOpCreateCapacityReservationFleet struct {
 }
 
@@ -4861,6 +4925,70 @@ func (m *awsEc2query_serializeOpCreateIpam) HandleSerialize(ctx context.Context,
 	body.Key("Version").String("2016-11-15")
 
 	if err := awsEc2query_serializeOpDocumentCreateIpamInput(input, bodyEncoder.Value); err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+
+	err = bodyEncoder.Encode()
+	if err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+
+	if request, err = request.SetStream(bytes.NewReader(bodyWriter.Bytes())); err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+
+	if request.Request, err = httpBindingEncoder.Encode(request.Request); err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+	in.Request = request
+
+	return next.HandleSerialize(ctx, in)
+}
+
+type awsEc2query_serializeOpCreateIpamExternalResourceVerificationToken struct {
+}
+
+func (*awsEc2query_serializeOpCreateIpamExternalResourceVerificationToken) ID() string {
+	return "OperationSerializer"
+}
+
+func (m *awsEc2query_serializeOpCreateIpamExternalResourceVerificationToken) HandleSerialize(ctx context.Context, in middleware.SerializeInput, next middleware.SerializeHandler) (
+	out middleware.SerializeOutput, metadata middleware.Metadata, err error,
+) {
+	request, ok := in.Request.(*smithyhttp.Request)
+	if !ok {
+		return out, metadata, &smithy.SerializationError{Err: fmt.Errorf("unknown transport type %T", in.Request)}
+	}
+
+	input, ok := in.Parameters.(*CreateIpamExternalResourceVerificationTokenInput)
+	_ = input
+	if !ok {
+		return out, metadata, &smithy.SerializationError{Err: fmt.Errorf("unknown input parameters type %T", in.Parameters)}
+	}
+
+	operationPath := "/"
+	if len(request.Request.URL.Path) == 0 {
+		request.Request.URL.Path = operationPath
+	} else {
+		request.Request.URL.Path = path.Join(request.Request.URL.Path, operationPath)
+		if request.Request.URL.Path != "/" && operationPath[len(operationPath)-1] == '/' {
+			request.Request.URL.Path += "/"
+		}
+	}
+	request.Request.Method = "POST"
+	httpBindingEncoder, err := httpbinding.NewEncoder(request.URL.Path, request.URL.RawQuery, request.Header)
+	if err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+	httpBindingEncoder.SetHeader("Content-Type").String("application/x-www-form-urlencoded")
+
+	bodyWriter := bytes.NewBuffer(nil)
+	bodyEncoder := query.NewEncoder(bodyWriter)
+	body := bodyEncoder.Object()
+	body.Key("Action").String("CreateIpamExternalResourceVerificationToken")
+	body.Key("Version").String("2016-11-15")
+
+	if err := awsEc2query_serializeOpDocumentCreateIpamExternalResourceVerificationTokenInput(input, bodyEncoder.Value); err != nil {
 		return out, metadata, &smithy.SerializationError{Err: err}
 	}
 
@@ -9725,6 +9853,70 @@ func (m *awsEc2query_serializeOpDeleteIpam) HandleSerialize(ctx context.Context,
 	body.Key("Version").String("2016-11-15")
 
 	if err := awsEc2query_serializeOpDocumentDeleteIpamInput(input, bodyEncoder.Value); err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+
+	err = bodyEncoder.Encode()
+	if err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+
+	if request, err = request.SetStream(bytes.NewReader(bodyWriter.Bytes())); err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+
+	if request.Request, err = httpBindingEncoder.Encode(request.Request); err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+	in.Request = request
+
+	return next.HandleSerialize(ctx, in)
+}
+
+type awsEc2query_serializeOpDeleteIpamExternalResourceVerificationToken struct {
+}
+
+func (*awsEc2query_serializeOpDeleteIpamExternalResourceVerificationToken) ID() string {
+	return "OperationSerializer"
+}
+
+func (m *awsEc2query_serializeOpDeleteIpamExternalResourceVerificationToken) HandleSerialize(ctx context.Context, in middleware.SerializeInput, next middleware.SerializeHandler) (
+	out middleware.SerializeOutput, metadata middleware.Metadata, err error,
+) {
+	request, ok := in.Request.(*smithyhttp.Request)
+	if !ok {
+		return out, metadata, &smithy.SerializationError{Err: fmt.Errorf("unknown transport type %T", in.Request)}
+	}
+
+	input, ok := in.Parameters.(*DeleteIpamExternalResourceVerificationTokenInput)
+	_ = input
+	if !ok {
+		return out, metadata, &smithy.SerializationError{Err: fmt.Errorf("unknown input parameters type %T", in.Parameters)}
+	}
+
+	operationPath := "/"
+	if len(request.Request.URL.Path) == 0 {
+		request.Request.URL.Path = operationPath
+	} else {
+		request.Request.URL.Path = path.Join(request.Request.URL.Path, operationPath)
+		if request.Request.URL.Path != "/" && operationPath[len(operationPath)-1] == '/' {
+			request.Request.URL.Path += "/"
+		}
+	}
+	request.Request.Method = "POST"
+	httpBindingEncoder, err := httpbinding.NewEncoder(request.URL.Path, request.URL.RawQuery, request.Header)
+	if err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+	httpBindingEncoder.SetHeader("Content-Type").String("application/x-www-form-urlencoded")
+
+	bodyWriter := bytes.NewBuffer(nil)
+	bodyEncoder := query.NewEncoder(bodyWriter)
+	body := bodyEncoder.Object()
+	body.Key("Action").String("DeleteIpamExternalResourceVerificationToken")
+	body.Key("Version").String("2016-11-15")
+
+	if err := awsEc2query_serializeOpDocumentDeleteIpamExternalResourceVerificationTokenInput(input, bodyEncoder.Value); err != nil {
 		return out, metadata, &smithy.SerializationError{Err: err}
 	}
 
@@ -17681,6 +17873,70 @@ func (m *awsEc2query_serializeOpDescribeIpamByoasn) HandleSerialize(ctx context.
 	return next.HandleSerialize(ctx, in)
 }
 
+type awsEc2query_serializeOpDescribeIpamExternalResourceVerificationTokens struct {
+}
+
+func (*awsEc2query_serializeOpDescribeIpamExternalResourceVerificationTokens) ID() string {
+	return "OperationSerializer"
+}
+
+func (m *awsEc2query_serializeOpDescribeIpamExternalResourceVerificationTokens) HandleSerialize(ctx context.Context, in middleware.SerializeInput, next middleware.SerializeHandler) (
+	out middleware.SerializeOutput, metadata middleware.Metadata, err error,
+) {
+	request, ok := in.Request.(*smithyhttp.Request)
+	if !ok {
+		return out, metadata, &smithy.SerializationError{Err: fmt.Errorf("unknown transport type %T", in.Request)}
+	}
+
+	input, ok := in.Parameters.(*DescribeIpamExternalResourceVerificationTokensInput)
+	_ = input
+	if !ok {
+		return out, metadata, &smithy.SerializationError{Err: fmt.Errorf("unknown input parameters type %T", in.Parameters)}
+	}
+
+	operationPath := "/"
+	if len(request.Request.URL.Path) == 0 {
+		request.Request.URL.Path = operationPath
+	} else {
+		request.Request.URL.Path = path.Join(request.Request.URL.Path, operationPath)
+		if request.Request.URL.Path != "/" && operationPath[len(operationPath)-1] == '/' {
+			request.Request.URL.Path += "/"
+		}
+	}
+	request.Request.Method = "POST"
+	httpBindingEncoder, err := httpbinding.NewEncoder(request.URL.Path, request.URL.RawQuery, request.Header)
+	if err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+	httpBindingEncoder.SetHeader("Content-Type").String("application/x-www-form-urlencoded")
+
+	bodyWriter := bytes.NewBuffer(nil)
+	bodyEncoder := query.NewEncoder(bodyWriter)
+	body := bodyEncoder.Object()
+	body.Key("Action").String("DescribeIpamExternalResourceVerificationTokens")
+	body.Key("Version").String("2016-11-15")
+
+	if err := awsEc2query_serializeOpDocumentDescribeIpamExternalResourceVerificationTokensInput(input, bodyEncoder.Value); err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+
+	err = bodyEncoder.Encode()
+	if err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+
+	if request, err = request.SetStream(bytes.NewReader(bodyWriter.Bytes())); err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+
+	if request.Request, err = httpBindingEncoder.Encode(request.Request); err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+	in.Request = request
+
+	return next.HandleSerialize(ctx, in)
+}
+
 type awsEc2query_serializeOpDescribeIpamPools struct {
 }
 
@@ -21309,6 +21565,70 @@ func (m *awsEc2query_serializeOpDescribeTags) HandleSerialize(ctx context.Contex
 	body.Key("Version").String("2016-11-15")
 
 	if err := awsEc2query_serializeOpDocumentDescribeTagsInput(input, bodyEncoder.Value); err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+
+	err = bodyEncoder.Encode()
+	if err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+
+	if request, err = request.SetStream(bytes.NewReader(bodyWriter.Bytes())); err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+
+	if request.Request, err = httpBindingEncoder.Encode(request.Request); err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+	in.Request = request
+
+	return next.HandleSerialize(ctx, in)
+}
+
+type awsEc2query_serializeOpDescribeTrafficMirrorFilterRules struct {
+}
+
+func (*awsEc2query_serializeOpDescribeTrafficMirrorFilterRules) ID() string {
+	return "OperationSerializer"
+}
+
+func (m *awsEc2query_serializeOpDescribeTrafficMirrorFilterRules) HandleSerialize(ctx context.Context, in middleware.SerializeInput, next middleware.SerializeHandler) (
+	out middleware.SerializeOutput, metadata middleware.Metadata, err error,
+) {
+	request, ok := in.Request.(*smithyhttp.Request)
+	if !ok {
+		return out, metadata, &smithy.SerializationError{Err: fmt.Errorf("unknown transport type %T", in.Request)}
+	}
+
+	input, ok := in.Parameters.(*DescribeTrafficMirrorFilterRulesInput)
+	_ = input
+	if !ok {
+		return out, metadata, &smithy.SerializationError{Err: fmt.Errorf("unknown input parameters type %T", in.Parameters)}
+	}
+
+	operationPath := "/"
+	if len(request.Request.URL.Path) == 0 {
+		request.Request.URL.Path = operationPath
+	} else {
+		request.Request.URL.Path = path.Join(request.Request.URL.Path, operationPath)
+		if request.Request.URL.Path != "/" && operationPath[len(operationPath)-1] == '/' {
+			request.Request.URL.Path += "/"
+		}
+	}
+	request.Request.Method = "POST"
+	httpBindingEncoder, err := httpbinding.NewEncoder(request.URL.Path, request.URL.RawQuery, request.Header)
+	if err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+	httpBindingEncoder.SetHeader("Content-Type").String("application/x-www-form-urlencoded")
+
+	bodyWriter := bytes.NewBuffer(nil)
+	bodyEncoder := query.NewEncoder(bodyWriter)
+	body := bodyEncoder.Object()
+	body.Key("Action").String("DescribeTrafficMirrorFilterRules")
+	body.Key("Version").String("2016-11-15")
+
+	if err := awsEc2query_serializeOpDocumentDescribeTrafficMirrorFilterRulesInput(input, bodyEncoder.Value); err != nil {
 		return out, metadata, &smithy.SerializationError{Err: err}
 	}
 
@@ -28369,6 +28689,70 @@ func (m *awsEc2query_serializeOpGetInstanceMetadataDefaults) HandleSerialize(ctx
 	return next.HandleSerialize(ctx, in)
 }
 
+type awsEc2query_serializeOpGetInstanceTpmEkPub struct {
+}
+
+func (*awsEc2query_serializeOpGetInstanceTpmEkPub) ID() string {
+	return "OperationSerializer"
+}
+
+func (m *awsEc2query_serializeOpGetInstanceTpmEkPub) HandleSerialize(ctx context.Context, in middleware.SerializeInput, next middleware.SerializeHandler) (
+	out middleware.SerializeOutput, metadata middleware.Metadata, err error,
+) {
+	request, ok := in.Request.(*smithyhttp.Request)
+	if !ok {
+		return out, metadata, &smithy.SerializationError{Err: fmt.Errorf("unknown transport type %T", in.Request)}
+	}
+
+	input, ok := in.Parameters.(*GetInstanceTpmEkPubInput)
+	_ = input
+	if !ok {
+		return out, metadata, &smithy.SerializationError{Err: fmt.Errorf("unknown input parameters type %T", in.Parameters)}
+	}
+
+	operationPath := "/"
+	if len(request.Request.URL.Path) == 0 {
+		request.Request.URL.Path = operationPath
+	} else {
+		request.Request.URL.Path = path.Join(request.Request.URL.Path, operationPath)
+		if request.Request.URL.Path != "/" && operationPath[len(operationPath)-1] == '/' {
+			request.Request.URL.Path += "/"
+		}
+	}
+	request.Request.Method = "POST"
+	httpBindingEncoder, err := httpbinding.NewEncoder(request.URL.Path, request.URL.RawQuery, request.Header)
+	if err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+	httpBindingEncoder.SetHeader("Content-Type").String("application/x-www-form-urlencoded")
+
+	bodyWriter := bytes.NewBuffer(nil)
+	bodyEncoder := query.NewEncoder(bodyWriter)
+	body := bodyEncoder.Object()
+	body.Key("Action").String("GetInstanceTpmEkPub")
+	body.Key("Version").String("2016-11-15")
+
+	if err := awsEc2query_serializeOpDocumentGetInstanceTpmEkPubInput(input, bodyEncoder.Value); err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+
+	err = bodyEncoder.Encode()
+	if err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+
+	if request, err = request.SetStream(bytes.NewReader(bodyWriter.Bytes())); err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+
+	if request.Request, err = httpBindingEncoder.Encode(request.Request); err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+	in.Request = request
+
+	return next.HandleSerialize(ctx, in)
+}
+
 type awsEc2query_serializeOpGetInstanceTypesFromInstanceRequirements struct {
 }
 
@@ -35409,6 +35793,70 @@ func (m *awsEc2query_serializeOpMoveByoipCidrToIpam) HandleSerialize(ctx context
 	return next.HandleSerialize(ctx, in)
 }
 
+type awsEc2query_serializeOpMoveCapacityReservationInstances struct {
+}
+
+func (*awsEc2query_serializeOpMoveCapacityReservationInstances) ID() string {
+	return "OperationSerializer"
+}
+
+func (m *awsEc2query_serializeOpMoveCapacityReservationInstances) HandleSerialize(ctx context.Context, in middleware.SerializeInput, next middleware.SerializeHandler) (
+	out middleware.SerializeOutput, metadata middleware.Metadata, err error,
+) {
+	request, ok := in.Request.(*smithyhttp.Request)
+	if !ok {
+		return out, metadata, &smithy.SerializationError{Err: fmt.Errorf("unknown transport type %T", in.Request)}
+	}
+
+	input, ok := in.Parameters.(*MoveCapacityReservationInstancesInput)
+	_ = input
+	if !ok {
+		return out, metadata, &smithy.SerializationError{Err: fmt.Errorf("unknown input parameters type %T", in.Parameters)}
+	}
+
+	operationPath := "/"
+	if len(request.Request.URL.Path) == 0 {
+		request.Request.URL.Path = operationPath
+	} else {
+		request.Request.URL.Path = path.Join(request.Request.URL.Path, operationPath)
+		if request.Request.URL.Path != "/" && operationPath[len(operationPath)-1] == '/' {
+			request.Request.URL.Path += "/"
+		}
+	}
+	request.Request.Method = "POST"
+	httpBindingEncoder, err := httpbinding.NewEncoder(request.URL.Path, request.URL.RawQuery, request.Header)
+	if err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+	httpBindingEncoder.SetHeader("Content-Type").String("application/x-www-form-urlencoded")
+
+	bodyWriter := bytes.NewBuffer(nil)
+	bodyEncoder := query.NewEncoder(bodyWriter)
+	body := bodyEncoder.Object()
+	body.Key("Action").String("MoveCapacityReservationInstances")
+	body.Key("Version").String("2016-11-15")
+
+	if err := awsEc2query_serializeOpDocumentMoveCapacityReservationInstancesInput(input, bodyEncoder.Value); err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+
+	err = bodyEncoder.Encode()
+	if err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+
+	if request, err = request.SetStream(bytes.NewReader(bodyWriter.Bytes())); err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+
+	if request.Request, err = httpBindingEncoder.Encode(request.Request); err != nil {
+		return out, metadata, &smithy.SerializationError{Err: err}
+	}
+	in.Request = request
+
+	return next.HandleSerialize(ctx, in)
+}
+
 type awsEc2query_serializeOpProvisionByoipCidr struct {
 }
 
@@ -39731,6 +40179,9 @@ func awsEc2query_serializeDocumentAcceleratorCountRequest(v *types.AcceleratorCo
 }
 
 func awsEc2query_serializeDocumentAcceleratorManufacturerSet(v []types.AcceleratorManufacturer, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -39741,6 +40192,9 @@ func awsEc2query_serializeDocumentAcceleratorManufacturerSet(v []types.Accelerat
 }
 
 func awsEc2query_serializeDocumentAcceleratorNameSet(v []types.AcceleratorName, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -39785,6 +40239,9 @@ func awsEc2query_serializeDocumentAcceleratorTotalMemoryMiBRequest(v *types.Acce
 }
 
 func awsEc2query_serializeDocumentAcceleratorTypeSet(v []types.AcceleratorType, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -39795,6 +40252,9 @@ func awsEc2query_serializeDocumentAcceleratorTypeSet(v []types.AcceleratorType, 
 }
 
 func awsEc2query_serializeDocumentAccessScopePathListRequest(v []types.AccessScopePathRequest, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -39835,6 +40295,9 @@ func awsEc2query_serializeDocumentAccessScopePathRequest(v *types.AccessScopePat
 }
 
 func awsEc2query_serializeDocumentAccountAttributeNameStringList(v []types.AccountAttributeName, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("AttributeName")
 
 	for i := range v {
@@ -39857,6 +40320,9 @@ func awsEc2query_serializeDocumentAddIpamOperatingRegion(v *types.AddIpamOperati
 }
 
 func awsEc2query_serializeDocumentAddIpamOperatingRegionSet(v []types.AddIpamOperatingRegion, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -39869,6 +40335,9 @@ func awsEc2query_serializeDocumentAddIpamOperatingRegionSet(v []types.AddIpamOpe
 }
 
 func awsEc2query_serializeDocumentAddPrefixListEntries(v []types.AddPrefixListEntry, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -39898,6 +40367,9 @@ func awsEc2query_serializeDocumentAddPrefixListEntry(v *types.AddPrefixListEntry
 }
 
 func awsEc2query_serializeDocumentAllocationIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("AllocationId")
 
 	for i := range v {
@@ -39908,6 +40380,9 @@ func awsEc2query_serializeDocumentAllocationIdList(v []string, value query.Value
 }
 
 func awsEc2query_serializeDocumentAllocationIds(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -39918,6 +40393,9 @@ func awsEc2query_serializeDocumentAllocationIds(v []string, value query.Value) e
 }
 
 func awsEc2query_serializeDocumentAllowedInstanceTypeSet(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -39928,6 +40406,9 @@ func awsEc2query_serializeDocumentAllowedInstanceTypeSet(v []string, value query
 }
 
 func awsEc2query_serializeDocumentArchitectureTypeSet(v []types.ArchitectureType, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -39938,6 +40419,9 @@ func awsEc2query_serializeDocumentArchitectureTypeSet(v []types.ArchitectureType
 }
 
 func awsEc2query_serializeDocumentArnList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -39965,6 +40449,9 @@ func awsEc2query_serializeDocumentAsnAuthorizationContext(v *types.AsnAuthorizat
 }
 
 func awsEc2query_serializeDocumentAssetIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -39975,6 +40462,9 @@ func awsEc2query_serializeDocumentAssetIdList(v []string, value query.Value) err
 }
 
 func awsEc2query_serializeDocumentAssociationIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("AssociationId")
 
 	for i := range v {
@@ -40012,6 +40502,9 @@ func awsEc2query_serializeDocumentAthenaIntegration(v *types.AthenaIntegration, 
 }
 
 func awsEc2query_serializeDocumentAthenaIntegrationsSet(v []types.AthenaIntegration, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -40048,6 +40541,9 @@ func awsEc2query_serializeDocumentAttributeValue(v *types.AttributeValue, value 
 }
 
 func awsEc2query_serializeDocumentAvailabilityZoneStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("AvailabilityZone")
 
 	for i := range v {
@@ -40092,6 +40588,9 @@ func awsEc2query_serializeDocumentBaselineEbsBandwidthMbpsRequest(v *types.Basel
 }
 
 func awsEc2query_serializeDocumentBillingProductList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -40143,6 +40642,9 @@ func awsEc2query_serializeDocumentBlockDeviceMapping(v *types.BlockDeviceMapping
 }
 
 func awsEc2query_serializeDocumentBlockDeviceMappingList(v []types.BlockDeviceMapping, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -40155,6 +40657,9 @@ func awsEc2query_serializeDocumentBlockDeviceMappingList(v []types.BlockDeviceMa
 }
 
 func awsEc2query_serializeDocumentBlockDeviceMappingRequestList(v []types.BlockDeviceMapping, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("BlockDeviceMapping")
 
 	for i := range v {
@@ -40167,6 +40672,9 @@ func awsEc2query_serializeDocumentBlockDeviceMappingRequestList(v []types.BlockD
 }
 
 func awsEc2query_serializeDocumentBundleIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("BundleId")
 
 	for i := range v {
@@ -40177,6 +40685,9 @@ func awsEc2query_serializeDocumentBundleIdStringList(v []string, value query.Val
 }
 
 func awsEc2query_serializeDocumentCapacityReservationFleetIdSet(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -40187,6 +40698,9 @@ func awsEc2query_serializeDocumentCapacityReservationFleetIdSet(v []string, valu
 }
 
 func awsEc2query_serializeDocumentCapacityReservationIdSet(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -40245,6 +40759,9 @@ func awsEc2query_serializeDocumentCapacityReservationTarget(v *types.CapacityRes
 }
 
 func awsEc2query_serializeDocumentCarrierGatewayIdSet(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -40296,6 +40813,9 @@ func awsEc2query_serializeDocumentClassicLoadBalancer(v *types.ClassicLoadBalanc
 }
 
 func awsEc2query_serializeDocumentClassicLoadBalancers(v []types.ClassicLoadBalancer, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -40429,6 +40949,9 @@ func awsEc2query_serializeDocumentClientVpnAuthenticationRequest(v *types.Client
 }
 
 func awsEc2query_serializeDocumentClientVpnAuthenticationRequestList(v []types.ClientVpnAuthenticationRequest, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -40441,6 +40964,9 @@ func awsEc2query_serializeDocumentClientVpnAuthenticationRequestList(v []types.C
 }
 
 func awsEc2query_serializeDocumentClientVpnEndpointIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -40451,6 +40977,9 @@ func awsEc2query_serializeDocumentClientVpnEndpointIdList(v []string, value quer
 }
 
 func awsEc2query_serializeDocumentClientVpnSecurityGroupIdSet(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -40483,6 +41012,9 @@ func awsEc2query_serializeDocumentCloudWatchLogOptionsSpecification(v *types.Clo
 }
 
 func awsEc2query_serializeDocumentCoipPoolIdSet(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -40515,6 +41047,9 @@ func awsEc2query_serializeDocumentConnectionLogOptions(v *types.ConnectionLogOpt
 }
 
 func awsEc2query_serializeDocumentConnectionNotificationIdsList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -40547,6 +41082,9 @@ func awsEc2query_serializeDocumentConnectionTrackingSpecificationRequest(v *type
 }
 
 func awsEc2query_serializeDocumentConversionIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -40557,6 +41095,9 @@ func awsEc2query_serializeDocumentConversionIdStringList(v []string, value query
 }
 
 func awsEc2query_serializeDocumentCpuManufacturerSet(v []types.CpuManufacturer, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -40713,6 +41254,9 @@ func awsEc2query_serializeDocumentCreateVerifiedAccessEndpointLoadBalancerOption
 }
 
 func awsEc2query_serializeDocumentCreateVerifiedAccessEndpointSubnetIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -40799,6 +41343,9 @@ func awsEc2query_serializeDocumentCreateVolumePermission(v *types.CreateVolumePe
 }
 
 func awsEc2query_serializeDocumentCreateVolumePermissionList(v []types.CreateVolumePermission, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -40844,6 +41391,9 @@ func awsEc2query_serializeDocumentCreditSpecificationRequest(v *types.CreditSpec
 }
 
 func awsEc2query_serializeDocumentCustomerGatewayIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("CustomerGatewayId")
 
 	for i := range v {
@@ -40854,6 +41404,9 @@ func awsEc2query_serializeDocumentCustomerGatewayIdStringList(v []string, value 
 }
 
 func awsEc2query_serializeDocumentDataQueries(v []types.DataQuery, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -40903,6 +41456,9 @@ func awsEc2query_serializeDocumentDataQuery(v *types.DataQuery, value query.Valu
 }
 
 func awsEc2query_serializeDocumentDedicatedHostIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -40913,6 +41469,9 @@ func awsEc2query_serializeDocumentDedicatedHostIdList(v []string, value query.Va
 }
 
 func awsEc2query_serializeDocumentDeleteQueuedReservedInstancesIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -40942,6 +41501,9 @@ func awsEc2query_serializeDocumentDeregisterInstanceTagAttributeRequest(v *types
 }
 
 func awsEc2query_serializeDocumentDescribeInstanceTopologyGroupNameSet(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -40952,6 +41514,9 @@ func awsEc2query_serializeDocumentDescribeInstanceTopologyGroupNameSet(v []strin
 }
 
 func awsEc2query_serializeDocumentDescribeInstanceTopologyInstanceIdSet(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -40984,6 +41549,9 @@ func awsEc2query_serializeDocumentDestinationOptionsRequest(v *types.Destination
 }
 
 func awsEc2query_serializeDocumentDhcpOptionsIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("DhcpOptionsId")
 
 	for i := range v {
@@ -41054,6 +41622,9 @@ func awsEc2query_serializeDocumentDiskImageDetail(v *types.DiskImageDetail, valu
 }
 
 func awsEc2query_serializeDocumentDiskImageList(v []types.DiskImage, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -41171,6 +41742,9 @@ func awsEc2query_serializeDocumentEbsInstanceBlockDeviceSpecification(v *types.E
 }
 
 func awsEc2query_serializeDocumentEgressOnlyInternetGatewayIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -41181,6 +41755,9 @@ func awsEc2query_serializeDocumentEgressOnlyInternetGatewayIdList(v []string, va
 }
 
 func awsEc2query_serializeDocumentEipAssociationIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -41191,6 +41768,9 @@ func awsEc2query_serializeDocumentEipAssociationIdList(v []string, value query.V
 }
 
 func awsEc2query_serializeDocumentElasticGpuIdSet(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -41213,6 +41793,9 @@ func awsEc2query_serializeDocumentElasticGpuSpecification(v *types.ElasticGpuSpe
 }
 
 func awsEc2query_serializeDocumentElasticGpuSpecificationList(v []types.ElasticGpuSpecification, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("ElasticGpuSpecification")
 
 	for i := range v {
@@ -41225,6 +41808,9 @@ func awsEc2query_serializeDocumentElasticGpuSpecificationList(v []types.ElasticG
 }
 
 func awsEc2query_serializeDocumentElasticGpuSpecifications(v []types.ElasticGpuSpecification, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -41254,6 +41840,9 @@ func awsEc2query_serializeDocumentElasticInferenceAccelerator(v *types.ElasticIn
 }
 
 func awsEc2query_serializeDocumentElasticInferenceAccelerators(v []types.ElasticInferenceAccelerator, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -41340,6 +41929,9 @@ func awsEc2query_serializeDocumentEnclaveOptionsRequest(v *types.EnclaveOptionsR
 }
 
 func awsEc2query_serializeDocumentExcludedInstanceTypeSet(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -41350,6 +41942,9 @@ func awsEc2query_serializeDocumentExcludedInstanceTypeSet(v []string, value quer
 }
 
 func awsEc2query_serializeDocumentExecutableByStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("ExecutableBy")
 
 	for i := range v {
@@ -41360,6 +41955,9 @@ func awsEc2query_serializeDocumentExecutableByStringList(v []string, value query
 }
 
 func awsEc2query_serializeDocumentExportImageTaskIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("ExportImageTaskId")
 
 	for i := range v {
@@ -41370,6 +41968,9 @@ func awsEc2query_serializeDocumentExportImageTaskIdList(v []string, value query.
 }
 
 func awsEc2query_serializeDocumentExportTaskIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("ExportTaskId")
 
 	for i := range v {
@@ -41424,6 +42025,9 @@ func awsEc2query_serializeDocumentExportToS3TaskSpecification(v *types.ExportToS
 }
 
 func awsEc2query_serializeDocumentFastLaunchImageIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("ImageId")
 
 	for i := range v {
@@ -41504,6 +42108,9 @@ func awsEc2query_serializeDocumentFilter(v *types.Filter, value query.Value) err
 }
 
 func awsEc2query_serializeDocumentFilterList(v []types.Filter, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Filter")
 
 	for i := range v {
@@ -41516,6 +42123,9 @@ func awsEc2query_serializeDocumentFilterList(v []types.Filter, value query.Value
 }
 
 func awsEc2query_serializeDocumentFleetIdSet(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -41526,6 +42136,9 @@ func awsEc2query_serializeDocumentFleetIdSet(v []string, value query.Value) erro
 }
 
 func awsEc2query_serializeDocumentFleetLaunchTemplateConfigListRequest(v []types.FleetLaunchTemplateConfigRequest, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -41559,6 +42172,9 @@ func awsEc2query_serializeDocumentFleetLaunchTemplateConfigRequest(v *types.Flee
 }
 
 func awsEc2query_serializeDocumentFleetLaunchTemplateOverridesListRequest(v []types.FleetLaunchTemplateOverridesRequest, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -41728,6 +42344,9 @@ func awsEc2query_serializeDocumentFleetSpotMaintenanceStrategiesRequest(v *types
 }
 
 func awsEc2query_serializeDocumentFlowLogIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -41738,6 +42357,9 @@ func awsEc2query_serializeDocumentFlowLogIdList(v []string, value query.Value) e
 }
 
 func awsEc2query_serializeDocumentFlowLogResourceIds(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -41748,6 +42370,9 @@ func awsEc2query_serializeDocumentFlowLogResourceIds(v []string, value query.Val
 }
 
 func awsEc2query_serializeDocumentFpgaImageIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -41775,6 +42400,9 @@ func awsEc2query_serializeDocumentGroupIdentifier(v *types.GroupIdentifier, valu
 }
 
 func awsEc2query_serializeDocumentGroupIdentifierList(v []types.GroupIdentifier, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -41787,6 +42415,9 @@ func awsEc2query_serializeDocumentGroupIdentifierList(v []types.GroupIdentifier,
 }
 
 func awsEc2query_serializeDocumentGroupIds(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -41797,6 +42428,9 @@ func awsEc2query_serializeDocumentGroupIds(v []string, value query.Value) error 
 }
 
 func awsEc2query_serializeDocumentGroupIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("GroupId")
 
 	for i := range v {
@@ -41807,6 +42441,9 @@ func awsEc2query_serializeDocumentGroupIdStringList(v []string, value query.Valu
 }
 
 func awsEc2query_serializeDocumentGroupNameStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("GroupName")
 
 	for i := range v {
@@ -41829,6 +42466,9 @@ func awsEc2query_serializeDocumentHibernationOptionsRequest(v *types.Hibernation
 }
 
 func awsEc2query_serializeDocumentHostReservationIdSet(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -41873,6 +42513,9 @@ func awsEc2query_serializeDocumentIcmpTypeCode(v *types.IcmpTypeCode, value quer
 }
 
 func awsEc2query_serializeDocumentIKEVersionsRequestList(v []types.IKEVersionsRequestListValue, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -41936,6 +42579,9 @@ func awsEc2query_serializeDocumentImageDiskContainer(v *types.ImageDiskContainer
 }
 
 func awsEc2query_serializeDocumentImageDiskContainerList(v []types.ImageDiskContainer, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -41948,6 +42594,9 @@ func awsEc2query_serializeDocumentImageDiskContainerList(v []types.ImageDiskCont
 }
 
 func awsEc2query_serializeDocumentImageIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -41958,6 +42607,9 @@ func awsEc2query_serializeDocumentImageIdList(v []string, value query.Value) err
 }
 
 func awsEc2query_serializeDocumentImageIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("ImageId")
 
 	for i := range v {
@@ -41980,6 +42632,9 @@ func awsEc2query_serializeDocumentImportImageLicenseConfigurationRequest(v *type
 }
 
 func awsEc2query_serializeDocumentImportImageLicenseSpecificationListRequest(v []types.ImportImageLicenseConfigurationRequest, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -42062,6 +42717,9 @@ func awsEc2query_serializeDocumentImportInstanceLaunchSpecification(v *types.Imp
 }
 
 func awsEc2query_serializeDocumentImportSnapshotTaskIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("ImportTaskId")
 
 	for i := range v {
@@ -42072,6 +42730,9 @@ func awsEc2query_serializeDocumentImportSnapshotTaskIdList(v []string, value que
 }
 
 func awsEc2query_serializeDocumentImportTaskIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("ImportTaskId")
 
 	for i := range v {
@@ -42082,6 +42743,9 @@ func awsEc2query_serializeDocumentImportTaskIdList(v []string, value query.Value
 }
 
 func awsEc2query_serializeDocumentInsideCidrBlocksStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -42121,6 +42785,9 @@ func awsEc2query_serializeDocumentInstanceBlockDeviceMappingSpecification(v *typ
 }
 
 func awsEc2query_serializeDocumentInstanceBlockDeviceMappingSpecificationList(v []types.InstanceBlockDeviceMappingSpecification, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -42133,6 +42800,9 @@ func awsEc2query_serializeDocumentInstanceBlockDeviceMappingSpecificationList(v 
 }
 
 func awsEc2query_serializeDocumentInstanceCreditSpecificationListRequest(v []types.InstanceCreditSpecificationRequest, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -42218,6 +42888,9 @@ func awsEc2query_serializeDocumentInstanceEventWindowDisassociationRequest(v *ty
 }
 
 func awsEc2query_serializeDocumentInstanceEventWindowIdSet(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("InstanceEventWindowId")
 
 	for i := range v {
@@ -42255,6 +42928,9 @@ func awsEc2query_serializeDocumentInstanceEventWindowTimeRangeRequest(v *types.I
 }
 
 func awsEc2query_serializeDocumentInstanceEventWindowTimeRangeRequestSet(v []types.InstanceEventWindowTimeRangeRequest, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -42267,6 +42943,9 @@ func awsEc2query_serializeDocumentInstanceEventWindowTimeRangeRequestSet(v []typ
 }
 
 func awsEc2query_serializeDocumentInstanceGenerationSet(v []types.InstanceGeneration, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -42277,6 +42956,9 @@ func awsEc2query_serializeDocumentInstanceGenerationSet(v []types.InstanceGenera
 }
 
 func awsEc2query_serializeDocumentInstanceIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -42287,6 +42969,9 @@ func awsEc2query_serializeDocumentInstanceIdList(v []string, value query.Value) 
 }
 
 func awsEc2query_serializeDocumentInstanceIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("InstanceId")
 
 	for i := range v {
@@ -42314,6 +42999,9 @@ func awsEc2query_serializeDocumentInstanceIpv6Address(v *types.InstanceIpv6Addre
 }
 
 func awsEc2query_serializeDocumentInstanceIpv6AddressList(v []types.InstanceIpv6Address, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -42326,6 +43014,9 @@ func awsEc2query_serializeDocumentInstanceIpv6AddressList(v []types.InstanceIpv6
 }
 
 func awsEc2query_serializeDocumentInstanceIpv6AddressListRequest(v []types.InstanceIpv6AddressRequest, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("InstanceIpv6Address")
 
 	for i := range v {
@@ -42544,6 +43235,9 @@ func awsEc2query_serializeDocumentInstanceNetworkInterfaceSpecification(v *types
 }
 
 func awsEc2query_serializeDocumentInstanceNetworkInterfaceSpecificationList(v []types.InstanceNetworkInterfaceSpecification, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -42930,6 +43624,9 @@ func awsEc2query_serializeDocumentInstanceSpecification(v *types.InstanceSpecifi
 }
 
 func awsEc2query_serializeDocumentInstanceTagKeySet(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -42940,6 +43637,9 @@ func awsEc2query_serializeDocumentInstanceTagKeySet(v []string, value query.Valu
 }
 
 func awsEc2query_serializeDocumentInstanceTypeList(v []types.InstanceType, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -42950,6 +43650,9 @@ func awsEc2query_serializeDocumentInstanceTypeList(v []types.InstanceType, value
 }
 
 func awsEc2query_serializeDocumentInstanceTypes(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -42974,6 +43677,9 @@ func awsEc2query_serializeDocumentIntegrateServices(v *types.IntegrateServices, 
 }
 
 func awsEc2query_serializeDocumentInternetGatewayIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -43001,6 +43707,9 @@ func awsEc2query_serializeDocumentIpamCidrAuthorizationContext(v *types.IpamCidr
 }
 
 func awsEc2query_serializeDocumentIpamPoolAllocationAllowedCidrs(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -43011,6 +43720,9 @@ func awsEc2query_serializeDocumentIpamPoolAllocationAllowedCidrs(v []string, val
 }
 
 func awsEc2query_serializeDocumentIpamPoolAllocationDisallowedCidrs(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -43048,6 +43760,9 @@ func awsEc2query_serializeDocumentIpamPoolSourceResourceRequest(v *types.IpamPoo
 }
 
 func awsEc2query_serializeDocumentIpList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -43108,6 +43823,9 @@ func awsEc2query_serializeDocumentIpPermission(v *types.IpPermission, value quer
 }
 
 func awsEc2query_serializeDocumentIpPermissionList(v []types.IpPermission, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -43120,6 +43838,9 @@ func awsEc2query_serializeDocumentIpPermissionList(v []types.IpPermission, value
 }
 
 func awsEc2query_serializeDocumentIpPrefixList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -43147,6 +43868,9 @@ func awsEc2query_serializeDocumentIpRange(v *types.IpRange, value query.Value) e
 }
 
 func awsEc2query_serializeDocumentIpRangeList(v []types.IpRange, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -43159,6 +43883,9 @@ func awsEc2query_serializeDocumentIpRangeList(v []types.IpRange, value query.Val
 }
 
 func awsEc2query_serializeDocumentIpv4PrefixList(v []types.Ipv4PrefixSpecificationRequest, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -43183,6 +43910,9 @@ func awsEc2query_serializeDocumentIpv4PrefixSpecificationRequest(v *types.Ipv4Pr
 }
 
 func awsEc2query_serializeDocumentIpv6AddressList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -43193,6 +43923,9 @@ func awsEc2query_serializeDocumentIpv6AddressList(v []string, value query.Value)
 }
 
 func awsEc2query_serializeDocumentIpv6PoolIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -43203,6 +43936,9 @@ func awsEc2query_serializeDocumentIpv6PoolIdList(v []string, value query.Value) 
 }
 
 func awsEc2query_serializeDocumentIpv6PrefixList(v []types.Ipv6PrefixSpecificationRequest, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -43244,6 +43980,9 @@ func awsEc2query_serializeDocumentIpv6Range(v *types.Ipv6Range, value query.Valu
 }
 
 func awsEc2query_serializeDocumentIpv6RangeList(v []types.Ipv6Range, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -43256,6 +43995,9 @@ func awsEc2query_serializeDocumentIpv6RangeList(v []types.Ipv6Range, value query
 }
 
 func awsEc2query_serializeDocumentKeyNameStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("KeyName")
 
 	for i := range v {
@@ -43266,6 +44008,9 @@ func awsEc2query_serializeDocumentKeyNameStringList(v []string, value query.Valu
 }
 
 func awsEc2query_serializeDocumentKeyPairIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("KeyPairId")
 
 	for i := range v {
@@ -43303,6 +44048,9 @@ func awsEc2query_serializeDocumentLaunchPermission(v *types.LaunchPermission, va
 }
 
 func awsEc2query_serializeDocumentLaunchPermissionList(v []types.LaunchPermission, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -43336,6 +44084,9 @@ func awsEc2query_serializeDocumentLaunchPermissionModifications(v *types.LaunchP
 }
 
 func awsEc2query_serializeDocumentLaunchSpecsList(v []types.SpotFleetLaunchSpecification, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -43377,6 +44128,9 @@ func awsEc2query_serializeDocumentLaunchTemplateBlockDeviceMappingRequest(v *typ
 }
 
 func awsEc2query_serializeDocumentLaunchTemplateBlockDeviceMappingRequestList(v []types.LaunchTemplateBlockDeviceMappingRequest, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("BlockDeviceMapping")
 
 	for i := range v {
@@ -43429,6 +44183,9 @@ func awsEc2query_serializeDocumentLaunchTemplateConfig(v *types.LaunchTemplateCo
 }
 
 func awsEc2query_serializeDocumentLaunchTemplateConfigList(v []types.LaunchTemplateConfig, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -43527,6 +44284,9 @@ func awsEc2query_serializeDocumentLaunchTemplateElasticInferenceAccelerator(v *t
 }
 
 func awsEc2query_serializeDocumentLaunchTemplateElasticInferenceAcceleratorList(v []types.LaunchTemplateElasticInferenceAccelerator, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -43580,6 +44340,9 @@ func awsEc2query_serializeDocumentLaunchTemplateIamInstanceProfileSpecificationR
 }
 
 func awsEc2query_serializeDocumentLaunchTemplateIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -43784,6 +44547,9 @@ func awsEc2query_serializeDocumentLaunchTemplateInstanceNetworkInterfaceSpecific
 }
 
 func awsEc2query_serializeDocumentLaunchTemplateInstanceNetworkInterfaceSpecificationRequestList(v []types.LaunchTemplateInstanceNetworkInterfaceSpecificationRequest, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("InstanceNetworkInterfaceSpecification")
 
 	for i := range v {
@@ -43808,6 +44574,9 @@ func awsEc2query_serializeDocumentLaunchTemplateLicenseConfigurationRequest(v *t
 }
 
 func awsEc2query_serializeDocumentLaunchTemplateLicenseSpecificationListRequest(v []types.LaunchTemplateLicenseConfigurationRequest, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -43820,6 +44589,9 @@ func awsEc2query_serializeDocumentLaunchTemplateLicenseSpecificationListRequest(
 }
 
 func awsEc2query_serializeDocumentLaunchTemplateNameStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -43900,6 +44672,9 @@ func awsEc2query_serializeDocumentLaunchTemplateOverrides(v *types.LaunchTemplat
 }
 
 func awsEc2query_serializeDocumentLaunchTemplateOverridesList(v []types.LaunchTemplateOverrides, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -44071,6 +44846,9 @@ func awsEc2query_serializeDocumentLaunchTemplateTagSpecificationRequest(v *types
 }
 
 func awsEc2query_serializeDocumentLaunchTemplateTagSpecificationRequestList(v []types.LaunchTemplateTagSpecificationRequest, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("LaunchTemplateTagSpecificationRequest")
 
 	for i := range v {
@@ -44095,6 +44873,9 @@ func awsEc2query_serializeDocumentLicenseConfigurationRequest(v *types.LicenseCo
 }
 
 func awsEc2query_serializeDocumentLicenseSpecificationListRequest(v []types.LicenseConfigurationRequest, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -44128,6 +44909,9 @@ func awsEc2query_serializeDocumentLoadBalancersConfig(v *types.LoadBalancersConf
 }
 
 func awsEc2query_serializeDocumentLoadPermissionListRequest(v []types.LoadPermissionRequest, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -44178,6 +44962,9 @@ func awsEc2query_serializeDocumentLoadPermissionRequest(v *types.LoadPermissionR
 }
 
 func awsEc2query_serializeDocumentLocalGatewayIdSet(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -44188,6 +44975,9 @@ func awsEc2query_serializeDocumentLocalGatewayIdSet(v []string, value query.Valu
 }
 
 func awsEc2query_serializeDocumentLocalGatewayRouteTableIdSet(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -44198,6 +44988,9 @@ func awsEc2query_serializeDocumentLocalGatewayRouteTableIdSet(v []string, value 
 }
 
 func awsEc2query_serializeDocumentLocalGatewayRouteTableVirtualInterfaceGroupAssociationIdSet(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -44208,6 +45001,9 @@ func awsEc2query_serializeDocumentLocalGatewayRouteTableVirtualInterfaceGroupAss
 }
 
 func awsEc2query_serializeDocumentLocalGatewayRouteTableVpcAssociationIdSet(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -44218,6 +45014,9 @@ func awsEc2query_serializeDocumentLocalGatewayRouteTableVpcAssociationIdSet(v []
 }
 
 func awsEc2query_serializeDocumentLocalGatewayVirtualInterfaceGroupIdSet(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -44228,6 +45027,9 @@ func awsEc2query_serializeDocumentLocalGatewayVirtualInterfaceGroupIdSet(v []str
 }
 
 func awsEc2query_serializeDocumentLocalGatewayVirtualInterfaceIdSet(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -44238,6 +45040,9 @@ func awsEc2query_serializeDocumentLocalGatewayVirtualInterfaceIdSet(v []string, 
 }
 
 func awsEc2query_serializeDocumentLocalStorageTypeSet(v []types.LocalStorageType, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -44502,6 +45307,9 @@ func awsEc2query_serializeDocumentModifyVerifiedAccessEndpointLoadBalancerOption
 }
 
 func awsEc2query_serializeDocumentModifyVerifiedAccessEndpointSubnetIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -44689,6 +45497,9 @@ func awsEc2query_serializeDocumentModifyVpnTunnelOptionsSpecification(v *types.M
 }
 
 func awsEc2query_serializeDocumentNatGatewayIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -44699,6 +45510,9 @@ func awsEc2query_serializeDocumentNatGatewayIdStringList(v []string, value query
 }
 
 func awsEc2query_serializeDocumentNetworkAclIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -44795,6 +45609,9 @@ func awsEc2query_serializeDocumentNetworkBandwidthGbpsRequest(v *types.NetworkBa
 }
 
 func awsEc2query_serializeDocumentNetworkInsightsAccessScopeAnalysisIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -44805,6 +45622,9 @@ func awsEc2query_serializeDocumentNetworkInsightsAccessScopeAnalysisIdList(v []s
 }
 
 func awsEc2query_serializeDocumentNetworkInsightsAccessScopeIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -44815,6 +45635,9 @@ func awsEc2query_serializeDocumentNetworkInsightsAccessScopeIdList(v []string, v
 }
 
 func awsEc2query_serializeDocumentNetworkInsightsAnalysisIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -44825,6 +45648,9 @@ func awsEc2query_serializeDocumentNetworkInsightsAnalysisIdList(v []string, valu
 }
 
 func awsEc2query_serializeDocumentNetworkInsightsPathIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -44886,6 +45712,9 @@ func awsEc2query_serializeDocumentNetworkInterfaceCountRequest(v *types.NetworkI
 }
 
 func awsEc2query_serializeDocumentNetworkInterfaceIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -44896,6 +45725,9 @@ func awsEc2query_serializeDocumentNetworkInterfaceIdList(v []string, value query
 }
 
 func awsEc2query_serializeDocumentNetworkInterfacePermissionIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -44925,6 +45757,9 @@ func awsEc2query_serializeDocumentNewDhcpConfiguration(v *types.NewDhcpConfigura
 }
 
 func awsEc2query_serializeDocumentNewDhcpConfigurationList(v []types.NewDhcpConfiguration, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -44937,6 +45772,9 @@ func awsEc2query_serializeDocumentNewDhcpConfigurationList(v []types.NewDhcpConf
 }
 
 func awsEc2query_serializeDocumentOccurrenceDayRequestSet(v []int32, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("OccurenceDay")
 
 	for i := range v {
@@ -44986,6 +45824,9 @@ func awsEc2query_serializeDocumentOnDemandOptionsRequest(v *types.OnDemandOption
 }
 
 func awsEc2query_serializeDocumentOrganizationalUnitArnStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("OrganizationalUnitArn")
 
 	for i := range v {
@@ -44996,6 +45837,9 @@ func awsEc2query_serializeDocumentOrganizationalUnitArnStringList(v []string, va
 }
 
 func awsEc2query_serializeDocumentOrganizationArnStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("OrganizationArn")
 
 	for i := range v {
@@ -45006,6 +45850,9 @@ func awsEc2query_serializeDocumentOrganizationArnStringList(v []string, value qu
 }
 
 func awsEc2query_serializeDocumentOwnerStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Owner")
 
 	for i := range v {
@@ -45146,6 +45993,9 @@ func awsEc2query_serializeDocumentPeeringConnectionOptionsRequest(v *types.Peeri
 }
 
 func awsEc2query_serializeDocumentPhase1DHGroupNumbersRequestList(v []types.Phase1DHGroupNumbersRequestListValue, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -45170,6 +46020,9 @@ func awsEc2query_serializeDocumentPhase1DHGroupNumbersRequestListValue(v *types.
 }
 
 func awsEc2query_serializeDocumentPhase1EncryptionAlgorithmsRequestList(v []types.Phase1EncryptionAlgorithmsRequestListValue, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -45194,6 +46047,9 @@ func awsEc2query_serializeDocumentPhase1EncryptionAlgorithmsRequestListValue(v *
 }
 
 func awsEc2query_serializeDocumentPhase1IntegrityAlgorithmsRequestList(v []types.Phase1IntegrityAlgorithmsRequestListValue, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -45218,6 +46074,9 @@ func awsEc2query_serializeDocumentPhase1IntegrityAlgorithmsRequestListValue(v *t
 }
 
 func awsEc2query_serializeDocumentPhase2DHGroupNumbersRequestList(v []types.Phase2DHGroupNumbersRequestListValue, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -45242,6 +46101,9 @@ func awsEc2query_serializeDocumentPhase2DHGroupNumbersRequestListValue(v *types.
 }
 
 func awsEc2query_serializeDocumentPhase2EncryptionAlgorithmsRequestList(v []types.Phase2EncryptionAlgorithmsRequestListValue, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -45266,6 +46128,9 @@ func awsEc2query_serializeDocumentPhase2EncryptionAlgorithmsRequestListValue(v *
 }
 
 func awsEc2query_serializeDocumentPhase2IntegrityAlgorithmsRequestList(v []types.Phase2IntegrityAlgorithmsRequestListValue, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -45342,6 +46207,9 @@ func awsEc2query_serializeDocumentPlacement(v *types.Placement, value query.Valu
 }
 
 func awsEc2query_serializeDocumentPlacementGroupIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("GroupId")
 
 	for i := range v {
@@ -45352,6 +46220,9 @@ func awsEc2query_serializeDocumentPlacementGroupIdStringList(v []string, value q
 }
 
 func awsEc2query_serializeDocumentPlacementGroupStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -45396,6 +46267,9 @@ func awsEc2query_serializeDocumentPrefixListId(v *types.PrefixListId, value quer
 }
 
 func awsEc2query_serializeDocumentPrefixListIdList(v []types.PrefixListId, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -45408,6 +46282,9 @@ func awsEc2query_serializeDocumentPrefixListIdList(v []types.PrefixListId, value
 }
 
 func awsEc2query_serializeDocumentPrefixListResourceIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -45453,6 +46330,9 @@ func awsEc2query_serializeDocumentPriceScheduleSpecification(v *types.PriceSched
 }
 
 func awsEc2query_serializeDocumentPriceScheduleSpecificationList(v []types.PriceScheduleSpecification, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -45487,6 +46367,9 @@ func awsEc2query_serializeDocumentPrivateDnsNameOptionsRequest(v *types.PrivateD
 }
 
 func awsEc2query_serializeDocumentPrivateIpAddressConfigSet(v []types.ScheduledInstancesPrivateIpAddressConfig, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("PrivateIpAddressConfigSet")
 
 	for i := range v {
@@ -45516,6 +46399,9 @@ func awsEc2query_serializeDocumentPrivateIpAddressSpecification(v *types.Private
 }
 
 func awsEc2query_serializeDocumentPrivateIpAddressSpecificationList(v []types.PrivateIpAddressSpecification, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -45528,6 +46414,9 @@ func awsEc2query_serializeDocumentPrivateIpAddressSpecificationList(v []types.Pr
 }
 
 func awsEc2query_serializeDocumentPrivateIpAddressStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("PrivateIpAddress")
 
 	for i := range v {
@@ -45538,6 +46427,9 @@ func awsEc2query_serializeDocumentPrivateIpAddressStringList(v []string, value q
 }
 
 func awsEc2query_serializeDocumentProductCodeStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("ProductCode")
 
 	for i := range v {
@@ -45548,6 +46440,9 @@ func awsEc2query_serializeDocumentProductCodeStringList(v []string, value query.
 }
 
 func awsEc2query_serializeDocumentProductDescriptionList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -45558,6 +46453,9 @@ func awsEc2query_serializeDocumentProductDescriptionList(v []string, value query
 }
 
 func awsEc2query_serializeDocumentProtocolList(v []types.Protocol, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -45568,6 +46466,9 @@ func awsEc2query_serializeDocumentProtocolList(v []types.Protocol, value query.V
 }
 
 func awsEc2query_serializeDocumentPublicIpStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("PublicIp")
 
 	for i := range v {
@@ -45578,6 +46479,9 @@ func awsEc2query_serializeDocumentPublicIpStringList(v []string, value query.Val
 }
 
 func awsEc2query_serializeDocumentPublicIpv4PoolIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -45605,6 +46509,9 @@ func awsEc2query_serializeDocumentPurchaseRequest(v *types.PurchaseRequest, valu
 }
 
 func awsEc2query_serializeDocumentPurchaseRequestSet(v []types.PurchaseRequest, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("PurchaseRequest")
 
 	for i := range v {
@@ -45617,6 +46524,9 @@ func awsEc2query_serializeDocumentPurchaseRequestSet(v []types.PurchaseRequest, 
 }
 
 func awsEc2query_serializeDocumentReasonCodesList(v []types.ReportInstanceReasonCodes, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -45627,6 +46537,9 @@ func awsEc2query_serializeDocumentReasonCodesList(v []types.ReportInstanceReason
 }
 
 func awsEc2query_serializeDocumentRegionNames(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -45637,6 +46550,9 @@ func awsEc2query_serializeDocumentRegionNames(v []string, value query.Value) err
 }
 
 func awsEc2query_serializeDocumentRegionNameStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("RegionName")
 
 	for i := range v {
@@ -45678,6 +46594,9 @@ func awsEc2query_serializeDocumentRemoveIpamOperatingRegion(v *types.RemoveIpamO
 }
 
 func awsEc2query_serializeDocumentRemoveIpamOperatingRegionSet(v []types.RemoveIpamOperatingRegion, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -45690,6 +46609,9 @@ func awsEc2query_serializeDocumentRemoveIpamOperatingRegionSet(v []types.RemoveI
 }
 
 func awsEc2query_serializeDocumentRemovePrefixListEntries(v []types.RemovePrefixListEntry, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -45714,6 +46636,9 @@ func awsEc2query_serializeDocumentRemovePrefixListEntry(v *types.RemovePrefixLis
 }
 
 func awsEc2query_serializeDocumentReplaceRootVolumeTaskIds(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("ReplaceRootVolumeTaskId")
 
 	for i := range v {
@@ -45741,6 +46666,9 @@ func awsEc2query_serializeDocumentRequestFilterPortRange(v *types.RequestFilterP
 }
 
 func awsEc2query_serializeDocumentRequestHostIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -45751,6 +46679,9 @@ func awsEc2query_serializeDocumentRequestHostIdList(v []string, value query.Valu
 }
 
 func awsEc2query_serializeDocumentRequestHostIdSet(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -45761,6 +46692,9 @@ func awsEc2query_serializeDocumentRequestHostIdSet(v []string, value query.Value
 }
 
 func awsEc2query_serializeDocumentRequestInstanceTypeList(v []types.InstanceType, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -45788,6 +46722,9 @@ func awsEc2query_serializeDocumentRequestIpamResourceTag(v *types.RequestIpamRes
 }
 
 func awsEc2query_serializeDocumentRequestIpamResourceTagList(v []types.RequestIpamResourceTag, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -46105,6 +47042,9 @@ func awsEc2query_serializeDocumentRequestSpotLaunchSpecification(v *types.Reques
 }
 
 func awsEc2query_serializeDocumentRequestSpotLaunchSpecificationSecurityGroupIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -46115,6 +47055,9 @@ func awsEc2query_serializeDocumentRequestSpotLaunchSpecificationSecurityGroupIdL
 }
 
 func awsEc2query_serializeDocumentRequestSpotLaunchSpecificationSecurityGroupList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -46180,6 +47123,9 @@ func awsEc2query_serializeDocumentReservationFleetInstanceSpecification(v *types
 }
 
 func awsEc2query_serializeDocumentReservationFleetInstanceSpecificationList(v []types.ReservationFleetInstanceSpecification, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -46192,6 +47138,9 @@ func awsEc2query_serializeDocumentReservationFleetInstanceSpecificationList(v []
 }
 
 func awsEc2query_serializeDocumentReservedInstanceIdSet(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("ReservedInstanceId")
 
 	for i := range v {
@@ -46264,6 +47213,9 @@ func awsEc2query_serializeDocumentReservedInstancesConfiguration(v *types.Reserv
 }
 
 func awsEc2query_serializeDocumentReservedInstancesConfigurationList(v []types.ReservedInstancesConfiguration, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -46276,6 +47228,9 @@ func awsEc2query_serializeDocumentReservedInstancesConfigurationList(v []types.R
 }
 
 func awsEc2query_serializeDocumentReservedInstancesIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("ReservedInstancesId")
 
 	for i := range v {
@@ -46286,6 +47241,9 @@ func awsEc2query_serializeDocumentReservedInstancesIdStringList(v []string, valu
 }
 
 func awsEc2query_serializeDocumentReservedInstancesModificationIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("ReservedInstancesModificationId")
 
 	for i := range v {
@@ -46296,6 +47254,9 @@ func awsEc2query_serializeDocumentReservedInstancesModificationIdStringList(v []
 }
 
 func awsEc2query_serializeDocumentReservedInstancesOfferingIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -46306,6 +47267,9 @@ func awsEc2query_serializeDocumentReservedInstancesOfferingIdStringList(v []stri
 }
 
 func awsEc2query_serializeDocumentResourceIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -46316,6 +47280,9 @@ func awsEc2query_serializeDocumentResourceIdList(v []string, value query.Value) 
 }
 
 func awsEc2query_serializeDocumentResourceList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -46347,6 +47314,9 @@ func awsEc2query_serializeDocumentResourceStatementRequest(v *types.ResourceStat
 }
 
 func awsEc2query_serializeDocumentRestorableByStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -46357,6 +47327,9 @@ func awsEc2query_serializeDocumentRestorableByStringList(v []string, value query
 }
 
 func awsEc2query_serializeDocumentRouteTableIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -46396,6 +47369,9 @@ func awsEc2query_serializeDocumentS3ObjectTag(v *types.S3ObjectTag, value query.
 }
 
 func awsEc2query_serializeDocumentS3ObjectTagList(v []types.S3ObjectTag, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -46440,6 +47416,9 @@ func awsEc2query_serializeDocumentS3Storage(v *types.S3Storage, value query.Valu
 }
 
 func awsEc2query_serializeDocumentScheduledInstanceIdRequestSet(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("ScheduledInstanceId")
 
 	for i := range v {
@@ -46513,6 +47492,9 @@ func awsEc2query_serializeDocumentScheduledInstancesBlockDeviceMapping(v *types.
 }
 
 func awsEc2query_serializeDocumentScheduledInstancesBlockDeviceMappingSet(v []types.ScheduledInstancesBlockDeviceMapping, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("BlockDeviceMapping")
 
 	for i := range v {
@@ -46591,6 +47573,9 @@ func awsEc2query_serializeDocumentScheduledInstancesIpv6Address(v *types.Schedul
 }
 
 func awsEc2query_serializeDocumentScheduledInstancesIpv6AddressList(v []types.ScheduledInstancesIpv6Address, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Ipv6Address")
 
 	for i := range v {
@@ -46777,6 +47762,9 @@ func awsEc2query_serializeDocumentScheduledInstancesNetworkInterface(v *types.Sc
 }
 
 func awsEc2query_serializeDocumentScheduledInstancesNetworkInterfaceSet(v []types.ScheduledInstancesNetworkInterface, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("NetworkInterface")
 
 	for i := range v {
@@ -46823,6 +47811,9 @@ func awsEc2query_serializeDocumentScheduledInstancesPrivateIpAddressConfig(v *ty
 }
 
 func awsEc2query_serializeDocumentScheduledInstancesSecurityGroupIdSet(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("SecurityGroupId")
 
 	for i := range v {
@@ -46833,6 +47824,9 @@ func awsEc2query_serializeDocumentScheduledInstancesSecurityGroupIdSet(v []strin
 }
 
 func awsEc2query_serializeDocumentSecurityGroupIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -46843,6 +47837,9 @@ func awsEc2query_serializeDocumentSecurityGroupIdList(v []string, value query.Va
 }
 
 func awsEc2query_serializeDocumentSecurityGroupIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("SecurityGroupId")
 
 	for i := range v {
@@ -46853,6 +47850,9 @@ func awsEc2query_serializeDocumentSecurityGroupIdStringList(v []string, value qu
 }
 
 func awsEc2query_serializeDocumentSecurityGroupIdStringListRequest(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("SecurityGroupId")
 
 	for i := range v {
@@ -46880,6 +47880,9 @@ func awsEc2query_serializeDocumentSecurityGroupRuleDescription(v *types.Security
 }
 
 func awsEc2query_serializeDocumentSecurityGroupRuleDescriptionList(v []types.SecurityGroupRuleDescription, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -46892,6 +47895,9 @@ func awsEc2query_serializeDocumentSecurityGroupRuleDescriptionList(v []types.Sec
 }
 
 func awsEc2query_serializeDocumentSecurityGroupRuleIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -46968,6 +47974,9 @@ func awsEc2query_serializeDocumentSecurityGroupRuleUpdate(v *types.SecurityGroup
 }
 
 func awsEc2query_serializeDocumentSecurityGroupRuleUpdateList(v []types.SecurityGroupRuleUpdate, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -46980,6 +47989,9 @@ func awsEc2query_serializeDocumentSecurityGroupRuleUpdateList(v []types.Security
 }
 
 func awsEc2query_serializeDocumentSecurityGroupStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("SecurityGroup")
 
 	for i := range v {
@@ -47053,6 +48065,9 @@ func awsEc2query_serializeDocumentSnapshotDiskContainer(v *types.SnapshotDiskCon
 }
 
 func awsEc2query_serializeDocumentSnapshotIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("SnapshotId")
 
 	for i := range v {
@@ -47396,6 +48411,9 @@ func awsEc2query_serializeDocumentSpotFleetRequestConfigData(v *types.SpotFleetR
 }
 
 func awsEc2query_serializeDocumentSpotFleetRequestIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -47425,6 +48443,9 @@ func awsEc2query_serializeDocumentSpotFleetTagSpecification(v *types.SpotFleetTa
 }
 
 func awsEc2query_serializeDocumentSpotFleetTagSpecificationList(v []types.SpotFleetTagSpecification, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -47437,6 +48458,9 @@ func awsEc2query_serializeDocumentSpotFleetTagSpecificationList(v []types.SpotFl
 }
 
 func awsEc2query_serializeDocumentSpotInstanceRequestIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("SpotInstanceRequestId")
 
 	for i := range v {
@@ -47617,6 +48641,9 @@ func awsEc2query_serializeDocumentSubnetConfiguration(v *types.SubnetConfigurati
 }
 
 func awsEc2query_serializeDocumentSubnetConfigurationsList(v []types.SubnetConfiguration, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -47629,6 +48656,9 @@ func awsEc2query_serializeDocumentSubnetConfigurationsList(v []types.SubnetConfi
 }
 
 func awsEc2query_serializeDocumentSubnetIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("SubnetId")
 
 	for i := range v {
@@ -47656,6 +48686,9 @@ func awsEc2query_serializeDocumentTag(v *types.Tag, value query.Value) error {
 }
 
 func awsEc2query_serializeDocumentTagList(v []types.Tag, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -47687,6 +48720,9 @@ func awsEc2query_serializeDocumentTagSpecification(v *types.TagSpecification, va
 }
 
 func awsEc2query_serializeDocumentTagSpecificationList(v []types.TagSpecification, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -47748,6 +48784,9 @@ func awsEc2query_serializeDocumentTargetConfigurationRequest(v *types.TargetConf
 }
 
 func awsEc2query_serializeDocumentTargetConfigurationRequestSet(v []types.TargetConfigurationRequest, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("TargetConfigurationRequest")
 
 	for i := range v {
@@ -47772,6 +48811,9 @@ func awsEc2query_serializeDocumentTargetGroup(v *types.TargetGroup, value query.
 }
 
 func awsEc2query_serializeDocumentTargetGroups(v []types.TargetGroup, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -47812,6 +48854,9 @@ func awsEc2query_serializeDocumentThroughResourcesStatementRequest(v *types.Thro
 }
 
 func awsEc2query_serializeDocumentThroughResourcesStatementRequestList(v []types.ThroughResourcesStatementRequest, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -47910,6 +48955,9 @@ func awsEc2query_serializeDocumentTotalLocalStorageGBRequest(v *types.TotalLocal
 }
 
 func awsEc2query_serializeDocumentTrafficMirrorFilterIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -47920,6 +48968,9 @@ func awsEc2query_serializeDocumentTrafficMirrorFilterIdList(v []string, value qu
 }
 
 func awsEc2query_serializeDocumentTrafficMirrorFilterRuleFieldList(v []types.TrafficMirrorFilterRuleField, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -47929,7 +48980,23 @@ func awsEc2query_serializeDocumentTrafficMirrorFilterRuleFieldList(v []types.Tra
 	return nil
 }
 
+func awsEc2query_serializeDocumentTrafficMirrorFilterRuleIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
+	array := value.Array("Item")
+
+	for i := range v {
+		av := array.Value()
+		av.String(v[i])
+	}
+	return nil
+}
+
 func awsEc2query_serializeDocumentTrafficMirrorNetworkServiceList(v []types.TrafficMirrorNetworkService, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -47957,6 +49024,9 @@ func awsEc2query_serializeDocumentTrafficMirrorPortRangeRequest(v *types.Traffic
 }
 
 func awsEc2query_serializeDocumentTrafficMirrorSessionFieldList(v []types.TrafficMirrorSessionField, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -47967,6 +49037,9 @@ func awsEc2query_serializeDocumentTrafficMirrorSessionFieldList(v []types.Traffi
 }
 
 func awsEc2query_serializeDocumentTrafficMirrorSessionIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -47977,6 +49050,9 @@ func awsEc2query_serializeDocumentTrafficMirrorSessionIdList(v []string, value q
 }
 
 func awsEc2query_serializeDocumentTrafficMirrorTargetIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -47987,6 +49063,9 @@ func awsEc2query_serializeDocumentTrafficMirrorTargetIdList(v []string, value qu
 }
 
 func awsEc2query_serializeDocumentTransitGatewayAttachmentIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -47997,6 +49076,9 @@ func awsEc2query_serializeDocumentTransitGatewayAttachmentIdStringList(v []strin
 }
 
 func awsEc2query_serializeDocumentTransitGatewayCidrBlockStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -48007,6 +49089,9 @@ func awsEc2query_serializeDocumentTransitGatewayCidrBlockStringList(v []string, 
 }
 
 func awsEc2query_serializeDocumentTransitGatewayConnectPeerIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -48029,6 +49114,9 @@ func awsEc2query_serializeDocumentTransitGatewayConnectRequestBgpOptions(v *type
 }
 
 func awsEc2query_serializeDocumentTransitGatewayIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -48039,6 +49127,9 @@ func awsEc2query_serializeDocumentTransitGatewayIdStringList(v []string, value q
 }
 
 func awsEc2query_serializeDocumentTransitGatewayMulticastDomainIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -48049,6 +49140,9 @@ func awsEc2query_serializeDocumentTransitGatewayMulticastDomainIdStringList(v []
 }
 
 func awsEc2query_serializeDocumentTransitGatewayNetworkInterfaceIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -48059,6 +49153,9 @@ func awsEc2query_serializeDocumentTransitGatewayNetworkInterfaceIdList(v []strin
 }
 
 func awsEc2query_serializeDocumentTransitGatewayPolicyTableIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -48123,6 +49220,9 @@ func awsEc2query_serializeDocumentTransitGatewayRequestOptions(v *types.TransitG
 }
 
 func awsEc2query_serializeDocumentTransitGatewayRouteTableAnnouncementIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -48133,6 +49233,9 @@ func awsEc2query_serializeDocumentTransitGatewayRouteTableAnnouncementIdStringLi
 }
 
 func awsEc2query_serializeDocumentTransitGatewayRouteTableIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -48143,6 +49246,9 @@ func awsEc2query_serializeDocumentTransitGatewayRouteTableIdStringList(v []strin
 }
 
 func awsEc2query_serializeDocumentTransitGatewaySubnetIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -48153,6 +49259,9 @@ func awsEc2query_serializeDocumentTransitGatewaySubnetIdList(v []string, value q
 }
 
 func awsEc2query_serializeDocumentTrunkInterfaceAssociationIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -48192,6 +49301,9 @@ func awsEc2query_serializeDocumentUserData(v *types.UserData, value query.Value)
 }
 
 func awsEc2query_serializeDocumentUserGroupStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("UserGroup")
 
 	for i := range v {
@@ -48244,6 +49356,9 @@ func awsEc2query_serializeDocumentUserIdGroupPair(v *types.UserIdGroupPair, valu
 }
 
 func awsEc2query_serializeDocumentUserIdGroupPairList(v []types.UserIdGroupPair, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -48256,6 +49371,9 @@ func awsEc2query_serializeDocumentUserIdGroupPairList(v []types.UserIdGroupPair,
 }
 
 func awsEc2query_serializeDocumentUserIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("UserId")
 
 	for i := range v {
@@ -48266,6 +49384,9 @@ func awsEc2query_serializeDocumentUserIdStringList(v []string, value query.Value
 }
 
 func awsEc2query_serializeDocumentValueStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -48310,6 +49431,9 @@ func awsEc2query_serializeDocumentVCpuCountRangeRequest(v *types.VCpuCountRangeR
 }
 
 func awsEc2query_serializeDocumentVerifiedAccessEndpointIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -48320,6 +49444,9 @@ func awsEc2query_serializeDocumentVerifiedAccessEndpointIdList(v []string, value
 }
 
 func awsEc2query_serializeDocumentVerifiedAccessGroupIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -48330,6 +49457,9 @@ func awsEc2query_serializeDocumentVerifiedAccessGroupIdList(v []string, value qu
 }
 
 func awsEc2query_serializeDocumentVerifiedAccessInstanceIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -48456,6 +49586,9 @@ func awsEc2query_serializeDocumentVerifiedAccessSseSpecificationRequest(v *types
 }
 
 func awsEc2query_serializeDocumentVerifiedAccessTrustProviderIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -48466,6 +49599,9 @@ func awsEc2query_serializeDocumentVerifiedAccessTrustProviderIdList(v []string, 
 }
 
 func awsEc2query_serializeDocumentVersionStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -48476,6 +49612,9 @@ func awsEc2query_serializeDocumentVersionStringList(v []string, value query.Valu
 }
 
 func awsEc2query_serializeDocumentVirtualizationTypeSet(v []types.VirtualizationType, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -48498,6 +49637,9 @@ func awsEc2query_serializeDocumentVolumeDetail(v *types.VolumeDetail, value quer
 }
 
 func awsEc2query_serializeDocumentVolumeIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("VolumeId")
 
 	for i := range v {
@@ -48508,6 +49650,9 @@ func awsEc2query_serializeDocumentVolumeIdStringList(v []string, value query.Val
 }
 
 func awsEc2query_serializeDocumentVpcClassicLinkIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("VpcId")
 
 	for i := range v {
@@ -48518,6 +49663,9 @@ func awsEc2query_serializeDocumentVpcClassicLinkIdList(v []string, value query.V
 }
 
 func awsEc2query_serializeDocumentVpcEndpointIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -48528,6 +49676,9 @@ func awsEc2query_serializeDocumentVpcEndpointIdList(v []string, value query.Valu
 }
 
 func awsEc2query_serializeDocumentVpcEndpointRouteTableIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -48538,6 +49689,9 @@ func awsEc2query_serializeDocumentVpcEndpointRouteTableIdList(v []string, value 
 }
 
 func awsEc2query_serializeDocumentVpcEndpointSecurityGroupIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -48548,6 +49702,9 @@ func awsEc2query_serializeDocumentVpcEndpointSecurityGroupIdList(v []string, val
 }
 
 func awsEc2query_serializeDocumentVpcEndpointServiceIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -48558,6 +49715,9 @@ func awsEc2query_serializeDocumentVpcEndpointServiceIdList(v []string, value que
 }
 
 func awsEc2query_serializeDocumentVpcEndpointSubnetIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -48568,6 +49728,9 @@ func awsEc2query_serializeDocumentVpcEndpointSubnetIdList(v []string, value quer
 }
 
 func awsEc2query_serializeDocumentVpcIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("VpcId")
 
 	for i := range v {
@@ -48578,6 +49741,9 @@ func awsEc2query_serializeDocumentVpcIdStringList(v []string, value query.Value)
 }
 
 func awsEc2query_serializeDocumentVpcPeeringConnectionIdList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Item")
 
 	for i := range v {
@@ -48588,6 +49754,9 @@ func awsEc2query_serializeDocumentVpcPeeringConnectionIdList(v []string, value q
 }
 
 func awsEc2query_serializeDocumentVpnConnectionIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("VpnConnectionId")
 
 	for i := range v {
@@ -48657,6 +49826,9 @@ func awsEc2query_serializeDocumentVpnConnectionOptionsSpecification(v *types.Vpn
 }
 
 func awsEc2query_serializeDocumentVpnGatewayIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("VpnGatewayId")
 
 	for i := range v {
@@ -48804,6 +49976,9 @@ func awsEc2query_serializeDocumentVpnTunnelOptionsSpecification(v *types.VpnTunn
 }
 
 func awsEc2query_serializeDocumentVpnTunnelOptionsSpecificationsList(v []types.VpnTunnelOptionsSpecification, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("Member")
 
 	for i := range v {
@@ -48816,6 +49991,9 @@ func awsEc2query_serializeDocumentVpnTunnelOptionsSpecificationsList(v []types.V
 }
 
 func awsEc2query_serializeDocumentZoneIdStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("ZoneId")
 
 	for i := range v {
@@ -48826,6 +50004,9 @@ func awsEc2query_serializeDocumentZoneIdStringList(v []string, value query.Value
 }
 
 func awsEc2query_serializeDocumentZoneNameStringList(v []string, value query.Value) error {
+	if len(v) == 0 {
+		return nil
+	}
 	array := value.Array("ZoneName")
 
 	for i := range v {
@@ -49038,6 +50219,11 @@ func awsEc2query_serializeOpDocumentAllocateAddressInput(v *AllocateAddressInput
 	if v.DryRun != nil {
 		objectKey := object.Key("DryRun")
 		objectKey.Boolean(*v.DryRun)
+	}
+
+	if v.IpamPoolId != nil {
+		objectKey := object.Key("IpamPoolId")
+		objectKey.String(*v.IpamPoolId)
 	}
 
 	if v.NetworkBorderGroup != nil {
@@ -50503,6 +51689,40 @@ func awsEc2query_serializeOpDocumentCopySnapshotInput(v *CopySnapshotInput, valu
 	return nil
 }
 
+func awsEc2query_serializeOpDocumentCreateCapacityReservationBySplittingInput(v *CreateCapacityReservationBySplittingInput, value query.Value) error {
+	object := value.Object()
+	_ = object
+
+	if v.ClientToken != nil {
+		objectKey := object.Key("ClientToken")
+		objectKey.String(*v.ClientToken)
+	}
+
+	if v.DryRun != nil {
+		objectKey := object.Key("DryRun")
+		objectKey.Boolean(*v.DryRun)
+	}
+
+	if v.InstanceCount != nil {
+		objectKey := object.Key("InstanceCount")
+		objectKey.Integer(*v.InstanceCount)
+	}
+
+	if v.SourceCapacityReservationId != nil {
+		objectKey := object.Key("SourceCapacityReservationId")
+		objectKey.String(*v.SourceCapacityReservationId)
+	}
+
+	if v.TagSpecifications != nil {
+		objectKey := object.FlatKey("TagSpecification")
+		if err := awsEc2query_serializeDocumentTagSpecificationList(v.TagSpecifications, objectKey); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func awsEc2query_serializeOpDocumentCreateCapacityReservationFleetInput(v *CreateCapacityReservationFleetInput, value query.Value) error {
 	object := value.Object()
 	_ = object
@@ -50878,6 +52098,11 @@ func awsEc2query_serializeOpDocumentCreateCustomerGatewayInput(v *CreateCustomer
 	if v.BgpAsn != nil {
 		objectKey := object.Key("BgpAsn")
 		objectKey.Integer(*v.BgpAsn)
+	}
+
+	if v.BgpAsnExtended != nil {
+		objectKey := object.Key("BgpAsnExtended")
+		objectKey.Long(*v.BgpAsnExtended)
 	}
 
 	if v.CertificateArn != nil {
@@ -51405,6 +52630,35 @@ func awsEc2query_serializeOpDocumentCreateInternetGatewayInput(v *CreateInternet
 	return nil
 }
 
+func awsEc2query_serializeOpDocumentCreateIpamExternalResourceVerificationTokenInput(v *CreateIpamExternalResourceVerificationTokenInput, value query.Value) error {
+	object := value.Object()
+	_ = object
+
+	if v.ClientToken != nil {
+		objectKey := object.Key("ClientToken")
+		objectKey.String(*v.ClientToken)
+	}
+
+	if v.DryRun != nil {
+		objectKey := object.Key("DryRun")
+		objectKey.Boolean(*v.DryRun)
+	}
+
+	if v.IpamId != nil {
+		objectKey := object.Key("IpamId")
+		objectKey.String(*v.IpamId)
+	}
+
+	if v.TagSpecifications != nil {
+		objectKey := object.FlatKey("TagSpecification")
+		if err := awsEc2query_serializeDocumentTagSpecificationList(v.TagSpecifications, objectKey); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func awsEc2query_serializeOpDocumentCreateIpamInput(v *CreateIpamInput, value query.Value) error {
 	object := value.Object()
 	_ = object
@@ -51422,6 +52676,11 @@ func awsEc2query_serializeOpDocumentCreateIpamInput(v *CreateIpamInput, value qu
 	if v.DryRun != nil {
 		objectKey := object.Key("DryRun")
 		objectKey.Boolean(*v.DryRun)
+	}
+
+	if v.EnablePrivateGua != nil {
+		objectKey := object.Key("EnablePrivateGua")
+		objectKey.Boolean(*v.EnablePrivateGua)
 	}
 
 	if v.OperatingRegions != nil {
@@ -52358,6 +53617,11 @@ func awsEc2query_serializeOpDocumentCreatePublicIpv4PoolInput(v *CreatePublicIpv
 		objectKey.Boolean(*v.DryRun)
 	}
 
+	if v.NetworkBorderGroup != nil {
+		objectKey := object.Key("NetworkBorderGroup")
+		objectKey.String(*v.NetworkBorderGroup)
+	}
+
 	if v.TagSpecifications != nil {
 		objectKey := object.FlatKey("TagSpecification")
 		if err := awsEc2query_serializeDocumentTagSpecificationList(v.TagSpecifications, objectKey); err != nil {
@@ -52973,6 +54237,13 @@ func awsEc2query_serializeOpDocumentCreateTrafficMirrorFilterRuleInput(v *Create
 	if v.SourcePortRange != nil {
 		objectKey := object.Key("SourcePortRange")
 		if err := awsEc2query_serializeDocumentTrafficMirrorPortRangeRequest(v.SourcePortRange, objectKey); err != nil {
+			return err
+		}
+	}
+
+	if v.TagSpecifications != nil {
+		objectKey := object.FlatKey("TagSpecification")
+		if err := awsEc2query_serializeDocumentTagSpecificationList(v.TagSpecifications, objectKey); err != nil {
 			return err
 		}
 	}
@@ -54435,6 +55706,23 @@ func awsEc2query_serializeOpDocumentDeleteInternetGatewayInput(v *DeleteInternet
 	return nil
 }
 
+func awsEc2query_serializeOpDocumentDeleteIpamExternalResourceVerificationTokenInput(v *DeleteIpamExternalResourceVerificationTokenInput, value query.Value) error {
+	object := value.Object()
+	_ = object
+
+	if v.DryRun != nil {
+		objectKey := object.Key("DryRun")
+		objectKey.Boolean(*v.DryRun)
+	}
+
+	if v.IpamExternalResourceVerificationTokenId != nil {
+		objectKey := object.Key("IpamExternalResourceVerificationTokenId")
+		objectKey.String(*v.IpamExternalResourceVerificationTokenId)
+	}
+
+	return nil
+}
+
 func awsEc2query_serializeOpDocumentDeleteIpamInput(v *DeleteIpamInput, value query.Value) error {
 	object := value.Object()
 	_ = object
@@ -54873,6 +56161,11 @@ func awsEc2query_serializeOpDocumentDeletePublicIpv4PoolInput(v *DeletePublicIpv
 	if v.DryRun != nil {
 		objectKey := object.Key("DryRun")
 		objectKey.Boolean(*v.DryRun)
+	}
+
+	if v.NetworkBorderGroup != nil {
+		objectKey := object.Key("NetworkBorderGroup")
+		objectKey.String(*v.NetworkBorderGroup)
 	}
 
 	if v.PoolId != nil {
@@ -57587,6 +58880,42 @@ func awsEc2query_serializeOpDocumentDescribeIpamByoasnInput(v *DescribeIpamByoas
 	return nil
 }
 
+func awsEc2query_serializeOpDocumentDescribeIpamExternalResourceVerificationTokensInput(v *DescribeIpamExternalResourceVerificationTokensInput, value query.Value) error {
+	object := value.Object()
+	_ = object
+
+	if v.DryRun != nil {
+		objectKey := object.Key("DryRun")
+		objectKey.Boolean(*v.DryRun)
+	}
+
+	if v.Filters != nil {
+		objectKey := object.FlatKey("Filter")
+		if err := awsEc2query_serializeDocumentFilterList(v.Filters, objectKey); err != nil {
+			return err
+		}
+	}
+
+	if v.IpamExternalResourceVerificationTokenIds != nil {
+		objectKey := object.FlatKey("IpamExternalResourceVerificationTokenId")
+		if err := awsEc2query_serializeDocumentValueStringList(v.IpamExternalResourceVerificationTokenIds, objectKey); err != nil {
+			return err
+		}
+	}
+
+	if v.MaxResults != nil {
+		objectKey := object.Key("MaxResults")
+		objectKey.Integer(*v.MaxResults)
+	}
+
+	if v.NextToken != nil {
+		objectKey := object.Key("NextToken")
+		objectKey.String(*v.NextToken)
+	}
+
+	return nil
+}
+
 func awsEc2query_serializeOpDocumentDescribeIpamPoolsInput(v *DescribeIpamPoolsInput, value query.Value) error {
 	object := value.Object()
 	_ = object
@@ -59656,6 +60985,47 @@ func awsEc2query_serializeOpDocumentDescribeTagsInput(v *DescribeTagsInput, valu
 	if v.NextToken != nil {
 		objectKey := object.Key("NextToken")
 		objectKey.String(*v.NextToken)
+	}
+
+	return nil
+}
+
+func awsEc2query_serializeOpDocumentDescribeTrafficMirrorFilterRulesInput(v *DescribeTrafficMirrorFilterRulesInput, value query.Value) error {
+	object := value.Object()
+	_ = object
+
+	if v.DryRun != nil {
+		objectKey := object.Key("DryRun")
+		objectKey.Boolean(*v.DryRun)
+	}
+
+	if v.Filters != nil {
+		objectKey := object.FlatKey("Filter")
+		if err := awsEc2query_serializeDocumentFilterList(v.Filters, objectKey); err != nil {
+			return err
+		}
+	}
+
+	if v.MaxResults != nil {
+		objectKey := object.Key("MaxResults")
+		objectKey.Integer(*v.MaxResults)
+	}
+
+	if v.NextToken != nil {
+		objectKey := object.Key("NextToken")
+		objectKey.String(*v.NextToken)
+	}
+
+	if v.TrafficMirrorFilterId != nil {
+		objectKey := object.Key("TrafficMirrorFilterId")
+		objectKey.String(*v.TrafficMirrorFilterId)
+	}
+
+	if v.TrafficMirrorFilterRuleIds != nil {
+		objectKey := object.FlatKey("TrafficMirrorFilterRuleId")
+		if err := awsEc2query_serializeDocumentTrafficMirrorFilterRuleIdList(v.TrafficMirrorFilterRuleIds, objectKey); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -62441,6 +63811,33 @@ func awsEc2query_serializeOpDocumentGetInstanceMetadataDefaultsInput(v *GetInsta
 	return nil
 }
 
+func awsEc2query_serializeOpDocumentGetInstanceTpmEkPubInput(v *GetInstanceTpmEkPubInput, value query.Value) error {
+	object := value.Object()
+	_ = object
+
+	if v.DryRun != nil {
+		objectKey := object.Key("DryRun")
+		objectKey.Boolean(*v.DryRun)
+	}
+
+	if v.InstanceId != nil {
+		objectKey := object.Key("InstanceId")
+		objectKey.String(*v.InstanceId)
+	}
+
+	if len(v.KeyFormat) > 0 {
+		objectKey := object.Key("KeyFormat")
+		objectKey.String(string(v.KeyFormat))
+	}
+
+	if len(v.KeyType) > 0 {
+		objectKey := object.Key("KeyType")
+		objectKey.String(string(v.KeyType))
+	}
+
+	return nil
+}
+
 func awsEc2query_serializeOpDocumentGetInstanceTypesFromInstanceRequirementsInput(v *GetInstanceTypesFromInstanceRequirementsInput, value query.Value) error {
 	object := value.Object()
 	_ = object
@@ -63941,6 +65338,11 @@ func awsEc2query_serializeOpDocumentModifyCapacityReservationInput(v *ModifyCapa
 		objectKey.Integer(*v.InstanceCount)
 	}
 
+	if len(v.InstanceMatchCriteria) > 0 {
+		objectKey := object.Key("InstanceMatchCriteria")
+		objectKey.String(string(v.InstanceMatchCriteria))
+	}
+
 	return nil
 }
 
@@ -64731,6 +66133,11 @@ func awsEc2query_serializeOpDocumentModifyIpamInput(v *ModifyIpamInput, value qu
 	if v.DryRun != nil {
 		objectKey := object.Key("DryRun")
 		objectKey.Boolean(*v.DryRun)
+	}
+
+	if v.EnablePrivateGua != nil {
+		objectKey := object.Key("EnablePrivateGua")
+		objectKey.Boolean(*v.EnablePrivateGua)
 	}
 
 	if v.IpamId != nil {
@@ -66471,6 +67878,38 @@ func awsEc2query_serializeOpDocumentMoveByoipCidrToIpamInput(v *MoveByoipCidrToI
 	return nil
 }
 
+func awsEc2query_serializeOpDocumentMoveCapacityReservationInstancesInput(v *MoveCapacityReservationInstancesInput, value query.Value) error {
+	object := value.Object()
+	_ = object
+
+	if v.ClientToken != nil {
+		objectKey := object.Key("ClientToken")
+		objectKey.String(*v.ClientToken)
+	}
+
+	if v.DestinationCapacityReservationId != nil {
+		objectKey := object.Key("DestinationCapacityReservationId")
+		objectKey.String(*v.DestinationCapacityReservationId)
+	}
+
+	if v.DryRun != nil {
+		objectKey := object.Key("DryRun")
+		objectKey.Boolean(*v.DryRun)
+	}
+
+	if v.InstanceCount != nil {
+		objectKey := object.Key("InstanceCount")
+		objectKey.Integer(*v.InstanceCount)
+	}
+
+	if v.SourceCapacityReservationId != nil {
+		objectKey := object.Key("SourceCapacityReservationId")
+		objectKey.String(*v.SourceCapacityReservationId)
+	}
+
+	return nil
+}
+
 func awsEc2query_serializeOpDocumentProvisionByoipCidrInput(v *ProvisionByoipCidrInput, value query.Value) error {
 	object := value.Object()
 	_ = object
@@ -66577,6 +68016,11 @@ func awsEc2query_serializeOpDocumentProvisionIpamPoolCidrInput(v *ProvisionIpamP
 		objectKey.Boolean(*v.DryRun)
 	}
 
+	if v.IpamExternalResourceVerificationTokenId != nil {
+		objectKey := object.Key("IpamExternalResourceVerificationTokenId")
+		objectKey.String(*v.IpamExternalResourceVerificationTokenId)
+	}
+
 	if v.IpamPoolId != nil {
 		objectKey := object.Key("IpamPoolId")
 		objectKey.String(*v.IpamPoolId)
@@ -66585,6 +68029,11 @@ func awsEc2query_serializeOpDocumentProvisionIpamPoolCidrInput(v *ProvisionIpamP
 	if v.NetmaskLength != nil {
 		objectKey := object.Key("NetmaskLength")
 		objectKey.Integer(*v.NetmaskLength)
+	}
+
+	if len(v.VerificationMethod) > 0 {
+		objectKey := object.Key("VerificationMethod")
+		objectKey.String(string(v.VerificationMethod))
 	}
 
 	return nil
@@ -66607,6 +68056,11 @@ func awsEc2query_serializeOpDocumentProvisionPublicIpv4PoolCidrInput(v *Provisio
 	if v.NetmaskLength != nil {
 		objectKey := object.Key("NetmaskLength")
 		objectKey.Integer(*v.NetmaskLength)
+	}
+
+	if v.NetworkBorderGroup != nil {
+		objectKey := object.Key("NetworkBorderGroup")
+		objectKey.String(*v.NetworkBorderGroup)
 	}
 
 	if v.PoolId != nil {

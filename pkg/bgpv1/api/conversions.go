@@ -65,6 +65,16 @@ func ToAPIFamily(f *types.Family) (*models.BgpFamily, error) {
 	}, nil
 }
 
+func ToAPIFamilies(families []types.Family) []*models.BgpFamily {
+	var res []*models.BgpFamily
+	for _, f := range families {
+		if family, err := ToAPIFamily(&f); err == nil {
+			res = append(res, family)
+		}
+	}
+	return res
+}
+
 func ToAgentFamily(m *models.BgpFamily) (*types.Family, error) {
 	f := &types.Family{}
 
@@ -79,6 +89,18 @@ func ToAgentFamily(m *models.BgpFamily) (*types.Family, error) {
 	return f, nil
 }
 
+func ToAgentFamilies(families []*models.BgpFamily) ([]types.Family, error) {
+	var res []types.Family
+	for _, f := range families {
+		family, err := ToAgentFamily(f)
+		if err != nil {
+			return nil, err
+		}
+		res = append(res, *family)
+	}
+	return res, nil
+}
+
 func ToAPIPath(p *types.Path) (*models.BgpPath, error) {
 	ret := &models.BgpPath{}
 
@@ -89,7 +111,7 @@ func ToAPIPath(p *types.Path) (*models.BgpPath, error) {
 	// type and we don't have any way to express the API response field which can
 	// be a multiple types. This is especially inconvenient for NLRI and Path
 	// Attributes. The workaround here is serialize NLRI or Path Attribute into
-	// BGP UPDATE messsage format and encode it with base64 to put them into text
+	// BGP UPDATE message format and encode it with base64 to put them into text
 	// based protocol. So that we can still stick to the standard (theoretically
 	// people can use standard BGP decoder to decode this base64 field).
 	bin, err := p.NLRI.Serialize()
@@ -349,6 +371,7 @@ func ToAPIRoutePolicyStatement(s *types.RoutePolicyStatement) *models.BgpRoutePo
 	}
 	ret := &models.BgpRoutePolicyStatement{
 		MatchNeighbors:      s.Conditions.MatchNeighbors,
+		MatchFamilies:       ToAPIFamilies(s.Conditions.MatchFamilies),
 		MatchPrefixes:       ToApiMatchPrefixes(s.Conditions.MatchPrefixes),
 		RouteAction:         ToApiRoutePolicyAction(s.Actions.RouteAction),
 		AddCommunities:      s.Actions.AddCommunities,
@@ -367,9 +390,14 @@ func ToAgentRoutePolicyStatement(s *models.BgpRoutePolicyStatement) (*types.Rout
 	if err != nil {
 		return nil, err
 	}
+	families, err := ToAgentFamilies(s.MatchFamilies)
+	if err != nil {
+		return nil, err
+	}
 	ret := &types.RoutePolicyStatement{
 		Conditions: types.RoutePolicyConditions{
 			MatchNeighbors: s.MatchNeighbors,
+			MatchFamilies:  families,
 			MatchPrefixes:  prefixes,
 		},
 		Actions: types.RoutePolicyActions{

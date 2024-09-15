@@ -32,6 +32,7 @@ focus:
 - "f18-datapath-bgp-lrp"
 - "f19-update"
 - "f20-kafka"
+- "f21-datapath-misc-3"
 include:
   ###
   # K8sAgentChaosTest Connectivity demo application Endpoint can still connect while Cilium is not running
@@ -44,7 +45,8 @@ include:
   # K8sAgentFQDNTest Restart Cilium validate that FQDN is still working
   # K8sAgentFQDNTest Validate that FQDN policy continues to work after being updated
   # K8sAgentFQDNTest Validate that multiple specs are working correctly
-  # K8sAgentPerNodeConfigTest Correctly computes config overrides
+  # K8sAgentPerNodeConfigTest Correctly computes config overrides with CNC v2alpha1
+  # K8sAgentPerNodeConfigTest Correctly computes config overrides with CNC v2
   - focus: "f02-agent-fqdn"
     cliFocus: "K8sAgentFQDNTest|K8sAgentPerNodeConfigTest"
 
@@ -107,17 +109,21 @@ include:
     cliFocus: "K8sDatapathConfig Encapsulation|K8sDatapathConfig Etcd|K8sDatapathConfig Etcd|K8sDatapathConfig MonitorAggregation"
 
   ###
-  # K8sDatapathConfig WireGuard encryption strict mode Pod-to-pod traffic is encrypted in native routing mode with per-endpoint routes
-  # K8sDatapathConfig WireGuard encryption strict mode Pod-to-pod traffic is encrypted in native routing mode with per-endpoint routes and overlapping node and pod CIDRs
   # K8sDatapathConfig Check BPF masquerading with ip-masq-agent DirectRouting
   # K8sDatapathConfig Check BPF masquerading with ip-masq-agent DirectRouting, IPv4 only
   # K8sDatapathConfig Check BPF masquerading with ip-masq-agent VXLAN
-  # K8sDatapathConfig High-scale IPcache Test ingress policy enforcement with GENEVE and endpoint routes
+  - focus: "f09-datapath-misc-2"
+    cliFocus: "K8sDatapathConfig Check"
+
+  ###
+  # K8sDatapathConfig WireGuard encryption strict mode Pod-to-pod traffic is encrypted in native routing mode with per-endpoint routes
+  # K8sDatapathConfig WireGuard encryption strict mode Pod-to-pod traffic is encrypted in native routing mode with per-endpoint routes and overlapping node and pod CIDRs
   # K8sDatapathConfig Iptables Skip conntrack for pod traffic
   # K8sDatapathConfig IPv4Only Check connectivity with IPv6 disabled
   # K8sDatapathConfig IPv6 masquerading across K8s nodes, skipped due to native routing CIDR
-  - focus: "f09-datapath-misc-2"
-    cliFocus: "K8sDatapathConfig WireGuard encryption strict mode|K8sDatapathConfig Check|K8sDatapathConfig IPv4Only|K8sDatapathConfig High-scale|K8sDatapathConfig Iptables|K8sDatapathConfig IPv4Only|K8sDatapathConfig IPv6"
+  # K8sDatapathConfig High-scale IPcache Test ingress policy enforcement with GENEVE and endpoint routes
+  - focus: "f21-datapath-misc-3"
+    cliFocus: "K8sDatapathConfig WireGuard encryption strict mode|K8sDatapathConfig Iptables|K8sDatapathConfig IPv4Only|K8sDatapathConfig IPv6|K8sDatapathConfig High-scale"
 
   ###
   # K8sAgentHubbleTest Hubble Observe Test FQDN Policy with Relay
@@ -187,7 +193,7 @@ include:
     cliFocus: 'K8sDatapathServicesTest Checks E/W loadbalancing \\(ClusterIP, NodePort from inside cluster, etc\\) TFTP|K8sDatapathServicesTest Checks E/W loadbalancing \\(ClusterIP, NodePort from inside cluster, etc\\) with'
 
   ###
-  # K8sDatapathServicesTest Checks E/W loadbalancing (ClusterIP, NodePort from inside cluster, etc) Tests NodePort inside cluster (kube-proxy) 
+  # K8sDatapathServicesTest Checks E/W loadbalancing (ClusterIP, NodePort from inside cluster, etc) Tests NodePort inside cluster (kube-proxy) vanilla
   # K8sDatapathServicesTest Checks E/W loadbalancing (ClusterIP, NodePort from inside cluster, etc) Tests NodePort inside cluster (kube-proxy) with externalTrafficPolicy=Local
   # K8sDatapathServicesTest Checks E/W loadbalancing (ClusterIP, NodePort from inside cluster, etc) Tests NodePort inside cluster (kube-proxy) with IPSec and externalTrafficPolicy=Local
   # K8sDatapathServicesTest Checks E/W loadbalancing (ClusterIP, NodePort from inside cluster, etc) Tests NodePort inside cluster (kube-proxy) with the host firewall and externalTrafficPolicy=Local
@@ -215,18 +221,36 @@ include:
 exclude:
   # The bandwidth test is disabled and hubble tests are not meant
   # to run on net-next.
-  - k8s-version: "1.30"
+  - k8s-version: "1.31"
     focus: "f10-agent-hubble-bandwidth"
 
   # These tests are meant to run with kube-proxy which is not available
   # with net-next
-  - k8s-version: "1.30"
+  - k8s-version: "1.31"
     focus: "f16-datapath-service-ew-2"
 
   # These tests are meant to run with kube-proxy which is not available
   # with net-next
-  - k8s-version: "1.30"
+  - k8s-version: "1.31"
     focus: "f17-datapath-service-ew-kube-proxy"
+
+  # These tests require an external node which is only available on 1.30
+  # / net-next so there's no point on running them
+  - k8s-version: "1.30"
+    focus: "f05-agent-policy-multi-node-2"
+
+  # These tests require kernel net-next so there's no point on running them
+  - k8s-version: "1.30"
+    focus: "f11-datapath-service-ns-tc"
+
+  - k8s-version: "1.30"
+    focus: "f12-datapath-service-ns-misc"
+
+  - k8s-version: "1.30"
+    focus: "f13-datapath-service-ns-xdp-1"
+
+  - k8s-version: "1.30"
+    focus: "f14-datapath-service-ns-xdp-2"
 
   # These tests require an external node which is only available on 1.29
   # / net-next so there's no point on running them
@@ -246,60 +270,42 @@ exclude:
   - k8s-version: "1.29"
     focus: "f14-datapath-service-ns-xdp-2"
 
-  # These tests require an external node which is only available on 1.28
-  # / net-next so there's no point on running them
-  - k8s-version: "1.28"
-    focus: "f05-agent-policy-multi-node-2"
-
-  # These tests require kernel net-next so there's no point on running them
-  - k8s-version: "1.28"
-    focus: "f11-datapath-service-ns-tc"
-
-  - k8s-version: "1.28"
-    focus: "f12-datapath-service-ns-misc"
-
-  - k8s-version: "1.28"
-    focus: "f13-datapath-service-ns-xdp-1"
-
-  - k8s-version: "1.28"
-    focus: "f14-datapath-service-ns-xdp-2"
-
   # These tests require are not intended to run on kernel 5.4, thus we can ignore them
-  - k8s-version: "1.27"
+  - k8s-version: "1.28"
     focus: "f01-agent-chaos"
 
-  - k8s-version: "1.27"
+  - k8s-version: "1.28"
     focus: "f03-agent-policy"
 
-  - k8s-version: "1.27"
+  - k8s-version: "1.28"
     focus: "f04-agent-policy-multi-node-1"
 
-  - k8s-version: "1.27"
+  - k8s-version: "1.28"
     focus: "f05-agent-policy-multi-node-2"
 
-  - k8s-version: "1.27"
+  - k8s-version: "1.28"
     focus: "f11-datapath-service-ns-tc"
 
-  - k8s-version: "1.27"
+  - k8s-version: "1.28"
     focus: "f12-datapath-service-ns-misc"
 
-  - k8s-version: "1.27"
+  - k8s-version: "1.28"
     focus: "f13-datapath-service-ns-xdp-1"
 
-  - k8s-version: "1.27"
+  - k8s-version: "1.28"
     focus: "f14-datapath-service-ns-xdp-2"
 
-  - k8s-version: "1.27"
+  - k8s-version: "1.28"
     focus: "f15-datapath-service-ew-1"
 
-  - k8s-version: "1.27"
+  - k8s-version: "1.28"
     focus: "f16-datapath-service-ew-2"
 
-  - k8s-version: "1.27"
+  - k8s-version: "1.28"
     focus: "f17-datapath-service-ew-kube-proxy"
 
-  - k8s-version: "1.27"
+  - k8s-version: "1.28"
     focus: "f18-datapath-bgp-lrp"
 
-  - k8s-version: "1.27"
+  - k8s-version: "1.28"
     focus: "f20-kafka"

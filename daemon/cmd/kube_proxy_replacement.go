@@ -59,20 +59,7 @@ func initKubeProxyReplacementOptions(sysctl sysctl.Sysctl, tunnelConfig tunnel.C
 		option.Config.EnableSessionAffinity = true
 	}
 
-	if option.Config.KubeProxyReplacement != option.KubeProxyReplacementFalse &&
-		option.Config.EnableEnvoyConfig && !option.Config.EnableIPSec &&
-		!option.Config.EnableNodePort {
-		// CiliumEnvoyConfig L7 LB only works with bpf node port enabled
-		log.Infof("Auto-enabling %s for %s",
-			option.EnableNodePort, option.EnableEnvoyConfig)
-		option.Config.EnableNodePort = true
-	}
-
 	if option.Config.EnableNodePort {
-		if option.Config.EnableIPSec {
-			return fmt.Errorf("IPSec cannot be used with BPF NodePort")
-		}
-
 		if option.Config.NodePortMode != option.NodePortModeSNAT &&
 			option.Config.NodePortMode != option.NodePortModeDSR &&
 			option.Config.NodePortMode != option.NodePortModeHybrid {
@@ -142,13 +129,6 @@ func initKubeProxyReplacementOptions(sysctl sysctl.Sysctl, tunnelConfig tunnel.C
 		}
 
 		if option.Config.NodePortAcceleration != option.NodePortAccelerationDisabled &&
-			option.Config.NodePortAcceleration != option.NodePortAccelerationGeneric &&
-			option.Config.NodePortAcceleration != option.NodePortAccelerationNative &&
-			option.Config.NodePortAcceleration != option.NodePortAccelerationBestEffort {
-			return fmt.Errorf("Invalid value for --%s: %s", option.NodePortAcceleration, option.Config.NodePortAcceleration)
-		}
-
-		if option.Config.NodePortAcceleration != option.NodePortAccelerationDisabled &&
 			option.Config.EnableWireguard && option.Config.EncryptNode {
 			log.WithField(logfields.Hint,
 				"Disable XDP acceleration to encrypt N/S Loadbalancer traffic.").
@@ -184,9 +164,7 @@ func initKubeProxyReplacementOptions(sysctl sysctl.Sysctl, tunnelConfig tunnel.C
 				return fmt.Errorf("Failed to initialize maglev hash seeds: %w", err)
 			}
 		}
-	}
 
-	if option.Config.EnableNodePort {
 		if option.Config.TunnelingEnabled() && tunnelConfig.Protocol() == tunnel.VXLAN &&
 			option.Config.LoadBalancerUsesDSR() {
 			return fmt.Errorf("Node Port %q mode cannot be used with %s tunneling.", option.Config.NodePortMode, tunnel.VXLAN)
@@ -329,6 +307,7 @@ func probeKubeProxyReplacementOptions(sysctl sysctl.Sysctl) error {
 		}
 	} else {
 		option.Config.EnableSocketLBTracing = false
+		option.Config.EnableSocketLBPodConnectionTermination = false
 	}
 
 	if option.Config.EnableSessionAffinity && option.Config.EnableSocketLB {
@@ -358,7 +337,7 @@ func probeKubeProxyReplacementOptions(sysctl sysctl.Sysctl) error {
 
 // finishKubeProxyReplacementInit finishes initialization of kube-proxy
 // replacement after all devices are known.
-func finishKubeProxyReplacementInit(sysctl sysctl.Sysctl, devices []*tables.Device) error {
+func finishKubeProxyReplacementInit(sysctl sysctl.Sysctl, devices []*tables.Device, directRoutingDevice string) error {
 	if !option.Config.EnableNodePort {
 		// Make sure that NodePort dependencies are disabled
 		disableNodePort()
@@ -403,12 +382,6 @@ func finishKubeProxyReplacementInit(sysctl sysctl.Sysctl, devices []*tables.Devi
 		}
 	}
 
-	if option.Config.NodePortAcceleration != option.NodePortAccelerationDisabled {
-		if err := setXDPMode(option.Config.NodePortAcceleration); err != nil {
-			return fmt.Errorf("Cannot set NodePort acceleration: %w", err)
-		}
-	}
-
 	option.Config.NodePortNat46X64 = option.Config.IsDualStack() &&
 		option.Config.DatapathMode == datapathOption.DatapathModeLBOnly &&
 		option.Config.NodePortMode == option.NodePortModeSNAT
@@ -427,6 +400,7 @@ func finishKubeProxyReplacementInit(sysctl sysctl.Sysctl, devices []*tables.Devi
 	if option.Config.EnableIPv4 &&
 		!option.Config.TunnelingEnabled() &&
 		option.Config.LoadBalancerUsesDSR() &&
+		directRoutingDevice != "" &&
 		len(devices) > 1 {
 
 		// In the case of the multi-dev NodePort DSR, if a request from an
@@ -436,15 +410,14 @@ func finishKubeProxyReplacementInit(sysctl sysctl.Sysctl, devices []*tables.Devi
 		// and the client IP is reachable via other device than the direct
 		// routing one.
 
-		iface := option.Config.DirectRoutingDevice
-		if val, err := sysctl.Read(fmt.Sprintf("net.ipv4.conf.%s.rp_filter", iface)); err != nil {
+		if val, err := sysctl.Read([]string{"net", "ipv4", "conf", directRoutingDevice, "rp_filter"}); err != nil {
 			log.Warnf("Unable to read net.ipv4.conf.%s.rp_filter: %s. Ignoring the check",
-				iface, err)
+				directRoutingDevice, err)
 		} else {
 			if val == "1" {
 				log.Warnf(`DSR might not work for requests sent to other than %s device. `+
 					`Run 'sysctl -w net.ipv4.conf.%s.rp_filter=2' (or set to '0') on each node to fix`,
-					iface, iface)
+					directRoutingDevice, directRoutingDevice)
 			}
 		}
 	}
@@ -533,7 +506,7 @@ func markHostExtension() {
 // Otherwise, if EnableAutoProtectNodePortRange == true, then append the nodeport
 // range to ip_local_reserved_ports.
 func checkNodePortAndEphemeralPortRanges(sysctl sysctl.Sysctl) error {
-	ephemeralPortRangeStr, err := sysctl.Read("net.ipv4.ip_local_port_range")
+	ephemeralPortRangeStr, err := sysctl.Read([]string{"net", "ipv4", "ip_local_port_range"})
 	if err != nil {
 		return fmt.Errorf("Unable to read net.ipv4.ip_local_port_range: %w", err)
 	}
@@ -565,7 +538,7 @@ func checkNodePortAndEphemeralPortRanges(sysctl sysctl.Sysctl) error {
 			nodePortRangeStr, ephemeralPortRangeStr)
 	}
 
-	reservedPortsStr, err := sysctl.Read("net.ipv4.ip_local_reserved_ports")
+	reservedPortsStr, err := sysctl.Read([]string{"net", "ipv4", "ip_local_reserved_ports"})
 	if err != nil {
 		return fmt.Errorf("Unable to read net.ipv4.ip_local_reserved_ports: %w", err)
 	}
@@ -611,34 +584,10 @@ func checkNodePortAndEphemeralPortRanges(sysctl sysctl.Sysctl) error {
 		reservedPortsStr += ","
 	}
 	reservedPortsStr += fmt.Sprintf("%d-%d", option.Config.NodePortMin, option.Config.NodePortMax)
-	if err := sysctl.Write("net.ipv4.ip_local_reserved_ports", reservedPortsStr); err != nil {
+	if err := sysctl.Write([]string{"net", "ipv4", "ip_local_reserved_ports"}, reservedPortsStr); err != nil {
 		return fmt.Errorf("Unable to addend nodeport range (%s) to net.ipv4.ip_local_reserved_ports: %w",
 			nodePortRangeStr, err)
 	}
 
-	return nil
-}
-
-func setXDPMode(mode string) error {
-	switch mode {
-	case option.XDPModeNative, option.XDPModeBestEffort:
-		if option.Config.XDPMode == option.XDPModeLinkNone ||
-			option.Config.XDPMode == option.XDPModeLinkDriver {
-			option.Config.XDPMode = option.XDPModeLinkDriver
-		} else {
-			return fmt.Errorf("XDP Mode conflict: current mode is %s, trying to set conflicting %s",
-				option.Config.XDPMode, option.XDPModeLinkDriver)
-		}
-	case option.XDPModeGeneric:
-		if option.Config.XDPMode == option.XDPModeLinkNone ||
-			option.Config.XDPMode == option.XDPModeLinkGeneric {
-			option.Config.XDPMode = option.XDPModeLinkGeneric
-		} else {
-			return fmt.Errorf("XDP Mode conflict: current mode is %s, trying to set conflicting %s",
-				option.Config.XDPMode, option.XDPModeLinkGeneric)
-		}
-	case option.XDPModeDisabled:
-		break
-	}
 	return nil
 }

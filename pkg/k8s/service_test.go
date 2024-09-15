@@ -5,13 +5,14 @@ package k8s
 
 import (
 	"net"
+	"net/netip"
 	"reflect"
 	"testing"
 
-	check "github.com/cilium/checkmate"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/cilium/cilium/pkg/checker"
+	"github.com/cilium/cilium/pkg/annotation"
 	"github.com/cilium/cilium/pkg/cidr"
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	fakeTypes "github.com/cilium/cilium/pkg/datapath/fake/types"
@@ -22,124 +23,216 @@ import (
 	serviceStore "github.com/cilium/cilium/pkg/service/store"
 )
 
-func (s *K8sSuite) TestGetAnnotationIncludeExternal(c *check.C) {
+func TestGetAnnotationIncludeExternal(t *testing.T) {
 	svc := &slim_corev1.Service{ObjectMeta: slim_metav1.ObjectMeta{
 		Name: "foo",
 	}}
-	c.Assert(getAnnotationIncludeExternal(svc), check.Equals, false)
+	require.Equal(t, false, getAnnotationIncludeExternal(svc))
 
 	svc = &slim_corev1.Service{ObjectMeta: slim_metav1.ObjectMeta{
 		Annotations: map[string]string{"service.cilium.io/global": "True"},
 	}}
-	c.Assert(getAnnotationIncludeExternal(svc), check.Equals, true)
+	require.Equal(t, true, getAnnotationIncludeExternal(svc))
 
 	svc = &slim_corev1.Service{ObjectMeta: slim_metav1.ObjectMeta{
 		Annotations: map[string]string{"service.cilium.io/global": "false"},
 	}}
-	c.Assert(getAnnotationIncludeExternal(svc), check.Equals, false)
+	require.Equal(t, false, getAnnotationIncludeExternal(svc))
 
 	svc = &slim_corev1.Service{ObjectMeta: slim_metav1.ObjectMeta{
 		Annotations: map[string]string{"service.cilium.io/global": ""},
 	}}
-	c.Assert(getAnnotationIncludeExternal(svc), check.Equals, false)
+	require.Equal(t, false, getAnnotationIncludeExternal(svc))
 
 	svc = &slim_corev1.Service{ObjectMeta: slim_metav1.ObjectMeta{
 		Annotations: map[string]string{"io.cilium/global-service": "True"},
 	}}
-	c.Assert(getAnnotationIncludeExternal(svc), check.Equals, true)
+	require.Equal(t, true, getAnnotationIncludeExternal(svc))
 }
 
-func (s *K8sSuite) TestGetAnnotationShared(c *check.C) {
+func TestGetAnnotationShared(t *testing.T) {
 	svc := &slim_corev1.Service{ObjectMeta: slim_metav1.ObjectMeta{
 		Name: "foo",
 	}}
-	c.Assert(getAnnotationShared(svc), check.Equals, false)
+	require.Equal(t, false, getAnnotationShared(svc))
 	svc = &slim_corev1.Service{ObjectMeta: slim_metav1.ObjectMeta{
 		Annotations: map[string]string{"service.cilium.io/global": "true"},
 	}}
-	c.Assert(getAnnotationShared(svc), check.Equals, true)
+	require.Equal(t, true, getAnnotationShared(svc))
 
 	svc = &slim_corev1.Service{ObjectMeta: slim_metav1.ObjectMeta{
 		Annotations: map[string]string{"service.cilium.io/shared": "true"},
 	}}
-	c.Assert(getAnnotationShared(svc), check.Equals, false)
+	require.Equal(t, false, getAnnotationShared(svc))
 
 	svc = &slim_corev1.Service{ObjectMeta: slim_metav1.ObjectMeta{
 		Annotations: map[string]string{"service.cilium.io/global": "true", "service.cilium.io/shared": "True"},
 	}}
-	c.Assert(getAnnotationShared(svc), check.Equals, true)
+	require.Equal(t, true, getAnnotationShared(svc))
 
 	svc = &slim_corev1.Service{ObjectMeta: slim_metav1.ObjectMeta{
 		Annotations: map[string]string{"service.cilium.io/global": "true", "service.cilium.io/shared": "false"},
 	}}
-	c.Assert(getAnnotationShared(svc), check.Equals, false)
+	require.Equal(t, false, getAnnotationShared(svc))
 
 	svc = &slim_corev1.Service{ObjectMeta: slim_metav1.ObjectMeta{
 		Annotations: map[string]string{"service.cilium.io/global": "true", "io.cilium/shared-service": "false"},
 	}}
-	c.Assert(getAnnotationShared(svc), check.Equals, false)
+	require.Equal(t, false, getAnnotationShared(svc))
 }
 
-func (s *K8sSuite) TestGetAnnotationServiceAffinity(c *check.C) {
+func TestGetAnnotationServiceAffinity(t *testing.T) {
 	svc := &slim_corev1.Service{ObjectMeta: slim_metav1.ObjectMeta{
 		Annotations: map[string]string{"service.cilium.io/global": "true", "service.cilium.io/affinity": "local"},
 	}}
-	c.Assert(getAnnotationServiceAffinity(svc), check.Equals, serviceAffinityLocal)
+	require.Equal(t, serviceAffinityLocal, getAnnotationServiceAffinity(svc))
 
 	svc = &slim_corev1.Service{ObjectMeta: slim_metav1.ObjectMeta{
 		Annotations: map[string]string{"service.cilium.io/global": "true", "service.cilium.io/affinity": "remote"},
 	}}
-	c.Assert(getAnnotationServiceAffinity(svc), check.Equals, serviceAffinityRemote)
+	require.Equal(t, serviceAffinityRemote, getAnnotationServiceAffinity(svc))
 
 	svc = &slim_corev1.Service{ObjectMeta: slim_metav1.ObjectMeta{
 		Annotations: map[string]string{"service.cilium.io/global": "true", "io.cilium/service-affinity": "local"},
 	}}
-	c.Assert(getAnnotationServiceAffinity(svc), check.Equals, serviceAffinityLocal)
+	require.Equal(t, serviceAffinityLocal, getAnnotationServiceAffinity(svc))
 
 	svc = &slim_corev1.Service{ObjectMeta: slim_metav1.ObjectMeta{
 		Annotations: map[string]string{"service.cilium.io/affinity": "remote"},
 	}}
-	c.Assert(getAnnotationServiceAffinity(svc), check.Equals, serviceAffinityNone)
+	require.Equal(t, serviceAffinityNone, getAnnotationServiceAffinity(svc))
 
 	svc = &slim_corev1.Service{ObjectMeta: slim_metav1.ObjectMeta{
 		Annotations: map[string]string{},
 	}}
-	c.Assert(getAnnotationServiceAffinity(svc), check.Equals, serviceAffinityNone)
+	require.Equal(t, serviceAffinityNone, getAnnotationServiceAffinity(svc))
 }
 
-func (s *K8sSuite) TestGetAnnotationTopologyAwareHints(c *check.C) {
+func TestGetTopologyAware(t *testing.T) {
+	tests := []struct {
+		name                string
+		annotations         map[string]string
+		trafficDistribution string
+		expectTopologyAware bool
+	}{{
+		name: "hints annotation == auto",
+		annotations: map[string]string{
+			corev1.DeprecatedAnnotationTopologyAwareHints: "auto",
+		},
+		expectTopologyAware: true,
+	}, {
+		name: "hints annotation == Auto",
+		annotations: map[string]string{
+			corev1.DeprecatedAnnotationTopologyAwareHints: "Auto",
+		},
+		expectTopologyAware: true,
+	}, {
+		name: "hints annotation == Disabled",
+		annotations: map[string]string{
+			corev1.DeprecatedAnnotationTopologyAwareHints: "Disabled",
+		},
+		expectTopologyAware: false,
+	}, {
+		name: "mode annotation == auto",
+		annotations: map[string]string{
+			corev1.AnnotationTopologyMode: "auto",
+		},
+		expectTopologyAware: true,
+	}, {
+		name: "mode annotation == Auto",
+		annotations: map[string]string{
+			corev1.AnnotationTopologyMode: "Auto",
+		},
+		expectTopologyAware: true,
+	}, {
+		name: "mode annotation == Disabled",
+		annotations: map[string]string{
+			corev1.AnnotationTopologyMode: "Disabled",
+		},
+		expectTopologyAware: false,
+	}, {
+		name: "mode annotation == example.com/custom",
+		annotations: map[string]string{
+			corev1.AnnotationTopologyMode: "example.com/custom",
+		},
+		expectTopologyAware: true,
+	}, {
+		name:                "trafficDistribution == PreferClose",
+		trafficDistribution: corev1.ServiceTrafficDistributionPreferClose,
+		expectTopologyAware: true,
+	}, {
+		name:                "trafficDistribution == SomethingElse",
+		trafficDistribution: "SomethingElse",
+		expectTopologyAware: false,
+	}, {
+		name: "mode annotation == Disabled, trafficDistribution == PreferClose",
+		annotations: map[string]string{
+			corev1.AnnotationTopologyMode: "Disabled",
+		},
+		trafficDistribution: corev1.ServiceTrafficDistributionPreferClose,
+		expectTopologyAware: true,
+	}, {
+		name: "hints annotation == Disabled, trafficDistribution == PreferClose",
+		annotations: map[string]string{
+			corev1.DeprecatedAnnotationTopologyAwareHints: "Disabled",
+		},
+		trafficDistribution: corev1.ServiceTrafficDistributionPreferClose,
+		expectTopologyAware: true,
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &slim_corev1.Service{
+				ObjectMeta: slim_metav1.ObjectMeta{
+					Annotations: map[string]string{},
+				},
+				Spec: slim_corev1.ServiceSpec{},
+			}
+			if tc.annotations != nil {
+				svc.Annotations = tc.annotations
+			}
+			if tc.trafficDistribution != "" {
+				svc.Spec.TrafficDistribution = &tc.trafficDistribution
+			}
+
+			require.Equal(t, tc.expectTopologyAware, getTopologyAware(svc))
+		})
+	}
+}
+
+func TestGetAnnotationTopologyAwareHints(t *testing.T) {
 	svc := &slim_corev1.Service{ObjectMeta: slim_metav1.ObjectMeta{
 		Annotations: map[string]string{},
 	}}
-	c.Assert(getAnnotationTopologyAwareHints(svc), check.Equals, false)
+	require.Equal(t, false, getAnnotationTopologyAwareHints(svc))
 
 	svc = &slim_corev1.Service{ObjectMeta: slim_metav1.ObjectMeta{
 		Annotations: map[string]string{
 			corev1.DeprecatedAnnotationTopologyAwareHints: "auto",
 		},
 	}}
-	c.Assert(getAnnotationTopologyAwareHints(svc), check.Equals, true)
+	require.Equal(t, true, getAnnotationTopologyAwareHints(svc))
 
 	svc = &slim_corev1.Service{ObjectMeta: slim_metav1.ObjectMeta{
 		Annotations: map[string]string{
 			corev1.DeprecatedAnnotationTopologyAwareHints: "Auto",
 		},
 	}}
-	c.Assert(getAnnotationTopologyAwareHints(svc), check.Equals, true)
+	require.Equal(t, true, getAnnotationTopologyAwareHints(svc))
 
 	svc = &slim_corev1.Service{ObjectMeta: slim_metav1.ObjectMeta{
 		Annotations: map[string]string{
 			corev1.AnnotationTopologyMode: "auto",
 		},
 	}}
-	c.Assert(getAnnotationTopologyAwareHints(svc), check.Equals, true)
+	require.Equal(t, true, getAnnotationTopologyAwareHints(svc))
 
 	svc = &slim_corev1.Service{ObjectMeta: slim_metav1.ObjectMeta{
 		Annotations: map[string]string{
 			corev1.AnnotationTopologyMode: "PreferZone",
 		},
 	}}
-	c.Assert(getAnnotationTopologyAwareHints(svc), check.Equals, true)
+	require.Equal(t, true, getAnnotationTopologyAwareHints(svc))
 
 	// v1.DeprecatedAnnotationTopologyAwareHints has precedence over v1.AnnotationTopologyMode.
 	svc = &slim_corev1.Service{ObjectMeta: slim_metav1.ObjectMeta{
@@ -148,7 +241,7 @@ func (s *K8sSuite) TestGetAnnotationTopologyAwareHints(c *check.C) {
 			corev1.AnnotationTopologyMode:                 "auto",
 		},
 	}}
-	c.Assert(getAnnotationTopologyAwareHints(svc), check.Equals, false)
+	require.Equal(t, false, getAnnotationTopologyAwareHints(svc))
 
 	svc = &slim_corev1.Service{ObjectMeta: slim_metav1.ObjectMeta{
 		Annotations: map[string]string{
@@ -156,11 +249,10 @@ func (s *K8sSuite) TestGetAnnotationTopologyAwareHints(c *check.C) {
 			corev1.AnnotationTopologyMode:                 "deprecated",
 		},
 	}}
-	c.Assert(getAnnotationTopologyAwareHints(svc), check.Equals, true)
-
+	require.True(t, getAnnotationTopologyAwareHints(svc))
 }
 
-func (s *K8sSuite) TestParseServiceID(c *check.C) {
+func TestParseServiceID(t *testing.T) {
 	svc := &slim_corev1.Service{
 		ObjectMeta: slim_metav1.ObjectMeta{
 			Name:      "foo",
@@ -168,10 +260,96 @@ func (s *K8sSuite) TestParseServiceID(c *check.C) {
 		},
 	}
 
-	c.Assert(ParseServiceID(svc), checker.DeepEquals, ServiceID{Namespace: "bar", Name: "foo"})
+	require.EqualValues(t, ServiceID{Namespace: "bar", Name: "foo"}, ParseServiceID(svc))
 }
 
-func (s *K8sSuite) TestParseService(c *check.C) {
+func TestParseServiceWithServiceTypeExposure(t *testing.T) {
+	objMeta := slim_metav1.ObjectMeta{
+		Name:      "foo",
+		Namespace: "bar",
+		Labels: map[string]string{
+			"foo": "bar",
+		},
+		Annotations: map[string]string{},
+	}
+
+	k8sSvc := &slim_corev1.Service{
+		ObjectMeta: objMeta,
+		Spec: slim_corev1.ServiceSpec{
+			ClusterIP: "10.96.0.1",
+			Type:      slim_corev1.ServiceTypeLoadBalancer,
+			Ports: []slim_corev1.ServicePort{
+				{
+					Name:     "http",
+					Port:     80,
+					NodePort: 31111,
+					Protocol: slim_corev1.ProtocolTCP,
+				},
+			},
+		},
+		Status: slim_corev1.ServiceStatus{
+			LoadBalancer: slim_corev1.LoadBalancerStatus{
+				Ingress: []slim_corev1.LoadBalancerIngress{
+					{IP: "3.3.3.3"},
+				},
+			},
+		},
+	}
+
+	ipv4InternalAddrCluster := cmtypes.MustAddrClusterFromIP(fakeTypes.IPv4InternalAddress)
+	addrs := []netip.Addr{
+		ipv4InternalAddrCluster.Addr(),
+	}
+
+	oldNodePort := option.Config.EnableNodePort
+	option.Config.EnableNodePort = true
+	defer func() {
+		option.Config.EnableNodePort = oldNodePort
+	}()
+
+	_, svc := ParseService(k8sSvc, addrs)
+	require.Len(t, svc.FrontendIPs, 1)
+	require.Len(t, svc.NodePorts, 1)
+	require.Len(t, svc.LoadBalancerIPs, 1)
+
+	// Expose only ClusterIP
+
+	k8sSvc.Annotations[annotation.ServiceTypeExposure] = "ClusterIP"
+	_, svc = ParseService(k8sSvc, addrs)
+	require.Len(t, svc.FrontendIPs, 1)
+	require.Len(t, svc.NodePorts, 0)
+	require.Len(t, svc.LoadBalancerIPs, 0)
+	require.Len(t, svc.Ports, 1)
+
+	// Expose only NodePort
+
+	k8sSvc.Annotations[annotation.ServiceTypeExposure] = "NodePort"
+	_, svc = ParseService(k8sSvc, addrs)
+	require.Len(t, svc.FrontendIPs, 0)
+	require.Len(t, svc.NodePorts, 1)
+	require.Len(t, svc.LoadBalancerIPs, 0)
+	require.Len(t, svc.Ports, 1)
+
+	// Expose only LoadBalancer
+
+	k8sSvc.Annotations[annotation.ServiceTypeExposure] = "LoadBalancer"
+	_, svc = ParseService(k8sSvc, addrs)
+	require.Len(t, svc.FrontendIPs, 0)
+	require.Len(t, svc.NodePorts, 0)
+	require.Len(t, svc.LoadBalancerIPs, 1)
+	require.Len(t, svc.Ports, 1)
+
+	// Expose all
+
+	delete(k8sSvc.Annotations, annotation.ServiceTypeExposure)
+	_, svc = ParseService(k8sSvc, addrs)
+	require.Len(t, svc.FrontendIPs, 1)
+	require.Len(t, svc.NodePorts, 1)
+	require.Len(t, svc.LoadBalancerIPs, 1)
+	require.Len(t, svc.Ports, 1)
+}
+
+func TestParseService(t *testing.T) {
 	objMeta := slim_metav1.ObjectMeta{
 		Name:      "foo",
 		Namespace: "bar",
@@ -191,9 +369,9 @@ func (s *K8sSuite) TestParseService(c *check.C) {
 		},
 	}
 
-	id, svc := ParseService(k8sSvc, fakeTypes.NewNodeAddressing())
-	c.Assert(id, checker.DeepEquals, ServiceID{Namespace: "bar", Name: "foo"})
-	c.Assert(svc, checker.DeepEquals, &Service{
+	id, svc := ParseService(k8sSvc, nil)
+	require.EqualValues(t, ServiceID{Namespace: "bar", Name: "foo"}, id)
+	require.EqualValues(t, &Service{
 		ExtTrafficPolicy:         loadbalancer.SVCTrafficPolicyCluster,
 		IntTrafficPolicy:         loadbalancer.SVCTrafficPolicyCluster,
 		FrontendIPs:              []net.IP{net.ParseIP("127.0.0.1")},
@@ -203,7 +381,7 @@ func (s *K8sSuite) TestParseService(c *check.C) {
 		NodePorts:                map[loadbalancer.FEPortName]NodePortToFrontend{},
 		LoadBalancerSourceRanges: map[string]*cidr.CIDR{},
 		Type:                     loadbalancer.SVCTypeClusterIP,
-	})
+	}, svc)
 
 	k8sSvc = &slim_corev1.Service{
 		ObjectMeta: objMeta,
@@ -213,9 +391,9 @@ func (s *K8sSuite) TestParseService(c *check.C) {
 		},
 	}
 
-	id, svc = ParseService(k8sSvc, fakeTypes.NewNodeAddressing())
-	c.Assert(id, checker.DeepEquals, ServiceID{Namespace: "bar", Name: "foo"})
-	c.Assert(svc, checker.DeepEquals, &Service{
+	id, svc = ParseService(k8sSvc, nil)
+	require.EqualValues(t, ServiceID{Namespace: "bar", Name: "foo"}, id)
+	require.EqualValues(t, &Service{
 		IsHeadless:               true,
 		ExtTrafficPolicy:         loadbalancer.SVCTrafficPolicyCluster,
 		IntTrafficPolicy:         loadbalancer.SVCTrafficPolicyCluster,
@@ -224,7 +402,7 @@ func (s *K8sSuite) TestParseService(c *check.C) {
 		NodePorts:                map[loadbalancer.FEPortName]NodePortToFrontend{},
 		LoadBalancerSourceRanges: map[string]*cidr.CIDR{},
 		Type:                     loadbalancer.SVCTypeClusterIP,
-	})
+	}, svc)
 
 	serviceInternalTrafficPolicyLocal := slim_corev1.ServiceInternalTrafficPolicyLocal
 	k8sSvc = &slim_corev1.Service{
@@ -237,9 +415,9 @@ func (s *K8sSuite) TestParseService(c *check.C) {
 		},
 	}
 
-	id, svc = ParseService(k8sSvc, fakeTypes.NewNodeAddressing())
-	c.Assert(id, checker.DeepEquals, ServiceID{Namespace: "bar", Name: "foo"})
-	c.Assert(svc, checker.DeepEquals, &Service{
+	id, svc = ParseService(k8sSvc, nil)
+	require.EqualValues(t, ServiceID{Namespace: "bar", Name: "foo"}, id)
+	require.EqualValues(t, &Service{
 		FrontendIPs:              []net.IP{net.ParseIP("127.0.0.1")},
 		ExtTrafficPolicy:         loadbalancer.SVCTrafficPolicyLocal,
 		IntTrafficPolicy:         loadbalancer.SVCTrafficPolicyLocal,
@@ -248,7 +426,7 @@ func (s *K8sSuite) TestParseService(c *check.C) {
 		NodePorts:                map[loadbalancer.FEPortName]NodePortToFrontend{},
 		LoadBalancerSourceRanges: map[string]*cidr.CIDR{},
 		Type:                     loadbalancer.SVCTypeNodePort,
-	})
+	}, svc)
 
 	oldNodePort := option.Config.EnableNodePort
 	option.Config.EnableNodePort = true
@@ -294,9 +472,14 @@ func (s *K8sSuite) TestParseService(c *check.C) {
 	nodePortFE := loadbalancer.NewL3n4AddrID(tcpProto, ipv4NodePortAddrCluster, 31111,
 		loadbalancer.ScopeExternal, lbID)
 
-	id, svc = ParseService(k8sSvc, fakeTypes.NewIPv4OnlyNodeAddressing())
-	c.Assert(id, checker.DeepEquals, ServiceID{Namespace: "bar", Name: "foo"})
-	c.Assert(svc, checker.DeepEquals, &Service{
+	addrs := []netip.Addr{
+		ipv4InternalAddrCluster.Addr(),
+		ipv4NodePortAddrCluster.Addr(),
+	}
+
+	id, svc = ParseService(k8sSvc, addrs)
+	require.EqualValues(t, ServiceID{Namespace: "bar", Name: "foo"}, id)
+	require.EqualValues(t, &Service{
 		FrontendIPs: []net.IP{net.ParseIP("127.0.0.1")},
 		Labels:      map[string]string{"foo": "bar"},
 		Ports: map[loadbalancer.FEPortName]*loadbalancer.L4Addr{
@@ -317,28 +500,29 @@ func (s *K8sSuite) TestParseService(c *check.C) {
 		LoadBalancerIPs:          map[string]net.IP{},
 		Type:                     loadbalancer.SVCTypeLoadBalancer,
 		TopologyAware:            true,
-	})
+		Annotations:              map[string]string{"service.kubernetes.io/topology-aware-hints": "auto"},
+	}, svc)
 }
 
-func (s *K8sSuite) TestIsK8ServiceExternal(c *check.C) {
+func TestIsK8ServiceExternal(t *testing.T) {
 	si := Service{}
 
-	c.Assert(si.IsExternal(), check.Equals, true)
+	require.Equal(t, true, si.IsExternal())
 
 	si.Selector = map[string]string{"l": "v"}
-	c.Assert(si.IsExternal(), check.Equals, false)
+	require.Equal(t, false, si.IsExternal())
 }
 
-func (s *K8sSuite) TestServiceUniquePorts(c *check.C) {
+func TestServiceUniquePorts(t *testing.T) {
 	type testMatrix struct {
 		input    Service
-		expected map[uint16]bool
+		expected map[string]bool
 	}
 
 	matrix := []testMatrix{
 		{
 			input:    Service{},
-			expected: map[uint16]bool{},
+			expected: map[string]bool{},
 		},
 		{
 			input: Service{
@@ -353,14 +537,15 @@ func (s *K8sSuite) TestServiceUniquePorts(c *check.C) {
 					},
 				},
 			},
-			expected: map[uint16]bool{
-				1: true,
-				2: true,
-			}},
+			expected: map[string]bool{
+				"1/NONE": true,
+				"2/NONE": true,
+			},
+		},
 	}
 
 	for _, m := range matrix {
-		c.Assert(m.input.UniquePorts(), checker.DeepEquals, m.expected)
+		require.EqualValues(t, m.expected, m.input.UniquePorts())
 	}
 }
 
@@ -908,7 +1093,7 @@ func TestService_Equals(t *testing.T) {
 	}
 }
 
-func (s *K8sSuite) TestServiceString(c *check.C) {
+func TestServiceString(t *testing.T) {
 	tests := []struct {
 		name      string
 		service   *slim_corev1.Service
@@ -968,14 +1153,13 @@ func (s *K8sSuite) TestServiceString(c *check.C) {
 		},
 	}
 
-	nodeAddressing := fakeTypes.NewNodeAddressing()
 	for _, tt := range tests {
-		_, svc := ParseService(tt.service, nodeAddressing)
-		c.Assert(svc.String(), check.Equals, tt.svcString)
+		_, svc := ParseService(tt.service, nil)
+		require.Equal(t, tt.svcString, svc.String())
 	}
 }
 
-func (s *K8sSuite) TestNewClusterService(c *check.C) {
+func TestNewClusterService(t *testing.T) {
 	id, svc := ParseService(
 		&slim_corev1.Service{
 			ObjectMeta: slim_metav1.ObjectMeta{
@@ -992,7 +1176,7 @@ func (s *K8sSuite) TestNewClusterService(c *check.C) {
 				},
 				Type: slim_corev1.ServiceTypeClusterIP,
 			},
-		}, fakeTypes.NewNodeAddressing())
+		}, nil)
 
 	endpoints := ParseEndpoints(&slim_corev1.Endpoints{
 		ObjectMeta: slim_metav1.ObjectMeta{
@@ -1014,7 +1198,7 @@ func (s *K8sSuite) TestNewClusterService(c *check.C) {
 	})
 
 	clusterService := NewClusterService(id, svc, endpoints)
-	c.Assert(clusterService, checker.DeepEquals, serviceStore.ClusterService{
+	require.EqualValues(t, serviceStore.ClusterService{
 		Name:      "foo",
 		Namespace: "bar",
 		Labels:    map[string]string{"foo": "bar"},
@@ -1028,7 +1212,7 @@ func (s *K8sSuite) TestNewClusterService(c *check.C) {
 			},
 		},
 		Hostnames: map[string]string{"10.0.0.2": "hostname-1"},
-	})
+	}, clusterService)
 }
 
 func TestParseServiceIDFrom(t *testing.T) {

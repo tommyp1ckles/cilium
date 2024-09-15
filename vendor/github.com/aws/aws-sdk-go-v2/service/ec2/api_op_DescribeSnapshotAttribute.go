@@ -12,9 +12,11 @@ import (
 )
 
 // Describes the specified attribute of the specified snapshot. You can specify
-// only one attribute at a time. For more information about EBS snapshots, see
-// Amazon EBS snapshots (https://docs.aws.amazon.com/ebs/latest/userguide/ebs-snapshots.html)
-// in the Amazon EBS User Guide.
+// only one attribute at a time.
+//
+// For more information about EBS snapshots, see [Amazon EBS snapshots] in the Amazon EBS User Guide.
+//
+// [Amazon EBS snapshots]: https://docs.aws.amazon.com/ebs/latest/userguide/ebs-snapshots.html
 func (c *Client) DescribeSnapshotAttribute(ctx context.Context, params *DescribeSnapshotAttributeInput, optFns ...func(*Options)) (*DescribeSnapshotAttributeOutput, error) {
 	if params == nil {
 		params = &DescribeSnapshotAttributeInput{}
@@ -122,6 +124,12 @@ func (c *Client) addOperationDescribeSnapshotAttributeMiddlewares(stack *middlew
 		return err
 	}
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+		return err
+	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
 	if err = addOpDescribeSnapshotAttributeValidationMiddleware(stack); err != nil {

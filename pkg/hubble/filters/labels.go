@@ -6,6 +6,7 @@ package filters
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	flowpb "github.com/cilium/cilium/api/v1/flow"
 	v1 "github.com/cilium/cilium/pkg/hubble/api/v1"
@@ -20,6 +21,11 @@ func sourceLabels(ev *v1.Event) k8sLabels.Labels {
 
 func destinationLabels(ev *v1.Event) k8sLabels.Labels {
 	labels := ev.GetFlow().GetDestination().GetLabels()
+	return ciliumLabels.ParseLabelArrayFromArray(labels)
+}
+
+func nodeLabels(ev *v1.Event) k8sLabels.Labels {
+	labels := ev.GetFlow().GetNodeLabels()
 	return ciliumLabels.ParseLabelArrayFromArray(labels)
 }
 
@@ -58,12 +64,9 @@ func FilterByLabelSelectors(labelSelectors []string, getLabels func(*v1.Event) k
 
 	return func(ev *v1.Event) bool {
 		labels := getLabels(ev)
-		for _, selector := range selectors {
-			if selector.Matches(labels) {
-				return true
-			}
-		}
-		return false
+		return slices.ContainsFunc(selectors, func(selector k8sLabels.Selector) bool {
+			return selector.Matches(labels)
+		})
 	}, nil
 }
 
@@ -88,6 +91,14 @@ func (l *LabelsFilter) OnBuildFilter(ctx context.Context, ff *flowpb.FlowFilter)
 			return nil, fmt.Errorf("invalid destination label filter: %w", err)
 		}
 		fs = append(fs, dlf)
+	}
+
+	if ff.GetNodeLabels() != nil {
+		nlf, err := FilterByLabelSelectors(ff.GetNodeLabels(), nodeLabels)
+		if err != nil {
+			return nil, fmt.Errorf("invalid node label filter: %w", err)
+		}
+		fs = append(fs, nlf)
 	}
 
 	return fs, nil

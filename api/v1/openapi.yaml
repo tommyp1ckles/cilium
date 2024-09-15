@@ -709,46 +709,6 @@ paths:
           schema:
             "$ref": "#/definitions/Error"
 
-  "/statedb/dump":
-    get:
-      produces:
-      - application/octet-stream
-      summary: Dump StateDB contents
-      tags:
-      - statedb
-      responses:
-        '200':
-          description: Success
-          schema:
-            type: string
-            format: binary
-
-  "/statedb/query/{table}":
-    get:
-      produces:
-      - application/octet-stream
-      summary: Perform a query against a StateDB table
-      tags:
-      - statedb
-      parameters:
-      - "$ref": "#/parameters/statedb-table"
-      - "$ref": "#/parameters/statedb-index"
-      - "$ref": "#/parameters/statedb-key"
-      - "$ref": "#/parameters/statedb-lowerbound"
-      responses:
-        '200':
-          description: Success
-          schema:
-            # Stream of gob encoded revision and object pairs.
-            type: string
-            format: binary
-        '400':
-          description: Invalid parameters
-          schema:
-            "$ref": "#/definitions/Error"
-        '404':
-          description: Table or Index not found
-
   "/recorder":
     get:
       summary: Retrieve list of all recorders
@@ -1102,7 +1062,7 @@ paths:
     get:
       summary: Lists operational state of BGP peers
       description: |
-        Retrieves current operational state of BGP peers created by 
+        Retrieves current operational state of BGP peers created by
         Cilium BGP virtual router. This includes session state, uptime,
         information per address family, etc.
       tags:
@@ -1276,30 +1236,6 @@ parameters:
     required: true
     schema:
       "$ref": "#/definitions/ServiceSpec"
-  statedb-table:
-    name: table
-    description: StateDB table name
-    required: true
-    in: path
-    type: string
-  statedb-index:
-    name: index
-    description: StateDB index name
-    required: true
-    in: query
-    type: string
-  statedb-key:
-    name: key
-    description: Query key (base64 encoded)
-    required: true
-    in: query
-    type: string
-  statedb-lowerbound:
-    name: lowerbound
-    description: If true perform a LowerBound search
-    required: true
-    in: query
-    type: boolean
   recorder-id:
     name: id
     description: ID of recorder
@@ -1478,6 +1414,9 @@ definitions:
         type: string
       k8s-namespace:
         description: Kubernetes namespace name
+        type: string
+      k8s-uid:
+        description: Kubernetes pod UID
         type: string
       datapath-map-id:
         description: ID of datapath tail call map
@@ -2126,6 +2065,12 @@ definitions:
       kubernetes:
         description: Status of Kubernetes integration
         "$ref": "#/definitions/K8sStatus"
+      datapath-mode:
+        description: Status of datapath mode
+        "$ref": "#/definitions/DatapathMode"
+      attach-mode:
+        description: Status of core datapath attachment mode
+        "$ref": "#/definitions/AttachMode"
       kube-proxy-replacement:
         description: Status of kube-proxy replacement
         "$ref": "#/definitions/KubeProxyReplacement"
@@ -2588,6 +2533,9 @@ definitions:
       num-shared-services:
         description: Number of services in the cluster
         type: integer
+      num-service-exports:
+        description: Number of MCS-API service exports in the cluster
+        type: integer
       num-identities:
         description: Number of identities in the cluster
         type: integer
@@ -2619,6 +2567,10 @@ definitions:
       services:
         description: Services synchronization status
         type: boolean
+      service-exports:
+        description: MCS-API service exports synchronization status (null means that the component is not watching service exports)
+        type: boolean
+        x-nullable: true
       endpoints:
         description: Endpoints synchronization status
         type: boolean
@@ -2646,6 +2598,10 @@ definitions:
       sync-canaries:
         description: Whether the remote cluster supports per-prefix "synced" canaries
         type: boolean
+      service-exports-enabled:
+        description: Whether or not MCS-API ServiceExports is enabled by the cluster (null means unsupported).
+        type: boolean
+        x-nullable: true
   MonitorStatus:
     description: Status of the node monitor
     properties:
@@ -2733,6 +2689,9 @@ definitions:
       routeMTU:
         description: MTU for network facing routes
         type: integer
+      enableRouteMTUForCNIChaining:
+        description: Enable route MTU for pod netns when CNI chaining is used
+        type: boolean
       datapathMode:
         "$ref": "#/definitions/DatapathMode"
       ipam-mode:
@@ -2769,11 +2728,22 @@ definitions:
       GROIPv4MaxSize:
         description: Maximum IPv4 GRO size on workload facing devices
         type: integer
+      ipLocalReservedPorts:
+        description: Comma-separated list of IP ports should be reserved in the workload network namespace
+        type: string
   DatapathMode:
     description: Datapath mode
     type: string
     enum:
       - veth
+      - netkit
+      - netkit-l2
+  AttachMode:
+    description: Core datapath attachment mode
+    type: string
+    enum:
+      - tc
+      - tcx
   EndpointConfigurationSpec:
     description: An endpoint's configuration
     type: object
@@ -3005,6 +2975,9 @@ definitions:
       ip:
         description: Layer 3 address
         type: string
+      protocol:
+        description: Layer 4 protocol (TCP, UDP, etc)
+        type: string
       port:
         description: Layer 4 port number
         type: integer
@@ -3030,6 +3003,9 @@ definitions:
         type: integer
         format: uint16
         x-nullable: true
+      zone:
+        description: Optional name of the zone in which this backend runs
+        type: string
   LRPBackend:
     description: Pod backend of an LRP
     type: object
@@ -3933,7 +3909,7 @@ definitions:
   BgpPeer:
     description: |-
       State of a BGP Peer
-      
+
       +k8s:deepcopy-gen=true
     properties:
       local-asn:
@@ -4000,7 +3976,7 @@ definitions:
   BgpPeerFamilies:
     description: |-
       BGP AFI SAFI state of the peer
-      
+
       +k8s:deepcopy-gen=true
     properties:
       afi:
@@ -4026,13 +4002,13 @@ definitions:
     properties:
       enabled:
         description: |-
-          When set, graceful restart capability is negotiated for all AFI/SAFIs of 
+          When set, graceful restart capability is negotiated for all AFI/SAFIs of
           this peer.
         type: boolean
       restart-time-seconds:
         description: |-
-          This is the time advertised to peer for the BGP session to be re-established 
-          after a restart. After this period, peer will remove stale routes. 
+          This is the time advertised to peer for the BGP session to be re-established
+          after a restart. After this period, peer will remove stale routes.
           (RFC 4724 section 4.2)
         type: integer
   BgpRoute:
@@ -4124,6 +4100,11 @@ definitions:
         type: array
         items:
           type: string
+      match-families:
+        description:  Matches any of the provided address families. If empty matches all address families.
+        type: array
+        items:
+          "$ref": "#/definitions/BgpFamily"
       match-prefixes:
         description:  Matches any of the provided prefixes. If empty matches all prefixes.
         type: array

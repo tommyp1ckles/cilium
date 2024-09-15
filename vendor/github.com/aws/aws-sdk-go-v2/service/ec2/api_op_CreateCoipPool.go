@@ -29,7 +29,7 @@ func (c *Client) CreateCoipPool(ctx context.Context, params *CreateCoipPoolInput
 
 type CreateCoipPoolInput struct {
 
-	// The ID of the local gateway route table.
+	//  The ID of the local gateway route table.
 	//
 	// This member is required.
 	LocalGatewayRouteTableId *string
@@ -40,7 +40,7 @@ type CreateCoipPoolInput struct {
 	// UnauthorizedOperation .
 	DryRun *bool
 
-	// The tags to assign to the CoIP address pool.
+	//  The tags to assign to the CoIP address pool.
 	TagSpecifications []types.TagSpecification
 
 	noSmithyDocumentSerde
@@ -110,6 +110,12 @@ func (c *Client) addOperationCreateCoipPoolMiddlewares(stack *middleware.Stack, 
 		return err
 	}
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+		return err
+	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
 	if err = addOpCreateCoipPoolValidationMiddleware(stack); err != nil {

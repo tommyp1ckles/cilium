@@ -307,42 +307,7 @@ func (d *Daemon) regenerateRestoredEndpoints(state *endpointRestoreState, endpoi
 		}
 	}
 
-	if option.Config.EnableIPSec {
-		// If IPsec is enabled we need to restore the host endpoint before any
-		// other endpoint, to ensure a dropless upgrade.
-		// This code can be removed in v1.15.
-		// This is necessary because we changed how the IPsec encapsulation is
-		// done. In older version, bpf_lxc would pass the outer destination IP
-		// via skb->cb to bpf_host which would write it to the outer header.
-		// In newer versions, the header is written by the kernel XFRM
-		// subsystem and bpf_host must therefore not write it. To allow for a
-		// smooth upgrade, bpf_host has been updated to handle both cases. But
-		// for that to succeed, it must be reloaded first, before the bpf_lxc
-		// programs stop writing the IP into skb->cb.
-		for _, ep := range state.restored {
-			// Cap the timeout used to wait for remote cluster synchronization
-			// to avoid blocking the agent startup, as this regeneration is
-			// performed synchronously.
-			endpointsRegenerator.CapTimeoutForSynchronousRegeneration()
-
-			if ep.IsHost() {
-				log.WithField(logfields.EndpointID, ep.ID).Info("Successfully restored endpoint. Scheduling regeneration")
-				if err := ep.RegenerateAfterRestore(endpointsRegenerator, d.bwManager, d.fetchK8sMetadataForEndpoint); err != nil {
-					log.WithField(logfields.EndpointID, ep.ID).WithError(err).Debug("error regenerating restored host endpoint")
-					epRegenerated <- false
-				} else {
-					epRegenerated <- true
-				}
-				break
-			}
-		}
-	}
-
 	for _, ep := range state.restored {
-		if ep.IsHost() && option.Config.EnableIPSec {
-			// The host endpoint was handled above.
-			continue
-		}
 		log.WithField(logfields.EndpointID, ep.ID).Info("Successfully restored endpoint. Scheduling regeneration")
 		go func(ep *endpoint.Endpoint, epRegenerated chan<- bool) {
 			if err := ep.RegenerateAfterRestore(endpointsRegenerator, d.bwManager, d.fetchK8sMetadataForEndpoint); err != nil {
@@ -467,7 +432,7 @@ func (d *Daemon) initRestore(restoredEndpoints *endpointRestoreState, endpointsR
 							DoFunc: func(ctx context.Context) error {
 								var localServices sets.Set[k8s.ServiceID]
 								if localOnly {
-									localServices = d.k8sWatcher.K8sSvcCache.LocalServices()
+									localServices = d.k8sSvcCache.LocalServices()
 								}
 
 								stale, err := d.svc.SyncWithK8sFinished(localOnly, localServices)
@@ -476,7 +441,7 @@ func (d *Daemon) initRestore(restoredEndpoints *endpointRestoreState, endpointsR
 								// of whether an error was returned.
 								swg := lock.NewStoppableWaitGroup()
 								for _, svc := range stale {
-									d.k8sWatcher.K8sSvcCache.EnsureService(svc, swg)
+									d.k8sSvcCache.EnsureService(svc, swg)
 								}
 
 								swg.Stop()
@@ -499,7 +464,7 @@ func (d *Daemon) initRestore(restoredEndpoints *endpointRestoreState, endpointsR
 
 					err := d.clustermesh.ServicesSynced(d.ctx)
 					if err != nil {
-						log.WithError(err).Fatal("timeout while waiting for all clusters to be locally synchronized")
+						return // The parent context expired, and we are already terminating
 					}
 					log.Debug("all clusters have been correctly synchronized locally")
 				}

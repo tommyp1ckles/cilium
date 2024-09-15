@@ -9,8 +9,8 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	"github.com/cilium/cilium/pkg/bgpv1/manager/instance"
 	"github.com/cilium/cilium/pkg/bgpv1/types"
+	"github.com/cilium/cilium/pkg/k8s/resource"
 )
 
 // PathMap is a map of paths indexed by the NLRI string
@@ -19,10 +19,13 @@ type PathMap map[string]*types.Path
 // AFPathsMap is a map of paths per address family, indexed by the family
 type AFPathsMap map[types.Family]PathMap
 
+// ResourceAFPathsMap holds the AF paths keyed by the resource name.
+type ResourceAFPathsMap map[resource.Key]AFPathsMap
+
 type ReconcileAFPathsParams struct {
 	Logger       logrus.FieldLogger
 	Ctx          context.Context
-	Instance     *instance.BGPInstance
+	Router       types.Router
 	DesiredPaths AFPathsMap
 	CurrentPaths AFPathsMap
 }
@@ -30,7 +33,7 @@ type ReconcileAFPathsParams struct {
 type reconcilePathsParams struct {
 	Logger                logrus.FieldLogger
 	Ctx                   context.Context
-	Instance              *instance.BGPInstance
+	Router                types.Router
 	CurrentAdvertisements PathMap
 	ToAdvertise           PathMap
 }
@@ -47,7 +50,7 @@ func ReconcileAFPaths(rp *ReconcileAFPathsParams) (AFPathsMap, error) {
 			runningAdverts, err := reconcilePaths(&reconcilePathsParams{
 				Logger:                rp.Logger,
 				Ctx:                   rp.Ctx,
-				Instance:              rp.Instance,
+				Router:                rp.Router,
 				CurrentAdvertisements: runningPaths,
 				ToAdvertise:           nil,
 			})
@@ -64,7 +67,7 @@ func ReconcileAFPaths(rp *ReconcileAFPathsParams) (AFPathsMap, error) {
 		runningAdverts, err := reconcilePaths(&reconcilePathsParams{
 			Logger:                rp.Logger,
 			Ctx:                   rp.Ctx,
-			Instance:              rp.Instance,
+			Router:                rp.Router,
 			CurrentAdvertisements: runningAFPaths[family],
 			ToAdvertise:           rp.DesiredPaths[family],
 		})
@@ -112,7 +115,7 @@ func reconcilePaths(params *reconcilePathsParams) (PathMap, error) {
 				types.FamilyLogField: advrt.Family.String(),
 			}).Debug("Withdrawing path")
 
-			if err := params.Instance.Router.WithdrawPath(params.Ctx, types.PathRequest{Path: advrt}); err != nil {
+			if err := params.Router.WithdrawPath(params.Ctx, types.PathRequest{Path: advrt}); err != nil {
 				return runningAdverts, err
 			}
 			delete(runningAdverts, advrtKey)
@@ -147,32 +150,41 @@ func reconcilePaths(params *reconcilePathsParams) (PathMap, error) {
 		return params.CurrentAdvertisements, nil
 	}
 
-	// create new adverts
-	for _, advrt := range toAdvertise {
-		l.WithFields(logrus.Fields{
-			types.PathLogField:   advrt.NLRI.String(),
-			types.FamilyLogField: advrt.Family.String(),
-		}).Debug("Advertising path")
-
-		advrtResp, err := params.Instance.Router.AdvertisePath(params.Ctx, types.PathRequest{Path: advrt})
-		if err != nil {
-			return runningAdverts, err
-		}
-		runningAdverts[advrt.NLRI.String()] = advrtResp.Path
-	}
-
 	// withdraw unneeded adverts
-	for _, advrt := range toWithdraw {
+	for advrtKey, advrt := range toWithdraw {
 		l.WithFields(logrus.Fields{
 			types.PathLogField:   advrt.NLRI.String(),
 			types.FamilyLogField: advrt.Family.String(),
 		}).Debug("Withdrawing path")
 
-		if err := params.Instance.Router.WithdrawPath(params.Ctx, types.PathRequest{Path: advrt}); err != nil {
+		if err := params.Router.WithdrawPath(params.Ctx, types.PathRequest{Path: advrt}); err != nil {
 			return runningAdverts, err
 		}
-		delete(runningAdverts, advrt.NLRI.String())
+		delete(runningAdverts, advrtKey)
+	}
+
+	// create new adverts
+	for advrtKey, advrt := range toAdvertise {
+		l.WithFields(logrus.Fields{
+			types.PathLogField:   advrt.NLRI.String(),
+			types.FamilyLogField: advrt.Family.String(),
+		}).Debug("Advertising path")
+
+		advrtResp, err := params.Router.AdvertisePath(params.Ctx, types.PathRequest{Path: advrt})
+		if err != nil {
+			return runningAdverts, err
+		}
+		runningAdverts[advrtKey] = advrtResp.Path
 	}
 
 	return runningAdverts, nil
+}
+
+func addPathToAFPathsMap(m AFPathsMap, fam types.Family, path *types.Path) {
+	pathsPerFamily, exists := m[fam]
+	if !exists {
+		pathsPerFamily = make(PathMap)
+		m[fam] = pathsPerFamily
+	}
+	pathsPerFamily[path.NLRI.String()] = path
 }

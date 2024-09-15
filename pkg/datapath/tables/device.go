@@ -4,14 +4,15 @@
 package tables
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"net/netip"
 	"slices"
 	"strings"
 
-	"github.com/cilium/cilium/pkg/statedb"
-	"github.com/cilium/cilium/pkg/statedb/index"
+	"github.com/cilium/statedb"
+	"github.com/cilium/statedb/index"
 )
 
 var (
@@ -42,7 +43,7 @@ var (
 )
 
 func NewDeviceTable() (statedb.RWTable[*Device], error) {
-	return statedb.NewTable[*Device](
+	return statedb.NewTable(
 		"devices",
 		DeviceIDIndex,
 		DeviceNameIndex,
@@ -51,7 +52,7 @@ func NewDeviceTable() (statedb.RWTable[*Device], error) {
 }
 
 // HardwareAddr is the physical address for a network device.
-// Defined here instead of using net.Hardwareaddr for proper
+// Defined here instead of using net.HardwareAddr for proper
 // JSON marshalling.
 type HardwareAddr []byte
 
@@ -63,11 +64,26 @@ func (a HardwareAddr) MarshalJSON() ([]byte, error) {
 	return []byte("\"" + a.String() + "\""), nil
 }
 
+func (a *HardwareAddr) UnmarshalJSON(bs []byte) error {
+	bs = bytes.Trim(bs, "\"")
+	if len(bs) == 0 {
+		return nil
+	}
+	hw, err := net.ParseMAC(string(bs))
+	if err != nil {
+		return err
+	}
+	*a = []byte(hw)
+	return nil
+}
+
 // Device is a local network device along with addresses associated with it.
 //
 // The devices that are selected are the external facing native devices that
 // Cilium will use with features such as load-balancing, host firewall and routing.
 // For the selection logic applied see 'pkg/datapath/linux/devices_controller.go'.
+//
+// +deepequal-gen=true
 type Device struct {
 	Index        int             // positive integer that starts at one, zero is never used
 	MTU          int             // maximum transmission unit
@@ -128,10 +144,11 @@ func (d *Device) TableRow() []string {
 	}
 }
 
+// NOTE: Update DeepEqual() when changing this struct.
 type DeviceAddress struct {
 	Addr      netip.Addr
 	Secondary bool
-	Scope     uint8 // Address scope, e.g. unix.RT_SCOPE_LINK, unix.RT_SCOPE_HOST etc.
+	Scope     RouteScope // Address scope, e.g. RT_SCOPE_LINK, RT_SCOPE_HOST etc.
 }
 
 func (d *DeviceAddress) AsIP() net.IP {
@@ -142,13 +159,19 @@ func (d *DeviceAddress) String() string {
 	return fmt.Sprintf("%s (secondary=%v, scope=%d)", d.Addr, d.Secondary, d.Scope)
 }
 
+func (d *DeviceAddress) DeepEqual(other *DeviceAddress) bool {
+	return d.Addr == other.Addr &&
+		d.Secondary == other.Secondary &&
+		d.Scope == other.Scope
+}
+
 // SelectedDevices returns the external facing network devices to use for
 // load-balancing, host firewall and routing.
 //
 // The invalidated channel is closed when devices have changed and
 // should be requeried with a new transaction.
 func SelectedDevices(tbl statedb.Table[*Device], txn statedb.ReadTxn) ([]*Device, <-chan struct{}) {
-	iter, invalidated := tbl.Get(txn, DeviceSelectedIndex.Query(true))
+	iter, invalidated := tbl.ListWatch(txn, DeviceSelectedIndex.Query(true))
 	return statedb.Collect(iter), invalidated
 }
 
@@ -159,4 +182,32 @@ func DeviceNames(devs []*Device) (names []string) {
 		names[i] = devs[i].Name
 	}
 	return
+}
+
+// DeviceFilter implements filtering device names either by
+// concrete name ("eth0") or by iptables-like wildcard ("eth+").
+type DeviceFilter []string
+
+// NonEmpty returns true if the filter has been defined
+// (i.e. user has specified --devices).
+func (lst DeviceFilter) NonEmpty() bool {
+	return len(lst) > 0
+}
+
+// Match checks whether the given device name passes the filter
+func (lst DeviceFilter) Match(dev string) bool {
+	if len(lst) == 0 {
+		return true
+	}
+	for _, entry := range lst {
+		if strings.HasSuffix(entry, "+") {
+			prefix := strings.TrimRight(entry, "+")
+			if strings.HasPrefix(dev, prefix) {
+				return true
+			}
+		} else if dev == entry {
+			return true
+		}
+	}
+	return false
 }

@@ -5,9 +5,12 @@ package manager
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -15,15 +18,17 @@ import (
 
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/hivetest"
+	"github.com/cilium/statedb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	fakeTypes "github.com/cilium/cilium/pkg/datapath/fake/types"
 	"github.com/cilium/cilium/pkg/datapath/iptables/ipset"
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
-	"github.com/cilium/cilium/pkg/healthv2/types"
 	"github.com/cilium/cilium/pkg/hive"
-	"github.com/cilium/cilium/pkg/identity/cache"
+	"github.com/cilium/cilium/pkg/hive/health"
+	"github.com/cilium/cilium/pkg/hive/health/types"
+	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/ipcache"
 	ipcacheTypes "github.com/cilium/cilium/pkg/ipcache/types"
@@ -33,7 +38,6 @@ import (
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/source"
-	"github.com/cilium/cilium/pkg/statedb"
 	testidentity "github.com/cilium/cilium/pkg/testutils/identity"
 )
 
@@ -85,8 +89,8 @@ func (i *ipcacheMock) Delete(ip string, source source.Source) bool {
 	return false
 }
 
-func (i *ipcacheMock) GetMetadataByPrefix(prefix netip.Prefix) ipcache.PrefixInfo {
-	return ipcache.PrefixInfo{}
+func (i *ipcacheMock) GetMetadataSourceByPrefix(prefix netip.Prefix) source.Source {
+	return source.Unspec
 }
 func (i *ipcacheMock) UpsertMetadata(prefix netip.Prefix, src source.Source, resource ipcacheTypes.ResourceID, aux ...ipcache.IPMetadata) {
 	i.Upsert(prefix.String(), nil, 0, nil, ipcache.Identity{})
@@ -440,14 +444,6 @@ func TestClusterSizeDependantInterval(t *testing.T) {
 }
 
 func TestBackgroundSync(t *testing.T) {
-	t.Skip("GH-6751 Test is disabled due to being unstable")
-
-	// set the base background sync interval to a very low value so the
-	// background sync runs aggressively
-	baseBackgroundSyncIntervalBackup := baseBackgroundSyncInterval
-	baseBackgroundSyncInterval = 10 * time.Millisecond
-	defer func() { baseBackgroundSyncInterval = baseBackgroundSyncIntervalBackup }()
-
 	signalNodeHandler := newSignalNodeHandler()
 	signalNodeHandler.EnableNodeValidateImplementationEvent = true
 	ipcacheMock := newIPcacheMock()
@@ -457,7 +453,7 @@ func TestBackgroundSync(t *testing.T) {
 	require.NoError(t, err)
 	defer mngr.Stop(context.TODO())
 
-	numNodes := 4096
+	numNodes := 128
 
 	allNodeValidateCallsReceived := &sync.WaitGroup{}
 	allNodeValidateCallsReceived.Add(1)
@@ -474,8 +470,10 @@ func TestBackgroundSync(t *testing.T) {
 					allNodeValidateCallsReceived.Done()
 					return
 				}
-			case <-timer.After(time.Second * 5):
+			case <-timer.After(time.Second * 1):
 				t.Errorf("Timeout while waiting for NodeValidateImplementation() to be called")
+				allNodeValidateCallsReceived.Done()
+				return
 			}
 		}
 	}()
@@ -489,6 +487,8 @@ func TestBackgroundSync(t *testing.T) {
 		}}
 		mngr.NodeUpdated(n)
 	}
+
+	mngr.singleBackgroundLoop(context.Background(), time.Millisecond)
 
 	allNodeValidateCallsReceived.Wait()
 }
@@ -653,7 +653,10 @@ func TestNodeEncryption(t *testing.T) {
 	ipcacheMock := newIPcacheMock()
 	dp := newSignalNodeHandler()
 	h, _ := cell.NewSimpleHealth()
-	mngr, err := New(&option.DaemonConfig{EncryptNode: true, EnableIPSec: true}, ipcacheMock, newIPSetMock(), nil, NewNodeMetrics(), h)
+	mngr, err := New(&option.DaemonConfig{
+		EncryptNode: true,
+		EnableIPSec: true,
+	}, ipcacheMock, newIPSetMock(), nil, NewNodeMetrics(), h)
 	require.NoError(t, err)
 	mngr.Subscribe(dp)
 	defer mngr.Stop(context.TODO())
@@ -858,32 +861,31 @@ func TestNodeManagerEmitStatus(t *testing.T) {
 
 		done := make(chan struct{})
 		reattempt := make(chan struct{})
-		checkStatus := func() ([]types.Status, <-chan struct{}) {
+		checkStatus := func(old statedb.Revision) (types.Status, <-chan struct{}, statedb.Revision) {
 			tx := db.ReadTxn()
-			iter, watch := statusTable.All(tx)
-			var ss []types.Status
-			for {
-				s, _, ok := iter.Next()
-				if !ok {
-					break
-				}
-				ss = append(ss, s)
-			}
 
-			return ss, watch
+			id := types.Identifier{
+				Module:    cell.FullModuleID{"node_manager"},
+				Component: []string{"background-sync"},
+			}
+			for {
+				ss, cur, watch, _ := statusTable.GetWatch(tx, health.PrimaryIndex.Query(id.HealthID()))
+				if cur != old {
+					return ss, watch, cur
+				}
+				<-watch
+			}
 		}
 		go func() {
-			ss, watch := checkStatus()
-			assert.Len(ss, 0)
+			status, watch, rev := checkStatus(99)
+			assert.Equal(types.Level(""), status.Level)
 			<-watch
-			ss, watch = checkStatus()
-			assert.Len(ss, 1)
-			assert.Equal(types.LevelDegraded, string(ss[0].Level))
+			status, watch, rev = checkStatus(rev)
+			assert.Equal(types.LevelDegraded, string(status.Level))
 			close(reattempt)
 			<-watch
-			ss, _ = checkStatus()
-			assert.Len(ss, 1)
-			assert.Equal(types.LevelOK, string(ss[0].Level))
+			status, _, _ = checkStatus(rev)
+			assert.Equal(types.LevelOK, string(status.Level))
 		}()
 		go func() {
 			<-nh1.NodeValidateImplementationEvent
@@ -925,7 +927,7 @@ type testParams struct {
 
 type mockUpdater struct{}
 
-func (m *mockUpdater) UpdateIdentities(_, _ cache.IdentityCache, _ *sync.WaitGroup) {}
+func (m *mockUpdater) UpdateIdentities(_, _ identity.IdentityMap, _ *sync.WaitGroup) {}
 
 type mockTriggerer struct{}
 
@@ -948,7 +950,9 @@ func TestNodeWithSameInternalIP(t *testing.T) {
 	dp.EnableNodeUpdateEvent = true
 	dp.EnableNodeDeleteEvent = true
 	h, _ := cell.NewSimpleHealth()
-	mngr, err := New(&option.DaemonConfig{LocalRouterIPv4: "169.254.4.6"}, ipcache, newIPSetMock(), nil, NewNodeMetrics(), h)
+	mngr, err := New(&option.DaemonConfig{
+		LocalRouterIPv4: "169.254.4.6",
+	}, ipcache, newIPSetMock(), nil, NewNodeMetrics(), h)
 	require.NoError(t, err)
 	mngr.Subscribe(dp)
 	defer mngr.Stop(context.TODO())
@@ -1164,4 +1168,111 @@ func TestNodeIpset(t *testing.T) {
 	ipsetExpect(mngr.ipsetMgr.(*ipsetMock), "2001:DB8::1", false)
 	ipsetExpect(mngr.ipsetMgr.(*ipsetMock), "10.0.0.1", false)
 	ipsetExpect(mngr.ipsetMgr.(*ipsetMock), "2001:ABCD::1", false)
+}
+
+// Tests that the node manager calls delete on nodes to be pruned.
+func TestNodesStartupPruning(t *testing.T) {
+	n1 := nodeTypes.Node{Name: "node1", Cluster: "c1", IPAddresses: []nodeTypes.Address{
+		{
+			Type: addressing.NodeInternalIP,
+			IP:   net.ParseIP("10.0.0.1"),
+		},
+	}}
+
+	n2 := nodeTypes.Node{Name: "node2", Cluster: "c1", IPAddresses: []nodeTypes.Address{
+		{
+			Type: addressing.NodeInternalIP,
+			IP:   net.ParseIP("10.0.0.2"),
+		},
+	}}
+
+	n3 := nodeTypes.Node{Name: "node3", Cluster: "c2", IPAddresses: []nodeTypes.Address{
+		{
+			Type: addressing.NodeInternalIP,
+			IP:   net.ParseIP("10.0.0.3"),
+		},
+	}}
+
+	// Create a nodes.json file from the above two nodes, simulating a previous instance of the agent.
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, nodesFilename)
+	nf, err := os.Create(path)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		nf.Close()
+		os.Remove(path)
+	})
+	e := json.NewEncoder(nf)
+	require.NoError(t, e.Encode([]nodeTypes.Node{n3, n2, n1}))
+	require.NoError(t, nf.Sync())
+	require.NoError(t, nf.Close())
+
+	checkNodeFileMatches := func(path string, node nodeTypes.Node) {
+		// Wait until the file exists. The node deletion triggers the write, hence
+		// this shouldn't take long.
+		require.EventuallyWithT(t, func(c *assert.CollectT) {
+			assert.FileExists(c, path)
+		}, time.Second, 10*time.Millisecond)
+		nwf, err := os.Open(path)
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			nwf.Close()
+		})
+		var nl []nodeTypes.Node
+		assert.NoError(t, json.NewDecoder(nwf).Decode(&nl))
+		assert.Len(t, nl, 1)
+		assert.Equal(t, node, nl[0])
+		require.NoError(t, os.Remove(path))
+	}
+
+	// Create a node manager and add only node1.
+	ipcacheMock := newIPcacheMock()
+	dp := newSignalNodeHandler()
+	dp.EnableNodeDeleteEvent = true
+	h, _ := cell.NewSimpleHealth()
+	mngr, err := New(&option.DaemonConfig{
+		StateDir:    tmp,
+		ClusterName: "c1",
+	}, ipcacheMock, newIPSetMock(), nil, NewNodeMetrics(), h)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		mngr.Stop(context.TODO())
+	})
+	mngr.Subscribe(dp)
+	mngr.NodeUpdated(n1)
+
+	// Load the nodes from disk and initiate pruning. This should prune node 2
+	// (since it's present in the file but not in our current view).
+	mngr.restoreNodeCheckpoint()
+	require.NoError(t, mngr.initNodeCheckpointer(time.Microsecond))
+	// We remove our test file here to be able to tell once the nodemanager has
+	// written one itself.
+	require.NoError(t, os.Remove(path))
+	// Declare cluster nodes synced (but not clustermesh nodes)
+	mngr.NodeSync()
+
+	select {
+	case dn := <-dp.NodeDeleteEvent:
+		n2r := n2
+		n2r.Source = source.Restored
+		assert.Equal(t, n2r, dn, "should have deleted node 2 and (with source=Restored)")
+	case <-time.After(time.Second * 5):
+		t.Fatal("should have received a node deletion event for node 2")
+	}
+
+	checkNodeFileMatches(path, n1)
+
+	// Allow pruning the clustermesh node.
+	mngr.MeshNodeSync()
+
+	select {
+	case dn := <-dp.NodeDeleteEvent:
+		n3r := n3
+		n3r.Source = source.Restored
+		assert.Equal(t, n3r, dn, "should have deleted node 3 and (with source=Restored)")
+	case <-time.After(time.Second * 5):
+		t.Fatal("should have received a node deletion event for node 3")
+	}
+
+	checkNodeFileMatches(path, n1)
 }

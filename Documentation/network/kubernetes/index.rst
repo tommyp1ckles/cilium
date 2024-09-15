@@ -18,9 +18,9 @@ Kubernetes Networking
    configuration
    policy
    kubeproxy-free
+   ciliumcidrgroup
    ciliumendpoint
    ciliumendpointslice
-   ciliumendpointslice_beta
    compatibility
    troubleshooting
    bandwidth-manager

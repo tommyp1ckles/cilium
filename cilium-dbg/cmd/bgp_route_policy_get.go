@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
 	"github.com/cilium/cilium/api/v1/client/bgp"
 	"github.com/cilium/cilium/api/v1/models"
@@ -33,7 +33,7 @@ var BgpRoutePoliciesCmd = &cobra.Command{
 			if err != nil {
 				Fatalf("failed to parse vrouter ASN: %s\n", err)
 			}
-			params.RouterAsn = pointer.Int64(asn)
+			params.RouterAsn = ptr.To[int64](asn)
 		}
 
 		res, err := client.Bgp.GetBgpRoutePolicies(params)
@@ -65,10 +65,10 @@ func printBGPRoutePoliciesTable(policies []*models.BgpRoutePolicy) {
 		return policies[i].RouterAsn < policies[j].RouterAsn && policies[i].Name < policies[j].Name
 	})
 
-	fmt.Fprintln(w, "VRouter\tPolicy Name\tType\tMatch Peers\tMatch Prefixes (Min..Max Len)\tRIB Action\tPath Actions")
+	fmt.Fprintln(w, "VRouter\tPolicy Name\tType\tMatch Peers\tMatch Families\tMatch Prefixes (Min..Max Len)\tRIB Action\tPath Actions")
 	for _, policy := range policies {
 		fmt.Fprintf(w, "%d\t", policy.RouterAsn)
-		fmt.Fprintf(w, "%s\t", trimString(policy.Name, 40))
+		fmt.Fprintf(w, "%s\t", policy.Name)
 		fmt.Fprintf(w, "%s\t", policy.Type)
 
 		for i, stmt := range policy.Statements {
@@ -76,6 +76,7 @@ func printBGPRoutePoliciesTable(policies []*models.BgpRoutePolicy) {
 				fmt.Fprint(w, strings.Repeat("\t", 3))
 			}
 			fmt.Fprintf(w, "%s\t", formatStringArray(stmt.MatchNeighbors))
+			fmt.Fprintf(w, "%s\t", formatStringArray(formatFamilies(stmt.MatchFamilies)))
 			fmt.Fprintf(w, "%s\t", formatStringArray(formatMatchPrefixes(stmt.MatchPrefixes)))
 			fmt.Fprintf(w, "%s\t", stmt.RouteAction)
 			fmt.Fprintf(w, "%s\t", formatStringArray(formatPathActions(stmt)))
@@ -88,13 +89,6 @@ func printBGPRoutePoliciesTable(policies []*models.BgpRoutePolicy) {
 	w.Flush()
 }
 
-func trimString(str string, length int) string {
-	if len(str) <= length {
-		return str
-	}
-	return str[:length] + "..."
-}
-
 func formatStringArray(arr []string) string {
 	if len(arr) == 1 {
 		return arr[0]
@@ -104,6 +98,14 @@ func formatStringArray(arr []string) string {
 		res += "{" + str + "} "
 	}
 	return strings.TrimSpace(res)
+}
+
+func formatFamilies(families []*models.BgpFamily) []string {
+	var res []string
+	for _, f := range families {
+		res = append(res, fmt.Sprintf("%s/%s", f.Afi, f.Safi))
+	}
+	return res
 }
 
 func formatMatchPrefixes(pfxs []*models.BgpRoutePolicyPrefixMatch) []string {

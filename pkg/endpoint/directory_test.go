@@ -13,7 +13,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func (s *EndpointSuite) TestMoveNewFilesTo(t *testing.T) {
+func TestMoveNewFilesTo(t *testing.T) {
+	setupEndpointSuite(t)
+
 	oldDir := t.TempDir()
 	newDir := t.TempDir()
 	f1, err := os.CreateTemp(oldDir, "")
@@ -70,7 +72,7 @@ func (s *EndpointSuite) TestMoveNewFilesTo(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		if err := moveNewFilesTo(tt.args.oldDir, tt.args.newDir); (err != nil) != tt.wantErr {
+		if err := copyExistingState(tt.args.oldDir, tt.args.newDir); (err != nil) != tt.wantErr {
 			require.Equal(t, tt.wantErr, err != nil)
 			compareDir(tt.args.oldDir, tt.wantOldDir)
 			compareDir(tt.args.newDir, tt.wantNewDir)
@@ -98,7 +100,7 @@ func benchmarkMoveNewFilesTo(b *testing.B, numFiles int) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if err := moveNewFilesTo(oldDir, newDir); err != nil {
+		if err := copyExistingState(oldDir, newDir); err != nil {
 			b.Fatal(err)
 		}
 	}

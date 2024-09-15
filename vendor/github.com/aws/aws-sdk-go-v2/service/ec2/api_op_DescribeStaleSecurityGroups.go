@@ -12,9 +12,9 @@ import (
 )
 
 // Describes the stale security group rules for security groups in a specified
-// VPC. Rules are stale when they reference a deleted security group in the same
-// VPC or peered VPC. Rules can also be stale if they reference a security group in
-// a peer VPC for which the VPC peering connection has been deleted.
+// VPC. Rules are stale when they reference a deleted security group in a peered
+// VPC. Rules can also be stale if they reference a security group in a peer VPC
+// for which the VPC peering connection has been deleted.
 func (c *Client) DescribeStaleSecurityGroups(ctx context.Context, params *DescribeStaleSecurityGroupsInput, optFns ...func(*Options)) (*DescribeStaleSecurityGroupsOutput, error) {
 	if params == nil {
 		params = &DescribeStaleSecurityGroupsInput{}
@@ -45,8 +45,9 @@ type DescribeStaleSecurityGroupsInput struct {
 
 	// The maximum number of items to return for this request. To get the next page of
 	// items, make another request with the token returned in the output. For more
-	// information, see Pagination (https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Query-Requests.html#api-pagination)
-	// .
+	// information, see [Pagination].
+	//
+	// [Pagination]: https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Query-Requests.html#api-pagination
 	MaxResults *int32
 
 	// The token returned from a previous paginated request. Pagination continues from
@@ -126,6 +127,12 @@ func (c *Client) addOperationDescribeStaleSecurityGroupsMiddlewares(stack *middl
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
+		return err
+	}
 	if err = addOpDescribeStaleSecurityGroupsValidationMiddleware(stack); err != nil {
 		return err
 	}
@@ -150,21 +157,14 @@ func (c *Client) addOperationDescribeStaleSecurityGroupsMiddlewares(stack *middl
 	return nil
 }
 
-// DescribeStaleSecurityGroupsAPIClient is a client that implements the
-// DescribeStaleSecurityGroups operation.
-type DescribeStaleSecurityGroupsAPIClient interface {
-	DescribeStaleSecurityGroups(context.Context, *DescribeStaleSecurityGroupsInput, ...func(*Options)) (*DescribeStaleSecurityGroupsOutput, error)
-}
-
-var _ DescribeStaleSecurityGroupsAPIClient = (*Client)(nil)
-
 // DescribeStaleSecurityGroupsPaginatorOptions is the paginator options for
 // DescribeStaleSecurityGroups
 type DescribeStaleSecurityGroupsPaginatorOptions struct {
 	// The maximum number of items to return for this request. To get the next page of
 	// items, make another request with the token returned in the output. For more
-	// information, see Pagination (https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Query-Requests.html#api-pagination)
-	// .
+	// information, see [Pagination].
+	//
+	// [Pagination]: https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Query-Requests.html#api-pagination
 	Limit int32
 
 	// Set to true if pagination should stop if the service returns a pagination token
@@ -227,6 +227,9 @@ func (p *DescribeStaleSecurityGroupsPaginator) NextPage(ctx context.Context, opt
 	}
 	params.MaxResults = limit
 
+	optFns = append([]func(*Options){
+		addIsPaginatorUserAgent,
+	}, optFns...)
 	result, err := p.client.DescribeStaleSecurityGroups(ctx, &params, optFns...)
 	if err != nil {
 		return nil, err
@@ -245,6 +248,14 @@ func (p *DescribeStaleSecurityGroupsPaginator) NextPage(ctx context.Context, opt
 
 	return result, nil
 }
+
+// DescribeStaleSecurityGroupsAPIClient is a client that implements the
+// DescribeStaleSecurityGroups operation.
+type DescribeStaleSecurityGroupsAPIClient interface {
+	DescribeStaleSecurityGroups(context.Context, *DescribeStaleSecurityGroupsInput, ...func(*Options)) (*DescribeStaleSecurityGroupsOutput, error)
+}
+
+var _ DescribeStaleSecurityGroupsAPIClient = (*Client)(nil)
 
 func newServiceMetadataMiddleware_opDescribeStaleSecurityGroups(region string) *awsmiddleware.RegisterServiceMetadata {
 	return &awsmiddleware.RegisterServiceMetadata{

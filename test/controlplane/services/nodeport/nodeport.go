@@ -5,11 +5,12 @@ package nodeport
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path"
 	"testing"
 
-	fakeTypes "github.com/cilium/cilium/pkg/datapath/fake/types"
+	datapathTables "github.com/cilium/cilium/pkg/datapath/tables"
 	lb "github.com/cilium/cilium/pkg/loadbalancer"
 	agentOption "github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/test/controlplane"
@@ -53,32 +54,37 @@ func init() {
 }
 
 func validate(test *suite.ControlPlaneTest, goldenFile string) error {
-	if err := helpers.ValidateLBMapGoldenFile(goldenFile, test.Datapath); err != nil {
+	if err := helpers.ValidateLBMapGoldenFile(goldenFile, test.FakeLbMap); err != nil {
 		return err
 	}
-	if err := validateExternalTrafficPolicyLocal(test.Datapath); err != nil {
+	if err := validateExternalTrafficPolicyLocal(test); err != nil {
 		return err
 	}
 	return nil
 }
 
-func validateExternalTrafficPolicyLocal(dp *fakeTypes.FakeDatapath) error {
-	lbmap := dp.LBMockMap()
-	lbmap.Lock()
-	defer lbmap.Unlock()
+func validateExternalTrafficPolicyLocal(test *suite.ControlPlaneTest) error {
+	test.FakeLbMap.Lock()
+	defer test.FakeLbMap.Unlock()
 
 	// Collect all echo-local services with internal ("local") scope.
 	localServices := []*lb.SVC{}
-	for _, svc := range dp.LBMockMap().ServiceByID {
+	for _, svc := range test.FakeLbMap.ServiceByID {
 		if svc.Name.Name == "echo-local" && svc.Frontend.Scope == lb.ScopeInternal {
 			localServices = append(localServices, svc)
 		}
 	}
 
 	expectedFrontendIPs := map[string]bool{}
-	for _, ip := range dp.LocalNodeAddressing().IPv4().LoadBalancerNodeAddresses() {
-		expectedFrontendIPs[ip.String()] = true
+
+	db, nodeAddrs := test.AgentDB()
+	iter := nodeAddrs.List(db.ReadTxn(), datapathTables.NodeAddressNodePortIndex.Query(true))
+	for addr := range iter {
+		if addr.NodePort && addr.Addr.Is4() {
+			expectedFrontendIPs[addr.Addr.String()] = true
+		}
 	}
+	expectedFrontendIPs[net.IPv4zero.String()] = true
 
 	// Check that all expected service entries exist with the expected frontends.
 	for _, svc := range localServices {

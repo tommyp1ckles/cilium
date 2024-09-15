@@ -5,11 +5,11 @@ package fqdn
 
 import (
 	"net/netip"
+	"testing"
 	"time"
 
-	. "github.com/cilium/checkmate"
 	"github.com/sirupsen/logrus"
-	"k8s.io/apimachinery/pkg/util/sets"
+	"github.com/stretchr/testify/require"
 
 	"github.com/cilium/cilium/pkg/ip"
 	"github.com/cilium/cilium/pkg/policy/api"
@@ -29,7 +29,7 @@ var (
 	}
 )
 
-func (ds *DNSCacheTestSuite) TestMapIPsToSelectors(c *C) {
+func TestMapIPsToSelectors(t *testing.T) {
 	var (
 		ciliumIP1   = netip.MustParseAddr("1.2.3.4")
 		ciliumIP2   = netip.MustParseAddr("1.2.3.5")
@@ -45,63 +45,41 @@ func (ds *DNSCacheTestSuite) TestMapIPsToSelectors(c *C) {
 	now := time.Now()
 	cache := nameManager.cache
 
-	selectors := sets.New[api.FQDNSelector](ciliumIOSel)
-
 	// Empty cache.
-	selIPMapping := nameManager.mapSelectorsToIPsLocked(selectors)
-	c.Assert(len(selIPMapping), Equals, 1)
-	ips, exists := selIPMapping[ciliumIOSel]
-	c.Assert(exists, Equals, true)
-	c.Assert(len(ips), Equals, 0)
+	nameIPMapping := nameManager.mapSelectorsToNamesLocked(ciliumIOSel)
+	require.Empty(t, nameIPMapping)
 
 	// Just one IP.
-	changed := cache.Update(now, prepareMatchName(ciliumIOSel.MatchName), []netip.Addr{ciliumIP1}, 100)
-	c.Assert(changed, Equals, true)
-	selIPMapping = nameManager.mapSelectorsToIPsLocked(selectors)
-	c.Assert(len(selIPMapping), Equals, 1)
-	ciliumIPs, ok := selIPMapping[ciliumIOSel]
-	c.Assert(ok, Equals, true)
-	c.Assert(len(ciliumIPs), Equals, 1)
-	c.Assert(ciliumIPs[0], Equals, ciliumIP1)
+	ciliumIOName := prepareMatchName(ciliumIOSel.MatchName)
+	changed := cache.Update(now, ciliumIOName, []netip.Addr{ciliumIP1}, 100)
+	require.Equal(t, true, changed)
+	nameIPMapping = nameManager.mapSelectorsToNamesLocked(ciliumIOSel)
+	require.Equal(t, 1, len(nameIPMapping))
+	println(ciliumIOSel.MatchName)
+	ciliumIPs, ok := nameIPMapping[ciliumIOName]
+	require.Equal(t, true, ok)
+	require.Equal(t, 1, len(ciliumIPs))
+	require.Equal(t, ciliumIP1, ciliumIPs[0])
 
 	// Two IPs now.
-	changed = cache.Update(now, prepareMatchName(ciliumIOSel.MatchName), []netip.Addr{ciliumIP1, ciliumIP2}, 100)
-	c.Assert(changed, Equals, true)
-	selIPMapping = nameManager.mapSelectorsToIPsLocked(selectors)
-	c.Assert(len(selIPMapping), Equals, 1)
-	ciliumIPs, ok = selIPMapping[ciliumIOSel]
-	c.Assert(ok, Equals, true)
-	c.Assert(len(ciliumIPs), Equals, 2)
+	changed = cache.Update(now, ciliumIOName, []netip.Addr{ciliumIP1, ciliumIP2}, 100)
+	require.Equal(t, true, changed)
+	nameIPMapping = nameManager.mapSelectorsToNamesLocked(ciliumIOSel)
+	require.Equal(t, 1, len(nameIPMapping))
+	ciliumIPs, ok = nameIPMapping[ciliumIOName]
+	require.Equal(t, true, ok)
+	require.Equal(t, 2, len(ciliumIPs))
 	ip.SortAddrList(ciliumIPs)
-	c.Assert(ciliumIPs[0], Equals, ciliumIP1)
-	c.Assert(ciliumIPs[1], Equals, ciliumIP2)
+	require.Equal(t, ciliumIP1, ciliumIPs[0])
+	require.Equal(t, ciliumIP2, ciliumIPs[1])
 
 	// Test with a MatchPattern.
-	selectors = sets.New(ciliumIOSelMatchPattern)
-
-	selIPMapping = nameManager.mapSelectorsToIPsLocked(selectors)
-	c.Assert(len(selIPMapping), Equals, 1)
-	ciliumIPs, ok = selIPMapping[ciliumIOSelMatchPattern]
-	c.Assert(ok, Equals, true)
-	c.Assert(len(ciliumIPs), Equals, 2)
+	nameIPMapping = nameManager.mapSelectorsToNamesLocked(ciliumIOSelMatchPattern)
+	require.Equal(t, 1, len(nameIPMapping))
+	ciliumIPs, ok = nameIPMapping[ciliumIOName]
+	require.Equal(t, true, ok)
+	require.Equal(t, 2, len(ciliumIPs))
 	ip.SortAddrList(ciliumIPs)
-	c.Assert(ciliumIPs[0], Equals, ciliumIP1)
-	c.Assert(ciliumIPs[1], Equals, ciliumIP2)
-
-	selectors = sets.New(ciliumIOSelMatchPattern, ciliumIOSel)
-
-	selIPMapping = nameManager.mapSelectorsToIPsLocked(selectors)
-	c.Assert(len(selIPMapping), Equals, 2)
-	ciliumIPs, ok = selIPMapping[ciliumIOSelMatchPattern]
-	c.Assert(ok, Equals, true)
-	c.Assert(len(ciliumIPs), Equals, 2)
-	ip.SortAddrList(ciliumIPs)
-	c.Assert(ciliumIPs[0], Equals, ciliumIP1)
-	c.Assert(ciliumIPs[1], Equals, ciliumIP2)
-	ciliumIPs, ok = selIPMapping[ciliumIOSel]
-	c.Assert(ok, Equals, true)
-	c.Assert(len(ciliumIPs), Equals, 2)
-	ip.SortAddrList(ciliumIPs)
-	c.Assert(ciliumIPs[0], Equals, ciliumIP1)
-	c.Assert(ciliumIPs[1], Equals, ciliumIP2)
+	require.Equal(t, ciliumIP1, ciliumIPs[0])
+	require.Equal(t, ciliumIP2, ciliumIPs[1])
 }

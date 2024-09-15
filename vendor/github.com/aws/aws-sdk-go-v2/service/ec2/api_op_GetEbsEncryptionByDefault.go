@@ -12,8 +12,11 @@ import (
 )
 
 // Describes whether EBS encryption by default is enabled for your account in the
-// current Region. For more information, see Amazon EBS encryption (https://docs.aws.amazon.com/ebs/latest/userguide/ebs-encryption.html)
-// in the Amazon EBS User Guide.
+// current Region.
+//
+// For more information, see [Amazon EBS encryption] in the Amazon EBS User Guide.
+//
+// [Amazon EBS encryption]: https://docs.aws.amazon.com/ebs/latest/userguide/ebs-encryption.html
 func (c *Client) GetEbsEncryptionByDefault(ctx context.Context, params *GetEbsEncryptionByDefaultInput, optFns ...func(*Options)) (*GetEbsEncryptionByDefaultOutput, error) {
 	if params == nil {
 		params = &GetEbsEncryptionByDefaultInput{}
@@ -107,6 +110,12 @@ func (c *Client) addOperationGetEbsEncryptionByDefaultMiddlewares(stack *middlew
 		return err
 	}
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+		return err
+	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opGetEbsEncryptionByDefault(options.Region), middleware.Before); err != nil {

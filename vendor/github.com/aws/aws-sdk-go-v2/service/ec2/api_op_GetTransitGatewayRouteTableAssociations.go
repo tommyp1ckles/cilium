@@ -42,9 +42,12 @@ type GetTransitGatewayRouteTableAssociationsInput struct {
 	DryRun *bool
 
 	// One or more filters. The possible values are:
+	//
 	//   - resource-id - The ID of the resource.
+	//
 	//   - resource-type - The resource type. Valid values are vpc | vpn |
 	//   direct-connect-gateway | peering | connect .
+	//
 	//   - transit-gateway-attachment-id - The ID of the attachment.
 	Filters []types.Filter
 
@@ -128,6 +131,12 @@ func (c *Client) addOperationGetTransitGatewayRouteTableAssociationsMiddlewares(
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
+		return err
+	}
 	if err = addOpGetTransitGatewayRouteTableAssociationsValidationMiddleware(stack); err != nil {
 		return err
 	}
@@ -151,14 +160,6 @@ func (c *Client) addOperationGetTransitGatewayRouteTableAssociationsMiddlewares(
 	}
 	return nil
 }
-
-// GetTransitGatewayRouteTableAssociationsAPIClient is a client that implements
-// the GetTransitGatewayRouteTableAssociations operation.
-type GetTransitGatewayRouteTableAssociationsAPIClient interface {
-	GetTransitGatewayRouteTableAssociations(context.Context, *GetTransitGatewayRouteTableAssociationsInput, ...func(*Options)) (*GetTransitGatewayRouteTableAssociationsOutput, error)
-}
-
-var _ GetTransitGatewayRouteTableAssociationsAPIClient = (*Client)(nil)
 
 // GetTransitGatewayRouteTableAssociationsPaginatorOptions is the paginator
 // options for GetTransitGatewayRouteTableAssociations
@@ -227,6 +228,9 @@ func (p *GetTransitGatewayRouteTableAssociationsPaginator) NextPage(ctx context.
 	}
 	params.MaxResults = limit
 
+	optFns = append([]func(*Options){
+		addIsPaginatorUserAgent,
+	}, optFns...)
 	result, err := p.client.GetTransitGatewayRouteTableAssociations(ctx, &params, optFns...)
 	if err != nil {
 		return nil, err
@@ -245,6 +249,14 @@ func (p *GetTransitGatewayRouteTableAssociationsPaginator) NextPage(ctx context.
 
 	return result, nil
 }
+
+// GetTransitGatewayRouteTableAssociationsAPIClient is a client that implements
+// the GetTransitGatewayRouteTableAssociations operation.
+type GetTransitGatewayRouteTableAssociationsAPIClient interface {
+	GetTransitGatewayRouteTableAssociations(context.Context, *GetTransitGatewayRouteTableAssociationsInput, ...func(*Options)) (*GetTransitGatewayRouteTableAssociationsOutput, error)
+}
+
+var _ GetTransitGatewayRouteTableAssociationsAPIClient = (*Client)(nil)
 
 func newServiceMetadataMiddleware_opGetTransitGatewayRouteTableAssociations(region string) *awsmiddleware.RegisterServiceMetadata {
 	return &awsmiddleware.RegisterServiceMetadata{

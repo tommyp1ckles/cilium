@@ -10,7 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
 	"github.com/cilium/cilium/pkg/bgpv1/manager/instance"
 	"github.com/cilium/cilium/pkg/bgpv1/manager/store"
@@ -83,10 +83,10 @@ func TestServiceReconcilerWithLoadBalancer(t *testing.T) {
 	svc1IPv6ETPLocal.Spec.ExternalTrafficPolicy = slim_corev1.ServiceExternalTrafficPolicyLocal
 
 	svc1LbClass := svc1.DeepCopy()
-	svc1LbClass.Spec.LoadBalancerClass = pointer.String(v2alpha1api.BGPLoadBalancerClass)
+	svc1LbClass.Spec.LoadBalancerClass = ptr.To[string](v2alpha1api.BGPLoadBalancerClass)
 
 	svc1UnsupportedClass := svc1LbClass.DeepCopy()
-	svc1UnsupportedClass.Spec.LoadBalancerClass = pointer.String("io.vendor/unsupported-class")
+	svc1UnsupportedClass.Spec.LoadBalancerClass = ptr.To[string]("io.vendor/unsupported-class")
 
 	svc2NonDefault := &slim_corev1.Service{
 		ObjectMeta: slim_metav1.ObjectMeta{
@@ -123,6 +123,26 @@ func TestServiceReconcilerWithLoadBalancer(t *testing.T) {
 		Backends: map[cmtypes.AddrCluster]*k8s.Backend{
 			cmtypes.MustParseAddrCluster("10.0.0.1"): {
 				NodeName: "node1",
+			},
+		},
+	}
+
+	eps1IPv4LocalTerminating := &k8s.Endpoints{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "svc-1-ipv4",
+			Namespace: "default",
+		},
+		EndpointSliceID: k8s.EndpointSliceID{
+			ServiceID: k8s.ServiceID{
+				Name:      "svc-1",
+				Namespace: "default",
+			},
+			EndpointSliceName: "svc-1-ipv4",
+		},
+		Backends: map[cmtypes.AddrCluster]*k8s.Backend{
+			cmtypes.MustParseAddrCluster("10.0.0.1"): {
+				NodeName:    "node1",
+				Terminating: true,
 			},
 		},
 	}
@@ -448,6 +468,16 @@ func TestServiceReconcilerWithLoadBalancer(t *testing.T) {
 			upsertedEndpoints:  []*k8s.Endpoints{},
 			updated:            map[resource.Key][]string{},
 		},
+		// Service with terminating endpoint
+		{
+			name:               "etp-local-terminating-endpoint",
+			oldServiceSelector: &blueSelector,
+			newServiceSelector: &blueSelector,
+			advertised:         map[resource.Key][]string{},
+			upsertedServices:   []*slim_corev1.Service{svc1ETPLocal},
+			upsertedEndpoints:  []*k8s.Endpoints{eps1IPv4LocalTerminating},
+			updated:            map[resource.Key][]string{},
+		},
 		// externalTrafficPolicy=Local && IPv4 && single slice && local endpoint
 		{
 			name:               "etp-local-ipv4-single-slice-local",
@@ -599,19 +629,22 @@ func TestServiceReconcilerWithLoadBalancer(t *testing.T) {
 			testSC.Config = oldc
 
 			diffstore := store.NewFakeDiffStore[*slim_corev1.Service]()
+			epDiffStore := store.NewFakeDiffStore[*k8s.Endpoints]()
+
+			reconciler := NewServiceReconciler(diffstore, epDiffStore).Reconciler.(*ServiceReconciler)
+			reconciler.Init(testSC)
+			defer reconciler.Cleanup(testSC)
+
 			for _, obj := range tt.upsertedServices {
 				diffstore.Upsert(obj)
 			}
 			for _, key := range tt.deletedServices {
 				diffstore.Delete(key)
 			}
-
-			epDiffStore := store.NewFakeDiffStore[*k8s.Endpoints]()
 			for _, obj := range tt.upsertedEndpoints {
 				epDiffStore.Upsert(obj)
 			}
 
-			reconciler := NewServiceReconciler(diffstore, epDiffStore).Reconciler.(*ServiceReconciler)
 			serviceAnnouncements := reconciler.getMetadata(testSC)
 
 			for svcKey, cidrs := range tt.advertised {
@@ -752,10 +785,10 @@ func TestServiceReconcilerWithClusterIP(t *testing.T) {
 	svc1IPv6ITPLocal.Spec.InternalTrafficPolicy = &internalTrafficPolicyLocal
 
 	svc1LbClass := svc1.DeepCopy()
-	svc1LbClass.Spec.LoadBalancerClass = pointer.String(v2alpha1api.BGPLoadBalancerClass)
+	svc1LbClass.Spec.LoadBalancerClass = ptr.To[string](v2alpha1api.BGPLoadBalancerClass)
 
 	svc1UnsupportedClass := svc1LbClass.DeepCopy()
-	svc1UnsupportedClass.Spec.LoadBalancerClass = pointer.String("io.vendor/unsupported-class")
+	svc1UnsupportedClass.Spec.LoadBalancerClass = ptr.To[string]("io.vendor/unsupported-class")
 
 	svc2NonDefault := &slim_corev1.Service{
 		ObjectMeta: slim_metav1.ObjectMeta{
@@ -1255,19 +1288,22 @@ func TestServiceReconcilerWithClusterIP(t *testing.T) {
 			testSC.Config = oldc
 
 			diffstore := store.NewFakeDiffStore[*slim_corev1.Service]()
+			epDiffStore := store.NewFakeDiffStore[*k8s.Endpoints]()
+
+			reconciler := NewServiceReconciler(diffstore, epDiffStore).Reconciler.(*ServiceReconciler)
+			reconciler.Init(testSC)
+			defer reconciler.Cleanup(testSC)
+
 			for _, obj := range tt.upsertedServices {
 				diffstore.Upsert(obj)
 			}
 			for _, key := range tt.deletedServices {
 				diffstore.Delete(key)
 			}
-
-			epDiffStore := store.NewFakeDiffStore[*k8s.Endpoints]()
 			for _, obj := range tt.upsertedEndpoints {
 				epDiffStore.Upsert(obj)
 			}
 
-			reconciler := NewServiceReconciler(diffstore, epDiffStore).Reconciler.(*ServiceReconciler)
 			serviceAnnouncements := reconciler.getMetadata(testSC)
 
 			for svcKey, cidrs := range tt.advertised {
@@ -1407,10 +1443,10 @@ func TestServiceReconcilerWithExternalIP(t *testing.T) {
 	svc1IPv6ETPLocal.Spec.ExternalTrafficPolicy = slim_corev1.ServiceExternalTrafficPolicyLocal
 
 	svc1LbClass := svc1.DeepCopy()
-	svc1LbClass.Spec.LoadBalancerClass = pointer.String(v2alpha1api.BGPLoadBalancerClass)
+	svc1LbClass.Spec.LoadBalancerClass = ptr.To[string](v2alpha1api.BGPLoadBalancerClass)
 
 	svc1UnsupportedClass := svc1LbClass.DeepCopy()
-	svc1UnsupportedClass.Spec.LoadBalancerClass = pointer.String("io.vendor/unsupported-class")
+	svc1UnsupportedClass.Spec.LoadBalancerClass = ptr.To[string]("io.vendor/unsupported-class")
 
 	svc2NonDefault := &slim_corev1.Service{
 		ObjectMeta: slim_metav1.ObjectMeta{
@@ -1909,19 +1945,22 @@ func TestServiceReconcilerWithExternalIP(t *testing.T) {
 			testSC.Config = oldc
 
 			diffstore := store.NewFakeDiffStore[*slim_corev1.Service]()
+			epDiffStore := store.NewFakeDiffStore[*k8s.Endpoints]()
+
+			reconciler := NewServiceReconciler(diffstore, epDiffStore).Reconciler.(*ServiceReconciler)
+			reconciler.Init(testSC)
+			defer reconciler.Cleanup(testSC)
+
 			for _, obj := range tt.upsertedServices {
 				diffstore.Upsert(obj)
 			}
 			for _, key := range tt.deletedServices {
 				diffstore.Delete(key)
 			}
-
-			epDiffStore := store.NewFakeDiffStore[*k8s.Endpoints]()
 			for _, obj := range tt.upsertedEndpoints {
 				epDiffStore.Upsert(obj)
 			}
 
-			reconciler := NewServiceReconciler(diffstore, epDiffStore).Reconciler.(*ServiceReconciler)
 			serviceAnnouncements := reconciler.getMetadata(testSC)
 
 			for svcKey, cidrs := range tt.advertised {
@@ -2121,6 +2160,8 @@ func TestEPUpdateOnly(t *testing.T) {
 	diffstore := store.NewFakeDiffStore[*slim_corev1.Service]()
 	epDiffStore := store.NewFakeDiffStore[*k8s.Endpoints]()
 	reconciler := NewServiceReconciler(diffstore, epDiffStore).Reconciler.(*ServiceReconciler)
+	reconciler.Init(testSC)
+	defer reconciler.Cleanup(testSC)
 
 	for _, step := range steps {
 		t.Logf("running step: %s", step.name)
@@ -2252,19 +2293,22 @@ func TestServiceReconcilerWithExternalIPAndClusterIP(t *testing.T) {
 			testSC.Config = oldc
 
 			diffstore := store.NewFakeDiffStore[*slim_corev1.Service]()
+			epDiffStore := store.NewFakeDiffStore[*k8s.Endpoints]()
+
+			reconciler := NewServiceReconciler(diffstore, epDiffStore).Reconciler.(*ServiceReconciler)
+			reconciler.Init(testSC)
+			defer reconciler.Cleanup(testSC)
+
 			for _, obj := range tt.upsertedServices {
 				diffstore.Upsert(obj)
 			}
 			for _, key := range tt.deletedServices {
 				diffstore.Delete(key)
 			}
-
-			epDiffStore := store.NewFakeDiffStore[*k8s.Endpoints]()
 			for _, obj := range tt.upsertedEndpoints {
 				epDiffStore.Upsert(obj)
 			}
 
-			reconciler := NewServiceReconciler(diffstore, epDiffStore).Reconciler.(*ServiceReconciler)
 			serviceAnnouncements := reconciler.getMetadata(testSC)
 
 			for svcKey, cidrs := range tt.advertised {

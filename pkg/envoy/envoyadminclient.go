@@ -18,24 +18,31 @@ import (
 )
 
 type EnvoyAdminClient struct {
-	adminURL string
-	unixPath string
-	level    string
+	adminURL        string
+	unixPath        string
+	currentLogLevel string
+	defaultLogLevel string
 }
 
-func NewEnvoyAdminClientForSocket(envoySocketDir string) *EnvoyAdminClient {
+func NewEnvoyAdminClientForSocket(envoySocketDir string, defaultLogLevel string) *EnvoyAdminClient {
 	return &EnvoyAdminClient{
 		// Needs to be provided to envoy (received as ':authority') - even though we Dial to a Unix domain socket.
-		adminURL: fmt.Sprintf("http://%s/", "envoy-admin"),
-		unixPath: getAdminSocketPath(envoySocketDir),
+		adminURL:        fmt.Sprintf("http://%s/", "envoy-admin"),
+		unixPath:        getAdminSocketPath(envoySocketDir),
+		defaultLogLevel: defaultLogLevel,
 	}
 }
 
 func (a *EnvoyAdminClient) transact(query string) error {
 	// Use a custom dialer to use a Unix domain socket for an HTTP connection.
+	var conn net.Conn
+	var err error
 	client := &http.Client{
 		Transport: &http.Transport{
-			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) { return net.Dial("unix", a.unixPath) },
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				conn, err = net.Dial("unix", a.unixPath)
+				return conn, err
+			},
 		},
 	}
 
@@ -43,21 +50,22 @@ func (a *EnvoyAdminClient) transact(query string) error {
 	if err != nil {
 		return err
 	}
+	defer conn.Close()
 	defer resp.Body.Close()
 	body, err := safeio.ReadAllLimit(resp.Body, safeio.MB)
 	if err != nil {
 		return err
 	}
-	ret := strings.Replace(string(body), "\r", "", -1)
+	ret := strings.ReplaceAll(string(body), "\r", "")
 	log.Debugf("Envoy: Admin response to %s: %s", query, ret)
 	return nil
 }
 
 // ChangeLogLevel changes Envoy log level to correspond to the logrus log level 'level'.
-func (a *EnvoyAdminClient) ChangeLogLevel(level logrus.Level) error {
-	envoyLevel := mapLogLevel(level)
+func (a *EnvoyAdminClient) ChangeLogLevel(agentLogLevel logrus.Level) error {
+	envoyLevel := mapLogLevel(agentLogLevel, a.defaultLogLevel)
 
-	if envoyLevel == a.level {
+	if envoyLevel == a.currentLogLevel {
 		log.Debugf("Envoy: Log level is already set as: %v", envoyLevel)
 		return nil
 	}
@@ -66,7 +74,7 @@ func (a *EnvoyAdminClient) ChangeLogLevel(level logrus.Level) error {
 	if err != nil {
 		log.WithError(err).Warnf("Envoy: Failed to set log level to: %v", envoyLevel)
 	} else {
-		a.level = envoyLevel
+		a.currentLogLevel = envoyLevel
 	}
 	return err
 }
@@ -78,9 +86,14 @@ func (a *EnvoyAdminClient) quit() error {
 // GetEnvoyVersion returns the envoy binary version string
 func (a *EnvoyAdminClient) GetEnvoyVersion() (string, error) {
 	// Use a custom dialer to use a Unix domain socket for a HTTP connection.
+	var conn net.Conn
+	var err error
 	client := &http.Client{
 		Transport: &http.Transport{
-			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) { return net.Dial("unix", a.unixPath) },
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				conn, err = net.Dial("unix", a.unixPath)
+				return conn, err
+			},
 		},
 	}
 
@@ -88,6 +101,7 @@ func (a *EnvoyAdminClient) GetEnvoyVersion() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to call ServerInfo endpoint: %w", err)
 	}
+	defer conn.Close()
 	defer resp.Body.Close()
 
 	body, err := safeio.ReadAllLimit(resp.Body, safeio.MB)

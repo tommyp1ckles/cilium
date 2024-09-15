@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cilium/cilium/pkg/allocator"
+	cmoperator "github.com/cilium/cilium/pkg/clustermesh/operator"
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	cmutils "github.com/cilium/cilium/pkg/clustermesh/utils"
 	"github.com/cilium/cilium/pkg/defaults"
@@ -60,15 +61,19 @@ func getOldestLeases(lockPaths map[string]kvstore.Value) map[string]kvstore.Valu
 	return oldestLeases
 }
 
-func startKvstoreWatchdog() {
+func startKvstoreWatchdog(cfgMCSAPI cmoperator.MCSAPIConfig) {
 	log.WithField(logfields.Interval, defaults.LockLeaseTTL).Infof("Starting kvstore watchdog")
-	backend, err := kvstoreallocator.NewKVStoreBackend(cache.IdentitiesPath, "", nil, kvstore.Client())
+
+	backend, err := kvstoreallocator.NewKVStoreBackend(kvstoreallocator.KVStoreBackendConfiguration{
+		BasePath: cache.IdentitiesPath,
+		Backend:  kvstore.Client(),
+	})
 	if err != nil {
 		log.WithError(err).Fatal("Unable to initialize kvstore backend for identity garbage collection")
 	}
 
-	minID := idpool.ID(identity.GetMinimalAllocationIdentity())
-	maxID := idpool.ID(identity.GetMaximumAllocationIdentity())
+	minID := idpool.ID(identity.GetMinimalAllocationIdentity(option.Config.ClusterID))
+	maxID := idpool.ID(identity.GetMaximumAllocationIdentity(option.Config.ClusterID))
 	a := allocator.NewAllocatorForGC(backend, allocator.WithMin(minID), allocator.WithMax(maxID))
 
 	keysToDelete := map[string]kvstore.Value{}
@@ -105,9 +110,12 @@ func startKvstoreWatchdog() {
 				// The cluster config continues to be enforced also after the initial successful
 				// insertion to prevent issues in case of, e.g., unexpected lease expiration.
 				cfg := cmtypes.CiliumClusterConfig{
-					ID:           option.Config.ClusterID,
-					Capabilities: cmtypes.CiliumClusterConfigCapabilities{MaxConnectedClusters: option.Config.MaxConnectedClusters}}
-				if err := cmutils.SetClusterConfig(ctx, option.Config.ClusterName, &cfg, kvstore.Client()); err != nil {
+					ID: option.Config.ClusterID,
+					Capabilities: cmtypes.CiliumClusterConfigCapabilities{
+						MaxConnectedClusters:  option.Config.MaxConnectedClusters,
+						ServiceExportsEnabled: &cfgMCSAPI.ClusterMeshEnableMCSAPI,
+					}}
+				if err := cmutils.SetClusterConfig(ctx, option.Config.ClusterName, cfg, kvstore.Client()); err != nil {
 					log.WithError(err).Warning("Unable to set local cluster config")
 				}
 			}

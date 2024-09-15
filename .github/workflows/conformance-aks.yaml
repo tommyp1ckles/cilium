@@ -17,6 +17,9 @@ on:
         description: "[JSON object] Arbitrary arguments passed from the trigger comment via regex capture group. Parse with 'fromJson(inputs.extra-args).argName' in workflow."
         required: false
         default: '{}'
+  push:
+    branches:
+      - 'renovate/main-**'
   # Run every 6 hours
   schedule:
     - cron:  '0 0/6 * * *'
@@ -24,6 +27,8 @@ on:
 # By specifying the access of one of the scopes, all of those that are not
 # specified are set to 'none'.
 permissions:
+  # To read actions state with catchpoint/workflow-telemetry-action
+  actions: read
   # To be able to access the repository with actions/checkout
   contents: read
   # To allow retrieving information from the PR API
@@ -47,6 +52,7 @@ concurrency:
     ${{ github.workflow }}
     ${{ github.event_name }}
     ${{
+      (github.event_name == 'push' && github.sha) ||
       (github.event_name == 'schedule' && github.sha) ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.PR-number)
     }}
@@ -72,7 +78,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Set initial commit status
-        uses: myrotvorets/set-commit-status-action@3730c0a348a2ace3c110851bed53331bc6406e9f # v2.0.1  
+        uses: myrotvorets/set-commit-status-action@3730c0a348a2ace3c110851bed53331bc6406e9f # v2.0.1
         with:
           sha: ${{ inputs.SHA || github.sha }}
 
@@ -81,9 +87,10 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
+      empty: ${{ steps.set-matrix.outputs.empty }}
     steps:
       - name: Checkout context ref (trusted)
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
         with:
           ref: ${{ inputs.context-ref || github.sha }}
           persist-credentials: false
@@ -97,7 +104,6 @@ jobs:
           yq -o=json "${work_dir}/k8s-versions.yaml" | jq . > "${destination_directory}/azure.json"
 
       - name: Generate Matrix
-        id: set-matrix
         run: |
           cd /tmp/generated/azure
 
@@ -112,11 +118,38 @@ jobs:
 
           echo "Generated matrix:"
           cat /tmp/matrix.json
-          echo "matrix=$(jq -c . < /tmp/matrix.json)" >> $GITHUB_OUTPUT
+
+      - name: Login to Azure
+        uses: azure/login@6c251865b4e6290e7b78be643ea2d005bc51f69a # v2.1.1
+        with:
+          creds: ${{ secrets.AZURE_PR_SP_CREDS }}
+
+      - name: Filter Matrix
+        id: set-matrix
+        run: |
+          cp /tmp/matrix.json /tmp/result.json
+          jq -c '.include[]' /tmp/matrix.json | while read i; do
+            VERSION=$(echo $i | jq -r '.version')
+            LOCATION=$(echo $i | jq -r '.location')
+            # Don't use LTS versions for AKS, it requires premium tier
+            az aks get-versions --location $LOCATION --query "values[?contains(capabilities.supportPlan,'KubernetesOfficial')].version" > /tmp/output
+            if grep -q -F $VERSION /tmp/output; then
+              echo "Version $VERSION is valid for location $LOCATION"
+            else
+              echo "::notice::Removing version $VERSION as it's not valid for location $LOCATION"
+              jq 'del(.include[] | select(.version == "'$VERSION'"))' /tmp/result.json > /tmp/result.json.tmp
+              mv /tmp/result.json.tmp /tmp/result.json
+            fi
+          done
+          echo "Filtered matrix:"
+          cat /tmp/result.json
+          echo "matrix=$(jq -c . < /tmp/result.json)" >> $GITHUB_OUTPUT
+          echo "empty=$(jq '(.include | length) == 0' /tmp/result.json)" >> $GITHUB_OUTPUT
 
   installation-and-connectivity:
     name: Installation and Connectivity Test
     needs: generate-matrix
+    if: ${{ needs.generate-matrix.outputs.empty == 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
@@ -132,7 +165,7 @@ jobs:
           comment_on_pr: false
 
       - name: Checkout context ref (trusted)
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
         with:
           ref: ${{ inputs.context-ref || github.sha }}
           persist-credentials: false
@@ -160,7 +193,7 @@ jobs:
             OWNER="${{ inputs.PR-number }}"
           else
             OWNER="${{ github.ref_name }}"
-            OWNER="${OWNER/./-}"
+            OWNER="${OWNER//[.\/]/-}"
           fi
 
           CILIUM_INSTALL_DEFAULTS="${{ steps.default_vars.outputs.cilium_install_defaults }} \
@@ -176,15 +209,8 @@ jobs:
           echo sha=${{ steps.default_vars.outputs.sha }} >> $GITHUB_OUTPUT
           echo owner=${OWNER} >> $GITHUB_OUTPUT
 
-      - name: Install Cilium CLI
-        uses: cilium/cilium-cli@a9579d1afc528b085930c5237a69ee77b2c2be76 # v0.16.4
-        with:
-          repository: ${{ env.CILIUM_CLI_RELEASE_REPO }}
-          release-version: ${{ env.CILIUM_CLI_VERSION }}
-          ci-version: ${{ env.cilium_cli_ci_version }}
-
       - name: Login to Azure
-        uses: azure/login@6b2456866fc08b011acb422a92a4aa20e2c4de32 # v2.1.0
+        uses: azure/login@6c251865b4e6290e7b78be643ea2d005bc51f69a # v2.1.1
         with:
           creds: ${{ secrets.AZURE_PR_SP_CREDS }}
 
@@ -213,6 +239,13 @@ jobs:
             --resource-group ${{ env.name }} \
             --name ${{ env.name }}
 
+      - name: Install Cilium CLI
+        uses: cilium/cilium-cli@62bd4511031211b50a4623870955a5ad27b43e3b # v0.16.16
+        with:
+          skip-build: ${{ env.CILIUM_CLI_SKIP_BUILD }}
+          image-repo: ${{ env.CILIUM_CLI_IMAGE_REPO }}
+          image-tag: ${{ steps.vars.outputs.sha }}
+
       - name: Wait for images to be available
         timeout-minutes: 30
         shell: bash
@@ -224,7 +257,7 @@ jobs:
       # Warning: since this is a privileged workflow, subsequent workflow job
       # steps must take care not to execute untrusted code.
       - name: Checkout pull request branch (NOT TRUSTED)
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
         with:
           ref: ${{ steps.vars.outputs.sha }}
           persist-credentials: false
@@ -245,12 +278,6 @@ jobs:
         run: |
           cilium status --wait --wait-duration=10m
 
-      - name: Port forward Relay
-        run: |
-          cilium hubble port-forward&
-          sleep 10s
-          [[ $(pgrep -f "cilium.*hubble.*port-forward|kubectl.*port-forward.*hubble-relay" | wc -l) == 2 ]]
-
       - name: Make JUnit report directory
         run: |
           mkdir -p cilium-junits
@@ -263,7 +290,6 @@ jobs:
 
       - name: Clean up Cilium
         run: |
-          pkill -f "cilium.*hubble.*port-forward|kubectl.*port-forward.*hubble-relay" || test $? -eq 1
           cilium uninstall --wait
 
       - name: Create custom IPsec secret
@@ -283,12 +309,6 @@ jobs:
       - name: Wait for Cilium status to be ready
         run: |
           cilium status --wait --wait-duration=10m
-
-      - name: Port forward Relay
-        run: |
-          cilium hubble port-forward&
-          sleep 10s
-          [[ $(pgrep -f "cilium.*hubble.*port-forward|kubectl.*port-forward.*hubble-relay" | wc -l) == 2 ]]
 
       - name: Run connectivity test with IPSec (${{ join(matrix.*, ', ') }})
         run: |
@@ -312,14 +332,14 @@ jobs:
 
       - name: Upload artifacts
         if: ${{ !success() }}
-        uses: actions/upload-artifact@1746f4ab65b179e0ea60a494b83293b640dd5bba # v4.3.2
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: cilium-sysdumps-${{ matrix.index }}
           path: cilium-sysdump-*.zip
 
       - name: Upload JUnits [junit]
         if: ${{ always() }}
-        uses: actions/upload-artifact@1746f4ab65b179e0ea60a494b83293b640dd5bba # v4.3.2
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: cilium-junits-${{ matrix.index }}
           path: cilium-junits/*.xml
@@ -331,14 +351,14 @@ jobs:
           junit-directory: "cilium-junits"
 
   merge-upload:
-    if: ${{ always() }}
+    if: ${{ always() && needs.installation-and-connectivity.result != 'skipped' }}
     name: Merge and Upload Artifacts
     runs-on: ubuntu-latest
     needs: installation-and-connectivity
     steps:
       - name: Merge Sysdumps
         if: ${{ needs.installation-and-connectivity.result == 'failure' }}
-        uses: actions/upload-artifact/merge@1746f4ab65b179e0ea60a494b83293b640dd5bba # v4.3.2
+        uses: actions/upload-artifact/merge@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: cilium-sysdumps
           pattern: cilium-sysdumps-*
@@ -346,7 +366,7 @@ jobs:
           delete-merged: true
         continue-on-error: true
       - name: Merge JUnits
-        uses: actions/upload-artifact/merge@1746f4ab65b179e0ea60a494b83293b640dd5bba # v4.3.2
+        uses: actions/upload-artifact/merge@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: cilium-junits
           pattern: cilium-junits-*
@@ -360,7 +380,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Set final commit status
-        uses: myrotvorets/set-commit-status-action@3730c0a348a2ace3c110851bed53331bc6406e9f # v2.0.1  
+        if: ${{ needs.installation-and-connectivity.result != 'skipped' }}
+        uses: myrotvorets/set-commit-status-action@3730c0a348a2ace3c110851bed53331bc6406e9f # v2.0.1
         with:
           sha: ${{ inputs.SHA || github.sha }}
           status: ${{ needs.installation-and-connectivity.result }}
+      - name: Set final commit status
+        if: ${{ needs.installation-and-connectivity.result == 'skipped' }}
+        uses: myrotvorets/set-commit-status-action@3730c0a348a2ace3c110851bed53331bc6406e9f # v2.0.1
+        with:
+          sha: ${{ inputs.SHA || github.sha }}
+          status: ${{ github.event_name != 'schedule' && 'success' || 'failure' }}
+          description: 'Skipped'

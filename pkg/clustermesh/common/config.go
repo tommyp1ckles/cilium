@@ -7,13 +7,27 @@ import (
 	"crypto/sha256"
 	"errors"
 	"os"
-	"path"
+	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/sirupsen/logrus"
+	"github.com/spf13/pflag"
 )
+
+type Config struct {
+	// ClusterMeshConfig is the path to the clustermesh configuration directory.
+	ClusterMeshConfig string
+}
+
+func (def Config) Flags(flags *pflag.FlagSet) {
+	flags.String("clustermesh-config", def.ClusterMeshConfig, "Path to the ClusterMesh configuration directory")
+}
+
+var DefaultConfig = Config{
+	ClusterMeshConfig: "",
+}
 
 // clusterLifecycle is the interface to implement in order to receive cluster
 // configuration lifecycle events. This is implemented by the ClusterMesh.
@@ -73,7 +87,7 @@ func isEtcdConfigFile(path string) (bool, fhash) {
 }
 
 func (cdw *configDirectoryWatcher) handle(abspath string) {
-	filename := path.Base(abspath)
+	filename := filepath.Base(abspath)
 	isConfig, newHash := isEtcdConfigFile(abspath)
 
 	if !isConfig {
@@ -112,6 +126,7 @@ func (cdw *configDirectoryWatcher) handle(abspath string) {
 			// watcher (except for NotFound) to prevent an infinite loop if
 			// something wrong happened.
 			cdw.handle(abspath)
+			return
 		}
 	}
 
@@ -144,7 +159,7 @@ func (cdw *configDirectoryWatcher) watch() error {
 			continue
 		}
 
-		absolutePath := path.Join(cdw.path, f.Name())
+		absolutePath := filepath.Join(cdw.path, f.Name())
 		cdw.handle(absolutePath)
 	}
 
@@ -176,4 +191,23 @@ func (cdw *configDirectoryWatcher) close() {
 	log.WithField(fieldConfigDir, cdw.path).Debug("Stopping config directory watcher")
 	close(cdw.stop)
 	cdw.watcher.Close()
+}
+
+// ConfigFiles returns the list of configuration files in the given path. It
+// shall be used by CLI tools only, as it doesn't handle subsequent updates.
+func ConfigFiles(cfgdir string) (configs map[string]string, err error) {
+	files, err := os.ReadDir(cfgdir)
+	if err != nil {
+		return nil, err
+	}
+
+	configs = make(map[string]string)
+	for _, f := range files {
+		cfgfile := filepath.Join(cfgdir, f.Name())
+		if ok, _ := isEtcdConfigFile(cfgfile); ok {
+			configs[f.Name()] = cfgfile
+		}
+	}
+
+	return configs, nil
 }

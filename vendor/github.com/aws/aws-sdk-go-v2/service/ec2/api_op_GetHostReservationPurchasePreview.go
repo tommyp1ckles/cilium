@@ -13,8 +13,10 @@ import (
 
 // Preview a reservation purchase with configurations that match those of your
 // Dedicated Host. You must have active Dedicated Hosts in your account before you
-// purchase a reservation. This is a preview of the PurchaseHostReservation action
-// and does not result in the offering being purchased.
+// purchase a reservation.
+//
+// This is a preview of the PurchaseHostReservation action and does not result in the offering being
+// purchased.
 func (c *Client) GetHostReservationPurchasePreview(ctx context.Context, params *GetHostReservationPurchasePreviewInput, optFns ...func(*Options)) (*GetHostReservationPurchasePreviewOutput, error) {
 	if params == nil {
 		params = &GetHostReservationPurchasePreviewInput{}
@@ -120,6 +122,12 @@ func (c *Client) addOperationGetHostReservationPurchasePreviewMiddlewares(stack 
 		return err
 	}
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+		return err
+	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
 	if err = addOpGetHostReservationPurchasePreviewValidationMiddleware(stack); err != nil {

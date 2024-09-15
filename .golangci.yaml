@@ -44,6 +44,25 @@ run:
 
 # all available settings of specific linters
 linters-settings:
+  depguard:
+    rules:
+      main:
+        deny:
+          - pkg: "math/rand$"
+            desc: "Use math/rand/v2 instead"
+  exhaustruct:
+    # Ensure that command-line flags are explicitly default-initialized.
+    include:
+      - '.+\.[Cc]onfig'
+      - '.+[Cc]fg'
+    exclude:
+      - '.+cache\.Config' # k8s
+      - '.+fqdn\.Config' # internal API
+      - '.+tls\.Config' # Go TLS
+      - '.+v3\.Config' # etcd
+    # Uninitialized config as input to tests is not as big of an issue as the
+    # scope is limited to the usage of the related structures in the test.
+    test: false
   govet:
     enable:
       - nilness
@@ -70,11 +89,29 @@ linters-settings:
             recommendations:
               - testing
               - github.com/stretchr/testify/assert
-            reason: "gocheck has been deprecated, see https://docs.cilium.io/en/latest/contributing/testing/unit/#migrating-tests-off-of-gopkg-in-check-v1"
+            reason: "gocheck has been deprecated, see https://github.com/cilium/cilium/issues/28596"
+        - github.com/cilium/checkmate:
+            recommendations:
+              - github.com/stretchr/testify/assert
+              - github.com/stretchr/testify/require
+            reason: "cilium/checkmate has been deprecated, see https://github.com/cilium/cilium/issues/28596"
         - go.uber.org/multierr:
             recommendations:
               - errors
             reason: "Go 1.20+ has support for combining multiple errors, see https://go.dev/doc/go1.20#errors"
+        - golang.org/x/exp/maps:
+            recommendations:
+              - maps
+              - slices
+            reason: "Go 1.23+ has support for maps and slices, see https://go.dev/doc/go1.23#iterators"
+        - golang.org/x/exp/constraints:
+            recommendations:
+              - cmp
+            reason: "Go 1.21+ has support for Ordered constraint, see https://go.dev/doc/go1.21#cmp"
+        - golang.org/x/exp/slices:
+            recommendations:
+              - slices
+            reason: "Go 1.21+ provides many common operations for slices using generic functions, see https://go.dev/doc/go1.21#slices"
 
   stylecheck:
     checks: ["ST1019"]
@@ -88,7 +125,7 @@ issues:
       text: "SA9003: empty branch"
     - linters: [staticcheck]
       text: "SA2001: empty critical section"
-    - linters: [goerr113]
+    - linters: [err113]
       text: "do not define dynamic errors, use wrapped static errors instead" # This rule to avoid opinionated check fmt.Errorf("text")
     # Skip goimports check on generated files
     - path: \\.(generated\\.deepcopy|pb)\\.go$
@@ -98,12 +135,17 @@ issues:
     - path: "pkg/ipam/(cidrset|service)/.+\\.go"
       linters:
         - goheader
+    - path: "pkg/hubble/dropeventemitter/fake_recorder.go"
+      linters:
+        - goheader
 
 linters:
   disable-all: true
   enable:
+    - depguard
     - errorlint
-    - goerr113
+    - err113
+    - exhaustruct
     - gofmt
     - goimports
     - govet

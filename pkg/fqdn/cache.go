@@ -5,9 +5,10 @@ package fqdn
 
 import (
 	"encoding/json"
-	"net"
+	"maps"
 	"net/netip"
 	"regexp"
+	"slices"
 	"sort"
 	"unsafe"
 
@@ -17,7 +18,7 @@ import (
 	"github.com/cilium/cilium/pkg/fqdn/re"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/option"
-	"github.com/cilium/cilium/pkg/slices"
+	ciliumslices "github.com/cilium/cilium/pkg/slices"
 	"github.com/cilium/cilium/pkg/time"
 )
 
@@ -479,13 +480,18 @@ func (c *DNSCache) lookupIPByTime(now time.Time, ip netip.Addr) (names []string)
 		}
 	}
 
-	sort.Strings(names)
+	slices.Sort(names)
 	return names
 }
 
-// ipExistsLocked returns true if the IP is known to the cache.
-func (c *DNSCache) ipExistsLocked(ip netip.Addr) bool {
-	_, exists := c.reverse[ip]
+// entryExistsLocked returns true if this (name, IP) pair is known to the cache.
+func (c *DNSCache) entryExistsLocked(name string, ip netip.Addr) bool {
+	names, exists := c.reverse[ip]
+	if !exists {
+		return false
+	}
+
+	_, exists = names[name]
 	return exists
 }
 
@@ -581,14 +587,14 @@ func (c *DNSCache) removeReverse(ip netip.Addr, entry *cacheEntry) {
 }
 
 // GetIPs takes a snapshot of all IPs in the reverse cache.
-func (c *DNSCache) GetIPs() sets.Set[netip.Addr] {
+func (c *DNSCache) GetIPs() map[netip.Addr][]string {
 	c.RWMutex.RLock()
 	defer c.RWMutex.RUnlock()
 
-	out := make(sets.Set[netip.Addr], len(c.reverse))
+	out := make(map[netip.Addr][]string, len(c.reverse))
 
-	for ip := range c.reverse {
-		out.Insert(ip)
+	for ip, names := range c.reverse {
+		out[ip] = slices.Collect(maps.Keys(names))
 	}
 
 	return out
@@ -791,6 +797,7 @@ type DNSZombieMappings struct {
 	lock.Mutex
 	deletes        map[netip.Addr]*DNSZombieMapping
 	lastCTGCUpdate time.Time
+	nextCTGCUpdate time.Time // estimated
 	// ctGCRevision is a serial number tracking the number of conntrack
 	// garbage collection runs. It is used to ensure that entries
 	// are not reaped until CT GC has run at least twice.
@@ -820,14 +827,14 @@ func (zombies *DNSZombieMappings) Upsert(expiryTime time.Time, addr netip.Addr, 
 	zombie, updatedExisting := zombies.deletes[addr]
 	if !updatedExisting {
 		zombie = &DNSZombieMapping{
-			Names:           slices.Unique(qname),
+			Names:           ciliumslices.Unique(qname),
 			IP:              addr,
 			DeletePendingAt: expiryTime,
 			revisionAddedAt: zombies.ctGCRevision,
 		}
 		zombies.deletes[addr] = zombie
 	} else {
-		zombie.Names = slices.Unique(append(zombie.Names, qname...))
+		zombie.Names = ciliumslices.Unique(append(zombie.Names, qname...))
 		// Keep the latest expiry time
 		if expiryTime.After(zombie.DeletePendingAt) {
 			zombie.DeletePendingAt = expiryTime
@@ -1059,9 +1066,10 @@ func (zombies *DNSZombieMappings) MarkAlive(now time.Time, ip netip.Addr) {
 // When 'ctGCStart' is later than an alive timestamp, set with MarkAlive, the zombie is
 // no longer alive. Thus, this call acts as a gating function for what data is
 // returned by GC.
-func (zombies *DNSZombieMappings) SetCTGCTime(ctGCStart time.Time) {
+func (zombies *DNSZombieMappings) SetCTGCTime(ctGCStart, estNext time.Time) {
 	zombies.Lock()
 	zombies.lastCTGCUpdate = ctGCStart
+	zombies.nextCTGCUpdate = estNext
 	zombies.ctGCRevision++
 	zombies.Unlock()
 }
@@ -1089,7 +1097,7 @@ func (zombies *DNSZombieMappings) ForceExpire(expireLookupsBefore time.Time, nam
 	return zombies.forceExpireLocked(expireLookupsBefore, nameMatch, nil)
 }
 
-func (zombies *DNSZombieMappings) forceExpireLocked(expireLookupsBefore time.Time, nameMatch *regexp.Regexp, cidr *net.IPNet) (namesAffected []string) {
+func (zombies *DNSZombieMappings) forceExpireLocked(expireLookupsBefore time.Time, nameMatch *regexp.Regexp, cidr *netip.Prefix) (namesAffected []string) {
 	var toDelete []*DNSZombieMapping
 
 	for _, zombie := range zombies.deletes {
@@ -1100,7 +1108,7 @@ func (zombies *DNSZombieMappings) forceExpireLocked(expireLookupsBefore time.Tim
 		}
 
 		// If cidr is provided, skip zombies with IPs outside the range
-		if cidr != nil && !cidr.Contains(zombie.IP.AsSlice()) {
+		if cidr != nil && !cidr.Contains(zombie.IP) {
 			continue
 		}
 
@@ -1134,7 +1142,7 @@ func (zombies *DNSZombieMappings) forceExpireLocked(expireLookupsBefore time.Tim
 // new DNS lookup.
 // The error return is for errors compiling the internal regexp. This should
 // never happen.
-func (zombies *DNSZombieMappings) ForceExpireByNameIP(expireLookupsBefore time.Time, name string, ips ...net.IP) error {
+func (zombies *DNSZombieMappings) ForceExpireByNameIP(expireLookupsBefore time.Time, name string, ips ...netip.Addr) error {
 	reStr := matchpattern.ToAnchoredRegexp(name)
 	re, err := re.CompileRegex(reStr)
 	if err != nil {
@@ -1144,19 +1152,19 @@ func (zombies *DNSZombieMappings) ForceExpireByNameIP(expireLookupsBefore time.T
 	zombies.Lock()
 	defer zombies.Unlock()
 	for _, ip := range ips {
-		cidr := net.IPNet{Mask: net.CIDRMask(len(ip)*8, len(ip)*8)}
-		cidr.IP = ip.Mask(cidr.Mask)
+		cidr := netip.PrefixFrom(ip, ip.BitLen())
 		zombies.forceExpireLocked(expireLookupsBefore, re, &cidr)
 	}
 	return nil
 }
 
-// CIDRMatcherFunc is a function passed to (*DNSZombieMappings).DumpAlive,
+// PrefixMatcherFunc is a function passed to (*DNSZombieMappings).DumpAlive,
 // called on each zombie to determine whether it should be returned.
-type CIDRMatcherFunc func(ip net.IP) bool
+type PrefixMatcherFunc func(ip netip.Addr) bool
+type NameMatcherFunc func(name string) bool
 
-// DumpAlive returns copies of still-alive zombies matching cidrMatcher.
-func (zombies *DNSZombieMappings) DumpAlive(cidrMatcher CIDRMatcherFunc) (alive []*DNSZombieMapping) {
+// DumpAlive returns copies of still-alive zombies matching prefixMatcher.
+func (zombies *DNSZombieMappings) DumpAlive(prefixMatcher PrefixMatcherFunc) (alive []*DNSZombieMapping) {
 	zombies.Lock()
 	defer zombies.Unlock()
 
@@ -1166,7 +1174,7 @@ func (zombies *DNSZombieMappings) DumpAlive(cidrMatcher CIDRMatcherFunc) (alive 
 			continue
 		}
 		// only proceed if zombie is alive and the IP matches the CIDR selector
-		if cidrMatcher != nil && !cidrMatcher(zombie.IP.AsSlice()) {
+		if prefixMatcher != nil && !prefixMatcher(zombie.IP) {
 			continue
 		}
 

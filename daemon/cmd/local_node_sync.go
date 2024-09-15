@@ -6,10 +6,10 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net"
 
 	"github.com/cilium/hive/cell"
-	"golang.org/x/exp/maps"
 
 	agentK8s "github.com/cilium/cilium/daemon/k8s"
 	"github.com/cilium/cilium/pkg/identity"
@@ -98,10 +98,6 @@ func (ini *localNodeSynchronizer) initFromConfig(ctx context.Context, n *node.Lo
 
 	n.IPv4NativeRoutingCIDR = ini.Config.IPv4NativeRoutingCIDR
 	n.IPv6NativeRoutingCIDR = ini.Config.IPv6NativeRoutingCIDR
-
-	// If there is one device specified, use it to derive better default
-	// allocation prefixes
-	node.SetDefaultPrefix(ini.Config, ini.Config.DirectRoutingDevice, n)
 
 	// Initialize node IP addresses from configuration.
 	if ini.Config.IPv6NodeAddr != "auto" {

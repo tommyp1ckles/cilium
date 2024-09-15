@@ -5,11 +5,12 @@ package sysctl
 
 import (
 	"github.com/cilium/hive/cell"
+	"github.com/cilium/statedb"
+	"github.com/cilium/statedb/reconciler"
 	"github.com/spf13/afero"
 	"github.com/spf13/pflag"
 
 	"github.com/cilium/cilium/pkg/datapath/tables"
-	"github.com/cilium/cilium/pkg/statedb/reconciler"
 	"github.com/cilium/cilium/pkg/time"
 )
 
@@ -17,7 +18,7 @@ var Cell = cell.Module(
 	"sysctl",
 	"Manages sysctl settings",
 
-	cell.Config(Config{}),
+	cell.Config(defaultConfig),
 
 	cell.Provide(
 		newReconcilingSysctl,
@@ -25,8 +26,7 @@ var Cell = cell.Module(
 	cell.ProvidePrivate(
 		tables.NewSysctlTable,
 
-		reconciler.New[*tables.Sysctl],
-		newReconcilerConfig,
+		newReconciler,
 		newOps,
 	),
 	cell.ProvidePrivate(
@@ -41,19 +41,31 @@ type Config struct {
 }
 
 func (cfg Config) Flags(flags *pflag.FlagSet) {
-	flags.String("procfs", "/proc", "Path to the host's proc filesystem mount")
+	flags.String("procfs", cfg.ProcFs, "Path to the host's proc filesystem mount")
 }
 
-func newReconcilerConfig(
+var defaultConfig = Config{
+	ProcFs: "/proc",
+}
+
+func newReconciler(
+	params reconciler.Params,
 	ops reconciler.Operations[*tables.Sysctl],
-) reconciler.Config[*tables.Sysctl] {
-	return reconciler.Config[*tables.Sysctl]{
-		FullReconcilationInterval: 10 * time.Second,
-		RetryBackoffMinDuration:   100 * time.Millisecond,
-		RetryBackoffMaxDuration:   5 * time.Second,
-		IncrementalRoundSize:      100,
-		GetObjectStatus:           (*tables.Sysctl).GetStatus,
-		WithObjectStatus:          (*tables.Sysctl).WithStatus,
-		Operations:                ops,
-	}
+	tbl statedb.RWTable[*tables.Sysctl],
+) (reconciler.Reconciler[*tables.Sysctl], error) {
+	return reconciler.Register(
+		params,
+		tbl,
+		(*tables.Sysctl).Clone,
+		(*tables.Sysctl).SetStatus,
+		(*tables.Sysctl).GetStatus,
+		ops,
+		nil,
+
+		reconciler.WithoutPruning(),
+		reconciler.WithRefreshing(
+			10*time.Minute,
+			nil,
+		),
+	)
 }

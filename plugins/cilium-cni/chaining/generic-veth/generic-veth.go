@@ -96,7 +96,16 @@ func (f *GenericVethChainer) Add(ctx context.Context, pluginCtx chainingapi.Plug
 
 			addrsv6, err := netlink.AddrList(link, netlink.FAMILY_V6)
 			if err == nil && len(addrsv6) > 0 {
-				vethIPv6 = addrsv6[0].IPNet.IP.String()
+				if len(addrsv6) == 1 {
+					vethIPv6 = addrsv6[0].IPNet.IP.String()
+				} else {
+					for _, addrv6 := range addrsv6 {
+						if addrv6.IP.IsGlobalUnicast() {
+							vethIPv6 = addrv6.IPNet.IP.String()
+							break
+						}
+					}
+				}
 			} else if err != nil {
 				pluginCtx.Logger.WithError(err).WithField(logfields.Interface, link.Attrs().Name).Warn("No valid IPv6 address found")
 			}
@@ -109,7 +118,7 @@ func (f *GenericVethChainer) Add(ctx context.Context, pluginCtx chainingapi.Plug
 			return errors.New("no link found inside container")
 		}
 
-		if pluginCtx.NetConf.EnableRouteMTU {
+		if pluginCtx.NetConf.EnableRouteMTU || pluginCtx.CiliumConf.EnableRouteMTUForCNIChaining {
 			routes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
 			if err != nil {
 				err = fmt.Errorf("unable to list the IPv4 routes: %w", err)
@@ -188,6 +197,7 @@ func (f *GenericVethChainer) Add(ctx context.Context, pluginCtx chainingapi.Plug
 		ContainerInterfaceName: vethLXCName,
 		K8sPodName:             string(pluginCtx.CniArgs.K8S_POD_NAME),
 		K8sNamespace:           string(pluginCtx.CniArgs.K8S_POD_NAMESPACE),
+		K8sUID:                 string(pluginCtx.CniArgs.K8S_POD_UID),
 		SyncBuildEndpoint:      true,
 		DatapathConfiguration: &models.EndpointDatapathConfiguration{
 			// aws-cni requires ARP passthrough between Linux and

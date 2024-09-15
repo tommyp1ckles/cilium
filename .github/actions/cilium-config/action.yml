@@ -12,13 +12,13 @@ inputs:
     default: 'disabled'
   endpoint-routes:
     description: 'Enable endpoint routes'
-    default: false
+    default: 'false'
   ipv6:
     description: 'Enable IPv6'
-    default: true
+    default: 'true'
   kpr:
     description: 'Enable kube-proxy replacement'
-    default: false
+    default: 'false'
   lb-mode:
     description: 'KPR load-balancer mode'
     default: 'snat'
@@ -30,28 +30,37 @@ inputs:
     default: ''
   encryption-node:
     description: 'Enable node-to-node encryption (WireGuard only)'
-    default: false
+    default: 'false'
   encryption-overlay:
     description: 'Encrypt the overlay itself (IPsec only)'
-    default: false
+    default: 'false'
   egress-gateway:
     description: 'Enable egress gateway'
-    default: false
+    default: 'false'
   host-fw:
     description: 'Enable host firewall'
-    default: false
+    default: 'false'
   mutual-auth:
     description: 'Enable mTLS-based Mutual Authentication'
-    default: true
+    default: 'true'
   ingress-controller:
     description: 'Enable ingress controller, required kubeProxyReplacement'
-    default: false
+    default: 'false'
   devices:
     description: 'List of native devices to attach datapath programs'
     default: ''
   misc:
     description: 'Misc helm rarely set by a user coma separated values'
     default: ''
+  ciliumendpointslice:
+    description: 'Enable CiliumEndpointSlice'
+    default: 'false'
+  local-redirect-policy:
+    description: 'Enable local redirect policy'
+    default: 'false'
+  bgp-control-plane:
+    description: 'Enable BGP Control Plane'
+    default: 'false'
 outputs:
   config:
     description: 'Cilium installation config'
@@ -65,6 +74,7 @@ runs:
       run: |
         DEFAULTS="--wait \
             --chart-directory=${{ inputs.chart-dir }} \
+            --disable-check=minimum-version \
             --helm-set=debug.enabled=true \
             --helm-set=debug.verbose=envoy \
             --helm-set=hubble.eventBufferCapacity=65535 \
@@ -119,10 +129,6 @@ runs:
           if [ "${{ inputs.kpr }}" == "true" ]; then
             # BPF-masq requires KPR=true.
             MASQ="--helm-set=bpf.masquerade=true"
-            if [ "${{ inputs.host-fw }}" == "true" ]; then
-              # BPF IPv6 masquerade not currently supported with host firewall - GH-26074
-              MASQ="${MASQ} --helm-set=enableIPv6Masquerade=false"
-            fi
           fi
 
           EGRESS_GATEWAY=""
@@ -157,6 +163,20 @@ runs:
               INGRESS_CONTROLLER+=" --helm-set=ingressController.service.type=NodePort"
             fi
           fi
-        
-          CONFIG="${DEFAULTS} ${IMAGE} ${TUNNEL} ${DEVICES} ${LB_MODE} ${ENDPOINT_ROUTES} ${IPV6} ${MASQ} ${EGRESS_GATEWAY} ${ENCRYPT} ${HOST_FW} ${LB_ACCELERATION} ${INGRESS_CONTROLLER}"
+
+          if [ "${{ inputs.ciliumendpointslice }}" == "true" ]; then
+            CILIUMENDPOINTSLICE="--helm-set=ciliumEndpointSlice.enabled=true"
+          fi
+
+          LOCAL_REDIRECT_POLICY=""
+          if [ "${{ inputs.local-redirect-policy }}" == "true" ]; then
+            LOCAL_REDIRECT_POLICY="--helm-set=localRedirectPolicy=true"
+          fi
+
+          BGP_CONTROL_PLANE=""
+          if [ "${{ inputs.bgp-control-plane }}" == "true" ]; then
+            BGP_CONTROL_PLANE="${{ env.BGP_CONTROL_PLANE_HELM_VALUES }}"
+          fi
+
+          CONFIG="${DEFAULTS} ${IMAGE} ${TUNNEL} ${DEVICES} ${LB_MODE} ${ENDPOINT_ROUTES} ${IPV6} ${MASQ} ${EGRESS_GATEWAY} ${ENCRYPT} ${HOST_FW} ${LB_ACCELERATION} ${INGRESS_CONTROLLER} ${CILIUMENDPOINTSLICE} ${LOCAL_REDIRECT_POLICY} ${BGP_CONTROL_PLANE}"
           echo "config=${CONFIG}" >> $GITHUB_OUTPUT

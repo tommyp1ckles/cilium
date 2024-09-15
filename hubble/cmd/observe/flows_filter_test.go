@@ -454,12 +454,13 @@ func TestLabels(t *testing.T) {
 	err := cmd.Flags().Parse([]string{
 		"--label", "k1=v1,k2=v2",
 		"-l", "k3",
+		"--node-label", "io.cilium.egress-gateway",
 	})
 	require.NoError(t, err)
 	if diff := cmp.Diff(
 		[]*flowpb.FlowFilter{
-			{SourceLabel: []string{"k1=v1,k2=v2", "k3"}},
-			{DestinationLabel: []string{"k1=v1,k2=v2", "k3"}},
+			{SourceLabel: []string{"k1=v1,k2=v2", "k3"}, NodeLabels: []string{"io.cilium.egress-gateway"}},
+			{DestinationLabel: []string{"k1=v1,k2=v2", "k3"}, NodeLabels: []string{"io.cilium.egress-gateway"}},
 		},
 		f.whitelist.flowFilters(),
 		cmpopts.IgnoreUnexported(flowpb.FlowFilter{}),
@@ -766,6 +767,94 @@ func TestTrafficDirection(t *testing.T) {
 	}
 }
 
+func TestSnatIp(t *testing.T) {
+	tt := []struct {
+		name    string
+		flags   []string
+		filters []*flowpb.FlowFilter
+		err     string
+	}{
+		{
+			name:  "exact match",
+			flags: []string{"--snat-ip", "1.1.1.1"},
+			filters: []*flowpb.FlowFilter{
+				{SourceIpXlated: []string{"1.1.1.1"}},
+			},
+		},
+		{
+			name:  "cidr range match",
+			flags: []string{"--snat-ip", "2.2.2.2/16"},
+			filters: []*flowpb.FlowFilter{
+				{SourceIpXlated: []string{"2.2.2.2/16"}},
+			},
+		},
+	}
+
+	for _, tc := range tt {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFlowFilter()
+			cmd := newFlowsCmdWithFilter(viper.New(), f)
+			err := cmd.Flags().Parse(tc.flags)
+			diff := cmp.Diff(tc.filters, f.whitelist.flowFilters(), cmpopts.IgnoreUnexported(flowpb.FlowFilter{}))
+			if diff != "" {
+				t.Errorf("mismatch (-want +got):\n%s", diff)
+			}
+			if tc.err != "" {
+				require.Errorf(t, err, tc.err)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Nil(t, f.blacklist)
+		})
+	}
+}
+
+func TestInterface(t *testing.T) {
+	tt := []struct {
+		name    string
+		flags   []string
+		filters []*flowpb.FlowFilter
+		err     string
+	}{
+		{
+			name:  "exact match",
+			flags: []string{"--interface", "eth0"},
+			filters: []*flowpb.FlowFilter{
+				{
+					Interface: []*flowpb.NetworkInterface{
+						{
+							Name: "eth0",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for _, tc := range tt {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFlowFilter()
+			cmd := newFlowsCmdWithFilter(viper.New(), f)
+			err := cmd.Flags().Parse(tc.flags)
+			diff := cmp.Diff(
+				tc.filters,
+				f.whitelist.flowFilters(),
+				cmpopts.IgnoreUnexported(flowpb.FlowFilter{}),
+				cmpopts.IgnoreUnexported(flowpb.NetworkInterface{}),
+			)
+			if diff != "" {
+				t.Errorf("mismatch (-want +got):\n%s", diff)
+			}
+			if tc.err != "" {
+				require.Errorf(t, err, tc.err)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Nil(t, f.blacklist)
+		})
+	}
+}
+
 func TestHTTPURL(t *testing.T) {
 	f := newFlowFilter()
 	cmd := newFlowsCmdWithFilter(viper.New(), f)
@@ -997,6 +1086,48 @@ func TestCluster(t *testing.T) {
 			}
 			assert.Nil(t, f.blacklist)
 			diff := cmp.Diff(tc.filters, f.whitelist.flowFilters(), cmpopts.IgnoreUnexported(flowpb.FlowFilter{}))
+			if diff != "" {
+				t.Errorf("mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestCELExpression(t *testing.T) {
+	tt := []struct {
+		name    string
+		flags   []string
+		filters []*flowpb.FlowFilter
+		err     string
+	}{
+		{
+			name:  "Single CEL expression filter",
+			flags: []string{"--cel-expression", "_flow.verdict == Verdict.FORWARDED || _flow.verdict == Verdict.TRANSLATED"},
+			filters: []*flowpb.FlowFilter{
+				{Experimental: &flowpb.FlowFilter_Experimental{CelExpression: []string{"_flow.verdict == Verdict.FORWARDED || _flow.verdict == Verdict.TRANSLATED"}}},
+			},
+		},
+		{
+			name:  "Multiple CEL expression filter",
+			flags: []string{"--cel-expression", "_flow.verdict == Verdict.FORWARDED", "--cel-expression", "_flow.verdict == Verdict.TRANSLATED"},
+			filters: []*flowpb.FlowFilter{
+				{Experimental: &flowpb.FlowFilter_Experimental{CelExpression: []string{"_flow.verdict == Verdict.FORWARDED", "_flow.verdict == Verdict.TRANSLATED"}}},
+			},
+		},
+	}
+	for _, tc := range tt {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFlowFilter()
+			cmd := newFlowsCmdWithFilter(viper.New(), f)
+			err := cmd.Flags().Parse(tc.flags)
+			if tc.err != "" {
+				require.Errorf(t, err, tc.err)
+				return
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Nil(t, f.blacklist)
+			diff := cmp.Diff(tc.filters, f.whitelist.flowFilters(), cmpopts.IgnoreUnexported(flowpb.FlowFilter{}, flowpb.FlowFilter_Experimental{}))
 			if diff != "" {
 				t.Errorf("mismatch (-want +got):\n%s", diff)
 			}

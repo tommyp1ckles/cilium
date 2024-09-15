@@ -129,7 +129,7 @@ func ParseNetworkPolicy(np *slim_networkingv1.NetworkPolicy) (api.Rules, error) 
 
 	for _, iRule := range np.Spec.Ingress {
 		fromRules := []api.IngressRule{}
-		if iRule.From != nil && len(iRule.From) > 0 {
+		if len(iRule.From) > 0 {
 			for _, rule := range iRule.From {
 				ingress := api.IngressRule{}
 				endpointSelector := parseNetworkPolicyPeer(namespace, &rule)
@@ -160,7 +160,7 @@ func ParseNetworkPolicy(np *slim_networkingv1.NetworkPolicy) (api.Rules, error) 
 		}
 
 		// We apply the ports to all rules generated from the From section
-		if iRule.Ports != nil && len(iRule.Ports) > 0 {
+		if len(iRule.Ports) > 0 {
 			toPorts := parsePorts(iRule.Ports)
 			for i := range fromRules {
 				fromRules[i].ToPorts = toPorts
@@ -173,7 +173,7 @@ func ParseNetworkPolicy(np *slim_networkingv1.NetworkPolicy) (api.Rules, error) 
 	for _, eRule := range np.Spec.Egress {
 		toRules := []api.EgressRule{}
 
-		if eRule.To != nil && len(eRule.To) > 0 {
+		if len(eRule.To) > 0 {
 			for _, rule := range eRule.To {
 				egress := api.EgressRule{}
 				if rule.NamespaceSelector != nil || rule.PodSelector != nil {
@@ -203,7 +203,7 @@ func ParseNetworkPolicy(np *slim_networkingv1.NetworkPolicy) (api.Rules, error) 
 		}
 
 		// We apply the ports to all rules generated from the To section
-		if eRule.Ports != nil && len(eRule.Ports) > 0 {
+		if len(eRule.Ports) > 0 {
 			toPorts := parsePorts(eRule.Ports)
 			for i := range toRules {
 				toRules[i].ToPorts = toPorts
@@ -249,26 +249,6 @@ func ParseNetworkPolicy(np *slim_networkingv1.NetworkPolicy) (api.Rules, error) 
 	}
 
 	return api.Rules{rule}, nil
-}
-
-// NetworkPolicyHasEndPort returns true if the network policy has an
-// EndPort.
-func NetworkPolicyHasEndPort(np *slim_networkingv1.NetworkPolicy) bool {
-	for _, iRule := range np.Spec.Ingress {
-		for _, port := range iRule.Ports {
-			if port.EndPort != nil && *port.EndPort > 0 {
-				return true
-			}
-		}
-	}
-	for _, eRule := range np.Spec.Egress {
-		for _, port := range eRule.Ports {
-			if port.EndPort != nil && *port.EndPort > 0 {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func parsePodSelector(podSelectorIn *slim_metav1.LabelSelector, namespace string) *slim_metav1.LabelSelector {
@@ -317,13 +297,17 @@ func parsePorts(ports []slim_networkingv1.NetworkPolicyPort) []api.PortRule {
 		}
 
 		portStr := "0"
+		var endPort int32
 		if port.Port != nil {
 			portStr = port.Port.String()
+		}
+		if port.EndPort != nil {
+			endPort = *port.EndPort
 		}
 
 		portRule := api.PortRule{
 			Ports: []api.PortProtocol{
-				{Port: portStr, Protocol: protocol},
+				{Port: portStr, EndPort: endPort, Protocol: protocol},
 			},
 		}
 

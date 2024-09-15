@@ -10,7 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 
@@ -140,7 +140,7 @@ func (n *Node) PrepareIPRelease(excessIPs int, scopedLog *logrus.Entry) *ipam.Re
 	for k := range n.enis {
 		eniIds = append(eniIds, k)
 	}
-	sort.Strings(eniIds)
+	slices.Sort(eniIds)
 	// Iterate over ENIs on this node, select the ENI with the most
 	// addresses available for release
 	for _, eniId := range eniIds {
@@ -207,7 +207,7 @@ func (n *Node) ReleaseIPs(ctx context.Context, r *ipam.ReleaseAction) error {
 func (n *Node) PrepareIPAllocation(scopedLog *logrus.Entry) (a *ipam.AllocationAction, err error) {
 	limits, limitsAvailable := n.getLimits()
 	if !limitsAvailable {
-		return nil, fmt.Errorf(errUnableToDetermineLimits)
+		return nil, errors.New(errUnableToDetermineLimits)
 	}
 
 	a = &ipam.AllocationAction{}
@@ -331,7 +331,7 @@ func (n *Node) getSecurityGroupIDs(ctx context.Context, eniSpec eniTypes.ENISpec
 		})
 
 	if securityGroups == nil {
-		return nil, fmt.Errorf("failed to get security group ids")
+		return nil, errors.New("failed to get security group ids")
 	}
 
 	return securityGroups, nil
@@ -405,7 +405,7 @@ const (
 func (n *Node) CreateInterface(ctx context.Context, allocation *ipam.AllocationAction, scopedLog *logrus.Entry) (int, string, error) {
 	limits, limitsAvailable := n.getLimits()
 	if !limitsAvailable {
-		return 0, unableToDetermineLimits, fmt.Errorf(errUnableToDetermineLimits)
+		return 0, unableToDetermineLimits, errors.New(errUnableToDetermineLimits)
 	}
 
 	n.mutex.RLock()
@@ -542,7 +542,7 @@ func (n *Node) ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Ent
 	err error) {
 	limits, limitsAvailable := n.getLimits()
 	if !limitsAvailable {
-		return nil, stats, fmt.Errorf(errUnableToDetermineLimits)
+		return nil, stats, ipam.LimitsNotFound{}
 	}
 
 	// n.node does not need to be protected by n.mutex as it is only written to

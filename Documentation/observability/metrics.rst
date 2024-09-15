@@ -88,6 +88,8 @@ option is set in the ``scrape_configs`` section:
           replacement: ${1}:${2}
           target_label: __address__
 
+.. _hubble_metrics:
+
 Hubble Metrics
 ==============
 
@@ -118,6 +120,9 @@ section for the full list of available metrics and their options.
 
 The port of the Hubble metrics can be configured with the
 ``hubble.metrics.port`` Helm value.
+
+For details on enabling Hubble metrics with TLS see the
+:ref:`hubble_configure_metrics_tls` section of the documentation.
 
 .. Note::
 
@@ -307,12 +312,14 @@ Name                                       Labels                               
 Node Connectivity
 ~~~~~~~~~~~~~~~~~
 
-========================================== ====================================================================================================================================================================== ========== ===================================================================================================================
-Name                                       Labels                                                                                                                                                                 Default    Description
-========================================== ====================================================================================================================================================================== ========== ===================================================================================================================
-``node_connectivity_status``               ``source_cluster``, ``source_node_name``, ``target_cluster``, ``target_node_name``, ``target_node_type``, ``type``                                                     Enabled    The last observed status of both ICMP and HTTP connectivity between the current Cilium agent and other Cilium nodes
-``node_connectivity_latency_seconds``      ``address_type``, ``protocol``, ``source_cluster``, ``source_node_name``, ``target_cluster``, ``target_node_ip``, ``target_node_name``, ``target_node_type``, ``type`` Enabled    The last observed latency between the current Cilium agent and other Cilium nodes in seconds
-========================================== ====================================================================================================================================================================== ========== ===================================================================================================================
+============================================= ====================================================================================================================================================================== ========== ==================================================================================================================================================================================================================
+Name                                          Labels                                                                                                                                                                 Default    Description
+============================================= ====================================================================================================================================================================== ========== ==================================================================================================================================================================================================================
+``node_connectivity_status``                  ``source_cluster``, ``source_node_name``, ``target_cluster``, ``target_node_name``, ``target_node_type``, ``type``                                                     Enabled    Deprecated, will be removed in Cilium 1.18 - use ``node_health_connectivity_status`` instead. The last observed status of both ICMP and HTTP connectivity between the current Cilium agent and other Cilium nodes
+``node_connectivity_latency_seconds``         ``address_type``, ``protocol``, ``source_cluster``, ``source_node_name``, ``target_cluster``, ``target_node_ip``, ``target_node_name``, ``target_node_type``, ``type`` Enabled    Deprecated, will be removed in Cilium 1.18 - use ``node_health_connectivity_latency_seconds`` instead. The last observed latency between the current Cilium agent and other Cilium nodes in seconds
+``node_health_connectivity_status``           ``source_cluster``, ``source_node_name``, ``type``, ``status``                                                                                                         Enabled    Number of endpoints with last observed status of both ICMP and HTTP connectivity between the current Cilium agent and other Cilium nodes
+``node_health_connectivity_latency_seconds``  ``source_cluster``, ``source_node_name``, ``type``, ``address_type``, ``protocol``                                                                                     Enabled    Histogram of the last observed latency between the current Cilium agent and other Cilium nodes in seconds
+============================================= ====================================================================================================================================================================== ========== ==================================================================================================================================================================================================================
 
 Clustermesh
 ~~~~~~~~~~~
@@ -365,6 +372,7 @@ Name                                       Labels                               
 ``bpf_map_capacity``                       ``map_group``                                                         Enabled    Maximum size of eBPF maps by group of maps (type of map that have the same max capacity size). Map types with size of 65536 are not emitted, missing map types can be assumed to be 65536.
 ``bpf_maps_virtual_memory_max_bytes``                                                                            Enabled    Max memory used by eBPF maps installed in the system
 ``bpf_progs_virtual_memory_max_bytes``                                                                           Enabled    Max memory used by eBPF programs installed in the system
+``bpf_ratelimit_dropped_total``            ``usage``                                                             Enabled    Total drops resulting from BPF ratelimiter, tagged by source of drop
 ========================================== ===================================================================== ========== ========================================================
 
 Both ``bpf_maps_virtual_memory_max_bytes`` and ``bpf_progs_virtual_memory_max_bytes``
@@ -391,8 +399,8 @@ Policy
 Name                                       Labels                                             Default    Description
 ========================================== ================================================== ========== ========================================================
 ``policy``                                                                                    Enabled    Number of policies currently loaded
-``policy_regeneration_total``                                                                 Enabled    Total number of policies regenerated successfully
-``policy_regeneration_time_stats_seconds`` ``scope``                                          Enabled    Policy regeneration time stats labeled by the scope
+``policy_regeneration_total``                                                                 Enabled    Deprecated, will be removed in Cilium 1.17 - use ``endpoint_regenerations_total`` instead. Total number of policies regenerated successfully
+``policy_regeneration_time_stats_seconds`` ``scope``                                          Enabled    Deprecated, will be removed in Cilium 1.17 - use ``endpoint_regeneration_time_stats_seconds`` instead. Policy regeneration time stats labeled by the scope
 ``policy_max_revision``                                                                       Enabled    Highest policy revision number in the agent
 ``policy_change_total``                                                                       Enabled    Number of policy changes by outcome
 ``policy_endpoint_enforcement_status``                                                        Enabled    Number of endpoints labeled by policy enforcement status
@@ -418,6 +426,10 @@ Identity
 Name                                     Labels                                             Default    Description
 ======================================== ================================================== ========== ========================================================
 ``identity``                             ``type``                                           Enabled    Number of identities currently allocated
+``identity_label_sources``               ``source``                                         Enabled    Number of identities which contain at least one label from the given label source
+``identity_gc_entries``                  ``identity_type``                                  Enabled    Number of alive and deleted identities at the end of a garbage collector run
+``identity_gc_runs``                     ``outcome``, ``identity_type``                     Enabled    Number of times identity garbage collector has run
+``identity_gc_latency``                  ``outcome``, ``identity_type``                     Enabled    Duration of the last successful identity GC run
 ``ipcache_errors_total``                 ``type``, ``error``                                Enabled    Number of errors interacting with the ipcache
 ``ipcache_events_total``                 ``type``                                           Enabled    Number of events interacting with the ipcache
 ======================================== ================================================== ========== ========================================================
@@ -545,6 +557,7 @@ Name                               Labels                           Default     
 ``fqdn_active_names``              ``endpoint``                     Disabled     Number of domains inside the DNS cache that have not expired (by TTL), per endpoint
 ``fqdn_active_ips``                ``endpoint``                     Disabled     Number of IPs inside the DNS cache associated with a domain that has not expired (by TTL), per endpoint
 ``fqdn_alive_zombie_connections``  ``endpoint``                     Disabled     Number of IPs associated with domains that have expired (by TTL) yet still associated with an active connection (aka zombie), per endpoint
+``fqdn_selectors``                                                  Enabled      Number of registered ToFQDN selectors
 ================================== ================================ ============ ========================================================
 
 Jobs
@@ -676,6 +689,34 @@ or the ``prometheus.controllerGroupMetrics`` helm value. The current
 recommended default set of group names can be found in the values file of
 the Cilium Helm chart. The special names "all" and "none" are supported.
 
+.. _ces_metrics:
+
+CiliumEndpointSlices (CES)
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+============================================== ================================ ========================================================
+Name                                           Labels                           Description
+============================================== ================================ ========================================================
+``number_of_ceps_per_ces``                                                      The number of CEPs batched in a CES
+``number_of_cep_changes_per_ces``              ``opcode``                       The number of changed CEPs in each CES update
+``ces_sync_total``                             ``outcome``                      The number of completed CES syncs by outcome
+``ces_queueing_delay_seconds``                                                  CiliumEndpointSlice queueing delay in seconds
+============================================== ================================ ========================================================
+
+"Double Write" Identity Allocation Mode
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+When the ":ref:`Double Write <double_write_migration>`" identity allocation mode is
+enabled, the following metrics are available:
+
+============================================ ======= ========== ============================================================
+Name                                         Labels  Default    Description
+============================================ ======= ========== ============================================================
+``doublewrite_identity_crd_total_count``             Enabled    The total number of CRD identities
+``doublewrite_identity_kvstore_total_count``         Enabled    The total number of identities in the KVStore
+``doublewrite_identity_crd_only_count``              Enabled    The number of CRD identities not present in the KVStore
+``doublewrite_identity_kvstore_only_count``          Enabled    The number of identities in the KVStore not present as a CRD
+============================================ ======= ========== ============================================================
+
 
 Hubble
 ------
@@ -689,6 +730,8 @@ The command-line options to configure them are ``--enable-hubble``,
 ``--hubble-metrics-server`` takes an ``IP:Port`` pair, but
 passing an empty IP (e.g. ``:9965``) will bind the server to all available
 interfaces. ``--hubble-metrics`` takes a comma-separated list of metrics.
+It's also possible to configure Hubble metrics to listen with TLS and
+optionally use mTLS for authentication. For details see :ref:`hubble_configure_metrics_tls`.
 
 Some metrics can take additional semicolon-separated options per metric, e.g.
 ``--hubble-metrics="dns:query;ignoreAAAA,http:destinationContext=workload-name"``
@@ -1256,3 +1299,26 @@ which is passed as the ``controller-group-metrics`` configuration
 flag. The current default set for ``kvstoremesh`` found in the
 Cilium Helm chart is the special name "all", which enables the metric
 for all controller groups. The special name "none" is also supported.
+
+NAT
+~~~
+
+.. _nat_metrics:
+
+======================================== ================================================== ========== ========================================================
+Name                                     Labels                                             Default    Description
+======================================== ================================================== ========== ========================================================
+``nat_endpoint_max_connection``          ``family``                                         Enabled    Saturation of the most saturated distinct NAT mapped connection, in terms of egress-IP and remote endpoint address.
+======================================== ================================================== ========== ========================================================
+
+These metrics are for monitoring Cilium's NAT mapping functionality. NAT is used by features such as Egress Gateway and BPF masquerading.
+
+The NAT map holds mappings for masqueraded connections. Connection held in the NAT table that are masqueraded with the
+same egress-IP and are going to the same remote endpoints IP and port all require a unique source port for the mapping.
+This means that any Node masquerading connections to a distinct external endpoint is limited by the possible ephemeral source ports.
+
+Given a Node forwarding one or more such egress-IP and remote endpoint tuples, the ``nat_endpoint_max_connection`` metric is the most saturated such connection in terms of a percent of possible source ports available.
+This metric is especially useful when using the egress gateway feature where it's possible to overload a Node if many connections are all going to the same endpoint.
+In general, this metric should normally be fairly low.
+A high number here may indicate that a Node is reaching its limit for connections to one or more external endpoints.
+

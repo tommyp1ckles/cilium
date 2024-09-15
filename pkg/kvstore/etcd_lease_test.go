@@ -5,14 +5,20 @@ package kvstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	v3rpcErrors "go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	client "go.etcd.io/etcd/client/v3"
+)
+
+var (
+	// ErrNotImplemented is the error which is returned when a functionality is not implemented.
+	ErrNotImplemented = errors.New("not implemented")
 )
 
 type fakeEtcdLeaseClient struct {
@@ -241,7 +247,7 @@ func TestLeaseManagerCancelIfExpired(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		expired = append(expired, <-expiredCH)
 	}
-	sort.Strings(expired)
+	slices.Sort(expired)
 	require.ElementsMatch(t, expired, []string{"key5", "key6", "key7", "key8", "key9"})
 
 	// Get the lease for one of the expired keys, and check that it is a different one.

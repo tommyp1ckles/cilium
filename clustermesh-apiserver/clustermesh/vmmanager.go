@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"net"
 	"path"
-	"sort"
+	"slices"
 
 	"github.com/cilium/hive/cell"
 	"github.com/spf13/pflag"
@@ -69,6 +69,7 @@ func externalWorkloadsProvider(
 	clusterInfo cmtypes.ClusterInfo,
 
 	clientset k8sClient.Clientset,
+	crdSyncPromise promise.Promise[synced.CRDSync],
 	ciliumExternalWorkloads resource.Resource[*ciliumv2.CiliumExternalWorkload],
 	backendPromise promise.Promise[kvstore.BackendOperations],
 ) *VMManager {
@@ -87,7 +88,10 @@ func externalWorkloadsProvider(
 
 	lc.Append(cell.Hook{
 		OnStart: func(ctx cell.HookContext) error {
-			synced.SyncCRDs(ctx, clientset, synced.ClusterMeshAPIServerResourceNames(), &synced.Resources{}, &synced.APIGroups{})
+			_, err := crdSyncPromise.Await(ctx)
+			if err != nil {
+				return fmt.Errorf("Wait for CRD resources failed: %w", err)
+			}
 
 			ewstore, err := ciliumExternalWorkloads.Store(ctx)
 			if err != nil {
@@ -137,7 +141,7 @@ type VMManager struct {
 //
 
 // UpdateIdentities will be called when identities have changed
-func (m *VMManager) UpdateIdentities(added, deleted identityCache.IdentityCache) {}
+func (m *VMManager) UpdateIdentities(added, deleted identity.IdentityMap) {}
 
 // GetNodeSuffix must return the node specific suffix to use
 func (m *VMManager) GetNodeSuffix() string {
@@ -469,7 +473,7 @@ func getEndpointIdentity(mdlIdentity *models.Identity) (identity *ciliumv2.Endpo
 
 	identity.Labels = make([]string, len(mdlIdentity.Labels))
 	copy(identity.Labels, mdlIdentity.Labels)
-	sort.Strings(identity.Labels)
+	slices.Sort(identity.Labels)
 	log.Infof("Got Endpoint Identity: %v", *identity)
 	return
 }

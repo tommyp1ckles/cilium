@@ -36,12 +36,16 @@ type DeleteLaunchTemplateInput struct {
 	// UnauthorizedOperation .
 	DryRun *bool
 
-	// The ID of the launch template. You must specify either the launch template ID
-	// or the launch template name, but not both.
+	// The ID of the launch template.
+	//
+	// You must specify either the launch template ID or the launch template name, but
+	// not both.
 	LaunchTemplateId *string
 
-	// The name of the launch template. You must specify either the launch template ID
-	// or the launch template name, but not both.
+	// The name of the launch template.
+	//
+	// You must specify either the launch template ID or the launch template name, but
+	// not both.
 	LaunchTemplateName *string
 
 	noSmithyDocumentSerde
@@ -111,6 +115,12 @@ func (c *Client) addOperationDeleteLaunchTemplateMiddlewares(stack *middleware.S
 		return err
 	}
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+		return err
+	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opDeleteLaunchTemplate(options.Region), middleware.Before); err != nil {

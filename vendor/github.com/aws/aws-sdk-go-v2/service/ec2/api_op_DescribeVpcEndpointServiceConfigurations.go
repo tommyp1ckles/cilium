@@ -37,15 +37,21 @@ type DescribeVpcEndpointServiceConfigurationsInput struct {
 	DryRun *bool
 
 	// The filters.
+	//
 	//   - service-name - The name of the service.
+	//
 	//   - service-id - The ID of the service.
+	//
 	//   - service-state - The state of the service ( Pending | Available | Deleting |
 	//   Deleted | Failed ).
+	//
 	//   - supported-ip-address-types - The IP address type ( ipv4 | ipv6 ).
+	//
 	//   - tag : - The key/value combination of a tag assigned to the resource. Use the
 	//   tag key in the filter name and the tag value as the filter value. For example,
 	//   to find all resources that have a tag with the key Owner and the value TeamA ,
 	//   specify tag:Owner for the filter name and TeamA for the filter value.
+	//
 	//   - tag-key - The key of a tag assigned to the resource. Use this filter to find
 	//   all resources assigned a tag with a specific key, regardless of the tag value.
 	Filters []types.Filter
@@ -135,6 +141,12 @@ func (c *Client) addOperationDescribeVpcEndpointServiceConfigurationsMiddlewares
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
+		return err
+	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opDescribeVpcEndpointServiceConfigurations(options.Region), middleware.Before); err != nil {
 		return err
 	}
@@ -155,14 +167,6 @@ func (c *Client) addOperationDescribeVpcEndpointServiceConfigurationsMiddlewares
 	}
 	return nil
 }
-
-// DescribeVpcEndpointServiceConfigurationsAPIClient is a client that implements
-// the DescribeVpcEndpointServiceConfigurations operation.
-type DescribeVpcEndpointServiceConfigurationsAPIClient interface {
-	DescribeVpcEndpointServiceConfigurations(context.Context, *DescribeVpcEndpointServiceConfigurationsInput, ...func(*Options)) (*DescribeVpcEndpointServiceConfigurationsOutput, error)
-}
-
-var _ DescribeVpcEndpointServiceConfigurationsAPIClient = (*Client)(nil)
 
 // DescribeVpcEndpointServiceConfigurationsPaginatorOptions is the paginator
 // options for DescribeVpcEndpointServiceConfigurations
@@ -233,6 +237,9 @@ func (p *DescribeVpcEndpointServiceConfigurationsPaginator) NextPage(ctx context
 	}
 	params.MaxResults = limit
 
+	optFns = append([]func(*Options){
+		addIsPaginatorUserAgent,
+	}, optFns...)
 	result, err := p.client.DescribeVpcEndpointServiceConfigurations(ctx, &params, optFns...)
 	if err != nil {
 		return nil, err
@@ -251,6 +258,14 @@ func (p *DescribeVpcEndpointServiceConfigurationsPaginator) NextPage(ctx context
 
 	return result, nil
 }
+
+// DescribeVpcEndpointServiceConfigurationsAPIClient is a client that implements
+// the DescribeVpcEndpointServiceConfigurations operation.
+type DescribeVpcEndpointServiceConfigurationsAPIClient interface {
+	DescribeVpcEndpointServiceConfigurations(context.Context, *DescribeVpcEndpointServiceConfigurationsInput, ...func(*Options)) (*DescribeVpcEndpointServiceConfigurationsOutput, error)
+}
+
+var _ DescribeVpcEndpointServiceConfigurationsAPIClient = (*Client)(nil)
 
 func newServiceMetadataMiddleware_opDescribeVpcEndpointServiceConfigurations(region string) *awsmiddleware.RegisterServiceMetadata {
 	return &awsmiddleware.RegisterServiceMetadata{

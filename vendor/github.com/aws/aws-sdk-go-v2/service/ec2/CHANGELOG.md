@@ -1,3 +1,137 @@
+# v1.177.2 (2024-09-04)
+
+* No change notes available for this release.
+
+# v1.177.1 (2024-09-03)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.177.0 (2024-08-28)
+
+* **Feature**: Amazon VPC IP Address Manager (IPAM) now allows customers to provision IPv4 CIDR blocks and allocate Elastic IP Addresses directly from IPAM pools with public IPv4 space
+
+# v1.176.0 (2024-08-21)
+
+* **Feature**: DescribeInstanceStatus now returns health information on EBS volumes attached to Nitro instances
+
+# v1.175.1 (2024-08-15)
+
+* **Dependency Update**: Bump minimum Go version to 1.21.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.175.0 (2024-08-12)
+
+* **Feature**: This release adds new capabilities to manage On-Demand Capacity Reservations including the ability to split your reservation, move capacity between reservations, and modify the instance eligibility of your reservation.
+
+# v1.174.0 (2024-08-08)
+
+* **Feature**: Launch of private IPv6 addressing for VPCs and Subnets. VPC IPAM supports the planning and monitoring of private IPv6 usage.
+
+# v1.173.0 (2024-07-25)
+
+* **Feature**: EC2 Fleet now supports using custom identifiers to reference Amazon Machine Images (AMI) in launch requests that are configured to choose from a diversified list of instance types.
+
+# v1.172.0 (2024-07-23)
+
+* **Feature**: Switch to new waiter matching implementation, which conveys a slight performance boost and removes the need for the go-jmespath runtime dependency.
+
+# v1.171.0 (2024-07-18)
+
+* **Feature**: Amazon VPC IP Address Manager (IPAM) now supports Bring-Your-Own-IP (BYOIP) for IP addresses registered with any Internet Registry. This feature uses DNS TXT records to validate ownership of a public IP address range.
+
+# v1.170.0 (2024-07-10.2)
+
+* **Feature**: Add parameters to enable provisioning IPAM BYOIPv4 space at a Local Zone Network Border Group level
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.169.0 (2024-07-10)
+
+* **Feature**: Add parameters to enable provisioning IPAM BYOIPv4 space at a Local Zone Network Border Group level
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.168.0 (2024-07-02)
+
+* **Feature**: Documentation updates for Elastic Compute Cloud (EC2).
+
+# v1.167.1 (2024-06-28)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.167.0 (2024-06-26)
+
+* **Feature**: Support list-of-string endpoint parameter.
+
+# v1.166.0 (2024-06-25)
+
+* **Feature**: This release is for the launch of the new u7ib-12tb.224xlarge, R8g, c7gn.metal and mac2-m1ultra.metal instance types
+
+# v1.165.1 (2024-06-19)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.165.0 (2024-06-18)
+
+* **Feature**: Track usage of various AWS SDK features in user-agent string.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.164.2 (2024-06-17)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.164.1 (2024-06-14)
+
+* **Documentation**: Documentation updates for Amazon EC2.
+
+# v1.164.0 (2024-06-12)
+
+* **Feature**: Tagging support for Traffic Mirroring FilterRule resource
+
+# v1.163.1 (2024-06-07)
+
+* **Bug Fix**: Add clock skew correction on all service clients
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.163.0 (2024-06-04)
+
+* **Feature**: U7i instances with up to 32 TiB of DDR5 memory and 896 vCPUs are now available. C7i-flex instances are launched and are lower-priced variants of the Amazon EC2 C7i instances that offer a baseline level of CPU performance with the ability to scale up to the full compute performance 95% of the time.
+
+# v1.162.1 (2024-06-03)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.162.0 (2024-05-28)
+
+* **Feature**: Providing support to accept BgpAsnExtended attribute
+
+# v1.161.4 (2024-05-23)
+
+* No change notes available for this release.
+
+# v1.161.3 (2024-05-16)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.161.2 (2024-05-15)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.161.1 (2024-05-10)
+
+* **Bug Fix**: Fix serialization behavior of empty lists.
+
+# v1.161.0 (2024-05-08)
+
+* **Feature**: Adding Precision Hardware Clock (PHC) to public API DescribeInstanceTypes
+* **Bug Fix**: GoDoc improvement
+
+# v1.160.0 (2024-05-02)
+
+* **Feature**: This release includes a new API for retrieving the public endorsement key of the EC2 instance's Nitro Trusted Platform Module (NitroTPM).
+
+# v1.159.1 (2024-05-01)
+
+* **Documentation**: Documentation updates for Amazon EC2.
+
 # v1.159.0 (2024-04-24)
 
 * **Feature**: Launching capability for customers to enable or disable automatic assignment of public IPv4 addresses to their network interface

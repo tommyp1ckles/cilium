@@ -29,12 +29,12 @@ func (c *Client) CreateCoipCidr(ctx context.Context, params *CreateCoipCidrInput
 
 type CreateCoipCidrInput struct {
 
-	// A customer-owned IP address range to create.
+	//  A customer-owned IP address range to create.
 	//
 	// This member is required.
 	Cidr *string
 
-	// The ID of the address pool.
+	//  The ID of the address pool.
 	//
 	// This member is required.
 	CoipPoolId *string
@@ -50,7 +50,7 @@ type CreateCoipCidrInput struct {
 
 type CreateCoipCidrOutput struct {
 
-	// Information about a range of customer-owned IP addresses.
+	//  Information about a range of customer-owned IP addresses.
 	CoipCidr *types.CoipCidr
 
 	// Metadata pertaining to the operation's result.
@@ -112,6 +112,12 @@ func (c *Client) addOperationCreateCoipCidrMiddlewares(stack *middleware.Stack, 
 		return err
 	}
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+		return err
+	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
 	if err = addOpCreateCoipCidrValidationMiddleware(stack); err != nil {

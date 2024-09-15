@@ -7,15 +7,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"net/netip"
 	"sync/atomic"
 
 	"github.com/sirupsen/logrus"
 	"k8s.io/apimachinery/pkg/util/sets"
 
+	"github.com/cilium/statedb"
+	"github.com/cilium/statedb/reconciler"
+
 	"github.com/cilium/cilium/pkg/datapath/tables"
-	"github.com/cilium/cilium/pkg/statedb"
-	"github.com/cilium/cilium/pkg/statedb/reconciler"
 )
 
 func newOps(logger logrus.FieldLogger, ipset *ipset, cfg config) *ops {
@@ -72,36 +74,28 @@ func (ops *ops) DeleteBatch(ctx context.Context, txn statedb.ReadTxn, batch []re
 var _ reconciler.Operations[*tables.IPSetEntry] = &ops{}
 var _ reconciler.BatchOperations[*tables.IPSetEntry] = &ops{}
 
-func (ops *ops) Update(ctx context.Context, _ statedb.ReadTxn, entry *tables.IPSetEntry, changed *bool) error {
-	// Since we're using batch operations Update is only called for full reconciliation.
-	// As we're doing full synchronization in Prune() we don't need to do anything here.
-	// The reconciler will be changed from Update+Prune to Sync in the future after which
-	// this hack can be removed.
-	if changed == nil {
-		// Panic here in case the assumptions change.
-		panic("Unexpectedly Update() called from incremental reconciliation")
-	}
-	return nil
+func (ops *ops) Update(ctx context.Context, _ statedb.ReadTxn, entry *tables.IPSetEntry) error {
+	panic("Unexpectedly Update() called for reconciliation")
 }
 
 func (ops *ops) Delete(ctx context.Context, _ statedb.ReadTxn, entry *tables.IPSetEntry) error {
-	panic("Unexpectedly Delete() called from incremental reconciliation")
+	panic("Unexpectedly Delete() called for reconciliation")
 }
 
-func (ops *ops) Prune(ctx context.Context, _ statedb.ReadTxn, iter statedb.Iterator[*tables.IPSetEntry]) error {
+func (ops *ops) Prune(ctx context.Context, _ statedb.ReadTxn, objs iter.Seq2[*tables.IPSetEntry, statedb.Revision]) error {
 	if !ops.enabled || !ops.doPrune.Load() {
 		return nil
 	}
 
 	desiredV4Set, desiredV6Set := sets.Set[netip.Addr]{}, sets.Set[netip.Addr]{}
-	statedb.ProcessEach(iter, func(obj *tables.IPSetEntry, _ uint64) error {
+
+	for obj := range objs {
 		if obj.Name == CiliumNodeIPSetV4 {
 			desiredV4Set.Insert(obj.Addr)
 		} else if obj.Name == CiliumNodeIPSetV6 {
 			desiredV6Set.Insert(obj.Addr)
 		}
-		return nil
-	})
+	}
 
 	return errors.Join(
 		reconcile(ctx, ops.ipset, CiliumNodeIPSetV4, INetFamily, desiredV4Set),

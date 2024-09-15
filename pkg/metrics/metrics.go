@@ -254,6 +254,12 @@ const (
 	LabelAddressType          = "address_type"
 	LabelAddressTypePrimary   = "primary"
 	LabelAddressTypeSecondary = "secondary"
+
+	// LabelConnectivityStatus is the label for connectivity statuses
+	LabelConnectivityStatus = "status"
+	LabelReachable          = "reachable"
+	LabelUnreachable        = "unreachable"
+	LabelUnknown            = "unknown"
 )
 
 var (
@@ -284,6 +290,14 @@ var (
 	// NodeConnectivityLatency is the connectivity latency between local node to
 	// other node intra or inter cluster.
 	NodeConnectivityLatency = NoOpGaugeDeletableVec
+
+	// NodeHealthConnectivityStatus is the number of connections with connectivity status
+	// between local node to other node intra or inter cluster.
+	NodeHealthConnectivityStatus = NoOpGaugeVec
+
+	// NodeHealthConnectivityLatency is the histogram connectivity latency between local node to
+	// other node intra or inter cluster.
+	NodeHealthConnectivityLatency = NoOpObserverVec
 
 	// Endpoint
 
@@ -316,9 +330,11 @@ var (
 
 	// PolicyRegenerationCount is the total number of successful policy
 	// regenerations.
+	// Deprecated: Use EndpointRegenerationTotal.
 	PolicyRegenerationCount = NoOpCounter
 
-	// PolicyRegenerationTimeStats is the total time taken to generate policies
+	// PolicyRegenerationTimeStats is the total time taken to generate policies.
+	// Deprecated: Use EndpointRegenerationTimeStats.
 	PolicyRegenerationTimeStats = NoOpObserverVec
 
 	// PolicyRevision is the current policy revision number for this agent
@@ -352,6 +368,11 @@ var (
 
 	// Identity is the number of identities currently in use on the node by type
 	Identity = NoOpGaugeVec
+
+	// IdentityLabelSources is the number of identities in use on the node with
+	// have a particular label source. Note that an identity may contain labels
+	// from multiple sources and thus might be counted in multiple buckets
+	IdentityLabelSources = NoOpGaugeVec
 
 	// Events
 
@@ -501,6 +522,9 @@ var (
 	// connection (aka zombie), per endpoint.
 	FQDNAliveZombieConnections = NoOpGaugeVec
 
+	// FQDNSelectors is the total number of registered ToFQDN selectors
+	FQDNSelectors = NoOpGauge
+
 	// FQDNSemaphoreRejectedTotal is the total number of DNS requests rejected
 	// by the DNS proxy because too many requests were in flight, as enforced by
 	// the admission semaphore.
@@ -647,6 +671,8 @@ type LegacyMetrics struct {
 	APIInteractions                  metric.Vec[metric.Observer]
 	NodeConnectivityStatus           metric.DeletableVec[metric.Gauge]
 	NodeConnectivityLatency          metric.DeletableVec[metric.Gauge]
+	NodeHealthConnectivityStatus     metric.Vec[metric.Gauge]
+	NodeHealthConnectivityLatency    metric.Vec[metric.Observer]
 	Endpoint                         metric.GaugeFunc
 	EndpointMaxIfindex               metric.Gauge
 	EndpointRegenerationTotal        metric.Vec[metric.Counter]
@@ -663,6 +689,7 @@ type LegacyMetrics struct {
 	CIDRGroupsReferenced             metric.Gauge
 	CIDRGroupTranslationTimeStats    metric.Histogram
 	Identity                         metric.Vec[metric.Gauge]
+	IdentityLabelSources             metric.Vec[metric.Gauge]
 	EventTS                          metric.Vec[metric.Gauge]
 	EventLagK8s                      metric.Gauge
 	ProxyRedirects                   metric.Vec[metric.Gauge]
@@ -698,6 +725,7 @@ type LegacyMetrics struct {
 	FQDNActiveNames                  metric.Vec[metric.Gauge]
 	FQDNActiveIPs                    metric.Vec[metric.Gauge]
 	FQDNAliveZombieConnections       metric.Vec[metric.Gauge]
+	FQDNSelectors                    metric.Gauge
 	FQDNSemaphoreRejectedTotal       metric.Counter
 	IPCacheErrorsTotal               metric.Vec[metric.Counter]
 	IPCacheEventsTotal               metric.Vec[metric.Counter]
@@ -859,6 +887,14 @@ func NewLegacyMetrics() *LegacyMetrics {
 			Name:      "identity",
 			Help:      "Number of identities currently allocated",
 		}, []string{LabelType}),
+
+		IdentityLabelSources: metric.NewGaugeVec(metric.GaugeOpts{
+			ConfigName: Namespace + "_identity_label_sources",
+
+			Namespace: Namespace,
+			Name:      "identity_label_sources",
+			Help:      "Number of identities which contain at least one label of the given label source",
+		}, []string{LabelSource}),
 
 		EventTS: metric.NewGaugeVec(metric.GaugeOpts{
 			ConfigName: Namespace + "_event_ts",
@@ -1163,6 +1199,14 @@ func NewLegacyMetrics() *LegacyMetrics {
 			Help:       "Number of IPs associated with domains that have expired (by TTL) yet still associated with an active connection (aka zombie), per endpoint",
 		}, []string{LabelPeerEndpoint}),
 
+		FQDNSelectors: metric.NewGauge(metric.GaugeOpts{
+			ConfigName: Namespace + "_" + SubsystemFQDN + "_selectors",
+			Namespace:  Namespace,
+			Subsystem:  SubsystemFQDN,
+			Name:       "selectors",
+			Help:       "Number of registered ToFQDN selectors",
+		}),
+
 		FQDNSemaphoreRejectedTotal: metric.NewCounter(metric.CounterOpts{
 			ConfigName: Namespace + "_" + SubsystemFQDN + "_semaphore_rejected_total",
 			Disabled:   true,
@@ -1324,6 +1368,32 @@ func NewLegacyMetrics() *LegacyMetrics {
 			LabelAddressType,
 		}),
 
+		NodeHealthConnectivityStatus: metric.NewGaugeVec(metric.GaugeOpts{
+			ConfigName: Namespace + "_node_health_connectivity_status",
+			Namespace:  Namespace,
+			Name:       "node_health_connectivity_status",
+			Help:       "The number of endpoints with last observed status of both ICMP and HTTP connectivity between the current Cilium agent and other Cilium nodes",
+		}, []string{
+			LabelSourceCluster,
+			LabelSourceNodeName,
+			LabelType,
+			LabelConnectivityStatus,
+		}),
+
+		NodeHealthConnectivityLatency: metric.NewHistogramVec(metric.HistogramOpts{
+			ConfigName: Namespace + "_node_health_connectivity_latency_seconds",
+			Namespace:  Namespace,
+			Name:       "node_health_connectivity_latency_seconds",
+			Help:       "The histogram for last observed latency between the current Cilium agent and other Cilium nodes in seconds",
+			Buckets:    []float64{0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0},
+		}, []string{
+			LabelSourceCluster,
+			LabelSourceNodeName,
+			LabelType,
+			LabelProtocol,
+			LabelAddressType,
+		}),
+
 		WorkQueueDepth:                   WorkQueueDepth,
 		WorkQueueAddsTotal:               WorkQueueAddsTotal,
 		WorkQueueLatency:                 WorkQueueLatency,
@@ -1350,6 +1420,8 @@ func NewLegacyMetrics() *LegacyMetrics {
 	APIInteractions = lm.APIInteractions
 	NodeConnectivityStatus = lm.NodeConnectivityStatus
 	NodeConnectivityLatency = lm.NodeConnectivityLatency
+	NodeHealthConnectivityStatus = lm.NodeHealthConnectivityStatus
+	NodeHealthConnectivityLatency = lm.NodeHealthConnectivityLatency
 	Endpoint = lm.Endpoint
 	EndpointMaxIfindex = lm.EndpointMaxIfindex
 	EndpointRegenerationTotal = lm.EndpointRegenerationTotal
@@ -1366,6 +1438,7 @@ func NewLegacyMetrics() *LegacyMetrics {
 	CIDRGroupsReferenced = lm.CIDRGroupsReferenced
 	CIDRGroupTranslationTimeStats = lm.CIDRGroupTranslationTimeStats
 	Identity = lm.Identity
+	IdentityLabelSources = lm.IdentityLabelSources
 	EventTS = lm.EventTS
 	EventLagK8s = lm.EventLagK8s
 	ProxyRedirects = lm.ProxyRedirects
@@ -1401,6 +1474,7 @@ func NewLegacyMetrics() *LegacyMetrics {
 	FQDNActiveNames = lm.FQDNActiveNames
 	FQDNActiveIPs = lm.FQDNActiveIPs
 	FQDNAliveZombieConnections = lm.FQDNAliveZombieConnections
+	FQDNSelectors = lm.FQDNSelectors
 	FQDNSemaphoreRejectedTotal = lm.FQDNSemaphoreRejectedTotal
 	IPCacheErrorsTotal = lm.IPCacheErrorsTotal
 	IPCacheEventsTotal = lm.IPCacheEventsTotal
@@ -1532,9 +1606,9 @@ func Unregister(c prometheus.Collector) bool {
 	return false
 }
 
-// DumpMetrics gets the current Cilium metrics and dumps all into a
+// dumpMetrics gets the current Cilium metrics and dumps all into a
 // models.Metrics structure.If metrics cannot be retrieved, returns an error
-func DumpMetrics() ([]*models.Metric, error) {
+func dumpMetrics() ([]*models.Metric, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	reg, err := registry.Await(ctx)

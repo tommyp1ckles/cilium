@@ -21,32 +21,6 @@ const (
 	// EndpointGCIntervalDefault is the default time for the CEP GC
 	EndpointGCIntervalDefault = 5 * time.Minute
 
-	// CESMaxCEPsInCESDefault is the maximum number of cilium endpoints allowed in a CES
-	CESMaxCEPsInCESDefault = 100
-
-	// CESSlicingModeDefault is default method for grouping CEP in a CES.
-	CESSlicingModeDefault = "cesSliceModeIdentity"
-
-	// CESWriteQPSLimitDefault is the default rate limit for the CES work queue.
-	CESWriteQPSLimitDefault = 10
-
-	// CESWriteQPSLimitMax is the maximum rate limit for the CES work queue.
-	// CES work queue QPS limit cannot exceed this value, regardless of other config.
-	CESWriteQPSLimitMax = 50
-
-	// CESWriteQPSBurstDefault is the default burst rate for the CES work queue.
-	CESWriteQPSBurstDefault = 20
-
-	// CESWriteQPSBurstMax is the maximum burst rate for the CES work queue.
-	// CES work queue QPS burst cannot exceed this value, regardless of other config.
-	CESWriteQPSBurstMax = 100
-
-	// CNPStatusCleanupQPSDefault is the default rate for the CNP NodeStatus updates GC.
-	CNPStatusCleanupQPSDefault = 10
-
-	// CNPStatusCleanupBurstDefault is the default maximum burst for the CNP NodeStatus updates GC.
-	CNPStatusCleanupBurstDefault = 20
-
 	// PprofAddressOperator is the default value for pprof in the operator
 	PprofAddressOperator = "localhost"
 
@@ -64,15 +38,6 @@ const (
 	// BGPConfigPath is the file path to the BGP configuration. It is
 	// compatible with MetalLB's configuration.
 	BGPConfigPath = "bgp-config-path"
-
-	// CNPStatusCleanupQPS is the rate at which the cleanup operation of the status
-	// nodes updates in CNPs is carried out. It is expressed as queries per second,
-	// and for each query a single CNP status update will be deleted.
-	CNPStatusCleanupQPS = "cnp-status-cleanup-qps"
-
-	// CNPStatusCleanupBurst is the maximum burst of queries allowed for the cleanup
-	// operation of the status nodes updates in CNPs.
-	CNPStatusCleanupBurst = "cnp-status-cleanup-burst"
 
 	// EnableMetrics enables prometheus metrics.
 	EnableMetrics = "enable-metrics"
@@ -109,7 +74,8 @@ const (
 	// IPAMSubnetsTags are optional tags used to filter subnets, and interfaces within those subnets
 	IPAMSubnetsTags = "subnet-tags-filter"
 
-	// IPAMInstanceTagFilter are optional tags used to filter instances for ENI discovery ; only used with AWS IPAM mode for now
+	// IPAMInstanceTags are optional tags used to filter instances for ENI discovery.
+	// Only used with AWS and Alibabacloud IPAM mode for now
 	IPAMInstanceTags = "instance-tags-filter"
 
 	// IPAMAutoCreateCiliumPodIPPools contains pre-defined IP pools to be auto-created on startup.
@@ -257,15 +223,6 @@ type OperatorConfig struct {
 	// NodesGCInterval is the GC interval for CiliumNodes
 	NodesGCInterval time.Duration
 
-	// CNPStatusCleanupQPS is the rate at which the cleanup operation of the status
-	// nodes updates in CNPs is carried out. It is expressed as queries per second,
-	// and for each query a single CNP status update will be deleted.
-	CNPStatusCleanupQPS float64
-
-	// CNPStatusCleanupBurst is the maximum burst of queries allowed for the cleanup
-	// operation of the status nodes updates in CNPs.
-	CNPStatusCleanupBurst int
-
 	// EnableMetrics enables prometheus metrics.
 	EnableMetrics bool
 
@@ -317,7 +274,8 @@ type OperatorConfig struct {
 	// IPAMSubnetsTags are optional tags used to filter subnets, and interfaces within those subnets
 	IPAMSubnetsTags map[string]string
 
-	// IPAMUInstanceTags are optional tags used to filter AWS EC2 instances, and interfaces (ENI) attached to them
+	// IPAMInstanceTags are optional tags used to filter instances for ENI discovery.
+	// Only used with AWS and Alibabacloud IPAM mode for now
 	IPAMInstanceTags map[string]string
 
 	// IPAM Operator options
@@ -449,8 +407,6 @@ type OperatorConfig struct {
 // Populate sets all options with the values from viper.
 func (c *OperatorConfig) Populate(vp *viper.Viper) {
 	c.NodesGCInterval = vp.GetDuration(NodesGCInterval)
-	c.CNPStatusCleanupQPS = vp.GetFloat64(CNPStatusCleanupQPS)
-	c.CNPStatusCleanupBurst = vp.GetInt(CNPStatusCleanupBurst)
 	c.EnableMetrics = vp.GetBool(EnableMetrics)
 	c.EndpointGCInterval = vp.GetDuration(EndpointGCInterval)
 	c.SyncK8sServices = vp.GetBool(SyncK8sServices)

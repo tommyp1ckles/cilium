@@ -6,12 +6,12 @@
 package loader
 
 import (
-	"fmt"
 	"net"
 	"testing"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
+
 	"github.com/spf13/afero"
 	"github.com/stretchr/testify/require"
 	"github.com/vishvananda/netlink"
@@ -24,22 +24,10 @@ import (
 	"github.com/cilium/cilium/pkg/testutils/netns"
 )
 
-func mustTCProgram(t *testing.T) *ebpf.Program {
-	p, err := ebpf.NewProgram(&ebpf.ProgramSpec{
-		Type: ebpf.SchedCLS,
-		Instructions: asm.Instructions{
-			asm.Mov.Imm(asm.R0, 0),
-			asm.Return(),
-		},
-		License: "Apache-2.0",
-	})
-	if err != nil {
-		t.Skipf("tc programs not supported: %s", err)
-	}
-	t.Cleanup(func() {
-		p.Close()
-	})
-	return p
+// lo accesses the default loopback interface present in the current netns.
+var lo = &netlink.GenericLink{
+	LinkAttrs: netlink.LinkAttrs{Name: "lo", Index: 1},
+	LinkType:  "loopback",
 }
 
 func mustXDPProgram(t *testing.T, name string) *ebpf.Program {
@@ -90,14 +78,14 @@ func TestSetupDev(t *testing.T) {
 		err = enableForwarding(sysctl, dummy)
 		require.NoError(t, err)
 
-		enabledSettings := []string{
-			fmt.Sprintf("net.ipv6.conf.%s.forwarding", ifName),
-			fmt.Sprintf("net.ipv4.conf.%s.forwarding", ifName),
-			fmt.Sprintf("net.ipv4.conf.%s.accept_local", ifName),
+		enabledSettings := [][]string{
+			{"net", "ipv6", "conf", ifName, "forwarding"},
+			{"net", "ipv4", "conf", ifName, "forwarding"},
+			{"net", "ipv4", "conf", ifName, "accept_local"},
 		}
-		disabledSettings := []string{
-			fmt.Sprintf("net.ipv4.conf.%s.rp_filter", ifName),
-			fmt.Sprintf("net.ipv4.conf.%s.send_redirects", ifName),
+		disabledSettings := [][]string{
+			{"net", "ipv4", "conf", ifName, "rp_filter"},
+			{"net", "ipv4", "conf", ifName, "send_redirects"},
 		}
 		for _, setting := range enabledSettings {
 			s, err := sysctl.Read(setting)
@@ -352,51 +340,6 @@ func TestAddHostDeviceAddr(t *testing.T) {
 
 		return nil
 	})
-}
-
-func TestAttachRemoveTCProgram(t *testing.T) {
-	testutils.PrivilegedTest(t)
-
-	ns := netns.NewNetNS(t)
-
-	ns.Do(func() error {
-		ifName := "dummy0"
-		dummy := &netlink.Dummy{
-			LinkAttrs: netlink.LinkAttrs{
-				Name: ifName,
-			},
-		}
-		err := netlink.LinkAdd(dummy)
-		require.NoError(t, err)
-
-		prog := mustTCProgram(t)
-
-		bpffs := testutils.TempBPFFS(t)
-		err = attachTCProgram(dummy, prog, "test", bpffsDeviceLinksDir(bpffs, dummy), directionToParent(dirEgress))
-		require.NoError(t, err)
-
-		filters, err := netlink.FilterList(dummy, directionToParent(dirEgress))
-		require.NoError(t, err)
-		require.NotEmpty(t, filters)
-
-		err = removeTCFilters(dummy.Attrs().Name, directionToParent(dirEgress))
-		require.NoError(t, err)
-
-		filters, err = netlink.FilterList(dummy, directionToParent(dirEgress))
-		require.NoError(t, err)
-		require.Empty(t, filters)
-
-		err = netlink.LinkDel(dummy)
-		require.NoError(t, err)
-
-		return nil
-	})
-}
-
-func TestRemoveTCFiltersError(t *testing.T) {
-	testutils.PrivilegedTest(t)
-
-	require.NoError(t, removeTCFilters("missing", directionToParent(dirIngress)))
 }
 
 func TestSetupIPIPDevices(t *testing.T) {

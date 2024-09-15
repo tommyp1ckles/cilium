@@ -27,6 +27,7 @@ import (
 	"github.com/cilium/cilium/pkg/components"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/safeio"
 )
 
 // BugtoolRootCmd is the top level command for the bugtool.
@@ -59,6 +60,21 @@ for sensitive information.
 	defaultDumpPath = "/tmp"
 )
 
+// ExtraCommandsFunc represents a function that builds and returns a list of extra commands
+// to gather additional information in specific environments.
+//
+// confDir is the directory where the output of "config commands" (e.g: "uname -r") is stored.
+// cmdDir is the directory where the output of "info commands" (e.g: "cilium-dbg debuginfo",
+// "cilium-dbg metrics list" and pprof traces) is stored.
+// k8sPods is a list of the cilium pods.
+//
+// It returns a slice of strings with all the commands to be executed.
+type ExtraCommandsFunc func(confDir string, cmdDir string, k8sPods []string) []string
+
+// ExtraCommands is a slice of ExtraCommandsFunc each of which generates a list of additional
+// commands to be executed alongside the default ones.
+var ExtraCommands []ExtraCommandsFunc
+
 var (
 	archive                  bool
 	archiveType              string
@@ -88,7 +104,7 @@ var (
 func init() {
 	BugtoolRootCmd.Flags().BoolVar(&archive, "archive", true, "Create archive when false skips deletion of the output directory")
 	BugtoolRootCmd.Flags().BoolVar(&getPProf, "get-pprof", false, "When set, only gets the pprof traces from the cilium-agent binary")
-	BugtoolRootCmd.Flags().IntVar(&pprofDebug, "pprof-debug", 1, "Debug pprof args")
+	BugtoolRootCmd.Flags().IntVar(&pprofDebug, "pprof-debug", 0, "Debug pprof args")
 	BugtoolRootCmd.Flags().BoolVar(&envoyDump, "envoy-dump", true, "When set, dump envoy configuration from unix socket")
 	BugtoolRootCmd.Flags().BoolVar(&envoyMetrics, "envoy-metrics", true, "When set, dump envoy prometheus metrics from unix socket")
 	BugtoolRootCmd.Flags().IntVar(&pprofPort,
@@ -168,6 +184,20 @@ func isValidArchiveType(archiveType string) bool {
 	return false
 }
 
+type postProcessFunc func(output []byte) ([]byte, error)
+
+var envoySecretMask = jsonFieldMaskPostProcess([]string{
+	// Cilium LogEntry -> KafkaLogEntry{l7} -> KafkaLogEntry{api_key}
+	"api_key",
+	// This could be from one of the following:
+	// - Cilium NetworkPolicy -> PortNetworkPolicy{ingress_per_port_policies, egress_per_port_policies}
+	//	-> PortNetworkPolicyRule{rules} -> TLSContext{downstream_tls_context, upstream_tls_context}
+	// - Upstream Envoy tls_certificate
+	"trusted_ca",
+	"certificate_chain",
+	"private_key",
+})
+
 func runTool() {
 	// Validate archive type
 	if !isValidArchiveType(archiveType) {
@@ -199,11 +229,21 @@ func runTool() {
 
 	k8sPods := getVerifyCiliumPods()
 
-	var commands []string
+	commands := defaultCommands(confDir, cmdDir, k8sPods)
+	for _, f := range ExtraCommands {
+		commands = append(commands, f(confDir, cmdDir, k8sPods)...)
+	}
+
 	if dryRunMode {
-		dryRun(configPath, k8sPods, confDir, cmdDir)
+		dryRun(configPath, commands)
 		fmt.Fprintf(os.Stderr, "Configuration file at %s\n", configPath)
 		return
+	}
+
+	// Check if there is a non-empty user supplied configuration
+	if config, _ := loadConfigFile(configPath); config != nil && len(config.Commands) > 0 {
+		// All of of the commands run are from the configuration file
+		commands = config.Commands
 	}
 
 	if getPProf {
@@ -214,13 +254,24 @@ func runTool() {
 		}
 	} else {
 		if envoyDump {
-			if err := dumpEnvoy(cmdDir, "http://admin/config_dump?include_eds", "envoy-config.json"); err != nil {
+			if err := dumpEnvoy(cmdDir, "http://admin/config_dump?include_eds", "envoy-config.json", envoySecretMask); err != nil {
 				fmt.Fprintf(os.Stderr, "Unable to dump envoy config: %s\n", err)
+			}
+			if err := dumpEnvoy(cmdDir, "http://admin/listeners", "envoy-listeners.txt", nil); err != nil {
+				fmt.Fprintf(os.Stderr, "Unable to dump envoy listeners: %s\n", err)
+			}
+
+			if err := dumpEnvoy(cmdDir, "http://admin/clusters", "envoy-clusters.txt", nil); err != nil {
+				fmt.Fprintf(os.Stderr, "Unable to dump envoy clusters: %s\n", err)
+			}
+
+			if err := dumpEnvoy(cmdDir, "http://admin/server_info", "envoy-server-info.json", nil); err != nil {
+				fmt.Fprintf(os.Stderr, "Unable to dump envoy server info: %s\n", err)
 			}
 		}
 
 		if envoyMetrics {
-			if err := dumpEnvoy(cmdDir, "http://admin/stats/prometheus", "envoy-metrics.txt"); err != nil {
+			if err := dumpEnvoy(cmdDir, "http://admin/stats/prometheus", "envoy-metrics.txt", nil); err != nil {
 				fmt.Fprintf(os.Stderr, "Unable to retrieve envoy prometheus metrics: %s\n", err)
 			}
 		}
@@ -231,17 +282,7 @@ func runTool() {
 			}
 		}
 
-		// Check if there is a user supplied configuration
-		if config, _ := loadConfigFile(configPath); config != nil {
-			// All of of the commands run are from the configuration file
-			commands = config.Commands
-		}
-		if len(commands) == 0 {
-			// Found no configuration file or empty so fall back to default commands.
-			commands = defaultCommands(confDir, cmdDir, k8sPods)
-		}
 		defer printDisclaimer()
-
 		runAll(commands, cmdDir, k8sPods)
 
 		if excludeObjectFiles {
@@ -276,9 +317,8 @@ func runTool() {
 
 // dryRun creates the configuration file to show the user what would have been run.
 // The same file can be used to modify what will be run by the bugtool.
-func dryRun(configPath string, k8sPods []string, confDir, cmdDir string) {
-	_, err := setupDefaultConfig(configPath, k8sPods, confDir, cmdDir)
-	if err != nil {
+func dryRun(configPath string, commands []string) {
+	if err := save(&BugtoolConfiguration{commands}, configPath); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s", err)
 		os.Exit(1)
 	}
@@ -513,7 +553,7 @@ func dumpHubbleMetrics(rootDir string) error {
 	return downloadToFile(httpClient, url, filepath.Join(rootDir, "hubble-metrics.txt"))
 }
 
-func dumpEnvoy(rootDir string, resource string, fileName string) error {
+func dumpEnvoy(rootDir string, resource string, fileName string, postProcess postProcessFunc) error {
 	// curl --unix-socket /var/run/cilium/envoy/sockets/admin.sock http:/admin/config_dump\?include_eds > dump.json
 	c := &http.Client{
 		Transport: &http.Transport{
@@ -522,7 +562,11 @@ func dumpEnvoy(rootDir string, resource string, fileName string) error {
 			},
 		},
 	}
-	return downloadToFile(c, resource, filepath.Join(rootDir, fileName))
+
+	if postProcess == nil {
+		return downloadToFile(c, resource, filepath.Join(rootDir, fileName))
+	}
+	return downloadToFileWithPostProcess(c, resource, filepath.Join(rootDir, fileName), postProcess)
 }
 
 func pprofTraces(rootDir string, pprofDebug int) error {
@@ -585,4 +629,28 @@ func downloadToFile(client *http.Client, url, file string) error {
 	}
 	_, err = io.Copy(out, resp.Body)
 	return err
+}
+
+// downloadToFileWithPostProcess downloads the content from the given URL and writes it to the given file.
+// The content is then post-processed using the given postProcess function before being written to the file.
+// Note: Please use downloadToFile instead of this function if no post-processing is required.
+func downloadToFileWithPostProcess(client *http.Client, url, file string, postProcess postProcessFunc) error {
+	resp, err := client.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("bad status: %s", resp.Status)
+	}
+	b, err := safeio.ReadAllLimit(resp.Body, safeio.MB)
+	if err != nil {
+		return err
+	}
+
+	b, err = postProcess(b)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(file, b, 0644)
 }

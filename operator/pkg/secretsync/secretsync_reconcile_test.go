@@ -5,10 +5,9 @@ package secretsync_test
 
 import (
 	"context"
-	"io"
 	"testing"
 
-	"github.com/sirupsen/logrus"
+	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -18,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -25,7 +25,6 @@ import (
 
 	gateway_api "github.com/cilium/cilium/operator/pkg/gateway-api"
 	"github.com/cilium/cilium/operator/pkg/ingress"
-	"github.com/cilium/cilium/operator/pkg/model"
 	"github.com/cilium/cilium/operator/pkg/secretsync"
 	ciliumv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 )
@@ -94,7 +93,7 @@ var secretFixture = []client.Object{
 				{
 					Name:     "https",
 					Port:     443,
-					Hostname: model.AddressOf[gatewayv1.Hostname]("*.cilium.io"),
+					Hostname: ptr.To[gatewayv1.Hostname]("*.cilium.io"),
 					Protocol: "HTTPS",
 					TLS: &gatewayv1.GatewayTLSConfig{
 						CertificateRefs: []gatewayv1.SecretObjectReference{
@@ -135,7 +134,7 @@ var secretFixture = []client.Object{
 				{
 					Name:     "https",
 					Port:     443,
-					Hostname: model.AddressOf[gatewayv1.Hostname]("*.acme.io"),
+					Hostname: ptr.To[gatewayv1.Hostname]("*.acme.io"),
 					Protocol: "HTTPS",
 					TLS: &gatewayv1.GatewayTLSConfig{
 						CertificateRefs: []gatewayv1.SecretObjectReference{
@@ -165,7 +164,7 @@ var secretFixture = []client.Object{
 				{
 					Name:     "https",
 					Port:     443,
-					Hostname: model.AddressOf[gatewayv1.Hostname]("*.cilium.io"),
+					Hostname: ptr.To[gatewayv1.Hostname]("*.cilium.io"),
 					Protocol: "HTTPS",
 					TLS: &gatewayv1.GatewayTLSConfig{
 						CertificateRefs: []gatewayv1.SecretObjectReference{
@@ -184,7 +183,7 @@ var secretFixture = []client.Object{
 			Name:      "valid-ingress-cilium",
 		},
 		Spec: networkingv1.IngressSpec{
-			IngressClassName: model.AddressOf("cilium"),
+			IngressClassName: ptr.To("cilium"),
 			TLS: []networkingv1.IngressTLS{
 				{
 					Hosts:      []string{"*.cilium.io"},
@@ -196,8 +195,7 @@ var secretFixture = []client.Object{
 }
 
 func Test_SecretSync_Reconcile(t *testing.T) {
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
+	logger := hivetest.Logger(t)
 
 	c := fake.NewClientBuilder().
 		WithScheme(testScheme()).
@@ -356,8 +354,7 @@ var secretFixtureDefaultSecret = []client.Object{
 }
 
 func Test_SecretSync_Reconcile_WithDefaultSecret(t *testing.T) {
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
+	logger := hivetest.Logger(t)
 
 	c := fake.NewClientBuilder().
 		WithScheme(testScheme()).

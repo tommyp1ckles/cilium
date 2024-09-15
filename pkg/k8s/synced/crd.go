@@ -17,7 +17,6 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 
-	"github.com/cilium/cilium/pkg/k8s"
 	v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	v2alpha1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	"github.com/cilium/cilium/pkg/k8s/client"
@@ -105,7 +104,8 @@ func AllCiliumCRDResourceNames() []string {
 	return append(
 		AgentCRDResourceNames(),
 		CRDResourceName(v2.CEWName),
-		CRDResourceName(v2alpha1.CNCName),
+		CRDResourceName(v2.CNCName),
+		CRDResourceName(v2alpha1.CNCName), // TODO depreciate CNC on v2alpha1 https://github.com/cilium/cilium/issues/31982
 	)
 }
 
@@ -179,6 +179,7 @@ func SyncCRDs(ctx context.Context, clientset client.Clientset, crdNames []string
 	log.Info("Waiting until all Cilium CRDs are available")
 
 	ticker := time.NewTicker(50 * time.Millisecond)
+	count := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -200,12 +201,17 @@ func SyncCRDs(ctx context.Context, clientset client.Clientset, crdNames []string
 				log.Info("All Cilium CRDs have been found and are available")
 				return nil
 			}
+			count++
+			if count == 20 {
+				count = 0
+				log.Infof("Still waiting for Cilium Operator to register the following CRDs: %v", crds.unSynced())
+			}
 		}
 	}
 }
 
 func (s *crdState) add(obj interface{}) {
-	if pom := k8s.CastInformerEvent[slim_metav1.PartialObjectMetadata](obj); pom != nil {
+	if pom := informer.CastInformerEvent[slim_metav1.PartialObjectMetadata](obj); pom != nil {
 		s.Lock()
 		s.m[CRDResourceName(pom.GetName())] = true
 		s.Unlock()
@@ -213,7 +219,7 @@ func (s *crdState) add(obj interface{}) {
 }
 
 func (s *crdState) remove(obj interface{}) {
-	if pom := k8s.CastInformerEvent[slim_metav1.PartialObjectMetadata](obj); pom != nil {
+	if pom := informer.CastInformerEvent[slim_metav1.PartialObjectMetadata](obj); pom != nil {
 		s.Lock()
 		s.m[CRDResourceName(pom.GetName())] = false
 		s.Unlock()

@@ -154,6 +154,8 @@ const (
 	CONDITION_LARGE_COMMUNITY
 	CONDITION_NEXT_HOP
 	CONDITION_AFI_SAFI_IN
+	CONDITION_COMMUNITY_COUNT
+	CONDITION_ORIGIN
 )
 
 type ActionType int
@@ -167,6 +169,7 @@ const (
 	ACTION_NEXTHOP
 	ACTION_LOCAL_PREF
 	ACTION_LARGE_COMMUNITY
+	ACTION_ORIGIN
 )
 
 func NewMatchOption(c interface{}) (MatchOption, error) {
@@ -1825,6 +1828,59 @@ func NewLargeCommunityCondition(c oc.MatchLargeCommunitySet) (*LargeCommunityCon
 	}, nil
 }
 
+type CommunityCountCondition struct {
+	count    uint32
+	operator AttributeComparison
+}
+
+func (c *CommunityCountCondition) Type() ConditionType {
+	return CONDITION_COMMUNITY_COUNT
+}
+
+// Evaluate compares the number of communities in the message's community
+// attributes with the one in condition.
+func (c *CommunityCountCondition) Evaluate(path *Path, _ *PolicyOptions) bool {
+	count := uint32(len(path.GetCommunities()))
+	switch c.operator {
+	case ATTRIBUTE_EQ:
+		return count == c.count
+	case ATTRIBUTE_GE:
+		return count >= c.count
+	case ATTRIBUTE_LE:
+		return count <= c.count
+	default:
+		return false
+	}
+}
+
+func (c *CommunityCountCondition) Set() DefinedSet {
+	return nil
+}
+
+func (c *CommunityCountCondition) Name() string { return "" }
+
+func (c *CommunityCountCondition) String() string {
+	return fmt.Sprintf("%s%d", c.operator, c.count)
+}
+
+func NewCommunityCountCondition(c oc.CommunityCount) (*CommunityCountCondition, error) {
+	if c.Value == 0 && c.Operator == "" {
+		return nil, nil
+	}
+	var op AttributeComparison
+	if i := c.Operator.ToInt(); i < 0 {
+		return nil, fmt.Errorf("invalid community count operator: %s", c.Operator)
+	} else {
+		// take mod 3 because we have extended openconfig attribute-comparison
+		// for simple configuration. see oc.AttributeComparison definition
+		op = AttributeComparison(i % 3)
+	}
+	return &CommunityCountCondition{
+		count:    c.Value,
+		operator: op,
+	}, nil
+}
+
 type AsPathLengthCondition struct {
 	length   uint32
 	operator AttributeComparison
@@ -1837,19 +1893,17 @@ func (c *AsPathLengthCondition) Type() ConditionType {
 // compare AS_PATH length in the message's AS_PATH attribute with
 // the one in condition.
 func (c *AsPathLengthCondition) Evaluate(path *Path, _ *PolicyOptions) bool {
-
 	length := uint32(path.GetAsPathLen())
-	result := false
 	switch c.operator {
 	case ATTRIBUTE_EQ:
-		result = c.length == length
+		return length == c.length
 	case ATTRIBUTE_GE:
-		result = c.length <= length
+		return length >= c.length
 	case ATTRIBUTE_LE:
-		result = c.length >= length
+		return length <= c.length
+	default:
+		return false
 	}
-
-	return result
 }
 
 func (c *AsPathLengthCondition) Set() DefinedSet {
@@ -1953,6 +2007,38 @@ func NewRouteTypeCondition(c oc.RouteType) (*RouteTypeCondition, error) {
 	}
 	return &RouteTypeCondition{
 		typ: c,
+	}, nil
+}
+
+type OriginCondition struct {
+	origin oc.BgpOriginAttrType
+}
+
+func (c *OriginCondition) Type() ConditionType {
+	return CONDITION_ORIGIN
+}
+
+func (c *OriginCondition) Set() DefinedSet {
+	return nil
+}
+
+// compare if origin matches the one in the condition.
+func (c *OriginCondition) Evaluate(path *Path, _ *PolicyOptions) bool {
+	originInt, err := path.GetOrigin()
+	if err != nil {
+		return false
+	}
+	return int(originInt) == c.origin.ToInt()
+}
+
+func (c *OriginCondition) Name() string { return "" }
+
+func NewOriginCondition(origin oc.BgpOriginAttrType) (*OriginCondition, error) {
+	if origin.ToInt() == -1 {
+		return nil, nil
+	}
+	return &OriginCondition{
+		origin: origin,
 	}, nil
 }
 
@@ -2492,6 +2578,44 @@ func NewLocalPrefAction(value uint32) (*LocalPrefAction, error) {
 	}, nil
 }
 
+type OriginAction struct {
+	value oc.BgpOriginAttrType
+}
+
+func (a *OriginAction) Type() ActionType {
+	return ACTION_ORIGIN
+}
+
+func (a *OriginAction) Apply(path *Path, _ *PolicyOptions) (*Path, error) {
+	originInt := a.value.ToInt()
+	if originInt == -1 {
+		return nil, fmt.Errorf("internal error: got invalid value for origin action")
+	}
+	path.setPathAttr(bgp.NewPathAttributeOrigin(uint8(originInt)))
+	return path, nil
+}
+
+func (a *OriginAction) ToConfig() oc.BgpOriginAttrType {
+	return a.value
+}
+
+func (a *OriginAction) String() string {
+	return fmt.Sprintf("%q", a.value)
+}
+
+func (a *OriginAction) MarshalJSON() ([]byte, error) {
+	return json.Marshal(a.ToConfig())
+}
+
+func NewOriginAction(value oc.BgpOriginAttrType) (*OriginAction, error) {
+	if value.ToInt() == -1 {
+		return nil, nil
+	}
+	return &OriginAction{
+		value: value,
+	}, nil
+}
+
 type AsPathPrependAction struct {
 	asn         uint32
 	useLeftMost bool
@@ -2569,9 +2693,10 @@ func NewAsPathPrependAction(action oc.SetAsPathPrepend) (*AsPathPrependAction, e
 }
 
 type NexthopAction struct {
-	value     net.IP
-	self      bool
-	unchanged bool
+	value       net.IP
+	self        bool
+	peerAddress bool
+	unchanged   bool
 }
 
 func (a *NexthopAction) Type() ActionType {
@@ -2579,13 +2704,18 @@ func (a *NexthopAction) Type() ActionType {
 }
 
 func (a *NexthopAction) Apply(path *Path, options *PolicyOptions) (*Path, error) {
-	if a.self {
+	switch {
+	case a.self:
 		if options != nil && options.Info != nil && options.Info.LocalAddress != nil {
 			path.SetNexthop(options.Info.LocalAddress)
 		}
 		return path, nil
-	}
-	if a.unchanged {
+	case a.peerAddress:
+		if options != nil && options.Info != nil && options.Info.Address != nil {
+			path.SetNexthop(options.Info.Address)
+		}
+		return path, nil
+	case a.unchanged:
 		if options != nil && options.OldNextHop != nil {
 			path.SetNexthop(options.OldNextHop)
 		}
@@ -2596,10 +2726,12 @@ func (a *NexthopAction) Apply(path *Path, options *PolicyOptions) (*Path, error)
 }
 
 func (a *NexthopAction) ToConfig() oc.BgpNextHopType {
-	if a.self {
+	switch {
+	case a.self:
 		return oc.BgpNextHopType("self")
-	}
-	if a.unchanged {
+	case a.peerAddress:
+		return oc.BgpNextHopType("peer-address")
+	case a.unchanged:
 		return oc.BgpNextHopType("unchanged")
 	}
 	return oc.BgpNextHopType(a.value.String())
@@ -2620,6 +2752,10 @@ func NewNexthopAction(c oc.BgpNextHopType) (*NexthopAction, error) {
 	case "self":
 		return &NexthopAction{
 			self: true,
+		}, nil
+	case "peer-address":
+		return &NexthopAction{
+			peerAddress: true,
 		}, nil
 	case "unchanged":
 		return &NexthopAction{
@@ -2693,6 +2829,8 @@ func (s *Statement) ToConfig() *oc.Statement {
 					cond.MatchPrefixSet = oc.MatchPrefixSet{PrefixSet: v.set.Name(), MatchSetOptions: v.option.ConvertToMatchSetOptionsRestrictedType()}
 				case *NeighborCondition:
 					cond.MatchNeighborSet = oc.MatchNeighborSet{NeighborSet: v.set.Name(), MatchSetOptions: v.option.ConvertToMatchSetOptionsRestrictedType()}
+				case *CommunityCountCondition:
+					cond.BgpConditions.CommunityCount = oc.CommunityCount{Operator: oc.IntToAttributeComparisonMap[int(v.operator)], Value: v.count}
 				case *AsPathLengthCondition:
 					cond.BgpConditions.AsPathLength = oc.AsPathLength{Operator: oc.IntToAttributeComparisonMap[int(v.operator)], Value: v.length}
 				case *AsPathCondition:
@@ -2709,6 +2847,8 @@ func (s *Statement) ToConfig() *oc.Statement {
 					cond.BgpConditions.RpkiValidationResult = v.result
 				case *RouteTypeCondition:
 					cond.BgpConditions.RouteType = v.typ
+				case *OriginCondition:
+					cond.BgpConditions.OriginEq = v.origin
 				case *AfiSafiInCondition:
 					res := make([]oc.AfiSafiType, 0, len(v.routeFamilies))
 					for _, rf := range v.routeFamilies {
@@ -2747,6 +2887,8 @@ func (s *Statement) ToConfig() *oc.Statement {
 					act.BgpActions.SetLocalPref = v.ToConfig()
 				case *NexthopAction:
 					act.BgpActions.SetNextHop = v.ToConfig()
+				case *OriginAction:
+					act.BgpActions.SetRouteOrigin = v.ToConfig()
 				}
 			}
 			return act
@@ -2893,6 +3035,9 @@ func NewStatement(c oc.Statement) (*Statement, error) {
 			return NewNeighborCondition(c.Conditions.MatchNeighborSet)
 		},
 		func() (Condition, error) {
+			return NewCommunityCountCondition(c.Conditions.BgpConditions.CommunityCount)
+		},
+		func() (Condition, error) {
 			return NewAsPathLengthCondition(c.Conditions.BgpConditions.AsPathLength)
 		},
 		func() (Condition, error) {
@@ -2900,6 +3045,9 @@ func NewStatement(c oc.Statement) (*Statement, error) {
 		},
 		func() (Condition, error) {
 			return NewRouteTypeCondition(c.Conditions.BgpConditions.RouteType)
+		},
+		func() (Condition, error) {
+			return NewOriginCondition(c.Conditions.BgpConditions.OriginEq)
 		},
 		func() (Condition, error) {
 			return NewAsPathCondition(c.Conditions.BgpConditions.MatchAsPathSet)
@@ -2955,6 +3103,9 @@ func NewStatement(c oc.Statement) (*Statement, error) {
 		},
 		func() (Action, error) {
 			return NewNexthopAction(c.Actions.BgpActions.SetNextHop)
+		},
+		func() (Action, error) {
+			return NewOriginAction(c.Actions.BgpActions.SetRouteOrigin)
 		},
 	}
 	as = make([]Action, 0, len(afs))
@@ -3945,6 +4096,22 @@ func toStatementApi(s *oc.Statement) *api.Statement {
 			Name: s.Conditions.MatchNeighborSet.NeighborSet,
 		}
 	}
+	if s.Conditions.BgpConditions.CommunityCount.Operator != "" {
+		cs.CommunityCount = &api.CommunityCount{
+			Count: s.Conditions.BgpConditions.CommunityCount.Value,
+			Type:  api.CommunityCount_Type(s.Conditions.BgpConditions.CommunityCount.Operator.ToInt()),
+		}
+	}
+	if s.Conditions.BgpConditions.OriginEq.ToInt() != -1 {
+		switch s.Actions.BgpActions.SetRouteOrigin {
+		case oc.BGP_ORIGIN_ATTR_TYPE_IGP:
+			cs.Origin = api.RouteOriginType_ORIGIN_IGP
+		case oc.BGP_ORIGIN_ATTR_TYPE_EGP:
+			cs.Origin = api.RouteOriginType_ORIGIN_EGP
+		case oc.BGP_ORIGIN_ATTR_TYPE_INCOMPLETE:
+			cs.Origin = api.RouteOriginType_ORIGIN_INCOMPLETE
+		}
+	}
 	if s.Conditions.BgpConditions.AsPathLength.Operator != "" {
 		cs.AsPathLength = &api.AsPathLength{
 			Length: s.Conditions.BgpConditions.AsPathLength.Value,
@@ -4073,12 +4240,16 @@ func toStatementApi(s *oc.Statement) *api.Statement {
 				return nil
 			}
 
-			if string(s.Actions.BgpActions.SetNextHop) == "self" {
+			switch string(s.Actions.BgpActions.SetNextHop) {
+			case "self":
 				return &api.NexthopAction{
 					Self: true,
 				}
-			}
-			if string(s.Actions.BgpActions.SetNextHop) == "unchanged" {
+			case "peer-address":
+				return &api.NexthopAction{
+					PeerAddress: true,
+				}
+			case "unchanged":
 				return &api.NexthopAction{
 					Unchanged: true,
 				}
@@ -4092,6 +4263,23 @@ func toStatementApi(s *oc.Statement) *api.Statement {
 				return nil
 			}
 			return &api.LocalPrefAction{Value: s.Actions.BgpActions.SetLocalPref}
+		}(),
+		OriginAction: func() *api.OriginAction {
+			if s.Actions.BgpActions.SetRouteOrigin.ToInt() == -1 {
+				return nil
+			}
+			var apiOrigin api.RouteOriginType
+			switch s.Actions.BgpActions.SetRouteOrigin {
+			case oc.BGP_ORIGIN_ATTR_TYPE_IGP:
+				apiOrigin = api.RouteOriginType_ORIGIN_IGP
+			case oc.BGP_ORIGIN_ATTR_TYPE_EGP:
+				apiOrigin = api.RouteOriginType_ORIGIN_EGP
+			case oc.BGP_ORIGIN_ATTR_TYPE_INCOMPLETE:
+				apiOrigin = api.RouteOriginType_ORIGIN_INCOMPLETE
+			default:
+				return nil
+			}
+			return &api.OriginAction{Origin: apiOrigin}
 		}(),
 	}
 	return &api.Statement{

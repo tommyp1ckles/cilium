@@ -178,7 +178,7 @@ func (mgr *endpointManager) UpdatePolicyMaps(ctx context.Context, notifyWg *sync
 		go func(ep *endpoint.Endpoint) {
 			// Proceed only after all notifications have been delivered to endpoints
 			notifyWg.Wait()
-			if err := ep.ApplyPolicyMapChanges(proxyWaitGroup); err != nil {
+			if err := ep.ApplyPolicyMapChanges(proxyWaitGroup); err != nil && !errors.Is(err, endpoint.ErrNotAlive) {
 				ep.Logger("endpointmanager").WithError(err).Warning("Failed to apply policy map changes. These will be re-applied in future updates.")
 			}
 			epWG.Done()
@@ -560,7 +560,7 @@ func (mgr *endpointManager) RegenerateAllEndpoints(regenMetadata *regeneration.E
 // OverrideEndpointOpts applies the given options to all endpoints.
 func (mgr *endpointManager) OverrideEndpointOpts(om option.OptionMap) {
 	for _, ep := range mgr.GetEndpoints() {
-		if _, err := ep.ApplyOpts(om); err != nil && !errors.Is(err, endpoint.ErrEndpointDeleted) {
+		if _, err := ep.ApplyOpts(om); err != nil && !errors.Is(err, endpoint.ErrNotAlive) {
 			log.WithError(err).WithFields(logrus.Fields{
 				"ep": ep.GetID(),
 			}).Error("Override endpoint options failed")
@@ -627,7 +627,6 @@ func (mgr *endpointManager) expose(ep *endpoint.Endpoint) error {
 // RestoreEndpoint exposes the specified endpoint to other subsystems via the
 // manager.
 func (mgr *endpointManager) RestoreEndpoint(ep *endpoint.Endpoint) error {
-	ep.SetDefaultConfiguration()
 	err := mgr.expose(ep)
 	if err != nil {
 		return err
@@ -648,7 +647,7 @@ func (mgr *endpointManager) RestoreEndpoint(ep *endpoint.Endpoint) error {
 }
 
 // AddEndpoint takes the prepared endpoint object and starts managing it.
-func (mgr *endpointManager) AddEndpoint(owner regeneration.Owner, ep *endpoint.Endpoint, reason string) (err error) {
+func (mgr *endpointManager) AddEndpoint(owner regeneration.Owner, ep *endpoint.Endpoint) (err error) {
 	if ep.ID != 0 {
 		return fmt.Errorf("Endpoint ID is already set to %d", ep.ID)
 	}
@@ -686,14 +685,13 @@ func (mgr *endpointManager) AddIngressEndpoint(
 	ipcache *ipcache.IPCache,
 	proxy endpoint.EndpointProxy,
 	allocator cache.IdentityAllocator,
-	reason string,
 ) error {
 	ep, err := endpoint.CreateIngressEndpoint(owner, policyGetter, ipcache, proxy, allocator)
 	if err != nil {
 		return err
 	}
 
-	if err := mgr.AddEndpoint(owner, ep, reason); err != nil {
+	if err := mgr.AddEndpoint(owner, ep); err != nil {
 		return err
 	}
 
@@ -709,14 +707,13 @@ func (mgr *endpointManager) AddHostEndpoint(
 	ipcache *ipcache.IPCache,
 	proxy endpoint.EndpointProxy,
 	allocator cache.IdentityAllocator,
-	reason, nodeName string,
 ) error {
 	ep, err := endpoint.CreateHostEndpoint(owner, policyGetter, ipcache, proxy, allocator)
 	if err != nil {
 		return err
 	}
 
-	if err := mgr.AddEndpoint(owner, ep, reason); err != nil {
+	if err := mgr.AddEndpoint(owner, ep); err != nil {
 		return err
 	}
 
@@ -803,5 +800,5 @@ func (mgr *endpointManager) GetEndpointNetnsCookieByIP(ip netip.Addr) (uint64, e
 		return 0, fmt.Errorf("endpoint not found by ip %v", ip)
 	}
 
-	return ep.GetEndpointNetnsCookie(), nil
+	return ep.NetNsCookie, nil
 }

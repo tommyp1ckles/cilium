@@ -6,7 +6,6 @@ package gateway_api
 import (
 	"context"
 
-	"github.com/sirupsen/logrus"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -21,10 +20,7 @@ import (
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.12.2/pkg/reconcile
 func (r *gatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	scopedLog := log.WithContext(ctx).WithFields(logrus.Fields{
-		logfields.Controller: "gatewayclass",
-		logfields.Resource:   req.NamespacedName,
-	})
+	scopedLog := r.logger.With(logfields.Controller, "gatewayclass", logfields.Resource, req.NamespacedName)
 
 	scopedLog.Info("Reconciling GatewayClass")
 	gwc := &gatewayv1.GatewayClass{}
@@ -46,31 +42,10 @@ func (r *gatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Hence, just set gateway class Accepted condition to true blindly.
 	setGatewayClassAccepted(gwc, true)
 
-	// List of features supported by Cilium.
-	// The same is used in GHA CI .github/workflows/conformance-gateway-api.yaml
-	gwc.Status.SupportedFeatures = []gatewayv1.SupportedFeature{
-		"Gateway",
-		//"GatewayPort8080",
-		//"GatewayStaticAddresses",
-		"HTTPRoute",
-		"HTTPRouteDestinationPortMatching",
-		"HTTPRouteHostRewrite",
-		"HTTPRouteMethodMatching",
-		"HTTPRoutePathRedirect",
-		"HTTPRoutePathRewrite",
-		"HTTPRoutePortRedirect",
-		"HTTPRouteQueryParamMatching",
-		"HTTPRouteRequestMirror",
-		"HTTPRouteRequestMultipleMirrors",
-		"HTTPRouteResponseHeaderModification",
-		"HTTPRouteSchemeRedirect",
-		//"Mesh",
-		"ReferenceGrant",
-		"TLSRoute",
-	}
+	setGatewayClassSupportedFeatures(gwc)
 
 	if err := r.Client.Status().Update(ctx, gwc); err != nil {
-		scopedLog.WithError(err).Error("Failed to update GatewayClass status")
+		scopedLog.ErrorContext(ctx, "Failed to update GatewayClass status", logfields.Error, err)
 		return controllerruntime.Fail(err)
 	}
 	scopedLog.Info("Successfully reconciled GatewayClass")

@@ -4,6 +4,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -53,14 +54,6 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 
 	flags.String(option.ConfigDir, "", `Configuration directory that contains a file for each option`)
 	option.BindEnv(vp, option.ConfigDir)
-
-	flags.Float64(operatorOption.CNPStatusCleanupQPS, operatorOption.CNPStatusCleanupQPSDefault,
-		"Rate used for limiting the clean up of the status nodes updates in CNP, expressed as qps")
-	option.BindEnv(vp, operatorOption.CNPStatusCleanupQPS)
-
-	flags.Int(operatorOption.CNPStatusCleanupBurst, operatorOption.CNPStatusCleanupBurstDefault,
-		"Maximum burst of requests to clean up status nodes updates in CNPs")
-	option.BindEnv(vp, operatorOption.CNPStatusCleanupBurst)
 
 	flags.BoolP(option.DebugArg, "D", false, "Enable debugging mode")
 	option.BindEnv(vp, option.DebugArg)
@@ -143,7 +136,7 @@ func InitGlobalFlags(cmd *cobra.Command, vp *viper.Viper) {
 			if recommendation := recommendInstead(); recommendation != "" {
 				return fmt.Errorf("%s (use %s)", errMsg, recommendation)
 			}
-			return fmt.Errorf(errMsg)
+			return errors.New(errMsg)
 		}
 
 		switch binaryName {
@@ -290,6 +283,10 @@ const (
 
 	// pprofPort is the port that the pprof listens on
 	pprofPort = "operator-pprof-port"
+
+	k8sClientQps = "operator-k8s-client-qps"
+
+	k8sClientBurst = "operator-k8s-client-burst"
 )
 
 // operatorPprofConfig holds the configuration for the operator pprof cell.
@@ -307,4 +304,14 @@ func (def operatorPprofConfig) Flags(flags *pflag.FlagSet) {
 	flags.Bool(pprofOperator, def.OperatorPprof, "Enable serving pprof debugging API")
 	flags.String(pprofAddress, def.OperatorPprofAddress, "Address that pprof listens on")
 	flags.Uint16(pprofPort, def.OperatorPprofPort, "Port that pprof listens on")
+}
+
+type operatorClientParams struct {
+	OperatorK8sClientQPS   float32
+	OperatorK8sClientBurst int
+}
+
+func (def operatorClientParams) Flags(flags *pflag.FlagSet) {
+	flags.Float32(k8sClientQps, def.OperatorK8sClientQPS, "Queries per second limit for the K8s client")
+	flags.Int(k8sClientBurst, def.OperatorK8sClientBurst, "Burst value allowed for the K8s client")
 }

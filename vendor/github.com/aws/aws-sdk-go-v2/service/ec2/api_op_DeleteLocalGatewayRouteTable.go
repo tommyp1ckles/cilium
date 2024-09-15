@@ -29,7 +29,7 @@ func (c *Client) DeleteLocalGatewayRouteTable(ctx context.Context, params *Delet
 
 type DeleteLocalGatewayRouteTableInput struct {
 
-	// The ID of the local gateway route table.
+	//  The ID of the local gateway route table.
 	//
 	// This member is required.
 	LocalGatewayRouteTableId *string
@@ -107,6 +107,12 @@ func (c *Client) addOperationDeleteLocalGatewayRouteTableMiddlewares(stack *midd
 		return err
 	}
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+		return err
+	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
 	if err = addOpDeleteLocalGatewayRouteTableValidationMiddleware(stack); err != nil {

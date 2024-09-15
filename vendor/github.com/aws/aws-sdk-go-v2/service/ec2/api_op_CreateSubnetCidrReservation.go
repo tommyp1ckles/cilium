@@ -11,11 +11,11 @@ import (
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
 
-// Creates a subnet CIDR reservation. For more information, see Subnet CIDR
-// reservations (https://docs.aws.amazon.com/vpc/latest/userguide/subnet-cidr-reservation.html)
-// in the Amazon Virtual Private Cloud User Guide and Assign prefixes to network
-// interfaces (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-prefix-eni.html)
-// in the Amazon Elastic Compute Cloud User Guide.
+// Creates a subnet CIDR reservation. For more information, see [Subnet CIDR reservations] in the Amazon VPC
+// User Guide and [Assign prefixes to network interfaces]in the Amazon EC2 User Guide.
+//
+// [Subnet CIDR reservations]: https://docs.aws.amazon.com/vpc/latest/userguide/subnet-cidr-reservation.html
+// [Assign prefixes to network interfaces]: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-prefix-eni.html
 func (c *Client) CreateSubnetCidrReservation(ctx context.Context, params *CreateSubnetCidrReservationInput, optFns ...func(*Options)) (*CreateSubnetCidrReservationOutput, error) {
 	if params == nil {
 		params = &CreateSubnetCidrReservationInput{}
@@ -40,8 +40,10 @@ type CreateSubnetCidrReservationInput struct {
 
 	// The type of reservation. The reservation type determines how the reserved IP
 	// addresses are assigned to resources.
+	//
 	//   - prefix - Amazon Web Services assigns the reserved IP addresses to network
 	//   interfaces.
+	//
 	//   - explicit - You assign the reserved IP addresses to network interfaces.
 	//
 	// This member is required.
@@ -131,6 +133,12 @@ func (c *Client) addOperationCreateSubnetCidrReservationMiddlewares(stack *middl
 		return err
 	}
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+		return err
+	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
 	if err = addOpCreateSubnetCidrReservationValidationMiddleware(stack); err != nil {

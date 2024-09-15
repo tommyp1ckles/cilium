@@ -254,6 +254,7 @@ func (c ciliumCleanup) cleanupFuncs() []cleanupFunc {
 		cleanupTCFilters,
 		cleanupXDPs,
 		removeSocketLBPrograms,
+		removeCiliumBPFFS,
 	}
 	if !c.bpfOnly {
 		funcs = append(funcs, cleanupRoutesAndLinks)
@@ -549,12 +550,8 @@ func removeTCFilters(linkAndFilters map[string][]*netlink.BpfFilter) error {
 }
 
 func removeXDPAttachments(links []netlink.Link) error {
-	loader := loader.NewLoader(loader.Params{
-		Config: loader.DefaultConfig,
-	})
-
 	for _, link := range links {
-		if err := loader.DetachXDP(link, bpf.CiliumPath(), "cil_xdp_entry"); err != nil {
+		if err := loader.DetachXDP(link.Attrs().Name, bpf.CiliumPath(), "cil_xdp_entry"); err != nil {
 			return err
 		}
 		fmt.Printf("removed cilium xdp of %s\n", link.Attrs().Name)
@@ -593,4 +590,15 @@ func isCiliumXDP(progId uint32) (bool, error) {
 
 	return false, nil
 
+}
+
+func removeCiliumBPFFS() error {
+	path := bpf.CiliumPath()
+
+	if err := bpf.Remove(path); err != nil {
+		return err
+	}
+
+	fmt.Printf("removed all cilium bpffs objects under %s\n", path)
+	return nil
 }

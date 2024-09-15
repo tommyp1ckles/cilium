@@ -17,6 +17,9 @@ on:
         description: "[JSON object] Arbitrary arguments passed from the trigger comment via regex capture group. Parse with 'fromJson(inputs.extra-args).argName' in workflow."
         required: false
         default: '{}'
+  push:
+    branches:
+      - 'renovate/main-**'
   # Run every 6 hours
   schedule:
     - cron:  '0 2/6 * * *'
@@ -24,6 +27,8 @@ on:
 # By specifying the access of one of the scopes, all of those that are not
 # specified are set to 'none'.
 permissions:
+  # To read actions state with catchpoint/workflow-telemetry-action
+  actions: read
   # To be able to access the repository with actions/checkout
   contents: read
   # To allow retrieving information from the PR API
@@ -47,6 +52,7 @@ concurrency:
     ${{ github.workflow }}
     ${{ github.event_name }}
     ${{
+      (github.event_name == 'push' && github.sha) ||
       (github.event_name == 'schedule' && github.sha) ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.PR-number)
     }}
@@ -56,6 +62,8 @@ env:
   clusterName: ${{ github.repository_owner }}-${{ github.event.repository.name }}-${{ github.run_id }}-${{ github.run_attempt }}
   cilium_cli_ci_version:
   USE_GKE_GCLOUD_AUTH_PLUGIN: True
+  # renovate: datasource=docker depName=google/cloud-sdk
+  gcloud_version: 491.0.0
 
 jobs:
   echo-inputs:
@@ -72,7 +80,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Set initial commit status
-        uses: myrotvorets/set-commit-status-action@3730c0a348a2ace3c110851bed53331bc6406e9f # v2.0.1  
+        uses: myrotvorets/set-commit-status-action@3730c0a348a2ace3c110851bed53331bc6406e9f # v2.0.1
         with:
           sha: ${{ inputs.SHA || github.sha }}
 
@@ -81,9 +89,10 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
+      empty: ${{ steps.set-matrix.outputs.empty }}
     steps:
       - name: Checkout context ref (trusted)
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
         with:
           ref: ${{ inputs.context-ref || github.sha }}
           persist-credentials: false
@@ -99,12 +108,11 @@ jobs:
             new_filename="${filename%.yaml}.json"
             yq -o=json "${file}" | jq . > "${destination_directory}/${new_filename}"
           done
-          
+
           # Merge 2 files into one
           jq -s "add" ${destination_directory}/*.json > "${destination_directory}/gke.json"
 
       - name: Generate Matrix
-        id: set-matrix
         run: |
           cd /tmp/generated/gke
 
@@ -119,16 +127,54 @@ jobs:
 
           echo "Generated matrix:"
           cat /tmp/matrix.json
-          echo "matrix=$(jq -c . < /tmp/matrix.json)" >> $GITHUB_OUTPUT
+
+      - name: Set up gcloud credentials
+        id: 'auth'
+        uses: google-github-actions/auth@62cf5bd3e4211a0a0b51f2c6d6a37129d828611d # v2.1.5
+        with:
+          workload_identity_provider: ${{ secrets.GCP_PR_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_PR_SA }}
+          create_credentials_file: true
+          export_environment_variables: true
+
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@f0990588f1e5b5af6827153b93673613abdc6ec7 # v2.1.1
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+          version: ${{ env.gcloud_version }}
+
+      - name: Filter Matrix
+        id: set-matrix
+        run: |
+          cp /tmp/matrix.json /tmp/result.json
+          jq -c '.k8s[]' /tmp/matrix.json | while read i; do
+            VERSION=$(echo $i | jq -r '.version')
+            ZONE=$(echo $i | jq -r '.zone')
+            gcloud --quiet container get-server-config \
+              --flatten="channels" \
+              --format="yaml(channels.validVersions)" --zone $ZONE > /tmp/output
+            if grep -q -F $VERSION /tmp/output; then
+              echo "Version $VERSION is valid for zone $ZONE"
+            else
+              echo "::notice::Removing version $VERSION as it's not valid for zone $ZONE"
+              jq 'del(.k8s[] | select(.version == "'$VERSION'"))' /tmp/result.json > /tmp/result.json.tmp
+              mv /tmp/result.json.tmp /tmp/result.json
+            fi
+          done
+          echo "Filtered matrix:"
+          cat /tmp/result.json
+
+          echo "matrix=$(jq -c . < /tmp/result.json)" >> $GITHUB_OUTPUT
+          echo "empty=$(jq '(.k8s | length) == 0' /tmp/result.json)" >> $GITHUB_OUTPUT
 
   installation-and-connectivity:
     name: Installation and Connectivity Test
     needs: generate-matrix
+    if: ${{ needs.generate-matrix.outputs.empty == 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 75
     env:
       job_name: "Installation and Connectivity Test"
-      preemptible: ${{ github.event_name != 'schedule' && '--preemptible' || '' }}
     strategy:
       fail-fast: false
       matrix: ${{fromJson(needs.generate-matrix.outputs.matrix)}}
@@ -140,7 +186,7 @@ jobs:
           comment_on_pr: false
 
       - name: Checkout context ref (trusted)
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
         with:
           ref: ${{ inputs.context-ref || github.sha }}
           persist-credentials: false
@@ -162,7 +208,7 @@ jobs:
             OWNER="${{ inputs.PR-number }}"
           else
             OWNER="${{ github.ref_name }}"
-            OWNER="${OWNER/./-}"
+            OWNER="${OWNER//[.\/]/-}"
           fi
 
           CILIUM_INSTALL_DEFAULTS="${{ steps.default_vars.outputs.cilium_install_defaults }} \
@@ -181,16 +227,9 @@ jobs:
           echo sha=${{ steps.default_vars.outputs.sha }} >> $GITHUB_OUTPUT
           echo owner=${OWNER} >> $GITHUB_OUTPUT
 
-      - name: Install Cilium CLI
-        uses: cilium/cilium-cli@a9579d1afc528b085930c5237a69ee77b2c2be76 # v0.16.4
-        with:
-          repository: ${{ env.CILIUM_CLI_RELEASE_REPO }}
-          release-version: ${{ env.CILIUM_CLI_VERSION }}
-          ci-version: ${{ env.cilium_cli_ci_version }}
-
       - name: Set up gcloud credentials
         id: 'auth'
-        uses: google-github-actions/auth@55bd3a7c6e2ae7cf1877fd1ccb9d54c0503c457c # v2.1.2
+        uses: google-github-actions/auth@62cf5bd3e4211a0a0b51f2c6d6a37129d828611d # v2.1.5
         with:
           workload_identity_provider: ${{ secrets.GCP_PR_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_PR_SA }}
@@ -198,10 +237,10 @@ jobs:
           export_environment_variables: true
 
       - name: Set up gcloud CLI
-        uses: google-github-actions/setup-gcloud@98ddc00a17442e89a24bbf282954a3b65ce6d200 # v2.1.0
+        uses: google-github-actions/setup-gcloud@f0990588f1e5b5af6827153b93673613abdc6ec7 # v2.1.1
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
-          version: "405.0.0"
+          version: ${{ env.gcloud_version }}
 
       - name: Install gke-gcloud-auth-plugin
         run: |
@@ -222,21 +261,27 @@ jobs:
             --cluster-ipv4-cidr="/21" \
             --services-ipv4-cidr="/24" \
             --image-type COS_CONTAINERD \
-            --num-nodes 2 \
+            --num-nodes ${{ matrix.config.nodes || 2 }} \
             --machine-type e2-custom-2-4096 \
             --disk-type pd-standard \
             --disk-size 20GB \
-            --node-taints ignore-taint.cluster-autoscaler.kubernetes.io/cilium-agent-not-ready=true:NoExecute \
-            ${{ env.preemptible }}
+            --node-taints ignore-taint.cluster-autoscaler.kubernetes.io/cilium-agent-not-ready=true:NoExecute
 
       - name: Get cluster credentials
         run: |
           gcloud container clusters get-credentials ${{ env.clusterName }}-${{ matrix.config.index }} --zone ${{ matrix.k8s.zone }}
 
+      - name: Install Cilium CLI
+        uses: cilium/cilium-cli@62bd4511031211b50a4623870955a5ad27b43e3b # v0.16.16
+        with:
+          skip-build: ${{ env.CILIUM_CLI_SKIP_BUILD }}
+          image-repo: ${{ env.CILIUM_CLI_IMAGE_REPO }}
+          image-tag: ${{ steps.vars.outputs.sha }}
+
       # Warning: since this is a privileged workflow, subsequent workflow job
       # steps must take care not to execute untrusted code.
       - name: Checkout pull request branch (NOT TRUSTED)
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
         with:
           ref: ${{ steps.vars.outputs.sha }}
           persist-credentials: false
@@ -267,12 +312,6 @@ jobs:
           cilium status --wait --wait-duration=10m
           kubectl get pods -n kube-system
 
-      - name: Port forward Relay
-        run: |
-          cilium hubble port-forward&
-          sleep 10s
-          [[ $(pgrep -f "cilium.*hubble.*port-forward|kubectl.*port-forward.*hubble-relay" | wc -l) == 2 ]]
-
       - name: Make JUnit report directory
         run: |
           mkdir -p cilium-junits
@@ -302,14 +341,14 @@ jobs:
 
       - name: Upload artifacts
         if: ${{ !success() }}
-        uses: actions/upload-artifact@1746f4ab65b179e0ea60a494b83293b640dd5bba # v4.3.2
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: cilium-sysdumps-${{ matrix.config.index }}-${{ matrix.k8s.vmIndex }}
           path: cilium-sysdump-*.zip
 
       - name: Upload JUnits [junit]
         if: ${{ always() }}
-        uses: actions/upload-artifact@1746f4ab65b179e0ea60a494b83293b640dd5bba # v4.3.2
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: cilium-junits-${{ matrix.config.index }}-${{ matrix.k8s.vmIndex }}
           path: cilium-junits/*.xml
@@ -321,14 +360,14 @@ jobs:
           junit-directory: "cilium-junits"
 
   merge-upload:
-    if: ${{ always() }}
+    if: ${{ always() && needs.installation-and-connectivity.result != 'skipped' }}
     name: Merge and Upload Artifacts
     runs-on: ubuntu-latest
     needs: installation-and-connectivity
     steps:
       - name: Merge Sysdumps
         if: ${{ needs.installation-and-connectivity.result == 'failure' }}
-        uses: actions/upload-artifact/merge@1746f4ab65b179e0ea60a494b83293b640dd5bba # v4.3.2
+        uses: actions/upload-artifact/merge@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: cilium-sysdumps
           pattern: cilium-sysdumps-*
@@ -336,7 +375,7 @@ jobs:
           delete-merged: true
         continue-on-error: true
       - name: Merge JUnits
-        uses: actions/upload-artifact/merge@1746f4ab65b179e0ea60a494b83293b640dd5bba # v4.3.2
+        uses: actions/upload-artifact/merge@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: cilium-junits
           pattern: cilium-junits-*
@@ -350,7 +389,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Set final commit status
-        uses: myrotvorets/set-commit-status-action@3730c0a348a2ace3c110851bed53331bc6406e9f # v2.0.1  
+        if: ${{ needs.installation-and-connectivity.result != 'skipped' }}
+        uses: myrotvorets/set-commit-status-action@3730c0a348a2ace3c110851bed53331bc6406e9f # v2.0.1
         with:
           sha: ${{ inputs.SHA || github.sha }}
           status: ${{ needs.installation-and-connectivity.result }}
+      - name: Set final commit status
+        if: ${{ needs.installation-and-connectivity.result == 'skipped' }}
+        uses: myrotvorets/set-commit-status-action@3730c0a348a2ace3c110851bed53331bc6406e9f # v2.0.1
+        with:
+          sha: ${{ inputs.SHA || github.sha }}
+          status: ${{ github.event_name != 'schedule' && 'success' || 'failure' }}
+          description: 'Skipped'

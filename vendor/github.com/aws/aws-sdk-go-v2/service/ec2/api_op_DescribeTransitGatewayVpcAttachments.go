@@ -37,11 +37,15 @@ type DescribeTransitGatewayVpcAttachmentsInput struct {
 	DryRun *bool
 
 	// One or more filters. The possible values are:
+	//
 	//   - state - The state of the attachment. Valid values are available | deleted |
 	//   deleting | failed | failing | initiatingRequest | modifying |
 	//   pendingAcceptance | pending | rollingBack | rejected | rejecting .
+	//
 	//   - transit-gateway-attachment-id - The ID of the attachment.
+	//
 	//   - transit-gateway-id - The ID of the transit gateway.
+	//
 	//   - vpc-id - The ID of the VPC.
 	Filters []types.Filter
 
@@ -128,6 +132,12 @@ func (c *Client) addOperationDescribeTransitGatewayVpcAttachmentsMiddlewares(sta
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
+		return err
+	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opDescribeTransitGatewayVpcAttachments(options.Region), middleware.Before); err != nil {
 		return err
 	}
@@ -148,14 +158,6 @@ func (c *Client) addOperationDescribeTransitGatewayVpcAttachmentsMiddlewares(sta
 	}
 	return nil
 }
-
-// DescribeTransitGatewayVpcAttachmentsAPIClient is a client that implements the
-// DescribeTransitGatewayVpcAttachments operation.
-type DescribeTransitGatewayVpcAttachmentsAPIClient interface {
-	DescribeTransitGatewayVpcAttachments(context.Context, *DescribeTransitGatewayVpcAttachmentsInput, ...func(*Options)) (*DescribeTransitGatewayVpcAttachmentsOutput, error)
-}
-
-var _ DescribeTransitGatewayVpcAttachmentsAPIClient = (*Client)(nil)
 
 // DescribeTransitGatewayVpcAttachmentsPaginatorOptions is the paginator options
 // for DescribeTransitGatewayVpcAttachments
@@ -224,6 +226,9 @@ func (p *DescribeTransitGatewayVpcAttachmentsPaginator) NextPage(ctx context.Con
 	}
 	params.MaxResults = limit
 
+	optFns = append([]func(*Options){
+		addIsPaginatorUserAgent,
+	}, optFns...)
 	result, err := p.client.DescribeTransitGatewayVpcAttachments(ctx, &params, optFns...)
 	if err != nil {
 		return nil, err
@@ -242,6 +247,14 @@ func (p *DescribeTransitGatewayVpcAttachmentsPaginator) NextPage(ctx context.Con
 
 	return result, nil
 }
+
+// DescribeTransitGatewayVpcAttachmentsAPIClient is a client that implements the
+// DescribeTransitGatewayVpcAttachments operation.
+type DescribeTransitGatewayVpcAttachmentsAPIClient interface {
+	DescribeTransitGatewayVpcAttachments(context.Context, *DescribeTransitGatewayVpcAttachmentsInput, ...func(*Options)) (*DescribeTransitGatewayVpcAttachmentsOutput, error)
+}
+
+var _ DescribeTransitGatewayVpcAttachmentsAPIClient = (*Client)(nil)
 
 func newServiceMetadataMiddleware_opDescribeTransitGatewayVpcAttachments(region string) *awsmiddleware.RegisterServiceMetadata {
 	return &awsmiddleware.RegisterServiceMetadata{

@@ -10,10 +10,11 @@ import (
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
 
-// This action is deprecated. Unlinks (detaches) a linked EC2-Classic instance
-// from a VPC. After the instance has been unlinked, the VPC security groups are no
-// longer associated with it. An instance is automatically unlinked from a VPC when
-// it's stopped.
+// This action is deprecated.
+//
+// Unlinks (detaches) a linked EC2-Classic instance from a VPC. After the instance
+// has been unlinked, the VPC security groups are no longer associated with it. An
+// instance is automatically unlinked from a VPC when it's stopped.
 func (c *Client) DetachClassicLinkVpc(ctx context.Context, params *DetachClassicLinkVpcInput, optFns ...func(*Options)) (*DetachClassicLinkVpcOutput, error) {
 	if params == nil {
 		params = &DetachClassicLinkVpcInput{}
@@ -114,6 +115,12 @@ func (c *Client) addOperationDetachClassicLinkVpcMiddlewares(stack *middleware.S
 		return err
 	}
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+		return err
+	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
 	if err = addOpDetachClassicLinkVpcValidationMiddleware(stack); err != nil {

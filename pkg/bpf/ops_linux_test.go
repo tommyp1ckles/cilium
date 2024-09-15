@@ -6,20 +6,22 @@ package bpf
 import (
 	"context"
 	"encoding"
+	"errors"
+	"iter"
 	"testing"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/hivetest"
+	"github.com/cilium/statedb"
+	"github.com/cilium/statedb/index"
+	"github.com/cilium/statedb/reconciler"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/cilium/cilium/pkg/hive"
 	"github.com/cilium/cilium/pkg/logging"
-	"github.com/cilium/cilium/pkg/statedb"
-	"github.com/cilium/cilium/pkg/statedb/index"
-	"github.com/cilium/cilium/pkg/statedb/reconciler"
 	"github.com/cilium/cilium/pkg/testutils"
 	"github.com/cilium/cilium/pkg/time"
 )
@@ -38,13 +40,7 @@ func (o *TestObject) BinaryValue() encoding.BinaryMarshaler {
 	return StructBinaryMarshaler{&o.Value}
 }
 
-type emptyIterator struct{}
-
-func (*emptyIterator) Next() (*TestObject, uint64, bool) {
-	return nil, 0, false
-}
-
-var _ statedb.Iterator[*TestObject] = &emptyIterator{}
+var emptySeq iter.Seq2[*TestObject, statedb.Revision] = func(yield func(*TestObject, uint64) bool) {}
 
 func Test_MapOps(t *testing.T) {
 	testutils.PrivilegedTest(t)
@@ -66,14 +62,11 @@ func Test_MapOps(t *testing.T) {
 	obj := &TestObject{Key: TestKey{1}, Value: TestValue{2}}
 
 	// Test Update() and Delete()
-	changed := false
-	err = ops.Update(ctx, nil, obj, &changed)
+	err = ops.Update(ctx, nil, obj)
 	assert.NoError(t, err, "Update")
-	assert.True(t, changed, "should have changed on first update")
 
-	err = ops.Update(ctx, nil, obj, &changed)
+	err = ops.Update(ctx, nil, obj)
 	assert.NoError(t, err, "Update")
-	assert.False(t, changed, "no change on second update")
 
 	v, err := testMap.Lookup(&TestKey{1})
 	assert.NoError(t, err, "Lookup")
@@ -96,7 +89,47 @@ func Test_MapOps(t *testing.T) {
 
 	// Give Prune() an empty set of objects, which should cause it to
 	// remove everything.
-	err = ops.Prune(ctx, nil, &emptyIterator{})
+	err = ops.Prune(ctx, nil, emptySeq)
+	assert.NoError(t, err, "Prune")
+
+	data := map[string][]string{}
+	testMap.Dump(data)
+	assert.Len(t, data, 0)
+}
+
+func Test_MapOpsPrune(t *testing.T) {
+	testutils.PrivilegedTest(t)
+
+	// This tests pruning with an LPM trie. This ensures we do not regress, as
+	// previously we had issues with Prune concurrently iterating and deleting
+	// entries, which caused the iteration to skip entries
+	testMap := NewMap(
+		"cilium_ops_prune_test",
+		ebpf.LPMTrie,
+		&TestLPMKey{},
+		&TestValue{},
+		maxEntries,
+		BPF_F_NO_PREALLOC,
+	)
+	err := testMap.OpenOrCreate()
+	require.NoError(t, err, "OpenOrCreate")
+	defer testMap.Close()
+
+	ctx := context.TODO()
+	ops := NewMapOps[*TestObject](testMap)
+
+	// Fill map with similarly prefixed entries
+	err = testMap.Update(&TestLPMKey{32, 0xFF00_00FF}, &TestValue{0})
+	assert.NoError(t, err, "Update 0")
+	err = testMap.Update(&TestLPMKey{32, 0xFF01_01FF}, &TestValue{1})
+	assert.NoError(t, err, "Update 1")
+	err = testMap.Update(&TestLPMKey{32, 0xFF02_02FF}, &TestValue{2})
+	assert.NoError(t, err, "Update 2")
+	err = testMap.Update(&TestLPMKey{32, 0xFF03_03FF}, &TestValue{3})
+	assert.NoError(t, err, "Update 3")
+
+	// Prune should now remove everything
+	err = ops.Prune(ctx, nil, emptySeq)
 	assert.NoError(t, err, "Prune")
 
 	data := map[string][]string{}
@@ -118,26 +151,7 @@ func Test_MapOps_ReconcilerExample(t *testing.T) {
 	)
 	err := exampleMap.OpenOrCreate()
 	require.NoError(t, err)
-	defer exampleMap.Close()
-
-	// Create the map operations and the reconciler configuration.
-	ops := NewMapOps[*TestObject](exampleMap)
-	config := reconciler.Config[*TestObject]{
-		FullReconcilationInterval: time.Minute,
-		RetryBackoffMinDuration:   100 * time.Millisecond,
-		RetryBackoffMaxDuration:   10 * time.Second,
-		IncrementalRoundSize:      1000,
-		GetObjectStatus: func(obj *TestObject) reconciler.Status {
-			return obj.Status
-		},
-		WithObjectStatus: func(obj *TestObject, s reconciler.Status) *TestObject {
-			obj2 := *obj
-			obj2.Status = s
-			return &obj2
-		},
-		Operations:      ops,
-		BatchOperations: nil,
-	}
+	t.Cleanup(func() { exampleMap.Close() })
 
 	// Create the table containing the desired state of the map.
 	keyIndex := statedb.Index[*TestObject, uint32]{
@@ -150,6 +164,9 @@ func Test_MapOps_ReconcilerExample(t *testing.T) {
 	}
 	table, err := statedb.NewTable("example", keyIndex)
 	require.NoError(t, err, "NewTable")
+
+	// Create the map operations and the reconciler configuration.
+	ops := NewMapOps[*TestObject](exampleMap)
 
 	// Silence the hive log output.
 	oldLogLevel := logging.DefaultLogger.GetLevel()
@@ -165,18 +182,33 @@ func Test_MapOps_ReconcilerExample(t *testing.T) {
 			"example",
 			"Example",
 
-			cell.Provide(
-				func(db_ *statedb.DB) (statedb.RWTable[*TestObject], error) {
+			cell.Invoke(
+				func(db_ *statedb.DB) error {
 					db = db_
-					return table, db.RegisterTable(table)
-				},
-				func() reconciler.Config[*TestObject] {
-					return config
+					return db.RegisterTable(table)
 				},
 			),
 			cell.Invoke(
-				reconciler.Register[*TestObject],
-			),
+				func(params reconciler.Params) error {
+					_, err := reconciler.Register[*TestObject](
+						params,
+						table,
+						func(obj *TestObject) *TestObject {
+							obj2 := *obj
+							return &obj2
+						},
+						func(obj *TestObject, s reconciler.Status) *TestObject {
+							obj.Status = s
+							return obj
+						},
+						func(obj *TestObject) reconciler.Status {
+							return obj.Status
+						},
+						ops,
+						nil,
+					)
+					return err
+				}),
 		),
 	)
 
@@ -201,7 +233,7 @@ func Test_MapOps_ReconcilerExample(t *testing.T) {
 	txn.Commit()
 
 	for {
-		obj, _, watch, ok := table.FirstWatch(db.ReadTxn(), keyIndex.Query(1))
+		obj, _, watch, ok := table.GetWatch(db.ReadTxn(), keyIndex.Query(1))
 		if ok {
 			if obj.Status.Kind == reconciler.StatusKindDone {
 				// The object has been reconciled.
@@ -219,15 +251,14 @@ func Test_MapOps_ReconcilerExample(t *testing.T) {
 
 	// Mark the object for deletion
 	txn = db.WriteTxn(table)
-	table.Insert(txn, &TestObject{
-		Key:    TestKey{1},
-		Value:  TestValue{2},
-		Status: reconciler.StatusPendingDelete(),
+	table.Delete(txn, &TestObject{
+		Key:   TestKey{1},
+		Value: TestValue{2},
 	})
 	txn.Commit()
 
 	for {
-		obj, _, watch, ok := table.FirstWatch(db.ReadTxn(), keyIndex.Query(1))
+		obj, _, watch, ok := table.GetWatch(db.ReadTxn(), keyIndex.Query(1))
 		if !ok {
 			// The object has been successfully deleted.
 			break
@@ -237,6 +268,14 @@ func Test_MapOps_ReconcilerExample(t *testing.T) {
 		<-watch
 	}
 
-	_, err = exampleMap.Lookup(&TestKey{1})
-	require.ErrorIs(t, err, ebpf.ErrKeyNotExist, "Lookup")
+	require.Eventually(
+		t,
+		func() bool {
+			_, err = exampleMap.Lookup(&TestKey{1})
+			return errors.Is(err, ebpf.ErrKeyNotExist)
+		},
+		time.Second,
+		100*time.Millisecond,
+		"Expected key to eventually be removed")
+
 }

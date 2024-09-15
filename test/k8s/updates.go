@@ -4,6 +4,7 @@
 package k8sTest
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strconv"
@@ -115,8 +116,7 @@ var _ = Describe("K8sUpdates", func() {
 	})
 
 	AfterFailed(func() {
-		// TODO(joe): Switch to cilium-dbg after v1.16-dev.
-		kubectl.CiliumReport("cilium endpoint list")
+		kubectl.CiliumReport("cilium-dbg endpoint list")
 	})
 
 	JustAfterEach(func() {
@@ -176,13 +176,17 @@ func InstallAndValidateCiliumUpgrades(kubectl *helpers.Kubectl, oldHelmChartVers
 	app1Service := "app1-service"
 
 	cleanupCiliumState := func(helmPath, chartVersion, imageName, imageTag, registry string) {
+		// GH-34026: Cilium v1.16.0 broke pidfile cleanup on shutdown. Remove it before the end of the test so that the testsuite can clean up the environment properly.
+		By("Cleaning up pidfiles...")
+		kubectl.CiliumExecMustSucceedOnAll(context.TODO(), "rm /var/run/cilium/cilium.pid", "Clean up pidfile before test completion")
+
 		removeCilium(kubectl)
 
 		opts := map[string]string{
 			"cleanState":         "true",
 			"image.tag":          imageTag,
 			"sleepAfterInit":     "true",
-			"operator.enabled":   "false ",
+			"operator.enabled":   "false",
 			"hubble.tls.enabled": "false",
 			"cluster.name":       clusterName,
 			"cluster.id":         clusterID,
@@ -264,9 +268,9 @@ func InstallAndValidateCiliumUpgrades(kubectl *helpers.Kubectl, oldHelmChartVers
 
 		hasNewHelmValues := versioncheck.MustCompile(">=1.12.90")
 		if hasNewHelmValues(versioncheck.MustVersion(newHelmChartVersion)) {
-			opts["bandwidthManager.enabled"] = "false "
+			opts["bandwidthManager.enabled"] = "false"
 		} else {
-			opts["bandwidthManager"] = "false "
+			opts["bandwidthManager"] = "false"
 		}
 
 		// Eventually allows multiple return values, and performs the assertion
@@ -281,6 +285,8 @@ func InstallAndValidateCiliumUpgrades(kubectl *helpers.Kubectl, oldHelmChartVers
 				helpers.CiliumNamespace,
 				opts)
 		}, time.Second*30, time.Second*1).Should(helpers.CMDSuccess(), fmt.Sprintf("Cilium %q was not able to be deployed", oldHelmChartVersion))
+
+		helpers.SetRunningCiliumVersion(oldHelmChartVersion)
 
 		// Cilium is only ready if kvstore is ready, the kvstore is ready if
 		// kube-dns is running.
@@ -417,12 +423,12 @@ func InstallAndValidateCiliumUpgrades(kubectl *helpers.Kubectl, oldHelmChartVers
 		By("Install Cilium pre-flight check DaemonSet")
 
 		opts = map[string]string{
-			"preflight.enabled":   "true ",
-			"config.enabled":      "false ",
-			"operator.enabled":    "false ",
+			"preflight.enabled":   "true",
+			"config.enabled":      "false",
+			"operator.enabled":    "false",
 			"preflight.image.tag": newImageVersion,
 			"nodeinit.enabled":    "false",
-			"agent":               "false ",
+			"agent":               "false",
 		}
 
 		EventuallyWithOffset(1, func() (*helpers.CmdRes, error) {
@@ -453,8 +459,6 @@ func InstallAndValidateCiliumUpgrades(kubectl *helpers.Kubectl, oldHelmChartVers
 			"hubble.relay.image.tag": newImageVersion,
 			"cluster.name":           clusterName,
 			"cluster.id":             clusterID,
-			// Remove this after 1.16 is released
-			"envoy.enabled": "false",
 		}
 
 		upgradeCompatibilityVer := strings.TrimSuffix(oldHelmChartVersion, "-dev")
@@ -471,6 +475,8 @@ func InstallAndValidateCiliumUpgrades(kubectl *helpers.Kubectl, oldHelmChartVers
 				helpers.CiliumNamespace,
 				opts)
 		}, time.Second*30, time.Second*1).Should(helpers.CMDSuccess(), fmt.Sprintf("Cilium %q was not able to be deployed", newHelmChartVersion))
+
+		helpers.SetRunningCiliumVersion(newHelmChartVersion)
 
 		By("Validating pods have the right image version upgraded")
 		err = helpers.WithTimeout(
@@ -513,6 +519,8 @@ func InstallAndValidateCiliumUpgrades(kubectl *helpers.Kubectl, oldHelmChartVers
 		// cilium with in this updates test.
 		cmd = kubectl.ExecMiddle("helm rollback cilium 1 --namespace=" + helpers.CiliumNamespace)
 		ExpectWithOffset(1, cmd).To(helpers.CMDSuccess(), "Cilium %q was not able to be deployed", oldHelmChartVersion)
+
+		helpers.SetRunningCiliumVersion(oldHelmChartVersion)
 
 		err = helpers.WithTimeout(
 			waitForUpdateImage(oldImageVersion),

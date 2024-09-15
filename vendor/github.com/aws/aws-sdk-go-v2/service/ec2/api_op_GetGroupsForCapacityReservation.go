@@ -44,8 +44,9 @@ type GetGroupsForCapacityReservationInput struct {
 
 	// The maximum number of items to return for this request. To get the next page of
 	// items, make another request with the token returned in the output. For more
-	// information, see Pagination (https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Query-Requests.html#api-pagination)
-	// .
+	// information, see [Pagination].
+	//
+	// [Pagination]: https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Query-Requests.html#api-pagination
 	MaxResults *int32
 
 	// The token to use to retrieve the next page of results.
@@ -125,6 +126,12 @@ func (c *Client) addOperationGetGroupsForCapacityReservationMiddlewares(stack *m
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
+		return err
+	}
 	if err = addOpGetGroupsForCapacityReservationValidationMiddleware(stack); err != nil {
 		return err
 	}
@@ -149,21 +156,14 @@ func (c *Client) addOperationGetGroupsForCapacityReservationMiddlewares(stack *m
 	return nil
 }
 
-// GetGroupsForCapacityReservationAPIClient is a client that implements the
-// GetGroupsForCapacityReservation operation.
-type GetGroupsForCapacityReservationAPIClient interface {
-	GetGroupsForCapacityReservation(context.Context, *GetGroupsForCapacityReservationInput, ...func(*Options)) (*GetGroupsForCapacityReservationOutput, error)
-}
-
-var _ GetGroupsForCapacityReservationAPIClient = (*Client)(nil)
-
 // GetGroupsForCapacityReservationPaginatorOptions is the paginator options for
 // GetGroupsForCapacityReservation
 type GetGroupsForCapacityReservationPaginatorOptions struct {
 	// The maximum number of items to return for this request. To get the next page of
 	// items, make another request with the token returned in the output. For more
-	// information, see Pagination (https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Query-Requests.html#api-pagination)
-	// .
+	// information, see [Pagination].
+	//
+	// [Pagination]: https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Query-Requests.html#api-pagination
 	Limit int32
 
 	// Set to true if pagination should stop if the service returns a pagination token
@@ -226,6 +226,9 @@ func (p *GetGroupsForCapacityReservationPaginator) NextPage(ctx context.Context,
 	}
 	params.MaxResults = limit
 
+	optFns = append([]func(*Options){
+		addIsPaginatorUserAgent,
+	}, optFns...)
 	result, err := p.client.GetGroupsForCapacityReservation(ctx, &params, optFns...)
 	if err != nil {
 		return nil, err
@@ -244,6 +247,14 @@ func (p *GetGroupsForCapacityReservationPaginator) NextPage(ctx context.Context,
 
 	return result, nil
 }
+
+// GetGroupsForCapacityReservationAPIClient is a client that implements the
+// GetGroupsForCapacityReservation operation.
+type GetGroupsForCapacityReservationAPIClient interface {
+	GetGroupsForCapacityReservation(context.Context, *GetGroupsForCapacityReservationInput, ...func(*Options)) (*GetGroupsForCapacityReservationOutput, error)
+}
+
+var _ GetGroupsForCapacityReservationAPIClient = (*Client)(nil)
 
 func newServiceMetadataMiddleware_opGetGroupsForCapacityReservation(region string) *awsmiddleware.RegisterServiceMetadata {
 	return &awsmiddleware.RegisterServiceMetadata{

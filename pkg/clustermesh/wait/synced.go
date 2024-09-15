@@ -6,9 +6,29 @@ package wait
 import (
 	"context"
 	"errors"
+	"time"
+
+	"github.com/spf13/pflag"
 )
 
+type TimeoutConfig struct {
+	// ClusterMeshSyncTimeout is the timeout when waiting for the initial
+	// synchronization from all remote clusters, before triggering the
+	// circuit breaker and possibly disrupting cross-cluster connections.
+	ClusterMeshSyncTimeout time.Duration
+}
+
+func (def TimeoutConfig) Flags(flags *pflag.FlagSet) {
+	flags.Duration("clustermesh-sync-timeout", def.ClusterMeshSyncTimeout,
+		"Timeout waiting for the initial synchronization of information from remote clusters")
+}
+
 var (
+	// TimeoutConfigDefault is the default timeout configuration.
+	TimeoutConfigDefault = TimeoutConfig{
+		ClusterMeshSyncTimeout: 1 * time.Minute,
+	}
+
 	// ErrRemoteClusterDisconnected is the error returned by wait for sync
 	// operations if the remote cluster is disconnected while still waiting.
 	ErrRemoteClusterDisconnected = errors.New("remote cluster disconnected")

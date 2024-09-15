@@ -11,8 +11,10 @@ import (
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
 
-// Modifies the specified Traffic Mirror rule. DestinationCidrBlock and
-// SourceCidrBlock must both be an IPv4 range or an IPv6 range.
+// Modifies the specified Traffic Mirror rule.
+//
+// DestinationCidrBlock and SourceCidrBlock must both be an IPv4 range or an IPv6
+// range.
 func (c *Client) ModifyTrafficMirrorFilterRule(ctx context.Context, params *ModifyTrafficMirrorFilterRuleInput, optFns ...func(*Options)) (*ModifyTrafficMirrorFilterRuleOutput, error) {
 	if params == nil {
 		params = &ModifyTrafficMirrorFilterRuleInput{}
@@ -54,6 +56,7 @@ type ModifyTrafficMirrorFilterRuleInput struct {
 	Protocol *int32
 
 	// The properties that you want to remove from the Traffic Mirror filter rule.
+	//
 	// When you remove a property from a Traffic Mirror filter rule, the property is
 	// set to the default.
 	RemoveFields []types.TrafficMirrorFilterRuleField
@@ -80,7 +83,9 @@ type ModifyTrafficMirrorFilterRuleInput struct {
 
 type ModifyTrafficMirrorFilterRuleOutput struct {
 
-	// Modifies a Traffic Mirror rule.
+	// Tags are not returned for ModifyTrafficMirrorFilterRule.
+	//
+	// A Traffic Mirror rule.
 	TrafficMirrorFilterRule *types.TrafficMirrorFilterRule
 
 	// Metadata pertaining to the operation's result.
@@ -142,6 +147,12 @@ func (c *Client) addOperationModifyTrafficMirrorFilterRuleMiddlewares(stack *mid
 		return err
 	}
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+		return err
+	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
 	if err = addOpModifyTrafficMirrorFilterRuleValidationMiddleware(stack); err != nil {

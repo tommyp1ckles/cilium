@@ -5,14 +5,16 @@ package endpointslicesync
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 
-	"golang.org/x/exp/maps"
+	"github.com/sirupsen/logrus"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	listersv1 "k8s.io/client-go/listers/core/v1"
-	cache "k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/cache"
 
 	"github.com/cilium/cilium/pkg/lock"
 )
@@ -29,9 +31,9 @@ type meshNodeInformer struct {
 	mutex   lock.RWMutex
 }
 
-func newMeshNodeInformer() *meshNodeInformer {
+func newMeshNodeInformer(logger logrus.FieldLogger) *meshNodeInformer {
 	return &meshNodeInformer{
-		dummyInformer: dummyInformer{"meshNodeInformer"},
+		dummyInformer: dummyInformer{name: "meshNodeInformer", logger: logger},
 		nodes:         map[string]*v1.Node{},
 	}
 }
@@ -55,6 +57,13 @@ func createDummyNode(cluster string) *v1.Node {
 	}
 }
 
+func (i *meshNodeInformer) ListClusters() []string {
+	i.mutex.RLock()
+	defer i.mutex.RUnlock()
+
+	return slices.Collect(maps.Keys(i.nodes))
+}
+
 func (i *meshNodeInformer) List(selector labels.Selector) ([]*v1.Node, error) {
 	reqs, _ := selector.Requirements()
 	if !selector.Empty() {
@@ -63,7 +72,7 @@ func (i *meshNodeInformer) List(selector labels.Selector) ([]*v1.Node, error) {
 
 	i.mutex.RLock()
 	defer i.mutex.RUnlock()
-	return maps.Values(i.nodes), nil
+	return slices.Collect(maps.Values(i.nodes)), nil
 }
 
 func (i *meshNodeInformer) Get(name string) (*v1.Node, error) {
@@ -75,7 +84,7 @@ func (i *meshNodeInformer) Get(name string) (*v1.Node, error) {
 	return nil, newNotFoundError(fmt.Sprintf("node '%s' not found", name))
 }
 
-func (i *meshNodeInformer) onAddCluster(cluster string) {
+func (i *meshNodeInformer) onClusterAdd(cluster string) {
 	i.mutex.Lock()
 	node := createDummyNode(cluster)
 	i.nodes[cluster] = node
@@ -87,7 +96,7 @@ func (i *meshNodeInformer) onAddCluster(cluster string) {
 	i.handler.OnAdd(node, false)
 }
 
-func (i *meshNodeInformer) onDeleteCluster(cluster string) {
+func (i *meshNodeInformer) onClusterDelete(cluster string) {
 	i.mutex.Lock()
 	delete(i.nodes, cluster)
 	i.mutex.Unlock()

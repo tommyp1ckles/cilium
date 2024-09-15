@@ -15,16 +15,16 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/sirupsen/logrus"
+	"go4.org/netipx"
 
 	"github.com/cilium/cilium/pkg/completion"
 	"github.com/cilium/cilium/pkg/controller"
+	datapathOption "github.com/cilium/cilium/pkg/datapath/option"
 	dptypes "github.com/cilium/cilium/pkg/datapath/types"
 	endpointid "github.com/cilium/cilium/pkg/endpoint/id"
 	"github.com/cilium/cilium/pkg/endpoint/regeneration"
 	"github.com/cilium/cilium/pkg/eventqueue"
 	identityPkg "github.com/cilium/cilium/pkg/identity"
-	"github.com/cilium/cilium/pkg/identity/identitymanager"
-	"github.com/cilium/cilium/pkg/ip"
 	"github.com/cilium/cilium/pkg/ipcache"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/logging"
@@ -34,6 +34,7 @@ import (
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
+	policyTypes "github.com/cilium/cilium/pkg/policy/types"
 	"github.com/cilium/cilium/pkg/revert"
 	"github.com/cilium/cilium/pkg/time"
 	"github.com/cilium/cilium/pkg/types"
@@ -53,7 +54,7 @@ func (e *Endpoint) HasBPFPolicyMap() bool {
 
 // GetNamedPort returns the port for the given name.
 // Must be called with e.mutex NOT held
-func (e *Endpoint) GetNamedPort(ingress bool, name string, proto uint8) uint16 {
+func (e *Endpoint) GetNamedPort(ingress bool, name string, proto u8proto.U8proto) uint16 {
 	if ingress {
 		// Ingress only needs the ports of the POD itself
 		return e.getNamedPortIngress(e.GetK8sPorts(), name, proto)
@@ -62,7 +63,7 @@ func (e *Endpoint) GetNamedPort(ingress bool, name string, proto uint8) uint16 {
 	return e.getNamedPortEgress(e.namedPortsGetter.GetNamedPorts(), name, proto)
 }
 
-func (e *Endpoint) getNamedPortIngress(npMap types.NamedPortMap, name string, proto uint8) uint16 {
+func (e *Endpoint) getNamedPortIngress(npMap types.NamedPortMap, name string, proto u8proto.U8proto) uint16 {
 	port, err := npMap.GetNamedPort(name, proto)
 	if err != nil && e.logLimiter.Allow() {
 		e.getLogger().WithFields(logrus.Fields{
@@ -74,7 +75,7 @@ func (e *Endpoint) getNamedPortIngress(npMap types.NamedPortMap, name string, pr
 	return port
 }
 
-func (e *Endpoint) getNamedPortEgress(npMap types.NamedPortMultiMap, name string, proto uint8) uint16 {
+func (e *Endpoint) getNamedPortEgress(npMap types.NamedPortMultiMap, name string, proto u8proto.U8proto) uint16 {
 	port, err := npMap.GetNamedPort(name, proto)
 	// Skip logging for ErrUnknownNamedPort on egress, as the destination POD with the port name
 	// is likely not scheduled yet.
@@ -89,16 +90,18 @@ func (e *Endpoint) getNamedPortEgress(npMap types.NamedPortMultiMap, name string
 }
 
 // proxyID returns a unique string to identify a proxy mapping,
-// and the resolved destination port and protocol numbers, if any.
+// and the resolved destination port number, if any.
+// For port ranges the proxy is identified by the first port in
+// the range, as overlapping proxy port ranges are not supported.
 // Must be called with e.mutex held.
-func (e *Endpoint) proxyID(l4 *policy.L4Filter, listener string) (string, uint16, uint8) {
-	port := uint16(l4.Port)
-	protocol := uint8(l4.U8Proto)
+func (e *Endpoint) proxyID(l4 *policy.L4Filter, listener string) (string, uint16, u8proto.U8proto) {
+	port := l4.Port
+	protocol := l4.U8Proto
 	// Calculate protocol if it is 0 (default) and
 	// is not "ANY" (that is, it was not calculated).
 	if protocol == 0 && !l4.Protocol.IsAny() {
 		proto, _ := u8proto.ParseProtocol(string(l4.Protocol))
-		protocol = uint8(proto)
+		protocol = proto
 	}
 	if port == 0 && l4.PortName != "" {
 		port = e.GetNamedPort(l4.Ingress, l4.PortName, protocol)
@@ -194,7 +197,7 @@ type policyGenerateResult struct {
 //
 // Returns a result that should be passed to setDesiredPolicy after the endpoint's
 // write lock has been acquired, or err if recomputing policy failed.
-func (e *Endpoint) regeneratePolicy() (*policyGenerateResult, error) {
+func (e *Endpoint) regeneratePolicy(stats *regenerationStatistics) (*policyGenerateResult, error) {
 	var err error
 
 	// lock the endpoint, read our values, then unlock
@@ -228,11 +231,6 @@ func (e *Endpoint) regeneratePolicy() (*policyGenerateResult, error) {
 	e.runlock()
 
 	e.getLogger().Debug("Starting policy recalculation...")
-	stats := &policyRegenerationStatistics{}
-	stats.totalTime.Start()
-	defer func() {
-		e.updatePolicyRegenerationStatistics(stats, forcePolicyCompute, err)
-	}()
 
 	stats.waitingForPolicyRepository.Start()
 	repo := e.policyGetter.GetPolicyRepository()
@@ -336,31 +334,6 @@ func (e *Endpoint) setDesiredPolicy(res *policyGenerateResult) error {
 	return nil
 }
 
-func (e *Endpoint) updatePolicyRegenerationStatistics(stats *policyRegenerationStatistics, forceRegeneration bool, err error) {
-	success := err == nil
-
-	stats.totalTime.End(success)
-	stats.success = success
-
-	stats.SendMetrics()
-
-	fields := logrus.Fields{
-		"waitingForIdentityCache":    &stats.waitingForIdentityCache,
-		"waitingForPolicyRepository": &stats.waitingForPolicyRepository,
-		"policyCalculation":          &stats.policyCalculation,
-		"forcedRegeneration":         forceRegeneration,
-	}
-
-	if err != nil {
-		e.getLogger().WithFields(fields).WithError(err).Warn("Regeneration of policy failed")
-		return
-	}
-
-	if logger := e.getLogger(); logging.CanLogAt(logger.Logger, logrus.DebugLevel) {
-		logger.WithFields(fields).Debug("Completed endpoint policy recalculation")
-	}
-}
-
 // updateAndOverrideEndpointOptions updates the boolean configuration options for the endpoint
 // based off of policy configuration, daemon policy enforcement mode, and any
 // configuration options provided in opts. Returns whether the options changed
@@ -380,7 +353,6 @@ func (e *Endpoint) updateAndOverrideEndpointOptions(opts option.OptionMap) (opts
 // Called with e.mutex UNlocked
 func (e *Endpoint) regenerate(ctx *regenerationContext) (retErr error) {
 	var revision uint64
-	var stateDirComplete bool
 	var err error
 
 	ctx.Stats = regenerationStatistics{}
@@ -485,7 +457,7 @@ func (e *Endpoint) regenerate(ctx *regenerationContext) (retErr error) {
 		e.unlock()
 	}()
 
-	revision, stateDirComplete, err = e.regenerateBPF(ctx)
+	revision, err = e.regenerateBPF(ctx)
 
 	// Write full verifier log to the endpoint directory.
 	var ve *ebpf.VerifierError
@@ -516,13 +488,13 @@ func (e *Endpoint) regenerate(ctx *regenerationContext) (retErr error) {
 		return err
 	}
 
-	return e.updateRealizedState(stats, origDir, revision, stateDirComplete)
+	return e.updateRealizedState(stats, origDir, revision)
 }
 
 // updateRealizedState sets any realized state fields within the endpoint to
 // be the desired state of the endpoint. This is only called after a successful
 // regeneration of the endpoint.
-func (e *Endpoint) updateRealizedState(stats *regenerationStatistics, origDir string, revision uint64, stateDirComplete bool) error {
+func (e *Endpoint) updateRealizedState(stats *regenerationStatistics, origDir string, revision uint64) error {
 	// Update desired policy for endpoint because policy has now been realized
 	// in the datapath. PolicyMap state is not updated here, because that is
 	// performed in endpoint.syncPolicyMap().
@@ -538,14 +510,15 @@ func (e *Endpoint) updateRealizedState(stats *regenerationStatistics, origDir st
 	// Depending upon result of BPF regeneration (compilation executed),
 	// shift endpoint directories to match said BPF regeneration
 	// results.
-	err = e.synchronizeDirectories(origDir, stateDirComplete)
+	err = e.synchronizeDirectories(origDir)
 	if err != nil {
 		return fmt.Errorf("error synchronizing endpoint BPF program directories: %w", err)
 	}
 
 	// Start periodic background full reconciliation of the policy map.
 	// Does nothing if it has already been started.
-	if !e.isProperty(PropertyFakeEndpoint) {
+	if !e.isProperty(PropertyFakeEndpoint) &&
+		option.Config.DatapathMode != datapathOption.DatapathModeLBOnly {
 		e.startSyncPolicyMapController()
 	}
 
@@ -775,7 +748,7 @@ func (e *Endpoint) startRegenerationFailureHandler() {
 				Reason:        reasonRegenRetry,
 				// Completely rewrite the endpoint - we don't know the nature
 				// of the failure, simply that something failed.
-				RegenerationLevel: regeneration.RegenerateWithDatapathRewrite,
+				RegenerationLevel: regeneration.RegenerateWithDatapath,
 			}
 			regen, _ := e.SetRegenerateStateIfAlive(regenMetadata)
 			if !regen {
@@ -837,7 +810,7 @@ func (e *Endpoint) runIPIdentitySync(endpointIP netip.Addr) {
 				}
 
 				ID := e.SecurityIdentity.ID
-				hostIP, ok := ip.AddrFromIP(node.GetIPv4())
+				hostIP, ok := netipx.FromStdIP(node.GetIPv4())
 				if !ok {
 					return controller.NewExitReason("Failed to convert node IPv4 address")
 				}
@@ -882,9 +855,9 @@ func (e *Endpoint) SetIdentity(identity *identityPkg.Identity, newEndpoint bool)
 	// identity for the endpoint.
 	if newEndpoint {
 		// TODO - GH-9354.
-		identitymanager.Add(identity)
+		e.owner.AddIdentity(identity)
 	} else {
-		identitymanager.RemoveOldAddNew(e.SecurityIdentity, identity)
+		e.owner.RemoveOldAddNewIdentity(e.SecurityIdentity, identity)
 	}
 	e.SecurityIdentity = identity
 	e.replaceIdentityLabels(labels.LabelSourceAny, identity.Labels)
@@ -985,7 +958,7 @@ func (e *Endpoint) UpdateBandwidthPolicy(bwm dptypes.BandwidthManager, annoCB An
 // LabelArrayList is shallow-copied and therefore must not be mutated.
 // This function explicitly exported to be accessed by code outside of the
 // Cilium source code tree and for testing.
-func (e *Endpoint) GetRealizedPolicyRuleLabelsForKey(key policy.Key) (
+func (e *Endpoint) GetRealizedPolicyRuleLabelsForKey(key policyTypes.Key) (
 	derivedFrom labels.LabelArrayList,
 	revision uint64,
 	ok bool,

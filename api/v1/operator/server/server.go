@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -27,6 +28,7 @@ import (
 	"golang.org/x/net/netutil"
 
 	"github.com/cilium/cilium/api/v1/operator/server/restapi"
+	"github.com/cilium/cilium/api/v1/operator/server/restapi/cluster"
 	"github.com/cilium/cilium/api/v1/operator/server/restapi/metrics"
 	"github.com/cilium/cilium/api/v1/operator/server/restapi/operator"
 	"github.com/cilium/hive/cell"
@@ -57,6 +59,7 @@ type apiParams struct {
 
 	Middleware middleware.Builder `name:"cilium-operator-middleware" optional:"true"`
 
+	ClusterGetClusterHandler  cluster.GetClusterHandler
 	OperatorGetHealthzHandler operator.GetHealthzHandler
 	MetricsGetMetricsHandler  metrics.GetMetricsHandler
 }
@@ -66,6 +69,7 @@ func newAPI(p apiParams) *restapi.CiliumOperatorAPI {
 
 	// Construct the API from the provided handlers
 
+	api.ClusterGetClusterHandler = p.ClusterGetClusterHandler
 	api.OperatorGetHealthzHandler = p.OperatorGetHealthzHandler
 	api.MetricsGetMetricsHandler = p.MetricsGetMetricsHandler
 
@@ -294,12 +298,7 @@ func (s *Server) hasScheme(scheme string) bool {
 		schemes = defaultSchemes
 	}
 
-	for _, v := range schemes {
-		if v == scheme {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(schemes, scheme)
 }
 
 func (s *Server) Serve() error {
@@ -313,8 +312,6 @@ func (s *Server) Serve() error {
 
 // Start the server
 func (s *Server) Start(cell.HookContext) (err error) {
-	s.ConfigureAPI()
-
 	if !s.hasListeners {
 		if err = s.Listen(); err != nil {
 			return err
@@ -331,6 +328,7 @@ func (s *Server) Start(cell.HookContext) (err error) {
 			return errors.New("can't create the default handler, as no api is set")
 		}
 
+		s.ConfigureAPI()
 		s.SetHandler(s.api.Serve(nil))
 	}
 
@@ -470,9 +468,6 @@ func (s *Server) Start(cell.HookContext) (err error) {
 			// this happens with a wrong custom TLS configurator
 			s.Fatalf("no certificate was configured for TLS")
 		}
-
-		// must have at least one certificate or panics
-		httpsServer.TLSConfig.BuildNameToCertificate()
 
 		configureServer(httpsServer, "https", s.httpsServerL.Addr().String())
 

@@ -12,6 +12,7 @@ import (
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/hivetest"
 	"github.com/cilium/hive/job"
+	"github.com/cilium/statedb"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/vishvananda/netlink"
@@ -20,7 +21,6 @@ import (
 	"github.com/cilium/cilium/pkg/hive"
 	"github.com/cilium/cilium/pkg/k8s/resource"
 	"github.com/cilium/cilium/pkg/maps/l2respondermap"
-	"github.com/cilium/cilium/pkg/statedb"
 )
 
 type fixture struct {
@@ -95,20 +95,16 @@ func TestEmptyMapAddPartialSync(t *testing.T) {
 	fix := newFixture(t)
 
 	txn := fix.stateDB.WriteTxn(fix.proxyNeighborTable)
-	tracker, err := fix.proxyNeighborTable.DeleteTracker(txn, "l2-responder-reconciler")
-	assert.NoError(t, err)
-	txn.Commit()
-
-	defer tracker.Close()
-
-	txn = fix.stateDB.WriteTxn(fix.proxyNeighborTable)
-	_, _, err = fix.proxyNeighborTable.Insert(txn, &tables.L2AnnounceEntry{
+	_, _, err := fix.proxyNeighborTable.Insert(txn, &tables.L2AnnounceEntry{
 		L2AnnounceKey: tables.L2AnnounceKey{
 			IP:               ip1,
 			NetworkInterface: if1,
 		},
 		Origins: []resource.Key{origin1},
 	})
+	assert.NoError(t, err)
+
+	changes, err := fix.proxyNeighborTable.Changes(txn)
 	assert.NoError(t, err)
 	txn.Commit()
 
@@ -122,7 +118,7 @@ func TestEmptyMapAddPartialSync(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	fix.reconciler.cycle(ctx, tracker, nil)
+	fix.reconciler.cycle(ctx, changes, nil)
 
 	stats, err := fix.respondermap.Lookup(ip1, ifidx1)
 	assert.NoError(t, err)
@@ -136,14 +132,7 @@ func TestEmptyMapAddDelPartialSync(t *testing.T) {
 	fix := newFixture(t)
 
 	txn := fix.stateDB.WriteTxn(fix.proxyNeighborTable)
-	tracker, err := fix.proxyNeighborTable.DeleteTracker(txn, "l2-responder-reconciler")
-	assert.NoError(t, err)
-	txn.Commit()
-
-	defer tracker.Close()
-
-	txn = fix.stateDB.WriteTxn(fix.proxyNeighborTable)
-	_, _, err = fix.proxyNeighborTable.Insert(txn, &tables.L2AnnounceEntry{
+	_, _, err := fix.proxyNeighborTable.Insert(txn, &tables.L2AnnounceEntry{
 		L2AnnounceKey: tables.L2AnnounceKey{
 			IP:               ip1,
 			NetworkInterface: if1,
@@ -157,6 +146,9 @@ func TestEmptyMapAddDelPartialSync(t *testing.T) {
 			NetworkInterface: if1,
 		},
 	})
+	assert.NoError(t, err)
+
+	changes, err := fix.proxyNeighborTable.Changes(txn)
 	assert.NoError(t, err)
 	txn.Commit()
 
@@ -180,7 +172,10 @@ func TestEmptyMapAddDelPartialSync(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	fix.reconciler.cycle(ctx, tracker, nil)
+	// Process the insertions (drains & refreshes the ChangeIterator)
+	fix.reconciler.cycle(ctx, changes, nil)
+	// Process the deletion
+	fix.reconciler.cycle(ctx, changes, nil)
 
 	// Added entry should be present
 	stats, err := fix.respondermap.Lookup(ip1, ifidx1)
@@ -215,7 +210,7 @@ func TestEmptyMapAddFullSync(t *testing.T) {
 		}, nil
 	}
 
-	_, err = fix.reconciler.fullReconciliation()
+	err = fix.reconciler.fullReconciliation(fix.stateDB.ReadTxn())
 	assert.NoError(t, err)
 
 	stats, err := fix.respondermap.Lookup(ip1, ifidx1)
@@ -263,7 +258,7 @@ func TestEmptyMapAddDelFullSync(t *testing.T) {
 		}, nil
 	}
 
-	_, err = fix.reconciler.fullReconciliation()
+	err = fix.reconciler.fullReconciliation(fix.stateDB.ReadTxn())
 	assert.NoError(t, err)
 
 	// Added entry should be present
@@ -283,20 +278,17 @@ func Test1RougeAddPartialSync(t *testing.T) {
 	fix := newFixture(t)
 
 	txn := fix.stateDB.WriteTxn(fix.proxyNeighborTable)
-	tracker, err := fix.proxyNeighborTable.DeleteTracker(txn, "l2-responder-reconciler")
-	assert.NoError(t, err)
-	txn.Commit()
 
-	defer tracker.Close()
-
-	txn = fix.stateDB.WriteTxn(fix.proxyNeighborTable)
-	_, _, err = fix.proxyNeighborTable.Insert(txn, &tables.L2AnnounceEntry{
+	_, _, err := fix.proxyNeighborTable.Insert(txn, &tables.L2AnnounceEntry{
 		L2AnnounceKey: tables.L2AnnounceKey{
 			IP:               ip1,
 			NetworkInterface: if1,
 		},
 		Origins: []resource.Key{origin1},
 	})
+	assert.NoError(t, err)
+
+	changes, err := fix.proxyNeighborTable.Changes(txn)
 	assert.NoError(t, err)
 	txn.Commit()
 
@@ -313,7 +305,7 @@ func Test1RougeAddPartialSync(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	fix.reconciler.cycle(ctx, tracker, nil)
+	fix.reconciler.cycle(ctx, changes, nil)
 
 	// Added entry should be present
 	stats, err := fix.respondermap.Lookup(ip1, ifidx1)
@@ -351,7 +343,7 @@ func Test1RougeAddFullSync(t *testing.T) {
 		}, nil
 	}
 
-	_, err = fix.reconciler.fullReconciliation()
+	err = fix.reconciler.fullReconciliation(fix.stateDB.ReadTxn())
 	assert.NoError(t, err)
 
 	// Added entry should be present
@@ -390,7 +382,7 @@ func Test1ExistingAddFullSync(t *testing.T) {
 		}, nil
 	}
 
-	_, err = fix.reconciler.fullReconciliation()
+	err = fix.reconciler.fullReconciliation(fix.stateDB.ReadTxn())
 	assert.NoError(t, err)
 
 	// Added entry should be present

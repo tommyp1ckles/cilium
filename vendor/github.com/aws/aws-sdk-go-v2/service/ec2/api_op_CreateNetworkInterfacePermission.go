@@ -12,9 +12,10 @@ import (
 )
 
 // Grants an Amazon Web Services-authorized account permission to attach the
-// specified network interface to an instance in their account. You can grant
-// permission to a single Amazon Web Services account only, and only one account at
-// a time.
+// specified network interface to an instance in their account.
+//
+// You can grant permission to a single Amazon Web Services account only, and only
+// one account at a time.
 func (c *Client) CreateNetworkInterfacePermission(ctx context.Context, params *CreateNetworkInterfacePermissionInput, optFns ...func(*Options)) (*CreateNetworkInterfacePermissionOutput, error) {
 	if params == nil {
 		params = &CreateNetworkInterfacePermissionInput{}
@@ -46,7 +47,7 @@ type CreateNetworkInterfacePermissionInput struct {
 	// The Amazon Web Services account ID.
 	AwsAccountId *string
 
-	// The Amazon Web Service. Currently not supported.
+	// The Amazon Web Services service. Currently not supported.
 	AwsService *string
 
 	// Checks whether you have the required permissions for the action, without
@@ -123,6 +124,12 @@ func (c *Client) addOperationCreateNetworkInterfacePermissionMiddlewares(stack *
 		return err
 	}
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+		return err
+	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
 	if err = addOpCreateNetworkInterfacePermissionValidationMiddleware(stack); err != nil {

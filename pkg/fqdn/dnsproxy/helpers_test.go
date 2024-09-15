@@ -7,9 +7,8 @@ import (
 	"regexp"
 	"testing"
 
-	. "github.com/cilium/checkmate"
+	"github.com/stretchr/testify/require"
 
-	"github.com/cilium/cilium/pkg/checker"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/fqdn/dns"
 	"github.com/cilium/cilium/pkg/fqdn/re"
@@ -21,27 +20,13 @@ import (
 	"github.com/cilium/cilium/pkg/u8proto"
 )
 
-const (
-	udpProto = uint8(u8proto.UDP)
-	tcpProto = uint8(u8proto.TCP)
-)
-
-type DNSProxyHelperTestSuite struct{}
-
-var _ = Suite(&DNSProxyHelperTestSuite{})
-
-// Hook up gocheck into the "go test" runner.
-func TestNonPrivileged(t *testing.T) {
-	TestingT(t)
-}
-
-func (s *DNSProxyHelperTestSuite) TestSetPortRulesForID(c *C) {
+func TestSetPortRulesForID(t *testing.T) {
 	re.InitRegexCompileLRU(1)
 	rules := policy.L7DataMap{}
 	epID := uint64(1)
 	pea := perEPAllow{}
 	cache := make(regexCache)
-	udpProtoPort8053 := restore.MakeV2PortProto(8053, udpProto)
+	udpProtoPort8053 := restore.MakeV2PortProto(8053, u8proto.UDP)
 
 	rules[new(MockCachedSelector)] = &policy.PerSelectorPolicy{
 		L7Rules: api.L7Rules{
@@ -53,8 +38,8 @@ func (s *DNSProxyHelperTestSuite) TestSetPortRulesForID(c *C) {
 	}
 
 	err := pea.setPortRulesForID(cache, epID, udpProtoPort8053, rules)
-	c.Assert(err, Equals, nil)
-	c.Assert(len(cache), Equals, 1)
+	require.Equal(t, nil, err)
+	require.Equal(t, 1, len(cache))
 
 	selector2 := new(MockCachedSelector)
 	rules[selector2] = &policy.PerSelectorPolicy{
@@ -68,17 +53,17 @@ func (s *DNSProxyHelperTestSuite) TestSetPortRulesForID(c *C) {
 	}
 
 	err = pea.setPortRulesForID(cache, epID, udpProtoPort8053, rules)
-	c.Assert(err, Equals, nil)
-	c.Assert(len(cache), Equals, 2)
+	require.Equal(t, nil, err)
+	require.Equal(t, 2, len(cache))
 
 	delete(rules, selector2)
 	err = pea.setPortRulesForID(cache, epID, udpProtoPort8053, rules)
-	c.Assert(err, Equals, nil)
-	c.Assert(len(cache), Equals, 1)
+	require.Equal(t, nil, err)
+	require.Equal(t, 1, len(cache))
 
 	err = pea.setPortRulesForID(cache, epID, udpProtoPort8053, nil)
-	c.Assert(err, Equals, nil)
-	c.Assert(len(cache), Equals, 0)
+	require.Equal(t, nil, err)
+	require.Equal(t, 0, len(cache))
 
 	rules[selector2] = &policy.PerSelectorPolicy{
 		L7Rules: api.L7Rules{
@@ -92,50 +77,50 @@ func (s *DNSProxyHelperTestSuite) TestSetPortRulesForID(c *C) {
 	}
 	err = pea.setPortRulesForID(cache, epID, udpProtoPort8053, rules)
 
-	c.Assert(err, NotNil)
-	c.Assert(len(cache), Equals, 0)
+	require.Error(t, err)
+	require.Equal(t, 0, len(cache))
 }
 
-func (s *DNSProxyHelperTestSuite) TestSetPortRulesForIDFromUnifiedFormat(c *C) {
+func TestSetPortRulesForIDFromUnifiedFormat(t *testing.T) {
 	re.InitRegexCompileLRU(1)
 	rules := make(CachedSelectorREEntry)
 	epID := uint64(1)
 	pea := perEPAllow{}
 	cache := make(regexCache)
-	udpProtoPort8053 := restore.MakeV2PortProto(8053, udpProto)
+	udpProtoPort8053 := restore.MakeV2PortProto(8053, u8proto.UDP)
 	rules[new(MockCachedSelector)] = regexp.MustCompile("^.*[.]cilium[.]io$")
 	rules[new(MockCachedSelector)] = regexp.MustCompile("^.*[.]cilium[.]io$")
 
 	err := pea.setPortRulesForIDFromUnifiedFormat(cache, epID, udpProtoPort8053, rules)
-	c.Assert(err, Equals, nil)
-	c.Assert(len(cache), Equals, 1)
+	require.Equal(t, nil, err)
+	require.Equal(t, 1, len(cache))
 
 	selector2 := new(MockCachedSelector)
 	rules[selector2] = regexp.MustCompile("^sub[.]cilium[.]io")
 	err = pea.setPortRulesForIDFromUnifiedFormat(cache, epID, udpProtoPort8053, rules)
-	c.Assert(err, Equals, nil)
-	c.Assert(len(cache), Equals, 2)
+	require.Equal(t, nil, err)
+	require.Equal(t, 2, len(cache))
 
 	delete(rules, selector2)
 	err = pea.setPortRulesForIDFromUnifiedFormat(cache, epID, udpProtoPort8053, rules)
-	c.Assert(err, Equals, nil)
-	c.Assert(len(cache), Equals, 1)
+	require.Equal(t, nil, err)
+	require.Equal(t, 1, len(cache))
 
 	err = pea.setPortRulesForIDFromUnifiedFormat(cache, epID, udpProtoPort8053, nil)
-	c.Assert(err, Equals, nil)
-	c.Assert(len(cache), Equals, 0)
+	require.Equal(t, nil, err)
+	require.Equal(t, 0, len(cache))
 
 	delete(rules, selector2)
 	err = pea.setPortRulesForIDFromUnifiedFormat(cache, epID, udpProtoPort8053, rules)
-	c.Assert(err, Equals, nil)
-	c.Assert(len(cache), Equals, 1)
+	require.Equal(t, nil, err)
+	require.Equal(t, 1, len(cache))
 
 	err = pea.setPortRulesForIDFromUnifiedFormat(cache, epID, udpProtoPort8053, nil)
-	c.Assert(err, Equals, nil)
-	c.Assert(len(cache), Equals, 0)
+	require.Equal(t, nil, err)
+	require.Equal(t, 0, len(cache))
 }
 
-func (s *DNSProxyHelperTestSuite) TestGeneratePattern(c *C) {
+func TestGeneratePattern(t *testing.T) {
 	l7 := &policy.PerSelectorPolicy{
 		L7Rules: api.L7Rules{DNS: []api.PortRuleDNS{
 			{MatchName: "example.name."},
@@ -153,13 +138,13 @@ func (s *DNSProxyHelperTestSuite) TestGeneratePattern(c *C) {
 	pattern := GeneratePattern(l7)
 
 	regex, err := re.CompileRegex(pattern)
-	c.Assert(err, Equals, nil)
+	require.Equal(t, nil, err)
 
 	for _, fqdn := range matching {
-		c.Assert(regex.MatchString(fqdn), Equals, true, Commentf("expected fqdn %q to match, but it did not", fqdn))
+		require.Truef(t, regex.MatchString(fqdn), "expected fqdn %q to match, but it did not", fqdn)
 	}
 	for _, fqdn := range notMatching {
-		c.Assert(regex.MatchString(fqdn), Equals, false, Commentf("expected fqdn %q to not match, but it did", fqdn))
+		require.Falsef(t, regex.MatchString(fqdn), "expected fqdn %q to not match, but it did", fqdn)
 	}
 
 	pattern = GeneratePattern(
@@ -171,11 +156,11 @@ func (s *DNSProxyHelperTestSuite) TestGeneratePattern(c *C) {
 		})
 
 	regex, err = re.CompileRegex(pattern)
-	c.Assert(err, Equals, nil)
+	require.Equal(t, nil, err)
 
 	// Ensure all fqdns match a policy with a wildcard
 	for _, fqdn := range append(matching, notMatching...) {
-		c.Assert(regex.MatchString(fqdn), Equals, true, Commentf("expected fqdn %q to match with wildcard policy, but it did not", fqdn))
+		require.Truef(t, regex.MatchString(fqdn), "expected fqdn %q to match with wildcard policy, but it did not", fqdn)
 	}
 
 	pattern = GeneratePattern(&policy.PerSelectorPolicy{
@@ -183,26 +168,26 @@ func (s *DNSProxyHelperTestSuite) TestGeneratePattern(c *C) {
 	})
 
 	regex, err = re.CompileRegex(pattern)
-	c.Assert(err, Equals, nil)
+	require.Equal(t, nil, err)
 
 	// Ensure all fqdns match a policy without any dns-rules
 	for _, fqdn := range append(matching, notMatching...) {
-		c.Assert(regex.MatchString(fqdn), Equals, true, Commentf("expected fqdn %q to match with wildcard policy, but it did not", fqdn))
+		require.Truef(t, regex.MatchString(fqdn), "expected fqdn %q to match with wildcard policy, but it did not", fqdn)
 	}
 
 	pattern = GeneratePattern(&policy.PerSelectorPolicy{
 		L7Rules: api.L7Rules{DNS: []api.PortRuleDNS{}},
 	})
 	regex, err = re.CompileRegex(pattern)
-	c.Assert(err, Equals, nil)
+	require.Equal(t, nil, err)
 
 	// Ensure all fqdns match a policy without any dns-rules
 	for _, fqdn := range append(matching, notMatching...) {
-		c.Assert(regex.MatchString(fqdn), Equals, true, Commentf("expected fqdn %q to match with wildcard policy, but it did not", fqdn))
+		require.Truef(t, regex.MatchString(fqdn), "expected fqdn %q to match with wildcard policy, but it did not", fqdn)
 	}
 }
 
-func (s *DNSProxyHelperTestSuite) TestGeneratePatternTrailingDot(c *C) {
+func TestGeneratePatternTrailingDot(t *testing.T) {
 	dnsName := "example.name"
 	dnsPattern := "*.example.name"
 	generatePattern := func(name, pattern string) string {
@@ -215,7 +200,7 @@ func (s *DNSProxyHelperTestSuite) TestGeneratePatternTrailingDot(c *C) {
 		return GeneratePattern(l7)
 
 	}
-	c.Assert(generatePattern(dnsPattern, dnsName), checker.DeepEquals, generatePattern(dns.FQDN(dnsPattern), dns.FQDN(dnsName)))
+	require.EqualValues(t, generatePattern(dns.FQDN(dnsPattern), dns.FQDN(dnsName)), generatePattern(dnsPattern, dnsName))
 
 }
 

@@ -10,7 +10,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/cilium/cilium/pkg/completion"
-	"github.com/cilium/cilium/pkg/datapath/iptables"
+	datapath "github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/envoy"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/proxy/endpoint"
@@ -28,12 +28,12 @@ type envoyRedirect struct {
 type envoyProxyIntegration struct {
 	adminClient     *envoy.EnvoyAdminClient
 	xdsServer       envoy.XDSServer
-	iptablesManager *iptables.Manager
+	iptablesManager datapath.IptablesManager
 }
 
 // createRedirect creates a redirect with corresponding proxy configuration. This will launch a proxy instance.
 func (p *envoyProxyIntegration) createRedirect(r *Redirect, wg *completion.WaitGroup) (RedirectImplementation, error) {
-	if r.listener.proxyType == types.ProxyTypeCRD {
+	if r.listener.ProxyType == types.ProxyTypeCRD {
 		// CRD Listeners already exist, create a no-op implementation
 		return &CRDRedirect{}, nil
 	}
@@ -49,17 +49,17 @@ func (p *envoyProxyIntegration) changeLogLevel(level logrus.Level) error {
 func (p *envoyProxyIntegration) handleEnvoyRedirect(r *Redirect, wg *completion.WaitGroup) (RedirectImplementation, error) {
 	l := r.listener
 	redirect := &envoyRedirect{
-		listenerName: net.JoinHostPort(r.name, fmt.Sprintf("%d", l.proxyPort)),
+		listenerName: net.JoinHostPort(r.name, fmt.Sprintf("%d", l.ProxyPort)),
 		xdsServer:    p.xdsServer,
 		adminClient:  p.adminClient,
 	}
 
 	mayUseOriginalSourceAddr := p.iptablesManager.SupportsOriginalSourceAddr()
 	// Only use original source address for egress
-	if l.ingress {
+	if l.Ingress {
 		mayUseOriginalSourceAddr = false
 	}
-	p.xdsServer.AddListener(redirect.listenerName, policy.L7ParserType(l.proxyType), l.proxyPort, l.ingress, mayUseOriginalSourceAddr, wg)
+	p.xdsServer.AddListener(redirect.listenerName, policy.L7ParserType(l.ProxyType), l.ProxyPort, l.Ingress, mayUseOriginalSourceAddr, wg)
 
 	return redirect, nil
 }

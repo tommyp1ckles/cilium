@@ -242,14 +242,14 @@ In this example, services with port ``31940`` were created (one for each of devi
     $ kubectl -n kube-system exec ds/cilium -- cilium-dbg service list
     ID   Frontend               Service Type   Backend
     [...]
-    4    10.104.239.135:80      ClusterIP      1 => 10.217.0.107:80
-                                               2 => 10.217.0.149:80
-    5    0.0.0.0:31940          NodePort       1 => 10.217.0.107:80
-                                               2 => 10.217.0.149:80
-    6    192.168.178.29:31940   NodePort       1 => 10.217.0.107:80
-                                               2 => 10.217.0.149:80
-    7    172.16.0.29:31940      NodePort       1 => 10.217.0.107:80
-                                               2 => 10.217.0.149:80
+    4    10.104.239.135:80/TCP      ClusterIP      1 => 10.217.0.107:80/TCP
+                                                   2 => 10.217.0.149:80/TCP
+    5    0.0.0.0:31940/TCP          NodePort       1 => 10.217.0.107:80/TCP
+                                                   2 => 10.217.0.149:80/TCP
+    6    192.168.178.29:31940/TCP   NodePort       1 => 10.217.0.107:80/TCP
+                                                   2 => 10.217.0.149:80/TCP
+    7    172.16.0.29:31940/TCP      NodePort       1 => 10.217.0.107:80/TCP
+                                                   2 => 10.217.0.149:80/TCP
 
 Create a variable with the node port for testing:
 
@@ -359,6 +359,40 @@ depending on the external and internal traffic policies:
 +----------+----------+-------------------------+-----------------------+
 | Local    | Local    | Node-local only         | Node-local only       |
 +----------+----------+-------------------------+-----------------------+
+
+Selective Service Exposure
+**************************
+
+By default, Cilium exposes Kubernetes services on all nodes in the cluster. To expose a
+service only on a subset of the nodes instead, use the ``service.cilium.io/node`` label for
+the relevant nodes. For example, label a node as follows:
+
+.. code-block:: shell-session
+
+  $ kubectl label node node_name service.cilium.io/node=beefy
+
+To add a new service that should only be exposed to nodes with label ``service.cilium.io/node=beefy``, install the service as follows:
+
+.. code-block:: yaml
+
+  apiVersion: v1
+  kind: Service
+  metadata:
+    name: example-service
+    annotations:
+      service.cilium.io/node: beefy
+  spec:
+    selector:
+      app: example
+    ports:
+      - port: 8765
+        targetPort: 9376
+    type: LoadBalancer
+
+Note that changing a node label after a service has been exposed matching that label does not
+automatically update the list of nodes where the service is exposed. To update exposure of the
+service after changing node labels, restart the Cilium agent. Generally it is advised to fixate the
+node label upon joining the Kubernetes cluster and retain it throughout the node's lifetime.
 
 .. _maglev:
 
@@ -603,6 +637,7 @@ mode would look as follows:
         --set k8sServiceHost=${API_SERVER_IP} \\
         --set k8sServicePort=${API_SERVER_PORT}
 
+.. _socketlb-host-netns-only:
 
 Socket LoadBalancer Bypass in Pod Namespace
 *******************************************
@@ -1340,13 +1375,18 @@ working, take a look at `this KEP
     free mode, make sure that default Kubernetes services like ``kube-dns`` and ``kubernetes``
     have the required label value.
 
-Topology Aware Hints
-********************
+Traffic Distribution and Topology Aware Hints
+*********************************************
 
-The kube-proxy replacement implements the K8s service
-`Topology Aware Hints <https://kubernetes.io/docs/concepts/services-networking/topology-aware-hints>`__.
-This allows Cilium nodes to prefer service endpoints residing in the same zone.
-To enable the feature, set ``loadBalancer.serviceTopology=true``.
+The kube-proxy replacement implements both Kubernetes `Topology Aware Routing
+<https://kubernetes.io/docs/concepts/services-networking/topology-aware-routing>`__,
+and the more recent `Traffic Distribution
+<https://kubernetes.io/docs/concepts/services-networking/service/#traffic-distribution>`__
+features.
+
+Both of these features work by setting ``hints`` on EndpointSlices that enable
+Cilium to route to endpoints residing in the same zone. To enable the feature,
+set ``loadBalancer.serviceTopology=true``.
 
 Neighbor Discovery
 ******************
@@ -1602,10 +1642,23 @@ Limitations
       which uses eBPF cgroup hooks to implement the service translation. Using it with libceph
       deployments currently requires support for the getpeername(2) hook address translation in
       eBPF, which is only available for kernels v5.8 and higher.
-    * In order to support nfs in the kernel with the socket-LB feature, ensure that
-      kernel commit ``0bdf399342c5 ("net: Avoid address overwrite in kernel_connect")``
-      is part of your underlying kernel. Linux kernels v6.6 and higher support it. Older
-      stable kernels are TBD. For a more detailed discussion see :gh-issue:`21541`.
+    * NFS and SMB mounts may break when mounted to a ``Service`` cluster IP while using socket-LB.
+      This issue is known to impact Longhorn, Portworx, and Robin, but may impact other storage
+      systems that implement ``ReadWriteMany`` volumes using this pattern. To avoid this problem,
+      ensure that the following commits are part of your underlying kernel:
+
+      * ``0bdf399342c5 ("net: Avoid address overwrite in kernel_connect")``
+      * ``86a7e0b69bd5 ("net: prevent rewrite of msg_name in sock_sendmsg()")``
+      * ``01b2885d9415 ("net: Save and restore msg_namelen in sock_sendmsg")``
+      * ``cedc019b9f26 ("smb: use kernel_connect() and kernel_bind()")`` (SMB only)
+
+      These patches have been backported to all stable kernels and some distro-specific kernels:
+
+      * **Ubuntu**: ``5.4.0-187-generic``, ``5.15.0-113-generic``, ``6.5.0-41-generic`` or newer.
+      * **RHEL 8**: ``4.18.0-553.8.1.el8_10.x86_64`` or newer (RHEL 8.10+).
+      * **RHEL 9**: ``kernel-5.14.0-427.31.1.el9_4`` or newer (RHEL 9.4+).
+
+      For a more detailed discussion see :gh-issue:`21541`.
     * Cilium's DSR NodePort mode currently does not operate well in environments with
       TCP Fast Open (TFO) enabled. It is recommended to switch to ``snat`` mode in this
       situation.
@@ -1631,14 +1684,10 @@ Limitations
       device changes.
     * When socket-LB feature is enabled, pods sending (connected) UDP traffic to services
       can continue to send traffic to a service backend even after it's deleted. Cilium agent
-      handles such scenarios by forcefully terminating pod sockets in the host network
-      namespace that are connected to deleted backends, so that the pods can be
-      load-balanced to active backends. This functionality requires these
-      kernel configs to be enabled: ``CONFIG_INET_DIAG``, ``CONFIG_INET_UDP_DIAG``
-      and ``CONFIG_INET_DIAG_DESTROY``. If you have application pods (not deployed in the
-      host network namespace) making long-lived connections using (connected) UDP,
-      you can enable ``bpf-lb-sock-hostns-only`` in order to enable the socket-LB
-      feature only in the host network namespace.
+      handles such scenarios by forcefully terminating application sockets that are connected
+      to deleted backends, so that the applications can be load-balanced to active backends.
+      This functionality requires these kernel configs to be enabled:
+      ``CONFIG_INET_DIAG``, ``CONFIG_INET_UDP_DIAG`` and ``CONFIG_INET_DIAG_DESTROY``.
     * Cilium's BPF-based masquerading is recommended over iptables when using the
       BPF-based NodePort. Otherwise, there is a risk for port collisions between
       BPF and iptables SNAT, which might result in dropped NodePort

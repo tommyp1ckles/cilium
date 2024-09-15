@@ -8,10 +8,16 @@ import (
 	"fmt"
 	"path"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sirupsen/logrus"
+	"k8s.io/utils/clock"
+	"k8s.io/utils/ptr"
 
+	"github.com/cilium/cilium/api/v1/models"
+	"github.com/cilium/cilium/pkg/clustermesh/common"
+	mcsapitypes "github.com/cilium/cilium/pkg/clustermesh/mcsapi/types"
 	"github.com/cilium/cilium/pkg/clustermesh/types"
 	cmutils "github.com/cilium/cilium/pkg/clustermesh/utils"
 	"github.com/cilium/cilium/pkg/clustermesh/wait"
@@ -20,6 +26,7 @@ import (
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/kvstore/store"
 	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	nodeStore "github.com/cilium/cilium/pkg/node/store"
 	serviceStore "github.com/cilium/cilium/pkg/service/store"
 )
@@ -31,10 +38,14 @@ type remoteCluster struct {
 
 	localBackend kvstore.BackendOperations
 
-	nodes      reflector
-	services   reflector
-	identities reflector
-	ipcache    reflector
+	nodes          reflector
+	services       reflector
+	serviceExports reflector
+	identities     reflector
+	ipcache        reflector
+
+	// status is the function which fills the common part of the status.
+	status common.StatusFunc
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -47,10 +58,15 @@ type remoteCluster struct {
 	// before removing the cluster from readiness checks.
 	readyTimeout time.Duration
 
+	// disableDrainOnDisconnection disables the removal of cached data upon
+	// cluster disconnection.
+	disableDrainOnDisconnection bool
+
 	logger logrus.FieldLogger
+	clock  clock.Clock
 }
 
-func (rc *remoteCluster) Run(ctx context.Context, backend kvstore.BackendOperations, srccfg *types.CiliumClusterConfig, ready chan<- error) {
+func (rc *remoteCluster) Run(ctx context.Context, backend kvstore.BackendOperations, srccfg types.CiliumClusterConfig, ready chan<- error) {
 	// Closing the synced.connected channel cancels the timeout goroutine.
 	// Ensure we do not attempt to close the channel more than once.
 	select {
@@ -60,37 +76,32 @@ func (rc *remoteCluster) Run(ctx context.Context, backend kvstore.BackendOperati
 	}
 
 	dstcfg := types.CiliumClusterConfig{
+		ID: srccfg.ID,
 		Capabilities: types.CiliumClusterConfigCapabilities{
-			SyncedCanaries: true,
-			Cached:         true,
+			SyncedCanaries:        true,
+			Cached:                true,
+			MaxConnectedClusters:  srccfg.Capabilities.MaxConnectedClusters,
+			ServiceExportsEnabled: srccfg.Capabilities.ServiceExportsEnabled,
 		},
 	}
 
-	if srccfg != nil {
-		dstcfg.ID = srccfg.ID
-		dstcfg.Capabilities.MaxConnectedClusters = srccfg.Capabilities.MaxConnectedClusters
-	}
-
-	if err := cmutils.SetClusterConfig(ctx, rc.name, &dstcfg, rc.localBackend); err != nil {
+	stopAndWait, err := cmutils.EnforceClusterConfig(ctx, rc.name, dstcfg, rc.localBackend, rc.logger)
+	defer stopAndWait()
+	if err != nil {
 		ready <- fmt.Errorf("failed to propagate cluster configuration: %w", err)
 		close(ready)
 		return
 	}
 
-	var capabilities types.CiliumClusterConfigCapabilities
-	if srccfg != nil {
-		capabilities = srccfg.Capabilities
-	}
-
 	var mgr store.WatchStoreManager
-	if capabilities.SyncedCanaries {
+	if srccfg.Capabilities.SyncedCanaries {
 		mgr = rc.storeFactory.NewWatchStoreManager(backend, rc.name)
 	} else {
 		mgr = store.NewWatchStoreManagerImmediate(rc.name)
 	}
 
 	adapter := func(prefix string) string { return prefix }
-	if capabilities.Cached {
+	if srccfg.Capabilities.Cached {
 		adapter = kvstore.StateToCachePrefix
 	}
 
@@ -102,9 +113,23 @@ func (rc *remoteCluster) Run(ctx context.Context, backend kvstore.BackendOperati
 		rc.services.watcher.Watch(ctx, backend, path.Join(adapter(serviceStore.ServiceStorePrefix), rc.name))
 	})
 
+	if srccfg.Capabilities.ServiceExportsEnabled != nil {
+		mgr.Register(adapter(mcsapitypes.ServiceExportStorePrefix), func(ctx context.Context) {
+			rc.serviceExports.watcher.Watch(ctx, backend, path.Join(adapter(mcsapitypes.ServiceExportStorePrefix), rc.name))
+		})
+	} else {
+		// Additionnally drain the service exports to remove stale entries if the
+		// service exports was previously supported and is now not supported anymore.
+		rc.serviceExports.watcher.Drain()
+		// Also mimic that the service exports are synced if the remote cluster
+		// doesn't support service exports (remote cluster is running Cilium
+		// version 1.16 or less).
+		rc.serviceExports.syncer.OnSync(ctx)
+	}
+
 	mgr.Register(adapter(ipcache.IPIdentitiesPath), func(ctx context.Context) {
 		suffix := ipcache.DefaultAddressSpace
-		if capabilities.Cached {
+		if srccfg.Capabilities.Cached {
 			suffix = rc.name
 		}
 
@@ -113,7 +138,7 @@ func (rc *remoteCluster) Run(ctx context.Context, backend kvstore.BackendOperati
 
 	mgr.Register(adapter(identityCache.IdentitiesPath), func(ctx context.Context) {
 		var suffix string
-		if capabilities.Cached {
+		if srccfg.Capabilities.Cached {
 			suffix = rc.name
 		}
 
@@ -130,12 +155,95 @@ func (rc *remoteCluster) Stop() {
 	rc.wg.Wait()
 }
 
-func (rc *remoteCluster) Remove() {
-	// Cluster specific keys are not explicitly removed, but they will be
-	// disappear once the associated lease expires.
+func (rc *remoteCluster) Remove(ctx context.Context) {
+	if rc.disableDrainOnDisconnection {
+		rc.logger.Warning("Remote cluster disconnected, but cached data removal is disabled. " +
+			"Reconnecting to the same cluster without first restarting KVStoreMesh may lead to inconsistencies")
+		return
+	}
+
+	const retries = 5
+	var (
+		retry   = 0
+		backoff = 2 * time.Second
+	)
+
+	rc.logger.Info("Remote cluster disconnected: draining cached data")
+	for {
+		err := rc.drain(ctx, retry == 0)
+		switch {
+		case err == nil:
+			rc.logger.Info("Successfully removed all cached data from kvstore")
+			return
+		case ctx.Err() != nil:
+			return
+		case retry == retries:
+			rc.logger.WithError(err).Error(
+				"Failed to remove cached data from kvstore, despite retries. Reconnecting to the " +
+					"same cluster without first restarting KVStoreMesh may lead to inconsistencies")
+			return
+		}
+
+		rc.logger.WithError(err).Warning("Failed to remove cached data from kvstore, retrying")
+		select {
+		case <-rc.clock.After(backoff):
+			retry++
+			backoff *= 2
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
-func (rc *remoteCluster) ClusterConfigRequired() bool { return false }
+// drain drains the cached data from the local kvstore. The cluster configuration
+// is removed as first step, to prevent bootstrapping agents from connecting while
+// removing the rest of the cached data. Indeed, there's no point in retrieving
+// incomplete data, and it is expected that agents will be disconnecting as well.
+func (rc *remoteCluster) drain(ctx context.Context, withGracePeriod bool) (err error) {
+	keys := []string{
+		path.Join(kvstore.ClusterConfigPrefix, rc.name),
+	}
+	prefixes := []string{
+		path.Join(kvstore.SyncedPrefix, rc.name),
+		path.Join(kvstore.StateToCachePrefix(nodeStore.NodeStorePrefix), rc.name),
+		path.Join(kvstore.StateToCachePrefix(serviceStore.ServiceStorePrefix), rc.name),
+		path.Join(kvstore.StateToCachePrefix(mcsapitypes.ServiceExportStorePrefix), rc.name),
+		path.Join(kvstore.StateToCachePrefix(identityCache.IdentitiesPath), rc.name),
+		path.Join(kvstore.StateToCachePrefix(ipcache.IPIdentitiesPath), rc.name),
+	}
+
+	for _, key := range keys {
+		if err = rc.localBackend.Delete(ctx, key); err != nil {
+			return fmt.Errorf("deleting key %q: %w", key, err)
+		}
+	}
+
+	if withGracePeriod {
+		// Wait for the grace period before deleting all the cached data. This
+		// allows Cilium agents to disconnect in the meanwhile, to reduce the
+		// overhead on etcd and prevent issues in case KVStoreMesh is disabled
+		// (as the removal of the configurations would cause the draining as
+		// well). The cluster configuration is deleted before waiting to prevent
+		// new agents from connecting in this time window.
+		const drainGracePeriod = 3 * time.Minute
+		rc.logger.WithField(logfields.Duration, drainGracePeriod).
+			Info("Waiting before removing cached data from kvstore, to allow Cilium agents to disconnect")
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-rc.clock.After(drainGracePeriod):
+			rc.logger.Info("Finished waiting before removing cached data from kvstore")
+		}
+	}
+
+	for _, prefix := range prefixes {
+		if err = rc.localBackend.DeletePrefix(ctx, prefix+"/"); err != nil {
+			return fmt.Errorf("deleting prefix %q: %w", prefix+"/", err)
+		}
+	}
+
+	return nil
+}
 
 // waitForConnection waits for a connection to be established to the remote cluster.
 // If the connection is not established within the timeout, the remote cluster is
@@ -157,6 +265,33 @@ func (rc *remoteCluster) waitForConnection(ctx context.Context) {
 	}
 }
 
+func (rc *remoteCluster) Status() *models.RemoteCluster {
+	status := rc.status()
+
+	status.NumNodes = int64(rc.nodes.watcher.NumEntries())
+	status.NumSharedServices = int64(rc.services.watcher.NumEntries())
+	status.NumServiceExports = int64(rc.serviceExports.watcher.NumEntries())
+	status.NumIdentities = int64(rc.identities.watcher.NumEntries())
+	status.NumEndpoints = int64(rc.ipcache.watcher.NumEntries())
+
+	status.Synced = &models.RemoteClusterSynced{
+		Nodes:      rc.nodes.watcher.Synced(),
+		Services:   rc.services.watcher.Synced(),
+		Identities: rc.identities.watcher.Synced(),
+		Endpoints:  rc.ipcache.watcher.Synced(),
+	}
+	if status.Config != nil && status.Config.ServiceExportsEnabled != nil {
+		status.Synced.ServiceExports = ptr.To(rc.serviceExports.watcher.Synced())
+	}
+
+	status.Ready = status.Ready &&
+		status.Synced.Nodes && status.Synced.Services &&
+		(status.Synced.ServiceExports == nil || *status.Synced.ServiceExports) &&
+		status.Synced.Identities && status.Synced.Endpoints
+
+	return status
+}
+
 type reflector struct {
 	watcher store.WatchStore
 	syncer  syncer
@@ -164,7 +299,8 @@ type reflector struct {
 
 type syncer struct {
 	store.SyncStore
-	synced *lock.StoppableWaitGroup
+	synced   *lock.StoppableWaitGroup
+	isSynced *atomic.Bool
 }
 
 func (o *syncer) OnUpdate(key store.Key) {
@@ -176,7 +312,11 @@ func (o *syncer) OnDelete(key store.NamedKey) {
 }
 
 func (o *syncer) OnSync(ctx context.Context) {
-	o.Synced(ctx, func(context.Context) { o.synced.Done() })
+	// As we send fake OnSync when service exports support is disabled we need
+	// to make sure that this is called only once.
+	if o.isSynced.CompareAndSwap(false, true) {
+		o.Synced(ctx, func(context.Context) { o.synced.Done() })
+	}
 }
 
 func newReflector(local kvstore.BackendOperations, cluster, prefix string, factory store.Factory, synced *lock.StoppableWaitGroup) reflector {
@@ -185,7 +325,8 @@ func newReflector(local kvstore.BackendOperations, cluster, prefix string, facto
 	syncer := syncer{
 		SyncStore: factory.NewSyncStore(cluster, local, path.Join(prefix, cluster),
 			store.WSSWithSyncedKeyOverride(prefix)),
-		synced: synced,
+		synced:   synced,
+		isSynced: &atomic.Bool{},
 	}
 
 	watcher := factory.NewWatchStore(cluster, store.KVPairCreator, &syncer,

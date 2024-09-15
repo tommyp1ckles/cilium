@@ -43,8 +43,9 @@ type CreateVerifiedAccessTrustProviderInput struct {
 	TrustProviderType types.TrustProviderType
 
 	// A unique, case-sensitive token that you provide to ensure idempotency of your
-	// modification request. For more information, see Ensuring Idempotency (https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Run_Instance_Idempotency.html)
-	// .
+	// modification request. For more information, see [Ensuring idempotency].
+	//
+	// [Ensuring idempotency]: https://docs.aws.amazon.com/ec2/latest/devguide/ec2-api-idempotency.html
 	ClientToken *string
 
 	// A description for the Verified Access trust provider.
@@ -145,6 +146,12 @@ func (c *Client) addOperationCreateVerifiedAccessTrustProviderMiddlewares(stack 
 		return err
 	}
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+		return err
+	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
 	if err = addIdempotencyToken_opCreateVerifiedAccessTrustProviderMiddleware(stack, options); err != nil {

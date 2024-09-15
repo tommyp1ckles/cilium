@@ -250,6 +250,7 @@ func NewService4Key(ip net.IP, port uint16, proto u8proto.U8proto, scope uint8, 
 func (k *Service4Key) String() string {
 	kHost := k.ToHost().(*Service4Key)
 	addr := net.JoinHostPort(kHost.Address.String(), fmt.Sprintf("%d", kHost.Port))
+	addr += fmt.Sprintf("/%s", u8proto.U8proto(kHost.Proto).String())
 	if kHost.Scope == loadbalancer.ScopeInternal {
 		addr += "/i"
 	}
@@ -268,6 +269,7 @@ func (k *Service4Key) SetScope(scope uint8)    { k.Scope = scope }
 func (k *Service4Key) GetScope() uint8         { return k.Scope }
 func (k *Service4Key) GetAddress() net.IP      { return k.Address.IP() }
 func (k *Service4Key) GetPort() uint16         { return k.Port }
+func (k *Service4Key) GetProtocol() uint8      { return k.Proto }
 func (k *Service4Key) MapDelete() error        { return k.Map().Delete(k.ToNetwork()) }
 
 func (k *Service4Key) RevNatValue() RevNatValue {
@@ -292,23 +294,25 @@ func (k *Service4Key) ToHost() ServiceKey {
 
 // Service4Value must match 'struct lb4_service' in "bpf/lib/common.h".
 type Service4Value struct {
-	BackendID uint32    `align:"$union0"`
-	Count     uint16    `align:"count"`
-	RevNat    uint16    `align:"rev_nat_index"`
-	Flags     uint8     `align:"flags"`
-	Flags2    uint8     `align:"flags2"`
-	Pad       pad2uint8 `align:"pad"`
+	BackendID uint32 `align:"$union0"`
+	Count     uint16 `align:"count"`
+	RevNat    uint16 `align:"rev_nat_index"`
+	Flags     uint8  `align:"flags"`
+	Flags2    uint8  `align:"flags2"`
+	QCount    uint16 `align:"qcount"`
 }
 
 func (s *Service4Value) New() bpf.MapValue { return &Service4Value{} }
 
 func (s *Service4Value) String() string {
 	sHost := s.ToHost().(*Service4Value)
-	return fmt.Sprintf("%d %d (%d) [0x%x 0x%x]", sHost.BackendID, sHost.Count, sHost.RevNat, sHost.Flags, sHost.Flags2)
+	return fmt.Sprintf("%d %d[%d] (%d) [0x%x 0x%x]", sHost.BackendID, sHost.Count, sHost.QCount, sHost.RevNat, sHost.Flags, sHost.Flags2)
 }
 
 func (s *Service4Value) SetCount(count int)   { s.Count = uint16(count) }
 func (s *Service4Value) GetCount() int        { return int(s.Count) }
+func (s *Service4Value) SetQCount(count int)  { s.QCount = uint16(count) }
+func (s *Service4Value) GetQCount() int       { return int(s.QCount) }
 func (s *Service4Value) SetRevNat(id int)     { s.RevNat = uint16(id) }
 func (s *Service4Value) GetRevNat() int       { return int(s.RevNat) }
 func (s *Service4Value) RevNatKey() RevNatKey { return &RevNat4Key{s.RevNat} }
@@ -413,8 +417,10 @@ func (b *Backend4Value) GetAddress() net.IP { return b.Address.IP() }
 func (b *Backend4Value) GetIPCluster() cmtypes.AddrCluster {
 	return cmtypes.AddrClusterFrom(b.Address.Addr(), 0)
 }
-func (b *Backend4Value) GetPort() uint16 { return b.Port }
-func (b *Backend4Value) GetFlags() uint8 { return b.Flags }
+func (b *Backend4Value) GetPort() uint16    { return b.Port }
+func (b *Backend4Value) GetProtocol() uint8 { return uint8(b.Proto) }
+func (b *Backend4Value) GetFlags() uint8    { return b.Flags }
+func (b *Backend4Value) GetZone() uint8     { return 0 }
 
 func (v *Backend4Value) ToNetwork() BackendValue {
 	n := *v
@@ -435,10 +441,11 @@ type Backend4ValueV3 struct {
 	Proto     u8proto.U8proto `align:"proto"`
 	Flags     uint8           `align:"flags"`
 	ClusterID uint16          `align:"cluster_id"`
-	Pad       pad2uint8       `align:"pad"`
+	Zone      uint8           `align:"zone"`
+	Pad       uint8           `align:"pad"`
 }
 
-func NewBackend4ValueV3(addrCluster cmtypes.AddrCluster, port uint16, proto u8proto.U8proto, state loadbalancer.BackendState) (*Backend4ValueV3, error) {
+func NewBackend4ValueV3(addrCluster cmtypes.AddrCluster, port uint16, proto u8proto.U8proto, state loadbalancer.BackendState, zone uint8) (*Backend4ValueV3, error) {
 	addr := addrCluster.Addr()
 	if !addr.Is4() {
 		return nil, fmt.Errorf("Not an IPv4 address")
@@ -456,6 +463,7 @@ func NewBackend4ValueV3(addrCluster cmtypes.AddrCluster, port uint16, proto u8pr
 		Proto:     proto,
 		Flags:     flags,
 		ClusterID: uint16(clusterID),
+		Zone:      zone,
 	}
 
 	ip4Array := addr.As4()
@@ -466,6 +474,9 @@ func NewBackend4ValueV3(addrCluster cmtypes.AddrCluster, port uint16, proto u8pr
 
 func (v *Backend4ValueV3) String() string {
 	vHost := v.ToHost().(*Backend4ValueV3)
+	if v.Zone != 0 {
+		return fmt.Sprintf("%s://%s[%s]", vHost.Proto, cmtypes.AddrClusterFrom(vHost.Address.Addr(), uint32(vHost.ClusterID)).String(), option.Config.GetZone(v.Zone))
+	}
 	return fmt.Sprintf("%s://%s", vHost.Proto, cmtypes.AddrClusterFrom(vHost.Address.Addr(), uint32(vHost.ClusterID)).String())
 }
 
@@ -475,8 +486,10 @@ func (b *Backend4ValueV3) GetAddress() net.IP { return b.Address.IP() }
 func (b *Backend4ValueV3) GetIPCluster() cmtypes.AddrCluster {
 	return cmtypes.AddrClusterFrom(b.Address.Addr(), uint32(b.ClusterID))
 }
-func (b *Backend4ValueV3) GetPort() uint16 { return b.Port }
-func (b *Backend4ValueV3) GetFlags() uint8 { return b.Flags }
+func (b *Backend4ValueV3) GetPort() uint16    { return b.Port }
+func (b *Backend4ValueV3) GetProtocol() uint8 { return uint8(b.Proto) }
+func (b *Backend4ValueV3) GetFlags() uint8    { return b.Flags }
+func (b *Backend4ValueV3) GetZone() uint8     { return b.Zone }
 
 func (v *Backend4ValueV3) ToNetwork() BackendValue {
 	n := *v
@@ -497,8 +510,8 @@ type Backend4V3 struct {
 }
 
 func NewBackend4V3(id loadbalancer.BackendID, addrCluster cmtypes.AddrCluster, port uint16,
-	proto u8proto.U8proto, state loadbalancer.BackendState) (*Backend4V3, error) {
-	val, err := NewBackend4ValueV3(addrCluster, port, proto, state)
+	proto u8proto.U8proto, state loadbalancer.BackendState, zone uint8) (*Backend4V3, error) {
+	val, err := NewBackend4ValueV3(addrCluster, port, proto, state, zone)
 	if err != nil {
 		return nil, err
 	}

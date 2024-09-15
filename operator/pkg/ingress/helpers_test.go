@@ -5,21 +5,20 @@ package ingress
 
 import (
 	"context"
-	"io"
 	"testing"
 
-	"github.com/sirupsen/logrus"
+	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/require"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/cilium/cilium/operator/pkg/model"
 	ciliumv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 )
 
@@ -77,8 +76,7 @@ func TestIsIngressClassMarkedAsDefault(t *testing.T) {
 }
 
 func TestIsCiliumManagedIngress(t *testing.T) {
-	fakeLogger := logrus.New()
-	fakeLogger.SetOutput(io.Discard)
+	fakeLogger := hivetest.Logger(t)
 
 	testCases := []struct {
 		desc    string
@@ -94,7 +92,7 @@ func TestIsCiliumManagedIngress(t *testing.T) {
 					Name:      "test",
 				},
 				Spec: networkingv1.IngressSpec{
-					IngressClassName: model.AddressOf("cilium"),
+					IngressClassName: ptr.To("cilium"),
 				},
 			},
 			fixture: []client.Object{},
@@ -126,7 +124,7 @@ func TestIsCiliumManagedIngress(t *testing.T) {
 					},
 				},
 				Spec: networkingv1.IngressSpec{
-					IngressClassName: model.AddressOf("cilium"),
+					IngressClassName: ptr.To("cilium"),
 				},
 			},
 			fixture: []client.Object{},
@@ -222,7 +220,7 @@ func TestIsCiliumManagedIngress(t *testing.T) {
 					Name:      "test",
 				},
 				Spec: networkingv1.IngressSpec{
-					IngressClassName: model.AddressOf("other"),
+					IngressClassName: ptr.To("other"),
 				},
 			},
 			fixture: []client.Object{

@@ -42,11 +42,16 @@ type GetTransitGatewayMulticastDomainAssociationsInput struct {
 	DryRun *bool
 
 	// One or more filters. The possible values are:
+	//
 	//   - resource-id - The ID of the resource.
+	//
 	//   - resource-type - The type of resource. The valid value is: vpc .
+	//
 	//   - state - The state of the subnet association. Valid values are associated |
 	//   associating | disassociated | disassociating .
+	//
 	//   - subnet-id - The ID of the subnet.
+	//
 	//   - transit-gateway-attachment-id - The id of the transit gateway attachment.
 	Filters []types.Filter
 
@@ -130,6 +135,12 @@ func (c *Client) addOperationGetTransitGatewayMulticastDomainAssociationsMiddlew
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
+		return err
+	}
 	if err = addOpGetTransitGatewayMulticastDomainAssociationsValidationMiddleware(stack); err != nil {
 		return err
 	}
@@ -153,14 +164,6 @@ func (c *Client) addOperationGetTransitGatewayMulticastDomainAssociationsMiddlew
 	}
 	return nil
 }
-
-// GetTransitGatewayMulticastDomainAssociationsAPIClient is a client that
-// implements the GetTransitGatewayMulticastDomainAssociations operation.
-type GetTransitGatewayMulticastDomainAssociationsAPIClient interface {
-	GetTransitGatewayMulticastDomainAssociations(context.Context, *GetTransitGatewayMulticastDomainAssociationsInput, ...func(*Options)) (*GetTransitGatewayMulticastDomainAssociationsOutput, error)
-}
-
-var _ GetTransitGatewayMulticastDomainAssociationsAPIClient = (*Client)(nil)
 
 // GetTransitGatewayMulticastDomainAssociationsPaginatorOptions is the paginator
 // options for GetTransitGatewayMulticastDomainAssociations
@@ -229,6 +232,9 @@ func (p *GetTransitGatewayMulticastDomainAssociationsPaginator) NextPage(ctx con
 	}
 	params.MaxResults = limit
 
+	optFns = append([]func(*Options){
+		addIsPaginatorUserAgent,
+	}, optFns...)
 	result, err := p.client.GetTransitGatewayMulticastDomainAssociations(ctx, &params, optFns...)
 	if err != nil {
 		return nil, err
@@ -247,6 +253,14 @@ func (p *GetTransitGatewayMulticastDomainAssociationsPaginator) NextPage(ctx con
 
 	return result, nil
 }
+
+// GetTransitGatewayMulticastDomainAssociationsAPIClient is a client that
+// implements the GetTransitGatewayMulticastDomainAssociations operation.
+type GetTransitGatewayMulticastDomainAssociationsAPIClient interface {
+	GetTransitGatewayMulticastDomainAssociations(context.Context, *GetTransitGatewayMulticastDomainAssociationsInput, ...func(*Options)) (*GetTransitGatewayMulticastDomainAssociationsOutput, error)
+}
+
+var _ GetTransitGatewayMulticastDomainAssociationsAPIClient = (*Client)(nil)
 
 func newServiceMetadataMiddleware_opGetTransitGatewayMulticastDomainAssociations(region string) *awsmiddleware.RegisterServiceMetadata {
 	return &awsmiddleware.RegisterServiceMetadata{

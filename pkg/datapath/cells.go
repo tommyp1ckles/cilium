@@ -4,12 +4,14 @@
 package datapath
 
 import (
+	"fmt"
 	"log"
+	"log/slog"
 	"path/filepath"
 
 	"github.com/cilium/hive/cell"
 
-	"github.com/cilium/cilium/pkg/bpf"
+	"github.com/cilium/cilium/pkg/act"
 	"github.com/cilium/cilium/pkg/datapath/agentliveness"
 	"github.com/cilium/cilium/pkg/datapath/garp"
 	"github.com/cilium/cilium/pkg/datapath/ipcache"
@@ -25,20 +27,21 @@ import (
 	"github.com/cilium/cilium/pkg/datapath/linux/sysctl"
 	"github.com/cilium/cilium/pkg/datapath/linux/utime"
 	"github.com/cilium/cilium/pkg/datapath/loader"
-	loaderTypes "github.com/cilium/cilium/pkg/datapath/loader/types"
+	"github.com/cilium/cilium/pkg/datapath/node"
 	"github.com/cilium/cilium/pkg/datapath/orchestrator"
 	"github.com/cilium/cilium/pkg/datapath/prefilter"
 	"github.com/cilium/cilium/pkg/datapath/tables"
 	"github.com/cilium/cilium/pkg/datapath/tunnel"
 	"github.com/cilium/cilium/pkg/datapath/types"
+	"github.com/cilium/cilium/pkg/datapath/xdp"
+	"github.com/cilium/cilium/pkg/loadbalancer/experimental"
 	"github.com/cilium/cilium/pkg/maps"
 	"github.com/cilium/cilium/pkg/maps/eventsmap"
-	"github.com/cilium/cilium/pkg/maps/nodemap"
+	"github.com/cilium/cilium/pkg/maps/lbmap"
 	monitorAgent "github.com/cilium/cilium/pkg/monitor/agent"
 	"github.com/cilium/cilium/pkg/mtu"
-	nodeManager "github.com/cilium/cilium/pkg/node/manager"
 	"github.com/cilium/cilium/pkg/option"
-	"github.com/cilium/cilium/pkg/statedb"
+	"github.com/cilium/cilium/pkg/testutils/mockmaps"
 	wg "github.com/cilium/cilium/pkg/wireguard/agent"
 	wgTypes "github.com/cilium/cilium/pkg/wireguard/types"
 )
@@ -73,16 +76,28 @@ var Cell = cell.Module(
 	// Manages Cilium-specific iptables rules.
 	iptables.Cell,
 
-	cell.Provide(
-		newWireguardAgent,
-		newDatapath,
-	),
+	cell.Invoke(initDatapath),
+
+	cell.Provide(newWireguardAgent),
+
+	cell.Provide(func(expConfig experimental.Config) types.LBMap {
+		if expConfig.EnableExperimentalLB {
+			// The experimental control-plane is enabled. Use a fake LBMap
+			// to effectively disable the other code paths writing to LBMaps.
+			return mockmaps.NewLBMockMap()
+		}
+
+		return lbmap.New()
+	}),
 
 	// Provides the Table[NodeAddress] and the controller that populates it from Table[*Device]
 	tables.NodeAddressCell,
 
 	// Provides the legacy accessor for the above, the NodeAddressing interface.
-	tables.NodeAddressingCell,
+	NodeAddressingCell,
+
+	// Provides the DirectRoutingDevice selection logic.
+	tables.DirectRoutingDeviceCell,
 
 	// This cell periodically updates the agent liveness value in configmap.Map to inform
 	// the datapath of the liveness of the agent.
@@ -127,8 +142,17 @@ var Cell = cell.Module(
 	// Provides prefilter, a means of configuring XDP pre-filters for DDoS-mitigation.
 	prefilter.Cell,
 
+	// XDP cell provides modularized XDP enablement.
+	xdp.Cell,
+
 	// Provides node handler, which handles node events.
 	cell.Provide(linuxdatapath.NewNodeHandler),
+	cell.Provide(node.NewNodeIDApiHandler),
+
+	// Provides Active Connection Tracking metrics based on counts of
+	// opened (from BPF ACT map), closed (from BPF ACT map), and failed
+	// connections (from ctmap's GC).
+	act.Cell,
 )
 
 func newWireguardAgent(lc cell.Lifecycle, sysctl sysctl.Sysctl) *wg.Agent {
@@ -159,74 +183,14 @@ func newWireguardAgent(lc cell.Lifecycle, sysctl sysctl.Sysctl) *wg.Agent {
 	return wgAgent
 }
 
-func newDatapath(params datapathParams) types.Datapath {
-	datapath := linuxdatapath.NewDatapath(linuxdatapath.DatapathParams{
-		ConfigWriter:   params.ConfigWriter,
-		RuleManager:    params.IptablesManager,
-		WGAgent:        params.WgAgent,
-		NodeMap:        params.NodeMap,
-		NodeAddressing: params.NodeAddressing,
-		BWManager:      params.BandwidthManager,
-		Loader:         params.Loader,
-		NodeManager:    params.NodeManager,
-		DB:             params.DB,
-		Devices:        params.Devices,
-		Orchestrator:   params.Orchestrator,
-		NodeHandler:    params.NodeHandler,
-		NodeIDHandler:  params.NodeIDHandler,
-		NodeNeighbors:  params.NodeNeighbors,
-	})
-
-	params.LC.Append(cell.Hook{
+func initDatapath(logger *slog.Logger, lifecycle cell.Lifecycle) {
+	lifecycle.Append(cell.Hook{
 		OnStart: func(cell.HookContext) error {
-			datapath.NodeIDs().RestoreNodeIDs()
+			if err := linuxdatapath.CheckRequirements(logger); err != nil {
+				return fmt.Errorf("requirements failed: %w", err)
+			}
+
 			return nil
 		},
 	})
-
-	return datapath
-}
-
-type datapathParams struct {
-	cell.In
-
-	LC      cell.Lifecycle
-	WgAgent *wg.Agent
-
-	// Force map initialisation before loader. You should not use these otherwise.
-	// Some of the entries in this slice may be nil.
-	BpfMaps []bpf.BpfMap `group:"bpf-maps"`
-
-	NodeMap nodemap.MapV2
-
-	NodeAddressing types.NodeAddressing
-
-	// Depend on DeviceManager to ensure devices have been resolved.
-	// This is required until option.Config.GetDevices() has been removed and
-	// uses of it converted to Table[Device].
-	DeviceManager *linuxdatapath.DeviceManager
-	DB            *statedb.DB
-	Devices       statedb.Table[*tables.Device]
-
-	BandwidthManager types.BandwidthManager
-
-	ModulesManager *modules.Manager
-
-	IptablesManager *iptables.Manager
-
-	ConfigWriter types.ConfigWriter
-
-	TunnelConfig tunnel.Config
-
-	Loader loaderTypes.Loader
-
-	NodeManager nodeManager.NodeManager
-
-	Orchestrator types.Orchestrator
-
-	NodeHandler types.NodeHandler
-
-	NodeIDHandler types.NodeIDHandler
-
-	NodeNeighbors types.NodeNeighbors
 }

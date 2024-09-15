@@ -12,8 +12,9 @@ import (
 )
 
 // Lists one or more AMIs that are currently in the Recycle Bin. For more
-// information, see Recycle Bin (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/recycle-bin.html)
-// in the Amazon EC2 User Guide.
+// information, see [Recycle Bin]in the Amazon EC2 User Guide.
+//
+// [Recycle Bin]: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/recycle-bin.html
 func (c *Client) ListImagesInRecycleBin(ctx context.Context, params *ListImagesInRecycleBinInput, optFns ...func(*Options)) (*ListImagesInRecycleBinOutput, error) {
 	if params == nil {
 		params = &ListImagesInRecycleBinInput{}
@@ -43,8 +44,9 @@ type ListImagesInRecycleBinInput struct {
 
 	// The maximum number of items to return for this request. To get the next page of
 	// items, make another request with the token returned in the output. For more
-	// information, see Pagination (https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Query-Requests.html#api-pagination)
-	// .
+	// information, see [Pagination].
+	//
+	// [Pagination]: https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Query-Requests.html#api-pagination
 	MaxResults *int32
 
 	// The token returned from a previous paginated request. Pagination continues from
@@ -124,6 +126,12 @@ func (c *Client) addOperationListImagesInRecycleBinMiddlewares(stack *middleware
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
+		return err
+	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opListImagesInRecycleBin(options.Region), middleware.Before); err != nil {
 		return err
 	}
@@ -145,21 +153,14 @@ func (c *Client) addOperationListImagesInRecycleBinMiddlewares(stack *middleware
 	return nil
 }
 
-// ListImagesInRecycleBinAPIClient is a client that implements the
-// ListImagesInRecycleBin operation.
-type ListImagesInRecycleBinAPIClient interface {
-	ListImagesInRecycleBin(context.Context, *ListImagesInRecycleBinInput, ...func(*Options)) (*ListImagesInRecycleBinOutput, error)
-}
-
-var _ ListImagesInRecycleBinAPIClient = (*Client)(nil)
-
 // ListImagesInRecycleBinPaginatorOptions is the paginator options for
 // ListImagesInRecycleBin
 type ListImagesInRecycleBinPaginatorOptions struct {
 	// The maximum number of items to return for this request. To get the next page of
 	// items, make another request with the token returned in the output. For more
-	// information, see Pagination (https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Query-Requests.html#api-pagination)
-	// .
+	// information, see [Pagination].
+	//
+	// [Pagination]: https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Query-Requests.html#api-pagination
 	Limit int32
 
 	// Set to true if pagination should stop if the service returns a pagination token
@@ -220,6 +221,9 @@ func (p *ListImagesInRecycleBinPaginator) NextPage(ctx context.Context, optFns .
 	}
 	params.MaxResults = limit
 
+	optFns = append([]func(*Options){
+		addIsPaginatorUserAgent,
+	}, optFns...)
 	result, err := p.client.ListImagesInRecycleBin(ctx, &params, optFns...)
 	if err != nil {
 		return nil, err
@@ -238,6 +242,14 @@ func (p *ListImagesInRecycleBinPaginator) NextPage(ctx context.Context, optFns .
 
 	return result, nil
 }
+
+// ListImagesInRecycleBinAPIClient is a client that implements the
+// ListImagesInRecycleBin operation.
+type ListImagesInRecycleBinAPIClient interface {
+	ListImagesInRecycleBin(context.Context, *ListImagesInRecycleBinInput, ...func(*Options)) (*ListImagesInRecycleBinOutput, error)
+}
+
+var _ ListImagesInRecycleBinAPIClient = (*Client)(nil)
 
 func newServiceMetadataMiddleware_opListImagesInRecycleBin(region string) *awsmiddleware.RegisterServiceMetadata {
 	return &awsmiddleware.RegisterServiceMetadata{

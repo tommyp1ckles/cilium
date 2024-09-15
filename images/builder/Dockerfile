@@ -1,19 +1,19 @@
 # Copyright Authors of Cilium
 # SPDX-License-Identifier: Apache-2.0
 
-ARG COMPILERS_IMAGE=quay.io/cilium/image-compilers:5569a29cea6b3ad50aeb03102aaf3dc03841197c@sha256:b15dbedb7c49816c74a765e2f6ecdb9359763b8e4e4328d794f48b9cefae9804
-ARG CILIUM_RUNTIME_IMAGE=quay.io/cilium/cilium-runtime:0615d2db1a5616db6ebe0d467da69bfc2b552427@sha256:60d433ea2d8cbe9712205323fe00cfd76a210ef0115216dbdd9f22603136e9a4
-ARG TESTER_IMAGE=quay.io/cilium/image-tester:dd09c8d3ef349a909fbcdc99279516baef153f22@sha256:c056d064cb47c97acd607343db5457e1d49d9338d6d8a87e93e23cc93f052c73
-ARG GOLANG_IMAGE=docker.io/library/golang:1.22.2@sha256:450e3822c7a135e1463cd83e51c8e2eb03b86a02113c89424e6f0f8344bb4168
-ARG CILIUM_LLVM_IMAGE=quay.io/cilium/cilium-llvm:9f1bfe736009afb1fbb562718bbc42ea07d37d8e@sha256:a666a7a01a2dc610c3ab6e32f25ca5e294201f3cbbc01f233320c527955deee3
+ARG COMPILERS_IMAGE=quay.io/cilium/image-compilers:f51ffb467692a59696b144dfe2f1ddeae1bb6bca@sha256:32f5f098d74db46c9d0405e25236828d22b7e3d7006387f9287b4aee48bc85c6
+ARG CILIUM_RUNTIME_IMAGE=quay.io/cilium/cilium-runtime:85aff327b358b84ecea2e06e1aebc5f8ad2b0d2b@sha256:7666e657b917f1cc1001ec2aa11f3b65bc67010568f29f0bd183e6efffa761e1
+ARG TESTER_IMAGE=quay.io/cilium/image-tester:0a7ee27812441d95926aec83929d97e93ce96aae@sha256:e96542b4f71dbc9cbe77feaf5b1fa9bd5e13122ee6418094731212f1c5667c67
+ARG GOLANG_IMAGE=docker.io/library/golang:1.23.1@sha256:4a3c2bcd243d3dbb7b15237eecb0792db3614900037998c2cd6a579c46888c1e
+ARG CILIUM_LLVM_IMAGE=quay.io/cilium/cilium-llvm:02191b3a68f4003f075e69a61b61faa8d12d4b6d@sha256:54ca04f65a6de3aa5243a7da392aed342c64f579ebd94ea1290590ce77a433a8
 
-FROM ${COMPILERS_IMAGE} as compilers-image
+FROM ${COMPILERS_IMAGE} AS compilers-image
 
-FROM ${GOLANG_IMAGE} as golang-dist
+FROM ${GOLANG_IMAGE} AS golang-dist
 
-FROM ${CILIUM_LLVM_IMAGE} as llvm-dist
+FROM ${CILIUM_LLVM_IMAGE} AS llvm-dist
 
-FROM ${CILIUM_RUNTIME_IMAGE} as rootfs
+FROM ${CILIUM_RUNTIME_IMAGE} AS rootfs
 
 # Change the number to force the generation of a new git-tree SHA. Useful when
 # we want to re-run 'apt-get upgrade' for stale images.
@@ -77,6 +77,11 @@ RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium/images/b
 
 # used to facilitate the verifier tests
 COPY --from=llvm-dist /usr/local/bin/llvm-objcopy /bin/
+
+# Create a cache directory with 777 so that we can run the builder image and
+# compile golang code from any UID.
+RUN mkdir -p /.cache && chmod 777 /.cache && \
+    mkdir -p /go/bin && chmod 777 /go/bin
 
 FROM ${TESTER_IMAGE} as test
 COPY --from=rootfs / /

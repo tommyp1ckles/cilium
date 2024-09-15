@@ -40,10 +40,12 @@ import (
 	confv1 "sigs.k8s.io/gateway-api/conformance/apis/v1"
 	"sigs.k8s.io/gateway-api/conformance/utils/config"
 	"sigs.k8s.io/gateway-api/conformance/utils/flags"
+	"sigs.k8s.io/gateway-api/conformance/utils/grpc"
 	"sigs.k8s.io/gateway-api/conformance/utils/kubernetes"
 	"sigs.k8s.io/gateway-api/conformance/utils/roundtripper"
 	"sigs.k8s.io/gateway-api/conformance/utils/tlog"
 	"sigs.k8s.io/gateway-api/pkg/consts"
+	"sigs.k8s.io/gateway-api/pkg/features"
 )
 
 // -----------------------------------------------------------------------------
@@ -58,6 +60,7 @@ type ConformanceTestSuite struct {
 	RESTClient               *rest.RESTClient
 	RestConfig               *rest.Config
 	RoundTripper             roundtripper.RoundTripper
+	GRPCClient               grpc.Client
 	GatewayClassName         string
 	ControllerName           string
 	Debug                    bool
@@ -65,7 +68,7 @@ type ConformanceTestSuite struct {
 	BaseManifests            string
 	MeshManifests            string
 	Applier                  kubernetes.Applier
-	SupportedFeatures        sets.Set[SupportedFeature]
+	SupportedFeatures        sets.Set[features.FeatureName]
 	TimeoutConfig            config.TimeoutConfig
 	SkipTests                sets.Set[string]
 	RunTest                  string
@@ -106,11 +109,11 @@ type ConformanceTestSuite struct {
 
 	// extendedSupportedFeatures is a compiled list of named features that were
 	// marked as supported, and is used for reporting the test results.
-	extendedSupportedFeatures map[ConformanceProfileName]sets.Set[SupportedFeature]
+	extendedSupportedFeatures map[ConformanceProfileName]sets.Set[features.FeatureName]
 
 	// extendedUnsupportedFeatures is a compiled list of named features that were
 	// marked as not supported, and is used for reporting the test results.
-	extendedUnsupportedFeatures map[ConformanceProfileName]sets.Set[SupportedFeature]
+	extendedUnsupportedFeatures map[ConformanceProfileName]sets.Set[features.FeatureName]
 
 	// lock is a mutex to help ensure thread safety of the test suite object.
 	lock sync.RWMutex
@@ -124,6 +127,7 @@ type ConformanceOptions struct {
 	GatewayClassName     string
 	Debug                bool
 	RoundTripper         roundtripper.RoundTripper
+	GRPCClient           grpc.Client
 	BaseManifests        string
 	MeshManifests        string
 	NamespaceLabels      map[string]string
@@ -133,8 +137,8 @@ type ConformanceOptions struct {
 	// CleanupBaseResources indicates whether or not the base test
 	// resources such as Gateways should be cleaned up after the run.
 	CleanupBaseResources       bool
-	SupportedFeatures          sets.Set[SupportedFeature]
-	ExemptFeatures             sets.Set[SupportedFeature]
+	SupportedFeatures          sets.Set[features.FeatureName]
+	ExemptFeatures             sets.Set[features.FeatureName]
 	EnableAllSupportedFeatures bool
 	TimeoutConfig              config.TimeoutConfig
 	// SkipTests contains all the tests not to be run and can be used to opt out
@@ -188,6 +192,8 @@ func NewConformanceTestSuite(options ConformanceOptions) (*ConformanceTestSuite,
 		roundTripper = &roundtripper.DefaultRoundTripper{Debug: options.Debug, TimeoutConfig: options.TimeoutConfig}
 	}
 
+	grpcClient := options.GRPCClient
+
 	installedCRDs := &apiextensionsv1.CustomResourceDefinitionList{}
 	err := options.Client.List(context.TODO(), installedCRDs)
 	if err != nil {
@@ -214,9 +220,9 @@ func NewConformanceTestSuite(options ConformanceOptions) (*ConformanceTestSuite,
 	// cover all features, if they don't they'll need to have provided a
 	// conformance profile or at least some specific features they support.
 	if options.EnableAllSupportedFeatures {
-		options.SupportedFeatures = AllFeatures
+		options.SupportedFeatures = features.SetsToNamesSet(features.AllFeatures)
 	} else if options.SupportedFeatures == nil {
-		options.SupportedFeatures = sets.New[SupportedFeature]()
+		options.SupportedFeatures = sets.New[features.FeatureName]()
 	}
 
 	for feature := range options.ExemptFeatures {
@@ -228,6 +234,7 @@ func NewConformanceTestSuite(options ConformanceOptions) (*ConformanceTestSuite,
 		Clientset:        options.Clientset,
 		RestConfig:       options.RestConfig,
 		RoundTripper:     roundTripper,
+		GRPCClient:       grpcClient,
 		GatewayClassName: options.GatewayClassName,
 		Debug:            options.Debug,
 		Cleanup:          options.CleanupBaseResources,
@@ -245,8 +252,8 @@ func NewConformanceTestSuite(options ConformanceOptions) (*ConformanceTestSuite,
 		UsableNetworkAddresses:      options.UsableNetworkAddresses,
 		UnusableNetworkAddresses:    options.UnusableNetworkAddresses,
 		results:                     make(map[string]testResult),
-		extendedUnsupportedFeatures: make(map[ConformanceProfileName]sets.Set[SupportedFeature]),
-		extendedSupportedFeatures:   make(map[ConformanceProfileName]sets.Set[SupportedFeature]),
+		extendedUnsupportedFeatures: make(map[ConformanceProfileName]sets.Set[features.FeatureName]),
+		extendedSupportedFeatures:   make(map[ConformanceProfileName]sets.Set[features.FeatureName]),
 		conformanceProfiles:         options.ConformanceProfiles,
 		implementation:              options.Implementation,
 		mode:                        mode,
@@ -269,12 +276,12 @@ func NewConformanceTestSuite(options ConformanceOptions) (*ConformanceTestSuite,
 		for _, f := range conformanceProfile.ExtendedFeatures.UnsortedList() {
 			if options.SupportedFeatures.Has(f) {
 				if suite.extendedSupportedFeatures[conformanceProfileName] == nil {
-					suite.extendedSupportedFeatures[conformanceProfileName] = sets.New[SupportedFeature]()
+					suite.extendedSupportedFeatures[conformanceProfileName] = sets.New[features.FeatureName]()
 				}
 				suite.extendedSupportedFeatures[conformanceProfileName].Insert(f)
 			} else {
 				if suite.extendedUnsupportedFeatures[conformanceProfileName] == nil {
-					suite.extendedUnsupportedFeatures[conformanceProfileName] = sets.New[SupportedFeature]()
+					suite.extendedUnsupportedFeatures[conformanceProfileName] = sets.New[features.FeatureName]()
 				}
 				suite.extendedUnsupportedFeatures[conformanceProfileName].Insert(f)
 			}
@@ -300,6 +307,10 @@ func NewConformanceTestSuite(options ConformanceOptions) (*ConformanceTestSuite,
 // Conformance Test Suite - Public Methods
 // -----------------------------------------------------------------------------
 
+const (
+	testSuiteUserAgentPrefix = "gateway-api-conformance.test"
+)
+
 // Setup ensures the base resources required for conformance tests are installed
 // in the cluster. It also ensures that all relevant resources are ready.
 func (suite *ConformanceTestSuite) Setup(t *testing.T, tests []ConformanceTest) {
@@ -307,8 +318,8 @@ func (suite *ConformanceTestSuite) Setup(t *testing.T, tests []ConformanceTest) 
 	suite.Applier.UsableNetworkAddresses = suite.UsableNetworkAddresses
 	suite.Applier.UnusableNetworkAddresses = suite.UnusableNetworkAddresses
 
-	supportsGateway := suite.SupportedFeatures.Has(SupportGateway)
-	supportsMesh := suite.SupportedFeatures.Has(SupportMesh)
+	supportsGateway := suite.SupportedFeatures.Has(features.SupportGateway)
+	supportsMesh := suite.SupportedFeatures.Has(features.SupportMesh)
 
 	if suite.RunTest != "" {
 		idx := slices.IndexFunc(tests, func(t ConformanceTest) bool {
@@ -320,8 +331,8 @@ func (suite *ConformanceTestSuite) Setup(t *testing.T, tests []ConformanceTest) 
 		}
 
 		test := tests[idx]
-		supportsGateway = supportsGateway || slices.Contains(test.Features, SupportGateway)
-		supportsMesh = supportsMesh || slices.Contains(test.Features, SupportMesh)
+		supportsGateway = supportsGateway || slices.Contains(test.Features, features.SupportGateway)
+		supportsMesh = supportsMesh || slices.Contains(test.Features, features.SupportMesh)
 	}
 
 	if supportsGateway {
@@ -367,6 +378,35 @@ func (suite *ConformanceTestSuite) Setup(t *testing.T, tests []ConformanceTest) 
 	}
 }
 
+func (suite *ConformanceTestSuite) setClientsetForTest(test ConformanceTest) error {
+	featureNames := []string{}
+	for _, v := range test.Features {
+		featureNames = append(featureNames, string(v))
+	}
+	if len(test.Features) == 0 {
+		featureNames = []string{"unknownFeature"}
+	}
+	suite.RestConfig.UserAgent = strings.Join(
+		[]string{
+			testSuiteUserAgentPrefix,
+			suite.apiVersion,
+			test.ShortName,
+			strings.Join(featureNames, ","),
+		},
+		"::")
+	client, err := client.New(suite.RestConfig, client.Options{})
+	if err != nil {
+		return err
+	}
+	clientset, err := clientset.NewForConfig(suite.RestConfig)
+	if err != nil {
+		return err
+	}
+	suite.Client = client
+	suite.Clientset = clientset
+	return nil
+}
+
 // Run runs the provided set of conformance tests.
 func (suite *ConformanceTestSuite) Run(t *testing.T, tests []ConformanceTest) error {
 	// verify that the test suite isn't already running, don't start a new run
@@ -385,10 +425,8 @@ func (suite *ConformanceTestSuite) Run(t *testing.T, tests []ConformanceTest) er
 
 	// run all tests and collect the test results for conformance reporting
 	results := make(map[string]testResult)
+	sleepForTestIsolation := false
 	for _, test := range tests {
-		succeeded := t.Run(test.ShortName, func(t *testing.T) {
-			test.Run(t, suite)
-		})
 		res := testSucceeded
 		if suite.SkipTests.Has(test.ShortName) {
 			res = testSkipped
@@ -397,6 +435,18 @@ func (suite *ConformanceTestSuite) Run(t *testing.T, tests []ConformanceTest) er
 			res = testNotSupported
 		}
 
+		// TODO(wstcliyu): need a better long term solution for test isolation
+		// https://github.com/kubernetes-sigs/gateway-api/issues/3233
+		if res != testSkipped && res != testNotSupported && sleepForTestIsolation {
+			tlog.Logf(t, "Sleeping %v for test isolation", suite.TimeoutConfig.TestIsolation)
+			time.Sleep(suite.TimeoutConfig.TestIsolation)
+		}
+
+		succeeded := t.Run(test.ShortName, func(t *testing.T) {
+			err := suite.setClientsetForTest(test)
+			require.NoError(t, err, "failed to create new clientset for test")
+			test.Run(t, suite)
+		})
 		if !succeeded {
 			res = testFailed
 		}
@@ -404,6 +454,9 @@ func (suite *ConformanceTestSuite) Run(t *testing.T, tests []ConformanceTest) er
 		results[test.ShortName] = testResult{
 			test:   test,
 			result: res,
+		}
+		if res == testSucceeded || res == testFailed {
+			sleepForTestIsolation = true
 		}
 	}
 
@@ -448,7 +501,7 @@ func (suite *ConformanceTestSuite) Report() (*confv1.ConformanceReport, error) {
 
 	return &confv1.ConformanceReport{
 		TypeMeta: v1.TypeMeta{
-			APIVersion: "gateway.networking.k8s.io/v1alpha1",
+			APIVersion: confv1.GroupVersion.String(),
 			Kind:       "ConformanceReport",
 		},
 		Date:              time.Now().Format(time.RFC3339),

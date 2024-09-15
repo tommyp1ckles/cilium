@@ -13,8 +13,9 @@ import (
 )
 
 // Retrieve historical information about a CIDR within an IPAM scope. For more
-// information, see View the history of IP addresses (https://docs.aws.amazon.com/vpc/latest/ipam/view-history-cidr-ipam.html)
-// in the Amazon VPC IPAM User Guide.
+// information, see [View the history of IP addresses]in the Amazon VPC IPAM User Guide.
+//
+// [View the history of IP addresses]: https://docs.aws.amazon.com/vpc/latest/ipam/view-history-cidr-ipam.html
 func (c *Client) GetIpamAddressHistory(ctx context.Context, params *GetIpamAddressHistoryInput, optFns ...func(*Options)) (*GetIpamAddressHistoryOutput, error) {
 	if params == nil {
 		params = &GetIpamAddressHistoryInput{}
@@ -143,6 +144,12 @@ func (c *Client) addOperationGetIpamAddressHistoryMiddlewares(stack *middleware.
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
+		return err
+	}
 	if err = addOpGetIpamAddressHistoryValidationMiddleware(stack); err != nil {
 		return err
 	}
@@ -166,14 +173,6 @@ func (c *Client) addOperationGetIpamAddressHistoryMiddlewares(stack *middleware.
 	}
 	return nil
 }
-
-// GetIpamAddressHistoryAPIClient is a client that implements the
-// GetIpamAddressHistory operation.
-type GetIpamAddressHistoryAPIClient interface {
-	GetIpamAddressHistory(context.Context, *GetIpamAddressHistoryInput, ...func(*Options)) (*GetIpamAddressHistoryOutput, error)
-}
-
-var _ GetIpamAddressHistoryAPIClient = (*Client)(nil)
 
 // GetIpamAddressHistoryPaginatorOptions is the paginator options for
 // GetIpamAddressHistory
@@ -240,6 +239,9 @@ func (p *GetIpamAddressHistoryPaginator) NextPage(ctx context.Context, optFns ..
 	}
 	params.MaxResults = limit
 
+	optFns = append([]func(*Options){
+		addIsPaginatorUserAgent,
+	}, optFns...)
 	result, err := p.client.GetIpamAddressHistory(ctx, &params, optFns...)
 	if err != nil {
 		return nil, err
@@ -258,6 +260,14 @@ func (p *GetIpamAddressHistoryPaginator) NextPage(ctx context.Context, optFns ..
 
 	return result, nil
 }
+
+// GetIpamAddressHistoryAPIClient is a client that implements the
+// GetIpamAddressHistory operation.
+type GetIpamAddressHistoryAPIClient interface {
+	GetIpamAddressHistory(context.Context, *GetIpamAddressHistoryInput, ...func(*Options)) (*GetIpamAddressHistoryOutput, error)
+}
+
+var _ GetIpamAddressHistoryAPIClient = (*Client)(nil)
 
 func newServiceMetadataMiddleware_opGetIpamAddressHistory(region string) *awsmiddleware.RegisterServiceMetadata {
 	return &awsmiddleware.RegisterServiceMetadata{

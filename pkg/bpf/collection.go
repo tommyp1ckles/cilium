@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/cilium/ebpf"
@@ -197,9 +198,7 @@ func iproute2Compat(spec *ebpf.CollectionSpec) error {
 				return fmt.Errorf("reading iproute2 map definition: %w", err)
 			}
 
-			if tail.Pinning > 0 {
-				m.Pinning = ebpf.PinByName
-			}
+			m.Pinning = ebpf.PinType(tail.Pinning)
 
 			// Index maps by their iproute2 .id if any, so X/Y ELF section names can
 			// be matched against them.
@@ -234,74 +233,120 @@ func iproute2Compat(spec *ebpf.CollectionSpec) error {
 	return nil
 }
 
+// LoadAndAssign loads spec into the kernel and assigns the requested eBPF
+// objects to the given object. It is a wrapper around [LoadCollection]. See its
+// documentation for more details on the loading process.
+func LoadAndAssign(to any, spec *ebpf.CollectionSpec, opts *CollectionOptions) (func() error, error) {
+	log.Debug("Loading Collection into kernel")
+
+	coll, commit, err := LoadCollection(spec, opts)
+	var ve *ebpf.VerifierError
+	if errors.As(err, &ve) {
+		if _, err := fmt.Fprintf(os.Stderr, "Verifier error: %s\nVerifier log: %+v\n", err, ve); err != nil {
+			return nil, fmt.Errorf("writing verifier log to stderr: %w", err)
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("loading eBPF collection into the kernel: %w", err)
+	}
+
+	if err := coll.Assign(to); err != nil {
+		return nil, fmt.Errorf("assigning eBPF objects to %T: %w", to, err)
+	}
+
+	return commit, nil
+}
+
+type CollectionOptions struct {
+	ebpf.CollectionOptions
+
+	// Replacements for constants defined using the DECLARE_CONFIG macros.
+	Constants map[string]uint64
+
+	// Maps to be renamed during loading. Key is the key in CollectionSpec.Maps,
+	// value is the new name.
+	MapRenames map[string]string
+}
+
 // LoadCollection loads the given spec into the kernel with the specified opts.
+// Returns a function that must be called after the Collection's entrypoints are
+// attached to their respective kernel hooks. This function commits pending map
+// pins to the bpf file system for maps that were found to be incompatible with
+// their pinned counterparts, or for maps with certain flags that modify the
+// default pinning behaviour.
+//
+// When attaching multiple programs from the same ELF in a loop, the returned
+// function should only be run after all entrypoints have been attached. For
+// example, attach both bpf_host.c:cil_to_netdev and cil_from_netdev before
+// invoking the returned function, otherwise missing tail calls will occur.
 //
 // The value given in ProgramOptions.LogSize is used as the starting point for
-// sizing the verifier's log buffer and defaults to 4MiB. On each retry, the
-// log buffer quadruples in size, for a total of 5 attempts. If that proves
+// sizing the verifier's log buffer and defaults to 4MiB. On each retry, the log
+// buffer quadruples in size, for a total of 5 attempts. If that proves
 // insufficient, a truncated ebpf.VerifierError is returned.
 //
 // Any maps marked as pinned in the spec are automatically loaded from the path
 // given in opts.Maps.PinPath and will be used instead of creating new ones.
-// MapSpecs that differ (type/key/value/max/flags) from their pinned versions
-// will result in an ebpf.ErrMapIncompatible here and the map must be removed
-// before loading the CollectionSpec.
-func LoadCollection(spec *ebpf.CollectionSpec, opts ebpf.CollectionOptions) (*ebpf.Collection, error) {
+func LoadCollection(spec *ebpf.CollectionSpec, opts *CollectionOptions) (*ebpf.Collection, func() error, error) {
 	if spec == nil {
-		return nil, errors.New("can't load nil CollectionSpec")
+		return nil, nil, errors.New("can't load nil CollectionSpec")
+	}
+
+	if opts == nil {
+		opts = &CollectionOptions{}
 	}
 
 	// Copy spec so the modifications below don't affect the input parameter,
 	// allowing the spec to be safely re-used by the caller.
 	spec = spec.Copy()
 
-	if err := inlineGlobalData(spec); err != nil {
-		return nil, fmt.Errorf("inlining global data: %w", err)
+	if err := renameMaps(spec, opts.MapRenames); err != nil {
+		return nil, nil, err
 	}
 
-	// Set initial size of verifier log buffer.
-	//
-	// Up until kernel 5.1, the maximum log size is (2^24)-1. In 5.2, this was
-	// increased to (2^30)-1 by 7a9f5c65abcc ("bpf: increase verifier log limit").
-	//
-	// The default value of (2^22)-1 was chosen to be large enough to fit the log
-	// of most Cilium programs, while falling just within the 5.1 maximum size in
-	// one of the steps of the multiplication loop below. Without the -1, it would
-	// overshoot the cap to 2^24, making e.g. verifier tests unable to load the
-	// program if the previous size (2^22) was too small to fit the log.
-	if opts.Programs.LogSize == 0 {
-		opts.Programs.LogSize = 4_194_303
+	if err := inlineGlobalData(spec, opts.Constants); err != nil {
+		return nil, nil, fmt.Errorf("inlining global data: %w", err)
 	}
 
-	attempt := 1
-	for {
-		coll, err := ebpf.NewCollectionWithOptions(spec, opts)
-		if err == nil {
-			return coll, nil
+	// Find and strip all CILIUM_PIN_REPLACE pinning flags before creating the
+	// Collection. ebpf-go will reject maps with pins it doesn't recognize.
+	toReplace := consumePinReplace(spec)
+
+	// Attempt to load the Collection.
+	coll, err := ebpf.NewCollectionWithOptions(spec, opts.CollectionOptions)
+
+	// Collect key names of maps that are not compatible with their pinned
+	// counterparts and remove their pinning flags.
+	if errors.Is(err, ebpf.ErrMapIncompatible) {
+		var incompatible []string
+		incompatible, err = incompatibleMaps(spec, opts.CollectionOptions)
+		if err != nil {
+			return nil, nil, fmt.Errorf("finding incompatible maps: %w", err)
 		}
+		toReplace = append(toReplace, incompatible...)
 
-		// Bump LogSize and retry if there's a truncated VerifierError.
-		var ve *ebpf.VerifierError
-		if errors.As(err, &ve) && ve.Truncated {
-			if attempt >= 5 {
-				return nil, fmt.Errorf("%d-byte truncated verifier log after %d attempts: %w", opts.Programs.LogSize, attempt, err)
-			}
-
-			// Retry with non-zero log level to avoid retrying with log disabled.
-			if opts.Programs.LogLevel == 0 {
-				opts.Programs.LogLevel = ebpf.LogLevelBranch
-			}
-
-			opts.Programs.LogSize *= 4
-
-			attempt++
-
-			continue
-		}
-
-		// Not a truncated VerifierError.
-		return nil, err
+		// Retry loading the Collection with necessary pinning flags removed.
+		coll, err = ebpf.NewCollectionWithOptions(spec, opts.CollectionOptions)
 	}
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Collect Maps that need their bpffs pins replaced. Pull out Map objects
+	// before returning the Collection, since commit() still needs to work when
+	// the Map is removed from the Collection, e.g. by [ebpf.Collection.Assign].
+	pins, err := mapsToReplace(toReplace, spec, coll, opts.CollectionOptions)
+	if err != nil {
+		return nil, nil, fmt.Errorf("collecting map pins to replace: %w", err)
+	}
+
+	// Load successful, return a function that must be invoked after attaching the
+	// Collection's entrypoint programs to their respective hooks.
+	commit := func() error {
+		return commitMapPins(pins)
+	}
+	return coll, commit, nil
 }
 
 // classifyProgramTypes sets the type of ProgramSpecs which the library cannot
@@ -335,7 +380,9 @@ func classifyProgramTypes(spec *ebpf.CollectionSpec) error {
 			// bpf_network.c
 			"cil_from_network",
 			// bpf_overlay.c
-			"cil_to_overlay", "cil_from_overlay":
+			"cil_to_overlay", "cil_from_overlay",
+			// bpf_wireguard.c
+			"cil_to_wireguard":
 			t = ebpf.SchedCLS
 		default:
 			continue
@@ -357,20 +404,50 @@ func classifyProgramTypes(spec *ebpf.CollectionSpec) error {
 	return nil
 }
 
+// renameMaps applies renames to coll.
+func renameMaps(coll *ebpf.CollectionSpec, renames map[string]string) error {
+	for name, rename := range renames {
+		mapSpec := coll.Maps[name]
+		if mapSpec == nil {
+			return fmt.Errorf("unknown map %q: can't rename to %q", name, rename)
+		}
+
+		mapSpec.Name = rename
+	}
+
+	return nil
+}
+
+// Must match the prefix used by the CONFIG macro in static_data.h.
+const constantPrefix = "__config_"
+
 // inlineGlobalData replaces all map loads from a global data section with
 // immediate dword loads, effectively performing those map lookups in the
 // loader. This is done for compatibility with kernels that don't support
 // global data maps yet.
 //
+// overrides allow changing the value of the inlined global data.
+//
 // This code interacts with the DECLARE_CONFIG macro in the BPF C code base.
-func inlineGlobalData(spec *ebpf.CollectionSpec) error {
-	vars, err := globalData(spec)
+func inlineGlobalData(spec *ebpf.CollectionSpec, overrides map[string]uint64) error {
+	offsets, values, err := globalData(spec)
 	if err != nil {
 		return err
 	}
-	if vars == nil {
-		// No static data, nothing to replace.
+	if offsets == nil {
+		// Most likely all references to global data have been compiled
+		// out.
 		return nil
+	}
+
+	for name, value := range overrides {
+		constName := constantPrefix + name
+
+		if _, ok := values[constName]; !ok {
+			return fmt.Errorf("can't override non-existent constant %q", name)
+		}
+
+		values[constName] = value
 	}
 
 	for _, prog := range spec.Programs {
@@ -390,16 +467,14 @@ func inlineGlobalData(spec *ebpf.CollectionSpec) error {
 
 			// Look up the value of the variable stored at the Datasec offset pointed
 			// at by the instruction.
-			value, ok := vars[off]
+			v, ok := offsets[off]
 			if !ok {
 				return fmt.Errorf("no global constant found in %s at offset %d", globalDataMap, off)
 			}
 
-			imm := spec.ByteOrder.Uint64(value)
-
 			// Replace the map load with an immediate load. Must be a dword load
 			// to match the instruction width of a map load.
-			r := asm.LoadImm(ins.Dst, int64(imm), asm.DWord)
+			r := asm.LoadImm(ins.Dst, int64(values[v]), asm.DWord)
 
 			// Preserve metadata of the original instruction. Otherwise, a program's
 			// first instruction could be stripped of its func_info or Symbol
@@ -413,54 +488,68 @@ func inlineGlobalData(spec *ebpf.CollectionSpec) error {
 	return nil
 }
 
-type varOffsets map[uint32][]byte
-
 // globalData gets the contents of the first entry in the global data map
 // and removes it from the spec to prevent it from being created in the kernel.
-func globalData(spec *ebpf.CollectionSpec) (varOffsets, error) {
+func globalData(spec *ebpf.CollectionSpec) (offsets map[uint32]string, values map[string]uint64, _ error) {
 	dm := spec.Maps[globalDataMap]
 	if dm == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	if dl := len(dm.Contents); dl != 1 {
-		return nil, fmt.Errorf("expected one key in %s, found %d", globalDataMap, dl)
+		return nil, nil, fmt.Errorf("expected one key in %s, found %d", globalDataMap, dl)
 	}
 
 	ds, ok := dm.Value.(*btf.Datasec)
 	if !ok {
-		return nil, fmt.Errorf("no BTF datasec found for %s", globalDataMap)
+		return nil, nil, fmt.Errorf("no BTF datasec found for %s", globalDataMap)
 	}
 
 	data, ok := (dm.Contents[0].Value).([]byte)
 	if !ok {
-		return nil, fmt.Errorf("expected %s value to be a byte slice, got: %T",
+		return nil, nil, fmt.Errorf("expected %s value to be a byte slice, got: %T",
 			globalDataMap, dm.Contents[0].Value)
 	}
 
 	// Slice up the binary contents of the global data map according to the
 	// variables described in its Datasec.
-	out := make(varOffsets)
+	values = make(map[string]uint64)
+	offsets = make(map[uint32]string)
+	buf := make([]byte, 8)
 	for _, vsi := range ds.Vars {
-		if vsi.Size > 8 {
-			return nil, fmt.Errorf("variables larger than 8 bytes are not supported (got %d)", vsi.Size)
+		v, ok := vsi.Type.(*btf.Var)
+		if !ok {
+			// VarSecInfo.Type can be a Func.
+			continue
 		}
 
-		if _, ok := out[vsi.Offset]; ok {
-			return nil, fmt.Errorf("duplicate VarSecInfo for offset %d", vsi.Offset)
+		if _, ok := offsets[vsi.Offset]; ok {
+			return nil, nil, fmt.Errorf("duplicate VarSecInfo for offset %d", vsi.Offset)
 		}
 
-		// Allocate a fixed slice of 8 bytes so it can be used to store in an imm64
-		// instruction later using ByteOrder.Uint64().
-		v := make([]byte, 8)
-		copy(v, data[vsi.Offset:vsi.Offset+vsi.Size])
+		copy(buf, data[vsi.Offset:vsi.Offset+vsi.Size])
+
+		var value uint64
+		switch vsi.Size {
+		case 8:
+			value = spec.ByteOrder.Uint64(buf)
+		case 4:
+			value = uint64(spec.ByteOrder.Uint32(buf))
+		case 2:
+			value = uint64(spec.ByteOrder.Uint16(buf))
+		case 1:
+			value = uint64(buf[0])
+		default:
+			return nil, nil, fmt.Errorf("invalid variable size %d", vsi.Size)
+		}
 
 		// Emit the variable's value by its offset in the datasec.
-		out[vsi.Offset] = v
+		offsets[vsi.Offset] = v.Name
+		values[v.Name] = value
 	}
 
 	// Remove the map definition to skip loading it into the kernel.
 	delete(spec.Maps, globalDataMap)
 
-	return out, nil
+	return offsets, values, nil
 }

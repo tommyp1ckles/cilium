@@ -16,10 +16,6 @@
 
 #define DISABLE_LOOPBACK_LB
 
-/* Skip ingress policy checks, not needed to validate hairpin flow */
-#define USE_BPF_PROG_FOR_INGRESS_POLICY
-#undef FORCE_LOCAL_POLICY_EVAL_AT_SOURCE
-
 #define CLIENT_IP		v4_ext_one
 #define CLIENT_PORT		__bpf_htons(111)
 #define CLIENT_IP_2		v4_ext_two
@@ -40,6 +36,8 @@
 #define BACKEND_IFACE		25
 #define SVC_EGRESS_IFACE	26
 
+#define BACKEND_EP_ID		127
+
 #define fib_lookup mock_fib_lookup
 
 static volatile const __u8 *client_mac = mac_one;
@@ -49,15 +47,52 @@ static volatile const __u8 *node_mac = mac_three;
 static volatile const __u8 *local_backend_mac = mac_four;
 static volatile const __u8 *remote_backend_mac = mac_five;
 
-static __be16 nat_source_port;
-static bool fail_fib;
+__section("mock-handle-policy")
+int mock_handle_policy(struct __ctx_buff *ctx __maybe_unused)
+{
+	return TC_ACT_REDIRECT;
+}
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PROG_ARRAY);
+	__uint(key_size, sizeof(__u32));
+	__uint(max_entries, 256);
+	__array(values, int());
+} mock_policy_call_map __section(".maps") = {
+	.values = {
+		[BACKEND_EP_ID] = &mock_handle_policy,
+	},
+};
+
+#define tail_call_dynamic mock_tail_call_dynamic
+static __always_inline __maybe_unused void
+mock_tail_call_dynamic(struct __ctx_buff *ctx __maybe_unused,
+		       const void *map __maybe_unused, __u32 slot __maybe_unused)
+{
+	tail_call(ctx, &mock_policy_call_map, slot);
+}
+
+struct mock_settings {
+	__be16 nat_source_port;
+	bool fail_fib;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(key_size, sizeof(__u32));
+	__uint(value_size, sizeof(struct mock_settings));
+	__uint(max_entries, 1);
+} settings_map __section_maps_btf;
 
 #define fib_lookup mock_fib_lookup
 
 long mock_fib_lookup(__maybe_unused void *ctx, struct bpf_fib_lookup *params,
 		     __maybe_unused int plen, __maybe_unused __u32 flags)
 {
-	if (fail_fib)
+	__u32 key = 0;
+	struct mock_settings *settings = map_lookup_elem(&settings_map, &key);
+
+	if (settings && settings->fail_fib)
 		return BPF_FIB_LKUP_RET_NO_NEIGH;
 
 	params->ifindex = DEFAULT_IFACE;
@@ -110,8 +145,6 @@ mock_ctx_redirect(const struct __sk_buff *ctx __maybe_unused,
 }
 
 #define SECCTX_FROM_IPCACHE 1
-
-#include "config_replacement.h"
 
 #include "bpf_host.c"
 
@@ -175,7 +208,7 @@ int nodeport_local_backend_setup(struct __ctx_buff *ctx)
 			  BACKEND_IP_LOCAL, BACKEND_PORT, IPPROTO_TCP, 0);
 
 	/* add local backend */
-	endpoint_v4_add_entry(BACKEND_IP_LOCAL, BACKEND_IFACE, 0, 0,
+	endpoint_v4_add_entry(BACKEND_IP_LOCAL, BACKEND_IFACE, BACKEND_EP_ID, 0, 0,
 			      (__u8 *)local_backend_mac, (__u8 *)node_mac);
 
 	ipcache_v4_add_entry(BACKEND_IP_LOCAL, 0, 112233, 0, 0);
@@ -229,6 +262,9 @@ int nodeport_local_backend_check(const struct __ctx_buff *ctx)
 
 	if (l3->daddr != BACKEND_IP_LOCAL)
 		test_fatal("dst IP hasn't been NATed to local backend IP");
+
+	if (l3->check != bpf_htons(0x4212))
+		test_fatal("L3 checksum is invalid: %d", bpf_htons(l3->check));
 
 	if (l4->source != CLIENT_PORT)
 		test_fatal("src port has changed");
@@ -319,6 +355,9 @@ int nodeport_local_backend_reply_check(const struct __ctx_buff *ctx)
 
 	if (l3->daddr != CLIENT_IP)
 		test_fatal("dst IP has changed");
+
+	if (l3->check != bpf_htons(0x4baa))
+		test_fatal("L3 checksum is invalid: %d", bpf_htons(l3->check));
 
 	if (l4->source != FRONTEND_PORT)
 		test_fatal("src port hasn't been revNATed to frontend port");
@@ -412,6 +451,9 @@ int nodeport_local_backend_redirect_check(const struct __ctx_buff *ctx)
 	if (l3->daddr != BACKEND_IP_LOCAL)
 		test_fatal("dst IP hasn't been NATed to local backend IP");
 
+	if (l3->check != bpf_htons(0x3711))
+		test_fatal("L3 checksum is invalid: %d", bpf_htons(l3->check));
+
 	if (l4->source != CLIENT_PORT)
 		test_fatal("src port has changed");
 
@@ -503,6 +545,9 @@ int nodeport_local_backend_redirect_reply_check(const struct __ctx_buff *ctx)
 
 	if (l3->daddr != CLIENT_IP_2)
 		test_fatal("dst IP has changed");
+
+	if (l3->check != bpf_htons(0x3611))
+		test_fatal("L3 checksum is invalid: %d", bpf_htons(l3->check));
 
 	if (l4->source != BACKEND_PORT)
 		test_fatal("src port has changed");
@@ -603,6 +648,9 @@ int nodeport_udp_local_backend_check(const struct __ctx_buff *ctx)
 	if (l3->daddr != BACKEND_IP_LOCAL)
 		test_fatal("dst IP hasn't been NATed to local backend IP");
 
+	if (l3->check != bpf_htons(0x4213))
+		test_fatal("L3 checksum is invalid: %d", bpf_htons(l3->check));
+
 	if (l4->source != CLIENT_PORT)
 		test_fatal("src port has changed");
 
@@ -668,6 +716,7 @@ int nodeport_nat_fwd_check(__maybe_unused const struct __ctx_buff *ctx)
 	struct tcphdr *l4;
 	struct ethhdr *l2;
 	struct iphdr *l3;
+	__u32 key = 0;
 
 	test_init();
 
@@ -704,13 +753,19 @@ int nodeport_nat_fwd_check(__maybe_unused const struct __ctx_buff *ctx)
 	if (l3->daddr != BACKEND_IP_REMOTE)
 		test_fatal("dst IP hasn't been NATed to remote backend IP");
 
+	if (l3->check != bpf_htons(0xa711))
+		test_fatal("L3 checksum is invalid: %d", bpf_htons(l3->check));
+
 	if (l4->source == CLIENT_PORT)
 		test_fatal("src port hasn't been NATed");
 
 	if (l4->dest != BACKEND_PORT)
 		test_fatal("dst port hasn't been NATed to backend port");
 
-	nat_source_port = l4->source;
+	struct mock_settings *settings = map_lookup_elem(&settings_map, &key);
+
+	if (settings)
+		settings->nat_source_port = l4->source;
 
 	test_finish();
 }
@@ -720,6 +775,13 @@ static __always_inline int build_reply(struct __ctx_buff *ctx)
 	struct pktgen builder;
 	struct tcphdr *l4;
 	void *data;
+	__u16 nat_source_port = 0;
+	__u32 key = 0;
+
+	struct mock_settings *settings = map_lookup_elem(&settings_map, &key);
+
+	if (settings)
+		nat_source_port = settings->nat_source_port;
 
 	/* Init packet builder */
 	pktgen__init(&builder, ctx);
@@ -830,7 +892,11 @@ int nodepoirt_nat_fwd_reply_no_fib_pktgen(struct __ctx_buff *ctx)
 SETUP("tc", "tc_nodeport_nat_fwd_reply_no_fib")
 int nodeport_nat_fwd_reply_no_fib_setup(struct __ctx_buff *ctx)
 {
-	fail_fib = 1;
+	__u32 key = 0;
+	struct mock_settings *settings = map_lookup_elem(&settings_map, &key);
+
+	if (settings)
+		settings->fail_fib = true;
 
 	/* Jump into the entrypoint */
 	tail_call_static(ctx, entry_call_map, FROM_NETDEV);

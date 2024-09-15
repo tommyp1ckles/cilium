@@ -7,11 +7,13 @@ package ipam
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/sirupsen/logrus"
 	"k8s.io/client-go/tools/cache"
 
+	operatorK8s "github.com/cilium/cilium/operator/k8s"
 	operatorOption "github.com/cilium/cilium/operator/option"
 	"github.com/cilium/cilium/operator/watchers"
 	"github.com/cilium/cilium/pkg/defaults"
@@ -309,7 +311,7 @@ func getPendingPodCount(nodeName string) (int, error) {
 	if watchers.PodStore == nil {
 		return pendingPods, fmt.Errorf("pod store uninitialized")
 	}
-	values, err := watchers.PodStore.(cache.Indexer).ByIndex(watchers.PodNodeNameIndex, nodeName)
+	values, err := watchers.PodStore.(cache.Indexer).ByIndex(operatorK8s.PodNodeNameIndex, nodeName)
 	if err != nil {
 		return pendingPods, fmt.Errorf("unable to access pod to node name index: %w", err)
 	}
@@ -457,7 +459,13 @@ func (n *Node) recalculate() {
 	defer n.mutex.Unlock()
 
 	if err != nil {
-		scopedLog.Warning("Instance not found! Please delete corresponding ciliumnode if instance has already been deleted.")
+		var limitsNotFound LimitsNotFound
+		ok := errors.As(err, &limitsNotFound)
+		if ok {
+			scopedLog.WithError(err).Warning("Instance limits not found.")
+		} else {
+			scopedLog.WithError(err).Warning("Instance not found! Please delete corresponding ciliumnode if instance has already been deleted.")
+		}
 		// Avoid any further action
 		n.stats.IPv4.NeededIPs = 0
 		n.stats.IPv4.ExcessIPs = 0

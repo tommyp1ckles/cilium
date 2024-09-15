@@ -6,6 +6,7 @@ package translation
 import (
 	"cmp"
 	"fmt"
+	"maps"
 	goslices "slices"
 	"syscall"
 
@@ -16,7 +17,6 @@ import (
 	httpConnectionManagerv3 "github.com/cilium/proxy/go/envoy/extensions/filters/network/http_connection_manager/v3"
 	envoy_extensions_filters_network_tcp_v3 "github.com/cilium/proxy/go/envoy/extensions/filters/network/tcp_proxy/v3"
 	envoy_extensions_transport_sockets_tls_v3 "github.com/cilium/proxy/go/envoy/extensions/transport_sockets/tls/v3"
-	"golang.org/x/exp/maps"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 
@@ -55,6 +55,31 @@ func WithProxyProtocol() ListenerMutator {
 			},
 		}
 		listener.ListenerFilters = append([]*envoy_config_listener.ListenerFilter{proxyListener}, listener.ListenerFilters...)
+		return listener
+	}
+}
+
+func WithAlpn() ListenerMutator {
+	return func(listener *envoy_config_listener.Listener) *envoy_config_listener.Listener {
+		for _, filterChain := range listener.FilterChains {
+			transportSocket := filterChain.GetTransportSocket()
+			if transportSocket == nil {
+				continue
+			}
+
+			downstreamContext := &envoy_extensions_transport_sockets_tls_v3.DownstreamTlsContext{}
+			err := proto.Unmarshal(transportSocket.ConfigType.(*envoy_config_core_v3.TransportSocket_TypedConfig).TypedConfig.Value, downstreamContext)
+			if err != nil {
+				continue
+			}
+
+			// Use `h2,http/1.1` to support both HTTP/2 and HTTP/1.1
+			downstreamContext.CommonTlsContext.AlpnProtocols = []string{"h2,http/1.1"}
+
+			transportSocket.ConfigType = &envoy_config_core_v3.TransportSocket_TypedConfig{
+				TypedConfig: toAny(downstreamContext),
+			}
+		}
 		return listener
 	}
 }
@@ -193,8 +218,9 @@ func httpsFilterChains(name string, ciliumSecretNamespace string, tlsSecretsToHo
 
 	var filterChains []*envoy_config_listener.FilterChain
 
-	orderedSecrets := maps.Keys(tlsSecretsToHostnames)
-	goslices.SortStableFunc(orderedSecrets, func(a, b model.TLSSecret) int { return cmp.Compare(a.Namespace+"/"+a.Name, b.Namespace+"/"+b.Name) })
+	orderedSecrets := goslices.SortedStableFunc(maps.Keys(tlsSecretsToHostnames), func(a, b model.TLSSecret) int {
+		return cmp.Compare(a.Namespace+"/"+a.Name, b.Namespace+"/"+b.Name)
+	})
 
 	for _, secret := range orderedSecrets {
 		hostNames := tlsSecretsToHostnames[secret]
@@ -334,8 +360,7 @@ func tlsPassthroughFilterChains(ptBackendsToHostnames map[string][]string) ([]*e
 
 	var filterChains []*envoy_config_listener.FilterChain
 
-	orderedBackends := maps.Keys(ptBackendsToHostnames)
-	goslices.Sort(orderedBackends)
+	orderedBackends := goslices.Sorted(maps.Keys(ptBackendsToHostnames))
 
 	for _, backend := range orderedBackends {
 		hostNames := ptBackendsToHostnames[backend]
@@ -401,8 +426,9 @@ func toFilterChainMatch(hostNames []string) *envoy_config_listener.FilterChainMa
 	}
 	// ServerNames must be sorted and unique, however, envoy don't support "*" as a server name
 	serverNames := slices.SortedUnique(hostNames)
-	if len(serverNames) > 1 || (len(serverNames) == 1 && serverNames[0] != "*") {
-		res.ServerNames = serverNames
+	if goslices.Contains(serverNames, "*") {
+		return res
 	}
+	res.ServerNames = serverNames
 	return res
 }

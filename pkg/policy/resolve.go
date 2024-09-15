@@ -6,8 +6,7 @@ package policy
 import (
 	"github.com/sirupsen/logrus"
 
-	"github.com/cilium/cilium/pkg/identity"
-	"github.com/cilium/cilium/pkg/policy/trafficdirection"
+	"github.com/cilium/cilium/pkg/u8proto"
 )
 
 // selectorPolicy is a structure which contains the resolved policy for a
@@ -67,7 +66,7 @@ type PolicyOwner interface {
 	LookupRedirectPort(ingress bool, protocol string, port uint16, listener string) (uint16, error)
 	GetRealizedRedirects() map[string]uint16
 	HasBPFPolicyMap() bool
-	GetNamedPort(ingress bool, name string, proto uint8) uint16
+	GetNamedPort(ingress bool, name string, proto u8proto.U8proto) uint16
 	PolicyDebug(fields logrus.Fields, msg string)
 }
 
@@ -109,7 +108,7 @@ func (p *selectorPolicy) Detach() {
 func (p *selectorPolicy) DistillPolicy(policyOwner PolicyOwner, isHost bool) *EndpointPolicy {
 	calculatedPolicy := &EndpointPolicy{
 		selectorPolicy: p,
-		policyMapState: NewMapState(nil),
+		policyMapState: NewMapState(),
 		PolicyOwner:    policyOwner,
 	}
 
@@ -133,12 +132,10 @@ func (p *selectorPolicy) DistillPolicy(policyOwner PolicyOwner, isHost bool) *En
 	// Must come after the 'insertUser()' above to guarantee
 	// PolicyMapChanges will contain all changes that are applied
 	// after the computation of PolicyMapState has started.
-	p.SelectorCache.mutex.RLock()
 	calculatedPolicy.toMapState()
 	if !isHost {
 		calculatedPolicy.policyMapState.determineAllowLocalhostIngress()
 	}
-	p.SelectorCache.mutex.RUnlock()
 
 	return calculatedPolicy
 }
@@ -154,7 +151,7 @@ func (p *EndpointPolicy) GetPolicyMap() MapState {
 // will initialize a new MapState object for the caller.
 func (p *EndpointPolicy) SetPolicyMap(ms MapState) {
 	if ms == nil {
-		p.policyMapState = NewMapState(nil)
+		p.policyMapState = NewMapState()
 		return
 	}
 	p.policyMapState = ms
@@ -165,6 +162,37 @@ func (p *EndpointPolicy) SetPolicyMap(ms MapState) {
 // PolicyOwner (aka Endpoint) is also locked during this call.
 func (p *EndpointPolicy) Detach() {
 	p.selectorPolicy.removeUser(p)
+}
+
+// NewMapStateWithInsert returns a new MapState and an insert function that can be used to populate
+// it. We keep general insert functions private so that the caller can only insert to this specific
+// map.
+func NewMapStateWithInsert() (MapState, func(k Key, e MapStateEntry)) {
+	currentMap := NewMapState()
+
+	return currentMap, func(k Key, e MapStateEntry) {
+		currentMap.insert(k, e, nil)
+	}
+}
+
+func (p *EndpointPolicy) InsertMapState(key Key, entry MapStateEntry) {
+	// SelectorCache used as Identities interface which only has GetPrefix() that needs no lock
+	p.policyMapState.insert(key, entry, p.SelectorCache)
+}
+
+func (p *EndpointPolicy) DeleteMapState(key Key) {
+	// SelectorCache used as Identities interface which only has GetPrefix() that needs no lock
+	p.policyMapState.delete(key, p.SelectorCache)
+}
+
+func (p *EndpointPolicy) RevertChanges(changes ChangeState) {
+	// SelectorCache used as Identities interface which only has GetPrefix() that needs no lock
+	p.policyMapState.revertChanges(p.SelectorCache, changes)
+}
+
+func (p *EndpointPolicy) AddVisibilityKeys(e PolicyOwner, redirectPort uint16, visMeta *VisibilityMetadata, changes ChangeState) {
+	// SelectorCache used as Identities interface which only has GetPrefix() that needs no lock
+	p.policyMapState.addVisibilityKeys(e, redirectPort, visMeta, p.SelectorCache, changes)
 }
 
 // toMapState transforms the EndpointPolicy.L4Policy into
@@ -185,9 +213,10 @@ func (p *EndpointPolicy) toMapState() {
 // PolicyOwner (aka Endpoint) is also unlocked during this call,
 // but the Endpoint's build mutex is held.
 func (l4policy L4DirectionPolicy) toMapState(p *EndpointPolicy) {
-	for _, l4 := range l4policy.PortRules {
+	l4policy.PortRules.ForEach(func(l4 *L4Filter) bool {
 		l4.toMapState(p, l4policy.features, p.PolicyOwner.GetRealizedRedirects(), ChangeState{})
-	}
+		return true
+	})
 }
 
 // createRedirectsFunc returns 'nil' if map changes should not be applied immemdiately,
@@ -207,15 +236,11 @@ func (p *EndpointPolicy) UpdateRedirects(ingress bool, createRedirects createRed
 }
 
 func (l4policy L4DirectionPolicy) updateRedirects(p *EndpointPolicy, createRedirects createRedirectsFunc, changes ChangeState) {
-	// Selectorcache needs to be locked for toMapState (GetLabels()) call
-	p.SelectorCache.mutex.RLock()
-	defer p.SelectorCache.mutex.RUnlock()
-
-	for _, l4 := range l4policy.PortRules {
+	l4policy.PortRules.ForEach(func(l4 *L4Filter) bool {
 		if l4.IsRedirect() {
 			// Check if we are denying this specific L4 first regardless the L3, if there are any deny policies
 			if l4policy.features.contains(denyRules) && p.policyMapState.deniesL4(p.PolicyOwner, l4) {
-				continue
+				return true
 			}
 
 			redirects := createRedirects(l4)
@@ -224,55 +249,25 @@ func (l4policy L4DirectionPolicy) updateRedirects(p *EndpointPolicy, createRedir
 				l4.toMapState(p, l4policy.features, redirects, changes)
 			}
 		}
-	}
+		return true
+	})
 }
 
-// ConsumeMapChanges transfers the changes from MapChanges to the caller,
-// locking the selector cache to make sure concurrent identity updates
-// have completed.
-// PolicyOwner (aka Endpoint) is also locked during this call.
+// ConsumeMapChanges transfers the changes from MapChanges to the caller.
+// SelectorCache used as Identities interface which only has GetPrefix() that needs no lock.
+// Endpoints explicitly wait for a WaitGroup signaling completion of AccumulatePolicyMapChanges
+// calls before calling ConsumeMapChanges so that if we see any partial changes here, there will be
+// another call after to cover for the rest.
+// PolicyOwner (aka Endpoint) is locked during this call.
 func (p *EndpointPolicy) ConsumeMapChanges() (adds, deletes Keys) {
-	p.selectorPolicy.SelectorCache.mutex.Lock()
-	defer p.selectorPolicy.SelectorCache.mutex.Unlock()
 	features := p.selectorPolicy.L4Policy.Ingress.features | p.selectorPolicy.L4Policy.Egress.features
-	return p.policyMapChanges.consumeMapChanges(p.PolicyOwner, p.policyMapState, features, p.SelectorCache)
-}
-
-// AllowsIdentity returns whether the specified policy allows
-// ingress and egress traffic for the specified numeric security identity.
-// If the 'secID' is zero, it will check if all traffic is allowed.
-//
-// Returning true for either return value indicates all traffic is allowed.
-func (p *EndpointPolicy) AllowsIdentity(identity identity.NumericIdentity) (ingress, egress bool) {
-	key := Key{
-		Identity: uint32(identity),
-	}
-
-	if !p.IngressPolicyEnabled {
-		ingress = true
-	} else {
-		key.TrafficDirection = trafficdirection.Ingress.Uint8()
-		if v, exists := p.policyMapState.Get(key); exists && !v.IsDeny {
-			ingress = true
-		}
-	}
-
-	if !p.EgressPolicyEnabled {
-		egress = true
-	} else {
-		key.TrafficDirection = trafficdirection.Egress.Uint8()
-		if v, exists := p.policyMapState.Get(key); exists && !v.IsDeny {
-			egress = true
-		}
-	}
-
-	return ingress, egress
+	return p.policyMapChanges.consumeMapChanges(p.PolicyOwner, p.policyMapState, p.SelectorCache, features)
 }
 
 // NewEndpointPolicy returns an empty EndpointPolicy stub.
 func NewEndpointPolicy(repo *Repository) *EndpointPolicy {
 	return &EndpointPolicy{
 		selectorPolicy: newSelectorPolicy(repo.GetSelectorCache()),
-		policyMapState: NewMapState(nil),
+		policyMapState: NewMapState(),
 	}
 }

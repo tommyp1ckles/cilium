@@ -4,21 +4,11 @@
 package loadbalancer
 
 import (
+	"bytes"
 	"testing"
-
-	check "github.com/cilium/checkmate"
 
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 )
-
-// Hook up gocheck into the "go test" runner.
-func Test(t *testing.T) {
-	check.TestingT(t)
-}
-
-type TypesSuite struct{}
-
-var _ = check.Suite(&TypesSuite{})
 
 func TestL4Addr_Equals(t *testing.T) {
 	type args struct {
@@ -80,6 +70,65 @@ func TestL4Addr_Equals(t *testing.T) {
 				t.Errorf("L4Addr.DeepEqual() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestL3n4Addr_Bytes(t *testing.T) {
+	v4 := cmtypes.MustParseAddrCluster("1.1.1.1")
+	v4c3 := cmtypes.MustParseAddrCluster("1.1.1.1@3")
+	v6 := cmtypes.MustParseAddrCluster("2001::1")
+	tests := []struct {
+		addr     L3n4Addr
+		expected []byte
+	}{
+		{
+			addr: L3n4Addr{
+				L4Addr:      L4Addr{Protocol: NONE, Port: 0xabcd},
+				AddrCluster: v4,
+				Scope:       ScopeExternal,
+			},
+			expected: []byte{
+				0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 1, 1, 1, 1, // IP
+				0, 0, 0, 0, // Cluster 0
+				0xab, 0xcd, // Port
+				'?', // L4Type
+				0,   // Scope
+			},
+		},
+		{
+			addr: L3n4Addr{
+				L4Addr:      L4Addr{Protocol: TCP, Port: 0xabcd},
+				AddrCluster: v4c3,
+				Scope:       ScopeInternal,
+			},
+			expected: []byte{
+				0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 1, 1, 1, 1, // IP
+				0, 0, 0, 3, // Cluster 3
+				0xab, 0xcd, // Port
+				'T', // L4Type
+				1,   // Scope
+			},
+		},
+		{
+			addr: L3n4Addr{
+				L4Addr:      L4Addr{Protocol: UDP, Port: 0xaabb},
+				AddrCluster: v6,
+				Scope:       ScopeExternal,
+			},
+			expected: []byte{
+				32, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, // IP
+				0, 0, 0, 0, // Cluster 0
+				0xaa, 0xbb, // Port
+				'U', // L4Type
+				0,   // Scope
+			},
+		},
+	}
+
+	for _, test := range tests {
+		if !bytes.Equal(test.addr.Bytes(), test.expected) {
+			t.Errorf("L3n4Addr.Bytes() = %v, want %v", test.addr.Bytes(), test.expected)
+		}
 	}
 }
 
@@ -232,7 +281,7 @@ func TestL3n4AddrID_Strings(t *testing.T) {
 				},
 				ID: 1,
 			},
-			string:             "1.1.1.1:9876",
+			string:             "1.1.1.1:9876/NONE",
 			stringWithProtocol: "1.1.1.1:9876/NONE",
 		},
 		{
@@ -248,7 +297,7 @@ func TestL3n4AddrID_Strings(t *testing.T) {
 				},
 				ID: 1,
 			},
-			string:             "2.2.2.2:9876",
+			string:             "2.2.2.2:9876/TCP",
 			stringWithProtocol: "2.2.2.2:9876/TCP",
 		},
 		{
@@ -264,7 +313,7 @@ func TestL3n4AddrID_Strings(t *testing.T) {
 				},
 				ID: 1,
 			},
-			string:             "3.3.3.3:9876/i",
+			string:             "3.3.3.3:9876/UDP/i",
 			stringWithProtocol: "3.3.3.3:9876/UDP/i",
 		},
 		{
@@ -279,7 +328,7 @@ func TestL3n4AddrID_Strings(t *testing.T) {
 				},
 				ID: 1,
 			},
-			string:             "4.4.4.4:9876",
+			string:             "4.4.4.4:9876/SCTP",
 			stringWithProtocol: "4.4.4.4:9876/SCTP",
 		},
 		{
@@ -294,7 +343,7 @@ func TestL3n4AddrID_Strings(t *testing.T) {
 				},
 				ID: 1,
 			},
-			string:             "[1020:3040:5060:7080:90a0:b0c0:d0e0:f000]:9876",
+			string:             "[1020:3040:5060:7080:90a0:b0c0:d0e0:f000]:9876/NONE",
 			stringWithProtocol: "[1020:3040:5060:7080:90a0:b0c0:d0e0:f000]:9876/NONE",
 		},
 		{
@@ -310,7 +359,7 @@ func TestL3n4AddrID_Strings(t *testing.T) {
 				},
 				ID: 1,
 			},
-			string:             "[1020:3040:5060:7080:90a0:b0c0:d0e0:f000]:9876",
+			string:             "[1020:3040:5060:7080:90a0:b0c0:d0e0:f000]:9876/TCP",
 			stringWithProtocol: "[1020:3040:5060:7080:90a0:b0c0:d0e0:f000]:9876/TCP",
 		},
 		{
@@ -326,7 +375,7 @@ func TestL3n4AddrID_Strings(t *testing.T) {
 				},
 				ID: 1,
 			},
-			string:             "[1020:3040:5060:7080:90a0:b0c0:d0e0:f000]:9876/i",
+			string:             "[1020:3040:5060:7080:90a0:b0c0:d0e0:f000]:9876/UDP/i",
 			stringWithProtocol: "[1020:3040:5060:7080:90a0:b0c0:d0e0:f000]:9876/UDP/i",
 		},
 		{
@@ -341,7 +390,7 @@ func TestL3n4AddrID_Strings(t *testing.T) {
 				},
 				ID: 1,
 			},
-			string:             "[1020:3040:5060:7080:90a0:b0c0:d0e0:f000]:9876",
+			string:             "[1020:3040:5060:7080:90a0:b0c0:d0e0:f000]:9876/SCTP",
 			stringWithProtocol: "[1020:3040:5060:7080:90a0:b0c0:d0e0:f000]:9876/SCTP",
 		},
 	}

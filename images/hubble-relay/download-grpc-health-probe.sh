@@ -9,13 +9,13 @@ set -o pipefail
 set -o nounset
 
 # renovate: datasource=github-release-attachments depName=grpc-ecosystem/grpc-health-probe
-grpc_health_probe_version="v0.4.25"
+grpc_health_probe_version="v0.4.28"
 
 declare -A grpc_health_probe_sha256
-# renovate: datasource=github-release-attachments depName=grpc-ecosystem/grpc-health-probe digestVersion=v0.4.25
-grpc_health_probe_sha256[amd64]="d14037ad94518eac8dbe57c146d6c2ca808f7f32600ee0c4057ef4b03ee0e42e"
-# renovate: datasource=github-release-attachments depName=grpc-ecosystem/grpc-health-probe digestVersion=v0.4.25
-grpc_health_probe_sha256[arm64]="dc1b96c23b6befe946516ffd2c57c9bb20d0fc8a6f6b652298a7b97cc5de4d31"
+# renovate: datasource=github-release-attachments depName=grpc-ecosystem/grpc-health-probe digestVersion=v0.4.28
+grpc_health_probe_sha256[amd64]="4b818d540683b1b97256c84714a51a095e54f19792b3d7f02ac78814be645a96"
+# renovate: datasource=github-release-attachments depName=grpc-ecosystem/grpc-health-probe digestVersion=v0.4.28
+grpc_health_probe_sha256[arm64]="1b1c1d02f68c439585901ac54bf79688350c35d1e5168a93b1a811e30b1f5124"
 
 for arch in amd64 arm64 ; do
   curl --fail --show-error --silent --location "https://github.com/grpc-ecosystem/grpc-health-probe/releases/download/${grpc_health_probe_version}/grpc_health_probe-linux-${arch}" --output "/tmp/grpc_health_probe-${arch}"

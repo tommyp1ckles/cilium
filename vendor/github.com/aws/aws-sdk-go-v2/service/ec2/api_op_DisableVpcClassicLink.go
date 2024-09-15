@@ -10,8 +10,10 @@ import (
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
 
-// This action is deprecated. Disables ClassicLink for a VPC. You cannot disable
-// ClassicLink for a VPC that has EC2-Classic instances linked to it.
+// This action is deprecated.
+//
+// Disables ClassicLink for a VPC. You cannot disable ClassicLink for a VPC that
+// has EC2-Classic instances linked to it.
 func (c *Client) DisableVpcClassicLink(ctx context.Context, params *DisableVpcClassicLinkInput, optFns ...func(*Options)) (*DisableVpcClassicLinkOutput, error) {
 	if params == nil {
 		params = &DisableVpcClassicLinkInput{}
@@ -107,6 +109,12 @@ func (c *Client) addOperationDisableVpcClassicLinkMiddlewares(stack *middleware.
 		return err
 	}
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+		return err
+	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
 	if err = addOpDisableVpcClassicLinkValidationMiddleware(stack); err != nil {

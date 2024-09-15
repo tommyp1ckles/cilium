@@ -20,6 +20,8 @@ import (
 	"k8s.io/client-go/util/workqueue"
 
 	"github.com/cilium/cilium/pkg/datapath/linux/config/defines"
+	"github.com/cilium/cilium/pkg/datapath/linux/sysctl"
+	"github.com/cilium/cilium/pkg/datapath/tables"
 	"github.com/cilium/cilium/pkg/datapath/tunnel"
 	"github.com/cilium/cilium/pkg/identity"
 	identityCache "github.com/cilium/cilium/pkg/identity/cache"
@@ -45,6 +47,9 @@ var (
 	// ExcludedCIDRIPv4 is a special IP value used as gatewayIP in the BPF policy map
 	// to indicate the entry is for an excluded CIDR and should skip egress gateway
 	ExcludedCIDRIPv4 = netip.MustParseAddr("0.0.0.1")
+	// EgressIPNotFoundIPv4 is a special IP value used as egressIP in the BPF policy map
+	// to indicate no egressIP was found for the given policy
+	EgressIPNotFoundIPv4 = netip.IPv4Unspecified()
 )
 
 // Cell provides a [Manager] for consumption with hive.
@@ -65,6 +70,8 @@ const (
 	eventDeletePolicy
 	eventUpdateEndpoint
 	eventDeleteEndpoint
+	eventUpdateNode
+	eventDeleteNode
 )
 
 type Config struct {
@@ -137,6 +144,8 @@ type Manager struct {
 	// reconciliationEventsCount keeps track of how many reconciliation
 	// events have occoured
 	reconciliationEventsCount atomic.Uint64
+
+	sysctl sysctl.Sysctl
 }
 
 type Params struct {
@@ -149,6 +158,7 @@ type Params struct {
 	Policies          resource.Resource[*Policy]
 	Nodes             resource.Resource[*cilium_api_v2.CiliumNode]
 	Endpoints         resource.Resource[*k8sTypes.CiliumEndpoint]
+	Sysctl            sysctl.Sysctl
 
 	Lifecycle cell.Lifecycle
 }
@@ -166,8 +176,8 @@ func NewEgressGatewayManager(p Params) (out struct {
 		return out, nil
 	}
 
-	if dcfg.IdentityAllocationMode == option.IdentityAllocationModeKVstore {
-		return out, errors.New("egress gateway is not supported in KV store identity allocation mode")
+	if dcfg.IdentityAllocationMode != option.IdentityAllocationModeCRD {
+		return out, fmt.Errorf("egress gateway is not supported in %s identity allocation mode", dcfg.IdentityAllocationMode)
 	}
 
 	if dcfg.EnableHighScaleIPcache {
@@ -180,12 +190,6 @@ func NewEgressGatewayManager(p Params) (out struct {
 
 	if !dcfg.EnableIPv4Masquerade || !dcfg.EnableBPFMasquerade {
 		return out, fmt.Errorf("egress gateway requires --%s=\"true\" and --%s=\"true\"", option.EnableIPv4Masquerade, option.EnableBPFMasquerade)
-	}
-
-	if dcfg.EnableL7Proxy {
-		log.WithField(logfields.URL, "https://github.com/cilium/cilium/issues/19642").
-			Warningf("both egress gateway and L7 proxy (--%s) are enabled. This is currently not fully supported: "+
-				"if the same endpoint is selected both by an egress gateway and a L7 policy, endpoint traffic will not go through egress gateway.", option.EnableL7Proxy)
 	}
 
 	out.Manager, err = newEgressGatewayManager(p)
@@ -213,6 +217,7 @@ func newEgressGatewayManager(p Params) (*Manager, error) {
 		policies:                      p.Policies,
 		ciliumNodes:                   p.Nodes,
 		endpoints:                     p.Endpoints,
+		sysctl:                        p.Sysctl,
 	}
 
 	t, err := trigger.NewTrigger(trigger.Parameters{
@@ -434,6 +439,11 @@ func (manager *Manager) addEndpoint(endpoint *k8sTypes.CiliumEndpoint) error {
 		logfields.K8sUID:          endpoint.UID,
 	})
 
+	if endpoint.Identity == nil {
+		logger.Warning("Endpoint is missing identity metadata, skipping update to egress policy.")
+		return nil
+	}
+
 	if identityLabels, err = manager.getIdentityLabels(uint32(endpoint.Identity.ID)); err != nil {
 		logger.WithError(err).
 			Warning("Failed to get identity labels for endpoint")
@@ -508,6 +518,7 @@ func (manager *Manager) handleNodeEvent(event resource.Event[*cilium_api_v2.Cili
 			manager.nodes = slices.Delete(manager.nodes, nidx, nidx+1)
 		}
 
+		manager.setEventBitmap(eventDeleteNode)
 		manager.reconciliationTrigger.TriggerWithReason("node deleted")
 		return
 	}
@@ -520,6 +531,7 @@ func (manager *Manager) handleNodeEvent(event resource.Event[*cilium_api_v2.Cili
 		manager.nodes = slices.Insert(manager.nodes, nidx, node)
 	}
 
+	manager.setEventBitmap(eventUpdateNode)
 	manager.reconciliationTrigger.TriggerWithReason("node updated")
 }
 
@@ -591,6 +603,33 @@ func (manager *Manager) regenerateGatewayConfigs() {
 	for _, policyConfig := range manager.policyConfigs {
 		policyConfig.regenerateGatewayConfig(manager)
 	}
+}
+
+func (manager *Manager) relaxRPFilter() error {
+	var sysSettings []tables.Sysctl
+	ifSet := make(map[string]struct{})
+
+	for _, pc := range manager.policyConfigs {
+		if !pc.gatewayConfig.localNodeConfiguredAsGateway {
+			continue
+		}
+
+		ifaceName := pc.gatewayConfig.ifaceName
+		if _, ok := ifSet[ifaceName]; !ok {
+			ifSet[ifaceName] = struct{}{}
+			sysSettings = append(sysSettings, tables.Sysctl{
+				Name:      []string{"net", "ipv4", "conf", ifaceName, "rp_filter"},
+				Val:       "2",
+				IgnoreErr: false,
+			})
+		}
+	}
+
+	if len(sysSettings) == 0 {
+		return nil
+	}
+
+	return manager.sysctl.ApplySettings(sysSettings)
 }
 
 func (manager *Manager) addMissingEgressRules() {
@@ -691,7 +730,23 @@ func (manager *Manager) reconcileLocked() {
 		manager.updatePoliciesBySourceIP()
 	}
 
-	manager.regenerateGatewayConfigs()
+	if manager.eventBitmapIsSet(eventK8sSyncDone, eventAddPolicy, eventDeletePolicy, eventUpdateNode, eventDeleteNode) {
+		manager.regenerateGatewayConfigs()
+
+		// Sysctl updates are handled by a reconciler, with the initial update attempting to wait some time
+		// for a synchronous reconciliation. Thus these updates are already resilient so in case of failure
+		// our best course of action is to log the error and continue with the reconciliation.
+		//
+		// The rp_filter setting is only important for traffic originating from endpoints on the same host (i.e.
+		// egw traffic being forwarded from a local Pod endpoint to the gateway on the same node).
+		// Therefore, for the sake of resiliency, it is acceptable for EGW to continue reconciling gatewayConfigs
+		// even if the rp_filter setting are failing.
+		if err := manager.relaxRPFilter(); err != nil {
+			log.WithError(err).Error("Error relaxing rp_filter for gateway interfaces. "+
+				"Selected egress gateway interfaces require rp_filter settings to use loose mode (rp_filter=2) for gateway forwarding to work correctly. ",
+				"This may cause connectivity issues for egress gateway traffic being forwarded through this node for Pods running on the same host. ")
+		}
+	}
 
 	// The order of the next 2 function calls matters, as by first adding missing policies and
 	// only then removing obsolete ones we make sure there will be no connectivity disruption

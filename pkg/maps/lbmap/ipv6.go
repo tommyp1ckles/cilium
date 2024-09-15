@@ -14,6 +14,7 @@ import (
 	"github.com/cilium/cilium/pkg/byteorder"
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	"github.com/cilium/cilium/pkg/loadbalancer"
+	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/types"
 	"github.com/cilium/cilium/pkg/u8proto"
 )
@@ -149,9 +150,9 @@ func NewService6Key(ip net.IP, port uint16, proto u8proto.U8proto, scope uint8, 
 func (k *Service6Key) String() string {
 	kHost := k.ToHost().(*Service6Key)
 	if kHost.Scope == loadbalancer.ScopeInternal {
-		return fmt.Sprintf("[%s]:%d/i (%d)", kHost.Address, kHost.Port, kHost.BackendSlot)
+		return fmt.Sprintf("[%s]:%d/%s/i (%d)", kHost.Address, kHost.Port, u8proto.U8proto(kHost.Proto).String(), kHost.BackendSlot)
 	} else {
-		return fmt.Sprintf("[%s]:%d (%d)", kHost.Address, kHost.Port, kHost.BackendSlot)
+		return fmt.Sprintf("[%s]:%d/%s (%d)", kHost.Address, kHost.Port, u8proto.U8proto(kHost.Proto).String(), kHost.BackendSlot)
 	}
 }
 
@@ -166,6 +167,7 @@ func (k *Service6Key) SetScope(scope uint8)    { k.Scope = scope }
 func (k *Service6Key) GetScope() uint8         { return k.Scope }
 func (k *Service6Key) GetAddress() net.IP      { return k.Address.IP() }
 func (k *Service6Key) GetPort() uint16         { return k.Port }
+func (k *Service6Key) GetProtocol() uint8      { return k.Proto }
 func (k *Service6Key) MapDelete() error        { return k.Map().Delete(k.ToNetwork()) }
 
 func (k *Service6Key) RevNatValue() RevNatValue {
@@ -190,23 +192,25 @@ func (k *Service6Key) ToHost() ServiceKey {
 
 // Service6Value must match 'struct lb6_service' in "bpf/lib/common.h".
 type Service6Value struct {
-	BackendID uint32    `align:"$union0"`
-	Count     uint16    `align:"count"`
-	RevNat    uint16    `align:"rev_nat_index"`
-	Flags     uint8     `align:"flags"`
-	Flags2    uint8     `align:"flags2"`
-	Pad       pad2uint8 `align:"pad"`
+	BackendID uint32 `align:"$union0"`
+	Count     uint16 `align:"count"`
+	RevNat    uint16 `align:"rev_nat_index"`
+	Flags     uint8  `align:"flags"`
+	Flags2    uint8  `align:"flags2"`
+	QCount    uint16 `align:"qcount"`
 }
 
 func (s *Service6Value) New() bpf.MapValue { return &Service6Value{} }
 
 func (s *Service6Value) String() string {
 	sHost := s.ToHost().(*Service6Value)
-	return fmt.Sprintf("%d %d (%d) [0x%x 0x%x]", sHost.BackendID, sHost.Count, sHost.RevNat, sHost.Flags, sHost.Flags2)
+	return fmt.Sprintf("%d %d[%d] (%d) [0x%x 0x%x]", sHost.BackendID, sHost.Count, sHost.QCount, sHost.RevNat, sHost.Flags, sHost.Flags2)
 }
 
 func (s *Service6Value) SetCount(count int)   { s.Count = uint16(count) }
 func (s *Service6Value) GetCount() int        { return int(s.Count) }
+func (s *Service6Value) SetQCount(count int)  { s.QCount = uint16(count) }
+func (s *Service6Value) GetQCount() int       { return int(s.QCount) }
 func (s *Service6Value) SetRevNat(id int)     { s.RevNat = uint16(id) }
 func (s *Service6Value) GetRevNat() int       { return int(s.RevNat) }
 func (s *Service6Value) RevNatKey() RevNatKey { return &RevNat6Key{s.RevNat} }
@@ -309,8 +313,10 @@ func (b *Backend6Value) GetAddress() net.IP { return b.Address.IP() }
 func (b *Backend6Value) GetIPCluster() cmtypes.AddrCluster {
 	return cmtypes.AddrClusterFrom(b.Address.Addr(), 0)
 }
-func (b *Backend6Value) GetPort() uint16 { return b.Port }
-func (b *Backend6Value) GetFlags() uint8 { return b.Flags }
+func (b *Backend6Value) GetPort() uint16    { return b.Port }
+func (b *Backend6Value) GetProtocol() uint8 { return uint8(b.Proto) }
+func (b *Backend6Value) GetFlags() uint8    { return b.Flags }
+func (b *Backend6Value) GetZone() uint8     { return 0 }
 
 func (v *Backend6Value) ToNetwork() BackendValue {
 	n := *v
@@ -331,10 +337,11 @@ type Backend6ValueV3 struct {
 	Proto     u8proto.U8proto `align:"proto"`
 	Flags     uint8           `align:"flags"`
 	ClusterID uint16          `align:"cluster_id"`
-	Pad       pad2uint8       `align:"pad"`
+	Zone      uint8           `align:"zone"`
+	Pad       uint8           `align:"pad"`
 }
 
-func NewBackend6ValueV3(addrCluster cmtypes.AddrCluster, port uint16, proto u8proto.U8proto, state loadbalancer.BackendState) (*Backend6ValueV3, error) {
+func NewBackend6ValueV3(addrCluster cmtypes.AddrCluster, port uint16, proto u8proto.U8proto, state loadbalancer.BackendState, zone uint8) (*Backend6ValueV3, error) {
 	addr := addrCluster.Addr()
 
 	// It is possible to have IPv4 backend in IPv6. We have NAT46/64.
@@ -352,6 +359,7 @@ func NewBackend6ValueV3(addrCluster cmtypes.AddrCluster, port uint16, proto u8pr
 		Port:  port,
 		Proto: proto,
 		Flags: flags,
+		Zone:  zone,
 	}
 
 	ipv6Array := addr.As16()
@@ -362,6 +370,9 @@ func NewBackend6ValueV3(addrCluster cmtypes.AddrCluster, port uint16, proto u8pr
 
 func (v *Backend6ValueV3) String() string {
 	vHost := v.ToHost().(*Backend6ValueV3)
+	if v.Zone != 0 {
+		return fmt.Sprintf("%s://%s[%s]", vHost.Proto, cmtypes.AddrClusterFrom(vHost.Address.Addr(), uint32(vHost.ClusterID)), option.Config.GetZone(v.Zone))
+	}
 	return fmt.Sprintf("%s://%s", vHost.Proto, cmtypes.AddrClusterFrom(vHost.Address.Addr(), uint32(vHost.ClusterID)))
 }
 
@@ -371,8 +382,10 @@ func (b *Backend6ValueV3) GetAddress() net.IP { return b.Address.IP() }
 func (b *Backend6ValueV3) GetIPCluster() cmtypes.AddrCluster {
 	return cmtypes.AddrClusterFrom(b.Address.Addr(), uint32(b.ClusterID))
 }
-func (b *Backend6ValueV3) GetPort() uint16 { return b.Port }
-func (b *Backend6ValueV3) GetFlags() uint8 { return b.Flags }
+func (b *Backend6ValueV3) GetPort() uint16    { return b.Port }
+func (b *Backend6ValueV3) GetProtocol() uint8 { return uint8(b.Proto) }
+func (b *Backend6ValueV3) GetFlags() uint8    { return b.Flags }
+func (b *Backend6ValueV3) GetZone() uint8     { return b.Zone }
 
 func (v *Backend6ValueV3) ToNetwork() BackendValue {
 	n := *v
@@ -393,8 +406,8 @@ type Backend6V3 struct {
 }
 
 func NewBackend6V3(id loadbalancer.BackendID, addrCluster cmtypes.AddrCluster, port uint16,
-	proto u8proto.U8proto, state loadbalancer.BackendState) (*Backend6V3, error) {
-	val, err := NewBackend6ValueV3(addrCluster, port, proto, state)
+	proto u8proto.U8proto, state loadbalancer.BackendState, zone uint8) (*Backend6V3, error) {
+	val, err := NewBackend6ValueV3(addrCluster, port, proto, state, zone)
 	if err != nil {
 		return nil, err
 	}

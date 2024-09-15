@@ -39,6 +39,7 @@ __id_for_file(const char *const header_name)
 	_strcase_(4, "bpf_xdp.c");
 	_strcase_(5, "bpf_sock.c");
 	_strcase_(6, "bpf_network.c");
+	_strcase_(7, "bpf_wireguard.c");
 
 	/* header files from bpf/lib/ */
 	_strcase_(101, "arp.h");
@@ -54,6 +55,7 @@ __id_for_file(const char *const header_name)
 	_strcase_(111, "trace.h");
 	_strcase_(112, "encap.h");
 	_strcase_(113, "encrypt.h");
+	_strcase_(114, "host_firewall.h");
 
 	/* @@ source files list end */
 

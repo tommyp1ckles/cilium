@@ -43,10 +43,8 @@
 
 #include "lib/lb.h"
 #include "lib/drop.h"
-#include "lib/dbg.h"
 #include "lib/trace.h"
 #include "lib/csum.h"
-#include "lib/egress_gateway.h"
 #include "lib/srv6.h"
 #include "lib/encap.h"
 #include "lib/eps.h"
@@ -105,9 +103,18 @@ static __always_inline int __per_packet_lb_svc_xlate_4(void *ctx, struct iphdr *
 			goto skip_service_lookup;
 		}
 #endif /* ENABLE_L7_LB */
+		/* When socket-LB is enabled, local-redirect services are load-balanced in
+		 * bpf_sock. In some cases, load-balancing can be skipped for certain local
+		 * redirect services based on user configured policies. Per packet LB should
+		 * not override LB decisions made for local-redirect services in bpf_sock.
+		 */
+#if defined(ENABLE_LOCAL_REDIRECT_POLICY) && defined(ENABLE_SOCKET_LB_FULL)
+		if (unlikely(lb4_svc_is_localredirect(svc)))
+			goto skip_service_lookup;
+#endif /* ENABLE_LOCAL_REDIRECT_POLICY && ENABLE_SOCKET_LB_FULL */
 		ret = lb4_local(get_ct_map4(&tuple), ctx, ipv4_is_fragment(ip4),
 				ETH_HLEN, l4_off, &key, &tuple, svc, &ct_state_new,
-				has_l4_header, false, &cluster_id, ext_err);
+				has_l4_header, false, &cluster_id, ext_err, ENDPOINT_NETNS_COOKIE);
 
 #ifdef SERVICE_NO_BACKEND_RESPONSE
 		if (ret == DROP_NO_SERVICE)
@@ -129,7 +136,7 @@ skip_service_lookup:
 static __always_inline int __per_packet_lb_svc_xlate_6(void *ctx, struct ipv6hdr *ip6,
 						       __s8 *ext_err)
 {
-	struct ipv6_ct_tuple tuple = {};
+	struct ipv6_ct_tuple tuple __align_stack_8 = {};
 	struct ct_state ct_state_new = {};
 	struct lb6_service *svc;
 	struct lb6_key key = {};
@@ -162,8 +169,14 @@ static __always_inline int __per_packet_lb_svc_xlate_6(void *ctx, struct ipv6hdr
 			goto skip_service_lookup;
 		}
 #endif /* ENABLE_L7_LB */
+		/* See comment in __per_packet_lb_svc_xlate_4. */
+#if defined(ENABLE_LOCAL_REDIRECT_POLICY) && defined(ENABLE_SOCKET_LB_FULL)
+		if (unlikely(lb6_svc_is_localredirect(svc)))
+			goto skip_service_lookup;
+#endif /* ENABLE_LOCAL_REDIRECT_POLICY && ENABLE_SOCKET_LB_FULL */
 		ret = lb6_local(get_ct_map6(&tuple), ctx, ETH_HLEN, l4_off,
-				&key, &tuple, svc, &ct_state_new, false, ext_err);
+				&key, &tuple, svc, &ct_state_new, false, ext_err,
+				ENDPOINT_NETNS_COOKIE);
 
 #ifdef SERVICE_NO_BACKEND_RESPONSE
 		if (ret == DROP_NO_SERVICE)
@@ -206,7 +219,7 @@ select_ct_map4(struct __ctx_buff *ctx __maybe_unused, int dir __maybe_unused,
 
 #if defined ENABLE_IPV4 || defined ENABLE_IPV6
 static __always_inline int drop_for_direction(struct __ctx_buff *ctx,
-					      enum ct_dir dir, __u32 reason,
+					      enum ct_dir dir, int reason,
 					      __s8 ext_err)
 {
 	__u32 dst = 0;
@@ -254,6 +267,7 @@ __section_tail(CILIUM_MAP_CALLS, ID)						\
 static __always_inline								\
 int NAME(struct __ctx_buff *ctx)						\
 {										\
+	enum ct_scope scope = SCOPE_BIDIR;					\
 	struct ct_buffer4 ct_buffer = {};					\
 	struct ipv4_ct_tuple *tuple;						\
 	struct ct_state *ct_state;						\
@@ -280,8 +294,28 @@ int NAME(struct __ctx_buff *ctx)						\
 		return drop_for_direction(ctx, DIR, DROP_CT_NO_MAP_FOUND,	\
 					  ext_err);				\
 										\
+	/* After a per-packet LB action, we only want the CT lookup to match	\
+	 * in forward direction.						\
+	 */									\
+	if (is_defined(ENABLE_PER_PACKET_LB) && DIR == CT_EGRESS) {		\
+		struct ct_state ct_state_new = {};				\
+		__u32 cluster_id;						\
+		__u16 proxy_port;						\
+										\
+		lb4_ctx_restore_state(ctx, &ct_state_new, &proxy_port,		\
+				      &cluster_id, false);			\
+		if (ct_state_new.rev_nat_index)					\
+			scope = SCOPE_FORWARD;					\
+		if (is_defined(ENABLE_L7_LB) && proxy_port)			\
+			scope = SCOPE_FORWARD;					\
+		if (is_defined(ENABLE_L7_LB) &&					\
+		    (ctx_load_meta(ctx, CB_FROM_HOST) == FROM_HOST_L7_LB))	\
+			scope = SCOPE_FORWARD;					\
+	}									\
+										\
 	ct_buffer.ret = ct_lookup4(map, tuple, ctx, ip4, ct_buffer.l4_off,	\
-				   DIR, ct_state, &ct_buffer.monitor);		\
+				   DIR, scope, ct_state,			\
+				   &ct_buffer.monitor);				\
 	if (ct_buffer.ret < 0)							\
 		return drop_for_direction(ctx, DIR, ct_buffer.ret, ext_err);	\
 	if (map_update_elem(&CT_TAIL_CALL_BUFFER4, &zero, &ct_buffer, 0) < 0)	\
@@ -300,6 +334,7 @@ __section_tail(CILIUM_MAP_CALLS, ID)						\
 static __always_inline								\
 int NAME(struct __ctx_buff *ctx)						\
 {										\
+	enum ct_scope scope = SCOPE_BIDIR;					\
 	struct ct_buffer6 ct_buffer = {};					\
 	int ret = CTX_ACT_OK, hdrlen;						\
 	struct ipv6_ct_tuple *tuple;						\
@@ -325,9 +360,23 @@ int NAME(struct __ctx_buff *ctx)						\
 										\
 	ct_buffer.l4_off = ETH_HLEN + hdrlen;					\
 										\
+	if (is_defined(ENABLE_PER_PACKET_LB) && DIR == CT_EGRESS) {		\
+		struct ct_state ct_state_new = {};				\
+		__u16 proxy_port;						\
+										\
+		lb6_ctx_restore_state(ctx, &ct_state_new, &proxy_port, false);	\
+		if (ct_state_new.rev_nat_index)					\
+			scope = SCOPE_FORWARD;					\
+		if (is_defined(ENABLE_L7_LB) && proxy_port)			\
+			scope = SCOPE_FORWARD;					\
+		if (is_defined(ENABLE_L7_LB) &&					\
+		    (ctx_load_meta(ctx, CB_FROM_HOST) == FROM_HOST_L7_LB))	\
+			scope = SCOPE_FORWARD;					\
+	}									\
+										\
 	ct_buffer.ret = ct_lookup6(get_ct_map6(tuple), tuple, ctx,		\
-				   ct_buffer.l4_off, DIR, ct_state,		\
-				   &ct_buffer.monitor);				\
+				   ct_buffer.l4_off, DIR, scope,		\
+				   ct_state, &ct_buffer.monitor);		\
 	if (ct_buffer.ret < 0)							\
 		return drop_for_direction(ctx, DIR, ct_buffer.ret, ext_err);	\
 										\
@@ -388,7 +437,7 @@ static __always_inline int handle_ipv6_from_lxc(struct __ctx_buff *ctx, __u32 *d
 	struct ct_state *ct_state, ct_state_new = {};
 	struct ipv6_ct_tuple *tuple;
 #ifdef ENABLE_ROUTING
-	union macaddr router_mac = NODE_MAC;
+	union macaddr router_mac = THIS_INTERFACE_MAC;
 #endif
 	struct ct_buffer6 *ct_buffer;
 	void *data, *data_end;
@@ -434,7 +483,7 @@ static __always_inline int handle_ipv6_from_lxc(struct __ctx_buff *ctx, __u32 *d
 
 #ifdef ENABLE_PER_PACKET_LB
 	/* Restore ct_state from per packet lb handling in the previous tail call. */
-	lb6_ctx_restore_state(ctx, &ct_state_new, &proxy_port);
+	lb6_ctx_restore_state(ctx, &ct_state_new, &proxy_port, true);
 	/* No hairpin/loopback support for IPv6, see lb6_local(). */
 #endif /* ENABLE_PER_PACKET_LB */
 
@@ -453,59 +502,70 @@ static __always_inline int handle_ipv6_from_lxc(struct __ctx_buff *ctx, __u32 *d
 	trace.reason = (enum trace_reason)ret;
 	l4_off = ct_buffer->l4_off;
 
+	/* Apply network policy: */
+	switch (ct_status) {
+	case CT_NEW:
+	case CT_ESTABLISHED:
 #if defined(ENABLE_L7_LB)
-	if (proxy_port > 0) {
-		/* tuple addresses have been swapped by CT lookup */
-		cilium_dbg3(ctx, DBG_L7_LB, tuple->daddr.p4, tuple->saddr.p4,
-			    bpf_ntohs(proxy_port));
-		goto skip_policy_enforcement;
-	}
+		from_l7lb = ctx_load_meta(ctx, CB_FROM_HOST) == FROM_HOST_L7_LB;
+
+		/* Forward to L7 LB first before applying network policy: */
+		if (proxy_port > 0) {
+			/* tuple addresses have been swapped by CT lookup */
+			cilium_dbg3(ctx, DBG_L7_LB, tuple->daddr.p4, tuple->saddr.p4,
+				    bpf_ntohs(proxy_port));
+			break;
+		}
 #endif /* ENABLE_L7_LB */
 
-	/* Skip policy enforcement for return traffic. */
-	if (ct_status == CT_REPLY || ct_status == CT_RELATED) {
+		/* If the packet is in the establishing direction and it's destined
+		 * within the cluster, it must match policy or be dropped. If it's
+		 * bound for the host/outside, perform the CIDR policy check.
+		 */
+		verdict = policy_can_egress6(ctx, &POLICY_MAP, tuple, l4_off, SECLABEL_IPV6,
+					     *dst_sec_identity, &policy_match_type, &audited,
+					     ext_err, &proxy_port);
+
+		if (verdict == DROP_POLICY_AUTH_REQUIRED) {
+			auth_type = (__u8)*ext_err;
+			verdict = auth_lookup(ctx, SECLABEL_IPV6, *dst_sec_identity,
+					      tunnel_endpoint, auth_type);
+		}
+
+		/* Emit verdict if drop or if allow for CT_NEW. */
+		if (verdict != CTX_ACT_OK || ct_status != CT_ESTABLISHED) {
+			send_policy_verdict_notify(ctx, *dst_sec_identity, tuple->dport,
+						   tuple->nexthdr, POLICY_EGRESS, 1,
+						   verdict, proxy_port,
+						   policy_match_type, audited,
+						   auth_type);
+		}
+
+		if (verdict != CTX_ACT_OK)
+			return verdict;
+
+		break;
+	case CT_RELATED:
+	case CT_REPLY:
+		/* Skip policy enforcement for return traffic. */
+
 		/* Check if this is return traffic to an ingress proxy. */
 		if (ct_state->proxy_redirect) {
 			send_trace_notify(ctx, TRACE_TO_PROXY, SECLABEL_IPV6,
-					  0, 0, 0, trace.reason,
+					  UNKNOWN_ID, TRACE_EP_ID_UNKNOWN,
+					  TRACE_IFINDEX_UNKNOWN, trace.reason,
 					  trace.monitor);
 			/* Stack will do a socket match and deliver locally. */
 			return ctx_redirect_to_proxy6(ctx, tuple, 0, false);
 		}
 		/* proxy_port remains 0 in this case */
-		goto skip_policy_enforcement;
+
+		policy_mark_skip(ctx);
+		break;
+	default:
+		return DROP_UNKNOWN_CT;
 	}
 
-	/* If the packet is in the establishing direction and it's destined
-	 * within the cluster, it must match policy or be dropped. If it's
-	 * bound for the host/outside, perform the CIDR policy check.
-	 */
-	verdict = policy_can_egress6(ctx, &POLICY_MAP, tuple, l4_off, SECLABEL_IPV6,
-				     *dst_sec_identity, &policy_match_type, &audited,
-				     ext_err, &proxy_port);
-
-	if (verdict == DROP_POLICY_AUTH_REQUIRED) {
-		auth_type = (__u8)*ext_err;
-		verdict = auth_lookup(ctx, SECLABEL_IPV6, *dst_sec_identity, tunnel_endpoint,
-				      auth_type);
-	}
-
-	/* Emit verdict if drop or if allow for CT_NEW or CT_REOPENED. */
-	if (verdict != CTX_ACT_OK || ct_status != CT_ESTABLISHED) {
-		send_policy_verdict_notify(ctx, *dst_sec_identity, tuple->dport,
-					   tuple->nexthdr, POLICY_EGRESS, 1,
-					   verdict, proxy_port,
-					   policy_match_type, audited,
-					   auth_type);
-	}
-
-	if (verdict != CTX_ACT_OK)
-		return verdict;
-
-skip_policy_enforcement:
-#if defined(ENABLE_L7_LB)
-	from_l7lb = ctx_load_meta(ctx, CB_FROM_HOST) == FROM_HOST_L7_LB;
-#endif
 	switch (ct_status) {
 	case CT_NEW:
 ct_recreate6:
@@ -525,30 +585,25 @@ ct_recreate6:
 		trace.monitor = TRACE_PAYLOAD_LEN;
 		break;
 
-	case CT_REOPENED:
 	case CT_ESTABLISHED:
 		/* Did we end up at a stale non-service entry? Recreate if so. */
 		if (unlikely(ct_state->rev_nat_index != ct_state_new.rev_nat_index))
+			goto ct_recreate6;
+
+		/* See comment in handle_ipv4_from_lxc(). */
+		ct_state_new.proxy_redirect = proxy_port > 0;
+		if (unlikely(ct_state->proxy_redirect != ct_state_new.proxy_redirect))
 			goto ct_recreate6;
 		break;
 
 	case CT_RELATED:
 	case CT_REPLY:
-		policy_mark_skip(ctx);
-
 #ifdef ENABLE_NODEPORT
-# ifdef ENABLE_DSR
 		/* See comment in handle_ipv4_from_lxc(). */
-		if (ct_state->dsr_internal) {
-			ret = xlate_dsr_v6(ctx, tuple, l4_off);
-			if (ret != 0)
-				return ret;
-		} else
-# endif /* ENABLE_DSR */
-		/* See comment in handle_ipv4_from_lxc(). */
-		if (ct_state->node_port) {
+		if (ct_state->node_port && lb_is_svc_proto(tuple->nexthdr)) {
 			send_trace_notify(ctx, TRACE_TO_NETWORK, SECLABEL_IPV6,
-					  *dst_sec_identity, 0, 0,
+					  *dst_sec_identity, TRACE_EP_ID_UNKNOWN,
+					  TRACE_IFINDEX_UNKNOWN,
 					  trace.reason, trace.monitor);
 			return tail_call_internal(ctx, CILIUM_CALL_IPV6_NODEPORT_REVNAT,
 						  ext_err);
@@ -558,9 +613,6 @@ ct_recreate6:
 	default:
 		return DROP_UNKNOWN_CT;
 	}
-
-	if (!revalidate_data(ctx, &data, &data_end, &ip6))
-		return DROP_INVALID;
 
 #ifdef ENABLE_SRV6
 	{
@@ -587,8 +639,8 @@ ct_recreate6:
 	 */
 	if (!from_l7lb && proxy_port > 0) {
 		/* Trace the packet before it is forwarded to proxy */
-		send_trace_notify(ctx, TRACE_TO_PROXY, SECLABEL_IPV6, 0,
-				  bpf_ntohs(proxy_port), 0,
+		send_trace_notify(ctx, TRACE_TO_PROXY, SECLABEL_IPV6, UNKNOWN_ID,
+				  bpf_ntohs(proxy_port), TRACE_IFINDEX_UNKNOWN,
 				  trace.reason, trace.monitor);
 		return ctx_redirect_to_proxy6(ctx, tuple, proxy_port, false);
 	}
@@ -599,7 +651,7 @@ ct_recreate6:
 	 */
 	if (*dst_sec_identity == HOST_ID) {
 		ctx_store_meta(ctx, CB_FROM_HOST, 0);
-		ret = tail_call_policy_static(ctx, HOST_EP_ID);
+		ret = tail_call_policy(ctx, HOST_EP_ID);
 
 		/* return fine-grained error: */
 		return DROP_HOST_NOT_READY;
@@ -680,7 +732,7 @@ ct_recreate6:
 		ret = fib_redirect_v6(ctx, ETH_HLEN, ip6, false, false, ext_err, &oif);
 		if (fib_ok(ret))
 			send_trace_notify(ctx, TRACE_TO_NETWORK, SECLABEL_IPV6,
-					  *dst_sec_identity, 0, oif,
+					  *dst_sec_identity, TRACE_EP_ID_UNKNOWN, oif,
 					  trace.reason, trace.monitor);
 		return ret;
 	}
@@ -692,7 +744,8 @@ to_host:
 #endif
 #ifdef ENABLE_ROUTING
 	if (is_defined(ENABLE_HOST_FIREWALL) && *dst_sec_identity == HOST_ID) {
-		send_trace_notify(ctx, TRACE_TO_HOST, SECLABEL_IPV6, HOST_ID, 0,
+		send_trace_notify(ctx, TRACE_TO_HOST, SECLABEL_IPV6, HOST_ID,
+				  TRACE_EP_ID_UNKNOWN,
 				  HOST_IFINDEX, trace.reason, trace.monitor);
 		return ctx_redirect(ctx, HOST_IFINDEX, BPF_F_INGRESS);
 	}
@@ -729,8 +782,9 @@ pass_to_stack:
 #ifdef TUNNEL_MODE
 encrypt_to_stack:
 #endif
-	send_trace_notify(ctx, TRACE_TO_STACK, SECLABEL_IPV6, *dst_sec_identity, 0, 0,
-			  trace.reason, trace.monitor);
+	send_trace_notify(ctx, TRACE_TO_STACK, SECLABEL_IPV6, *dst_sec_identity,
+			  TRACE_EP_ID_UNKNOWN,
+			  TRACE_IFINDEX_UNKNOWN, trace.reason, trace.monitor);
 
 	cilium_dbg_capture(ctx, DBG_CAPTURE_DELIVERY, 0);
 
@@ -746,7 +800,8 @@ int tail_handle_ipv6_cont(struct __ctx_buff *ctx)
 	int ret = handle_ipv6_from_lxc(ctx, &dst_sec_identity, &ext_err);
 
 	if (IS_ERR(ret))
-		return send_drop_notify_ext(ctx, SECLABEL_IPV6, dst_sec_identity, 0, ret, ext_err,
+		return send_drop_notify_ext(ctx, SECLABEL_IPV6, dst_sec_identity,
+					    TRACE_EP_ID_UNKNOWN, ret, ext_err,
 					    CTX_ACT_DROP, METRIC_EGRESS);
 
 #ifdef ENABLE_CUSTOM_CALLS
@@ -824,7 +879,7 @@ static __always_inline int handle_ipv4_from_lxc(struct __ctx_buff *ctx, __u32 *d
 	struct ct_state *ct_state, ct_state_new = {};
 	struct ipv4_ct_tuple *tuple;
 #ifdef ENABLE_ROUTING
-	union macaddr router_mac = NODE_MAC;
+	union macaddr router_mac = THIS_INTERFACE_MAC;
 #endif
 	void *data, *data_end;
 	struct iphdr *ip4;
@@ -841,7 +896,6 @@ static __always_inline int handle_ipv4_from_lxc(struct __ctx_buff *ctx, __u32 *d
 	struct ct_buffer4 *ct_buffer;
 	__u8 audited = 0;
 	__u8 auth_type = 0;
-	bool has_l4_header = false;
 	enum ct_status ct_status;
 	__u16 proxy_port = 0;
 	bool from_l7lb = false;
@@ -851,11 +905,9 @@ static __always_inline int handle_ipv4_from_lxc(struct __ctx_buff *ctx, __u32 *d
 	if (!revalidate_data(ctx, &data, &data_end, &ip4))
 		return DROP_INVALID;
 
-	has_l4_header = ipv4_has_l4_header(ip4);
-
 #ifdef ENABLE_PER_PACKET_LB
 	/* Restore ct_state from per packet lb handling in the previous tail call. */
-	lb4_ctx_restore_state(ctx, &ct_state_new, &proxy_port, &cluster_id);
+	lb4_ctx_restore_state(ctx, &ct_state_new, &proxy_port, &cluster_id, true);
 	hairpin_flow = ct_state_new.loopback;
 #endif /* ENABLE_PER_PACKET_LB */
 
@@ -892,67 +944,79 @@ static __always_inline int handle_ipv4_from_lxc(struct __ctx_buff *ctx, __u32 *d
 	trace.reason = (enum trace_reason)ret;
 	l4_off = ct_buffer->l4_off;
 
+	/* Apply network policy: */
+	switch (ct_status) {
+	case CT_NEW:
+	case CT_ESTABLISHED:
 #if defined(ENABLE_L7_LB)
-	if (proxy_port > 0) {
-		/* tuple addresses have been swapped by CT lookup */
-		cilium_dbg3(ctx, DBG_L7_LB, tuple->daddr, tuple->saddr, bpf_ntohs(proxy_port));
-		goto skip_policy_enforcement;
-	}
+		from_l7lb = ctx_load_meta(ctx, CB_FROM_HOST) == FROM_HOST_L7_LB;
+
+		/* Forward to L7 LB first before applying network policy: */
+		if (proxy_port > 0) {
+			/* tuple addresses have been swapped by CT lookup */
+			cilium_dbg3(ctx, DBG_L7_LB, tuple->daddr, tuple->saddr,
+				    bpf_ntohs(proxy_port));
+			break;
+		}
 #endif /* ENABLE_L7_LB */
 
-	/* Skip policy enforcement for return traffic. */
-	if (ct_status == CT_REPLY || ct_status == CT_RELATED) {
+		/* When an endpoint connects to itself via service clusterIP, we need
+		 * to skip the policy enforcement. If we didn't, the user would have to
+		 * define policy rules to allow pods to talk to themselves. We still
+		 * want to execute the conntrack logic so that replies can be correctly
+		 * matched.
+		 */
+		if (hairpin_flow)
+			break;
+
+		/* If the packet is in the establishing direction and it's destined
+		 * within the cluster, it must match policy or be dropped. If it's
+		 * bound for the host/outside, perform the CIDR policy check.
+		 */
+		verdict = policy_can_egress4(ctx, &POLICY_MAP, tuple, l4_off, SECLABEL_IPV4,
+					     *dst_sec_identity, &policy_match_type, &audited,
+					     ext_err, &proxy_port);
+
+		if (verdict == DROP_POLICY_AUTH_REQUIRED) {
+			auth_type = (__u8)*ext_err;
+			verdict = auth_lookup(ctx, SECLABEL_IPV4, *dst_sec_identity,
+					      tunnel_endpoint, auth_type);
+		}
+
+		/* Emit verdict if drop or if allow for CT_NEW. */
+		if (verdict != CTX_ACT_OK || ct_status != CT_ESTABLISHED) {
+			send_policy_verdict_notify(ctx, *dst_sec_identity, tuple->dport,
+						   tuple->nexthdr, POLICY_EGRESS, 0,
+						   verdict, proxy_port,
+						   policy_match_type, audited,
+						   auth_type);
+		}
+
+		if (verdict != CTX_ACT_OK)
+			return verdict;
+
+		break;
+	case CT_RELATED:
+	case CT_REPLY:
+		/* Skip policy enforcement for return traffic. */
+
 		/* Check if this is return traffic to an ingress proxy. */
 		if (ct_state->proxy_redirect) {
 			send_trace_notify(ctx, TRACE_TO_PROXY, SECLABEL_IPV4,
-					  0, 0, 0, trace.reason,
+					  UNKNOWN_ID, TRACE_EP_ID_UNKNOWN,
+					  TRACE_IFINDEX_UNKNOWN, trace.reason,
 					  trace.monitor);
 			/* Stack will do a socket match and deliver locally. */
 			return ctx_redirect_to_proxy4(ctx, tuple, 0, false);
 		}
 		/* proxy_port remains 0 in this case */
-		goto skip_policy_enforcement;
+
+		policy_mark_skip(ctx);
+		break;
+	default:
+		return DROP_UNKNOWN_CT;
 	}
 
-	/* When an endpoint connects to itself via service clusterIP, we need
-	 * to skip the policy enforcement. If we didn't, the user would have to
-	 * define policy rules to allow pods to talk to themselves. We still
-	 * want to execute the conntrack logic so that replies can be correctly
-	 * matched.
-	 */
-	if (hairpin_flow)
-		goto skip_policy_enforcement;
-
-	/* If the packet is in the establishing direction and it's destined
-	 * within the cluster, it must match policy or be dropped. If it's
-	 * bound for the host/outside, perform the CIDR policy check.
-	 */
-	verdict = policy_can_egress4(ctx, &POLICY_MAP, tuple, l4_off, SECLABEL_IPV4,
-				     *dst_sec_identity, &policy_match_type, &audited,
-				     ext_err, &proxy_port);
-
-	if (verdict == DROP_POLICY_AUTH_REQUIRED) {
-		auth_type = (__u8)*ext_err;
-		verdict = auth_lookup(ctx, SECLABEL_IPV4, *dst_sec_identity, tunnel_endpoint,
-				      auth_type);
-	}
-
-	/* Emit verdict if drop or if allow for CT_NEW or CT_REOPENED. */
-	if (verdict != CTX_ACT_OK || ct_status != CT_ESTABLISHED) {
-		send_policy_verdict_notify(ctx, *dst_sec_identity, tuple->dport,
-					   tuple->nexthdr, POLICY_EGRESS, 0,
-					   verdict, proxy_port,
-					   policy_match_type, audited,
-					   auth_type);
-	}
-
-	if (verdict != CTX_ACT_OK)
-		return verdict;
-
-skip_policy_enforcement:
-#if defined(ENABLE_L7_LB)
-	from_l7lb = ctx_load_meta(ctx, CB_FROM_HOST) == FROM_HOST_L7_LB;
-#endif
 	switch (ct_status) {
 	case CT_NEW:
 ct_recreate4:
@@ -983,60 +1047,50 @@ ct_recreate4:
 			return ret;
 		break;
 
-	case CT_REOPENED:
 	case CT_ESTABLISHED:
 		/* Did we end up at a stale non-service entry? Recreate if so. */
 		if (unlikely(ct_state->rev_nat_index != ct_state_new.rev_nat_index))
+			goto ct_recreate4;
+
+		/* Recreate the CT entry if the proxy_redirect flag is stale.
+		 * Otherwise, the return packet will be erroneously redirected (or not)
+		 * This check assumes the case where non-TCP packets hit the stale
+		 * CT entry with the proxy_redirect flag, or active TCP connection
+		 * suddenly comes into the scope of an L7 policy. Recreating the entry
+		 * updates the proxy_redirect flag properly.
+		 *
+		 * if the packet hits a closing stale entry, ct_lookup returns CT_NEW and
+		 * caller recreates the entry.
+		 */
+		ct_state_new.proxy_redirect = proxy_port > 0;
+		if (unlikely(ct_state->proxy_redirect != ct_state_new.proxy_redirect))
 			goto ct_recreate4;
 		break;
 
 	case CT_RELATED:
 	case CT_REPLY:
-		policy_mark_skip(ctx);
-
 #ifdef ENABLE_NODEPORT
-# ifdef ENABLE_DSR
-		/* DSR RevDNAT typically happens in to-netdev. This part is only
-		 * needed for old connections that were established prior to
-		 * the bpf_host support:
-		 */
-		if (ct_state->dsr_internal) {
-			ret = xlate_dsr_v4(ctx, tuple, l4_off, has_l4_header);
-			if (ret != 0)
-				return ret;
-		} else
-# endif /* ENABLE_DSR */
 		/* This handles reply traffic for the case where the nodeport EP
 		 * is local to the node. We'll do the tail call to perform
 		 * the reverse DNAT.
+		 *
+		 * This codepath currently doesn't support revDNAT for ICMP,
+		 * so make sure that we only send TCP/UDP/SCTP down this way.
 		 */
-		if (ct_state->node_port) {
+		if (ct_state->node_port && lb_is_svc_proto(tuple->nexthdr)) {
 			send_trace_notify(ctx, TRACE_TO_NETWORK, SECLABEL_IPV4,
-					  *dst_sec_identity, 0, 0,
+					  *dst_sec_identity, TRACE_EP_ID_UNKNOWN,
+					  TRACE_IFINDEX_UNKNOWN,
 					  trace.reason, trace.monitor);
 			return tail_call_internal(ctx, CILIUM_CALL_IPV4_NODEPORT_REVNAT,
 						  ext_err);
 		}
-
 #endif /* ENABLE_NODEPORT */
 
-		/* RevNAT for replies on a loopback connection: */
-		if (ct_state->rev_nat_index && ct_state->loopback) {
-			ret = lb4_rev_nat(ctx, ETH_HLEN, l4_off,
-					  ct_state->rev_nat_index,
-					  true, tuple, has_l4_header);
-			if (IS_ERR(ret))
-				return ret;
-		}
 		break;
-
 	default:
 		return DROP_UNKNOWN_CT;
 	}
-
-	/* After L4 write in port mapping: revalidate for direct packet access */
-	if (!revalidate_data(ctx, &data, &data_end, &ip4))
-		return DROP_INVALID;
 
 #ifdef ENABLE_SRV6
 	{
@@ -1065,8 +1119,8 @@ ct_recreate4:
 	 */
 	if (!from_l7lb && proxy_port > 0) {
 		/* Trace the packet before it is forwarded to proxy */
-		send_trace_notify(ctx, TRACE_TO_PROXY, SECLABEL_IPV4, 0,
-				  bpf_ntohs(proxy_port), 0,
+		send_trace_notify(ctx, TRACE_TO_PROXY, SECLABEL_IPV4, UNKNOWN_ID,
+				  bpf_ntohs(proxy_port), TRACE_IFINDEX_UNKNOWN,
 				  trace.reason, trace.monitor);
 		return ctx_redirect_to_proxy4(ctx, tuple, proxy_port, false);
 	}
@@ -1079,7 +1133,7 @@ ct_recreate4:
 	 */
 	if (*dst_sec_identity == HOST_ID) {
 		ctx_store_meta(ctx, CB_FROM_HOST, 0);
-		ret = tail_call_policy_static(ctx, HOST_EP_ID);
+		ret = tail_call_policy(ctx, HOST_EP_ID);
 
 		/* report fine-grained error: */
 		return DROP_HOST_NOT_READY;
@@ -1100,17 +1154,18 @@ ct_recreate4:
 	 */
 	if (is_defined(ENABLE_ROUTING) || hairpin_flow ||
 	    is_defined(ENABLE_HOST_ROUTING)) {
-		/* Hairpin requests need to pass through the backend's to-container
-		 * path, to create a CT_INGRESS entry with .lb_loopback set. This
-		 * drives RevNAT in the backend's from-container path.
-		 *
-		 * Hairpin replies are fully RevNATed in the backend's from-container
-		 * path. Thus they don't match the CT_EGRESS entry, and we can't rely
-		 * on a CT_REPLY result that would provide bypass of ingress policy.
-		 * Thus manually skip the ingress policy path.
-		 */
-		bool bypass_ingress_policy = hairpin_flow && ct_status == CT_REPLY;
+		__be32 daddr = ip4->daddr;
 		struct endpoint_info *ep;
+
+		/* Loopback replies are addressed to IPV4_LOOPBACK, so
+		 * an endpoint lookup with ip4->daddr won't work.
+		 *
+		 * But as it is loopback traffic, the clientIP and backendIP
+		 * are identical and we can just use the packet's saddr
+		 * for the destination endpoint lookup.
+		 */
+		if (ct_status == CT_REPLY && hairpin_flow)
+			daddr = ip4->saddr;
 
 		/* Lookup IPv4 address, this will return a match if:
 		 *  - The destination IP address belongs to a local endpoint
@@ -1119,7 +1174,7 @@ ct_recreate4:
 		 *    host itself
 		 *  - The destination IP address belongs to endpoint itself.
 		 */
-		ep = lookup_ip4_endpoint(ip4);
+		ep = __lookup_ip4_endpoint(daddr);
 		if (ep) {
 #if defined(ENABLE_HOST_ROUTING) || defined(ENABLE_ROUTING)
 			if (ep->flags & ENDPOINT_F_HOST) {
@@ -1137,45 +1192,9 @@ ct_recreate4:
 			return ipv4_local_delivery(ctx, ETH_HLEN, SECLABEL_IPV4,
 						   MARK_MAGIC_IDENTITY, ip4,
 						   ep, METRIC_EGRESS, from_l7lb,
-						   bypass_ingress_policy, false, 0);
+						   false, 0);
 		}
 	}
-
-#ifdef ENABLE_EGRESS_GATEWAY_COMMON
-	{
-		struct endpoint_info *gateway_node_ep;
-		__be32 gateway_ip = 0;
-
-		/* If the packet is destined to an entity inside the cluster,
-		 * either EP or node, it should not be forwarded to an egress
-		 * gateway since only traffic leaving the cluster is supposed to
-		 * be masqueraded with an egress IP.
-		 */
-		if (identity_is_cluster(*dst_sec_identity))
-			goto skip_egress_gateway;
-
-		ret = egress_gw_request_needs_redirect_hook(tuple, ct_status, &gateway_ip);
-		if (IS_ERR(ret))
-			return DROP_NO_EGRESS_GATEWAY;
-
-		if (ret == CTX_ACT_OK)
-			goto skip_egress_gateway;
-
-		/* If the gateway node is the local node, then just let the
-		 * packet go through, as it will be SNATed later on by
-		 * handle_nat_fwd().
-		 */
-		gateway_node_ep = __lookup_ip4_endpoint(gateway_ip);
-		if (gateway_node_ep && (gateway_node_ep->flags & ENDPOINT_F_HOST))
-			goto skip_egress_gateway;
-
-		/* Send the packet to egress gateway node through a tunnel. */
-		return __encap_and_redirect_lxc(ctx, gateway_ip, 0,
-						SECLABEL_IPV4,
-						*dst_sec_identity, &trace);
-	}
-skip_egress_gateway:
-#endif
 
 	/* L7 proxy result in VTEP redirection in bpf_host, but when L7 proxy disabled
 	 * We want VTEP redirection handled earlier here to avoid packets passing to
@@ -1207,12 +1226,12 @@ skip_vtep:
 	if (!skip_tunnel) {
 		struct tunnel_key key = {};
 
-		if (cluster_id > UINT8_MAX)
+		if (cluster_id > UINT16_MAX)
 			return DROP_INVALID_CLUSTER_ID;
 
 		key.ip4 = ip4->daddr & IPV4_MASK;
 		key.family = ENDPOINT_KEY_IPV4;
-		key.cluster_id = (__u8)cluster_id;
+		key.cluster_id = (__u16)cluster_id;
 
 #if !defined(ENABLE_NODEPORT) && defined(ENABLE_HOST_FIREWALL)
 		/*
@@ -1271,7 +1290,7 @@ skip_vtep:
 		ret = fib_redirect_v4(ctx, ETH_HLEN, ip4, false, false, ext_err, &oif);
 		if (fib_ok(ret))
 			send_trace_notify(ctx, TRACE_TO_NETWORK, SECLABEL_IPV4,
-					  *dst_sec_identity, 0, oif,
+					  *dst_sec_identity, TRACE_EP_ID_UNKNOWN, oif,
 					  trace.reason, trace.monitor);
 		return ret;
 	}
@@ -1283,7 +1302,8 @@ to_host:
 #endif
 #ifdef ENABLE_ROUTING
 	if (is_defined(ENABLE_HOST_FIREWALL) && *dst_sec_identity == HOST_ID) {
-		send_trace_notify(ctx, TRACE_TO_HOST, SECLABEL_IPV4, HOST_ID, 0,
+		send_trace_notify(ctx, TRACE_TO_HOST, SECLABEL_IPV4, HOST_ID,
+				  TRACE_EP_ID_UNKNOWN,
 				  HOST_IFINDEX, trace.reason, trace.monitor);
 		return ctx_redirect(ctx, HOST_IFINDEX, BPF_F_INGRESS);
 	}
@@ -1320,8 +1340,9 @@ pass_to_stack:
 #if defined(TUNNEL_MODE) || defined(ENABLE_HIGH_SCALE_IPCACHE)
 encrypt_to_stack:
 #endif
-	send_trace_notify(ctx, TRACE_TO_STACK, SECLABEL_IPV4, *dst_sec_identity, 0, 0,
-			  trace.reason, trace.monitor);
+	send_trace_notify(ctx, TRACE_TO_STACK, SECLABEL_IPV4, *dst_sec_identity,
+			  TRACE_EP_ID_UNKNOWN,
+			  TRACE_IFINDEX_UNKNOWN, trace.reason, trace.monitor);
 	cilium_dbg_capture(ctx, DBG_CAPTURE_DELIVERY, 0);
 	return CTX_ACT_OK;
 }
@@ -1336,7 +1357,8 @@ int tail_handle_ipv4_cont(struct __ctx_buff *ctx)
 	int ret = handle_ipv4_from_lxc(ctx, &dst_sec_identity, &ext_err);
 
 	if (IS_ERR(ret))
-		return send_drop_notify_ext(ctx, SECLABEL_IPV4, dst_sec_identity, 0, ret, ext_err,
+		return send_drop_notify_ext(ctx, SECLABEL_IPV4, dst_sec_identity,
+					    TRACE_EP_ID_UNKNOWN, ret, ext_err,
 					    CTX_ACT_DROP, METRIC_EGRESS);
 
 #ifdef ENABLE_CUSTOM_CALLS
@@ -1417,12 +1439,12 @@ int tail_handle_ipv4(struct __ctx_buff *ctx)
 #ifdef ENABLE_ARP_RESPONDER
 /*
  * ARP responder for ARP requests from container
- * Respond to IPV4_GATEWAY with NODE_MAC
+ * Respond to IPV4_GATEWAY with THIS_INTERFACE_MAC
  */
 __section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_ARP)
 int tail_handle_arp(struct __ctx_buff *ctx)
 {
-	union macaddr mac = NODE_MAC;
+	union macaddr mac = THIS_INTERFACE_MAC;
 	union macaddr smac;
 	__be32 sip;
 	__be32 tip;
@@ -1463,7 +1485,8 @@ int cil_from_container(struct __ctx_buff *ctx)
 	bpf_clear_meta(ctx);
 	reset_queue_mapping(ctx);
 
-	send_trace_notify(ctx, TRACE_FROM_LXC, sec_label, 0, 0, 0,
+	send_trace_notify(ctx, TRACE_FROM_LXC, sec_label, UNKNOWN_ID,
+			  TRACE_EP_ID_UNKNOWN, TRACE_IFINDEX_UNKNOWN,
 			  TRACE_REASON_UNKNOWN, TRACE_PAYLOAD_LEN);
 
 	if (!validate_ethertype(ctx, &proto)) {
@@ -1501,7 +1524,8 @@ int cil_from_container(struct __ctx_buff *ctx)
 
 out:
 	if (IS_ERR(ret))
-		return send_drop_notify_ext(ctx, sec_label, 0, 0, ret, ext_err,
+		return send_drop_notify_ext(ctx, sec_label, UNKNOWN_ID,
+					    TRACE_EP_ID_UNKNOWN, ret, ext_err,
 					    CTX_ACT_DROP, METRIC_EGRESS);
 	return ret;
 }
@@ -1558,7 +1582,8 @@ ipv6_policy(struct __ctx_buff *ctx, struct ipv6hdr *ip6, int ifindex, __u32 src_
 			 * into ctx->mark and *proxy_port can be left unset.
 			 */
 			send_trace_notify6(ctx, TRACE_TO_PROXY, src_label, SECLABEL_IPV6, &orig_sip,
-					   0, ifindex, trace.reason, trace.monitor);
+					   TRACE_EP_ID_UNKNOWN, ifindex, trace.reason,
+					   trace.monitor);
 			if (tuple_out)
 				memcpy(tuple_out, tuple, sizeof(*tuple));
 			return POLICY_ACT_PROXY_REDIRECT;
@@ -1594,7 +1619,7 @@ ipv6_policy(struct __ctx_buff *ctx, struct ipv6hdr *ip6, int ifindex, __u32 src_
 		}
 	}
 
-	/* Emit verdict if drop or if allow for CT_NEW or CT_REOPENED. */
+	/* Emit verdict if drop or if allow for CT_NEW. */
 	if (verdict != CTX_ACT_OK || ret != CT_ESTABLISHED)
 		send_policy_verdict_notify(ctx, src_label, tuple->dport,
 					   tuple->nexthdr, POLICY_INGRESS, 1,
@@ -1605,27 +1630,11 @@ ipv6_policy(struct __ctx_buff *ctx, struct ipv6hdr *ip6, int ifindex, __u32 src_
 		return verdict;
 
 skip_policy_enforcement:
-#ifdef ENABLE_NODEPORT
-	if (ret == CT_NEW || ret == CT_REOPENED) {
-# ifdef ENABLE_DSR
-		if (ret == CT_REOPENED && ct_state->dsr_internal)
-			ct_update_dsr(get_ct_map6(tuple), tuple, false);
-# endif /* ENABLE_DSR */
-		{
-			bool node_port =
-				ct_has_nodeport_egress_entry6(get_ct_map6(tuple),
-							      tuple, NULL, false);
-
-			ct_state_new.node_port = node_port;
-			if (ret == CT_REOPENED &&
-			    ct_state->node_port != node_port)
-				ct_update_nodeport(get_ct_map6(tuple), tuple,
-						   node_port);
-		}
-	}
-#endif /* ENABLE_NODEPORT */
-
 	if (ret == CT_NEW) {
+#if defined(ENABLE_NODEPORT) && defined(ENABLE_IPSEC)
+		ct_state_new.node_port = ct_has_nodeport_egress_entry6(get_ct_map6(tuple),
+								       tuple, NULL, false);
+#endif /* ENABLE_NODEPORT && ENABLE_IPSEC */
 		ct_state_new.src_sec_id = src_label;
 		ct_state_new.from_tunnel = from_tunnel;
 		ct_state_new.proxy_redirect = *proxy_port > 0;
@@ -1681,10 +1690,13 @@ int tail_ipv6_policy(struct __ctx_buff *ctx)
 		goto drop_err;
 	}
 
-	ret = ipv6_policy(ctx, ip6, ifindex, src_label, &tuple, &ext_err,
-			  &proxy_port, from_tunnel);
+	ret = ipv6_policy(ctx, ip6, THIS_INTERFACE_IFINDEX, src_label, &tuple,
+			  &ext_err, &proxy_port, from_tunnel);
 	switch (ret) {
 	case POLICY_ACT_PROXY_REDIRECT:
+		if (from_tunnel)
+			ctx_change_type(ctx, PACKET_HOST);
+
 		ret = ctx_redirect_to_proxy6(ctx, &tuple, proxy_port, from_host);
 		proxy_redirect = true;
 		break;
@@ -1698,7 +1710,8 @@ int tail_ipv6_policy(struct __ctx_buff *ctx)
 #endif /* !ENABLE_ROUTING && !ENABLE_NODEPORT */
 
 		if (ifindex)
-			ret = redirect_ep(ctx, ifindex, from_host, from_tunnel);
+			ret = redirect_ep(ctx, THIS_INTERFACE_IFINDEX, from_host,
+					  from_tunnel);
 		break;
 	default:
 		break;
@@ -1784,8 +1797,8 @@ int tail_ipv6_to_endpoint(struct __ctx_buff *ctx)
 	update_metrics(ctx_full_len(ctx), METRIC_INGRESS, REASON_FORWARDED);
 #endif
 
-	ret = ipv6_policy(ctx, ip6, 0, src_sec_identity, NULL, &ext_err,
-			  &proxy_port, false);
+	ret = ipv6_policy(ctx, ip6, THIS_INTERFACE_IFINDEX, src_sec_identity,
+			  NULL, &ext_err, &proxy_port, false);
 	switch (ret) {
 	case POLICY_ACT_PROXY_REDIRECT:
 		ret = ctx_redirect_to_proxy_hairpin_ipv6(ctx, proxy_port);
@@ -1889,21 +1902,23 @@ ipv4_policy(struct __ctx_buff *ctx, struct iphdr *ip4, int ifindex, __u32 src_la
 			 * into ctx->mark and *proxy_port can be left unset.
 			 */
 			send_trace_notify4(ctx, TRACE_TO_PROXY, src_label, SECLABEL_IPV4, orig_sip,
-					   0, ifindex, trace.reason, trace.monitor);
+					   TRACE_EP_ID_UNKNOWN, ifindex, trace.reason,
+					   trace.monitor);
 			if (tuple_out)
 				*tuple_out = *tuple;
 			return POLICY_ACT_PROXY_REDIRECT;
 		}
 
 		/* Reverse NAT applies to return traffic only. */
-		if (unlikely(ct_state->rev_nat_index && !ct_state->loopback)) {
+		if (unlikely(ct_state->rev_nat_index)) {
 			bool has_l4_header = false;
 			int ret2;
 
 			has_l4_header = ipv4_has_l4_header(ip4);
 
 			ret2 = lb4_rev_nat(ctx, ETH_HLEN, l4_off,
-					   ct_state->rev_nat_index, false,
+					   ct_state->rev_nat_index,
+					   ct_state->loopback,
 					   tuple, has_l4_header);
 			if (IS_ERR(ret2))
 				return ret2;
@@ -1929,8 +1944,7 @@ ipv4_policy(struct __ctx_buff *ctx, struct iphdr *ip4, int ifindex, __u32 src_la
 	 * - .rev_nat_index, so that replies can be RevNATed.
 	 */
 	if (ret == CT_NEW && ip4->saddr == IPV4_LOOPBACK &&
-	    ct_has_loopback_egress_entry4(get_ct_map4(tuple), tuple,
-					  &ct_state_new.rev_nat_index)) {
+	    ct_has_loopback_egress_entry4(get_ct_map4(tuple), tuple)) {
 		ct_state_new.loopback = true;
 		goto skip_policy_enforcement;
 	}
@@ -1947,11 +1961,11 @@ ipv4_policy(struct __ctx_buff *ctx, struct iphdr *ip4, int ifindex, __u32 src_la
 
 		if (sep) {
 			auth_type = (__u8)*ext_err;
-			verdict = auth_lookup(ctx, SECLABEL, src_label,
+			verdict = auth_lookup(ctx, SECLABEL_IPV4, src_label,
 					      sep->tunnel_endpoint, auth_type);
 		}
 	}
-	/* Emit verdict if drop or if allow for CT_NEW or CT_REOPENED. */
+	/* Emit verdict if drop or if allow for CT_NEW. */
 	if (verdict != CTX_ACT_OK || ret != CT_ESTABLISHED)
 		send_policy_verdict_notify(ctx, src_label, tuple->dport,
 					   tuple->nexthdr, POLICY_INGRESS, 0,
@@ -1962,28 +1976,14 @@ ipv4_policy(struct __ctx_buff *ctx, struct iphdr *ip4, int ifindex, __u32 src_la
 		return verdict;
 
 skip_policy_enforcement:
-#ifdef ENABLE_NODEPORT
-	if (ret == CT_NEW || ret == CT_REOPENED) {
-# ifdef ENABLE_DSR
-		/* Clear .dsr_internal flag for old connections: */
-		if (ret == CT_REOPENED && ct_state->dsr_internal)
-			ct_update_dsr(get_ct_map4(tuple), tuple, false);
-# endif /* ENABLE_DSR */
-		{
-			bool node_port =
-				ct_has_nodeport_egress_entry4(get_ct_map4(tuple),
-							      tuple, NULL, false);
-
-			ct_state_new.node_port = node_port;
-			if (ret == CT_REOPENED &&
-			    ct_state->node_port != node_port)
-				ct_update_nodeport(get_ct_map4(tuple), tuple,
-						   node_port);
-		}
-	}
-#endif /* ENABLE_NODEPORT */
-
 	if (ret == CT_NEW) {
+#if defined(ENABLE_NODEPORT) && (defined(ENABLE_IPSEC) || defined(ENABLE_SRV6))
+		/* Needed for hostport support, until
+		 * https://github.com/cilium/cilium/issues/32897 is fixed.
+		 */
+		ct_state_new.node_port = ct_has_nodeport_egress_entry4(get_ct_map4(tuple),
+								       tuple, NULL, false);
+#endif /* ENABLE_NODEPORT && ENABLE_IPSEC */
 		ct_state_new.src_sec_id = src_label;
 		ct_state_new.from_tunnel = from_tunnel;
 		ct_state_new.proxy_redirect = *proxy_port > 0;
@@ -2001,7 +2001,7 @@ skip_policy_enforcement:
 	}
 
 	if (*proxy_port > 0) {
-		send_trace_notify4(ctx, TRACE_TO_PROXY, src_label, SECLABEL, orig_sip,
+		send_trace_notify4(ctx, TRACE_TO_PROXY, src_label, SECLABEL_IPV4, orig_sip,
 				   bpf_ntohs(*proxy_port), ifindex, trace.reason,
 				   trace.monitor);
 		if (tuple_out)
@@ -2041,10 +2041,13 @@ int tail_ipv4_policy(struct __ctx_buff *ctx)
 		goto drop_err;
 	}
 
-	ret = ipv4_policy(ctx, ip4, ifindex, src_label, &tuple, &ext_err,
-			  &proxy_port, from_tunnel);
+	ret = ipv4_policy(ctx, ip4, THIS_INTERFACE_IFINDEX, src_label, &tuple,
+			  &ext_err, &proxy_port, from_tunnel);
 	switch (ret) {
 	case POLICY_ACT_PROXY_REDIRECT:
+		if (from_tunnel)
+			ctx_change_type(ctx, PACKET_HOST);
+
 		ret = ctx_redirect_to_proxy4(ctx, &tuple, proxy_port, from_host);
 		proxy_redirect = true;
 		break;
@@ -2065,7 +2068,8 @@ int tail_ipv4_policy(struct __ctx_buff *ctx)
 #endif /* !ENABLE_ROUTING && !ENABLE_NODEPORT */
 
 		if (ifindex)
-			ret = redirect_ep(ctx, ifindex, from_host, from_tunnel);
+			ret = redirect_ep(ctx, THIS_INTERFACE_IFINDEX, from_host,
+					  from_tunnel);
 		break;
 	default:
 		break;
@@ -2096,76 +2100,6 @@ int tail_ipv4_policy(struct __ctx_buff *ctx)
 drop_err:
 	return send_drop_notify_ext(ctx, src_label, SECLABEL_IPV4, LXC_ID,
 				    ret, ext_err, CTX_ACT_DROP, METRIC_INGRESS);
-}
-
-static __always_inline bool
-ipv4_to_endpoint_is_hairpin_flow(struct __ctx_buff *ctx, struct iphdr *ip4)
-{
-	__be16 client_port, backend_port, service_port;
-	struct ipv4_ct_tuple tuple = {};
-	struct lb4_backend *backend;
-	__be32 pod_ip, service_ip;
-	struct ct_entry *entry;
-	struct ct_map *map;
-	int err, l4_off;
-
-	/* Extract the tuple from the packet so we can freely access addrs and ports.
-	 * All values are in network byte order.
-	 */
-	err = lb4_extract_tuple(ctx, ip4, ETH_HLEN, &l4_off, &tuple);
-	if (IS_ERR(err))
-		return false;
-
-	/* If the packet originates from a regular, non-loopback address, it will look
-	 * like service_ip:client_port -> pod_ip:service_port.
-	 *
-	 * In order to determine whether the packet has been hairpinned, we need to
-	 * obtain the backend (listen) port first, requiring a CT lookup with the
-	 * TUPLE_F_SERVICE flag, followed by a backend lookup. After this, the regular
-	 * CT TUPLE_F_OUT lookup can proceed.
-	 */
-	service_ip = tuple.saddr;
-	pod_ip = tuple.daddr;
-	client_port = tuple.sport;
-	service_port = tuple.dport;
-
-	tuple.daddr = service_ip;
-	tuple.saddr = pod_ip;
-	tuple.dport = client_port;
-	tuple.sport = service_port;
-
-	tuple.flags = TUPLE_F_SERVICE;
-
-	map = get_ct_map4(&tuple);
-	entry = map_lookup_elem(map, &tuple);
-	if (!entry)
-		return false;
-
-	backend = lb4_lookup_backend(ctx, entry->backend_id);
-	if (!backend)
-		return false;
-
-	backend_port = backend->port;
-
-	/* Now the backend (listen) port inside the container is known, an egress CT
-	 * lookup can be performed.
-	 */
-	tuple.daddr = IPV4_LOOPBACK;
-	tuple.saddr = pod_ip;
-	tuple.dport = backend_port;
-	tuple.sport = client_port;
-
-	tuple.flags = TUPLE_F_OUT;
-
-	map = get_ct_map4(&tuple);
-	entry = map_lookup_elem(map, &tuple);
-	if (entry)
-		/* The packet is considered hairpinned if its egress CT entry has the
-		 * loopback flag set.
-		 */
-		return entry->lb_loopback == 1;
-
-	return false;
 }
 
 __section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_IPV4_TO_ENDPOINT)
@@ -2215,26 +2149,8 @@ int tail_ipv4_to_endpoint(struct __ctx_buff *ctx)
 	update_metrics(ctx_full_len(ctx), METRIC_INGRESS, REASON_FORWARDED);
 #endif
 
-	/* Check if packet is locally hairpinned (pod reaching itself through a
-	 * service) and skip the policy check if that is the case. Otherwise, pods may
-	 * need to explicitly allow traffic to themselves in some network
-	 * configurations.
-	 */
-	if (ipv4_to_endpoint_is_hairpin_flow(ctx, ip4)) {
-		send_trace_notify4(ctx, TRACE_TO_LXC,
-				   src_sec_identity,
-				   SECLABEL, ip4->saddr, LXC_ID,
-				   ctx->ingress_ifindex,
-				   TRACE_REASON_UNKNOWN, 0);
-
-		/* Skip policy check for hairpinned flow */
-		cilium_dbg(ctx, DBG_SKIP_POLICY, LXC_ID, src_sec_identity);
-		ret = CTX_ACT_OK;
-		goto out;
-	}
-
-	ret = ipv4_policy(ctx, ip4, 0, src_sec_identity, NULL, &ext_err,
-			  &proxy_port, false);
+	ret = ipv4_policy(ctx, ip4, THIS_INTERFACE_IFINDEX, src_sec_identity,
+			  NULL, &ext_err, &proxy_port, false);
 	switch (ret) {
 	case POLICY_ACT_PROXY_REDIRECT:
 		if (!revalidate_data(ctx, &data, &data_end, &ip4)) {
@@ -2293,7 +2209,7 @@ TAIL_CT_LOOKUP4(CILIUM_CALL_IPV4_CT_INGRESS, tail_ipv4_ct_ingress, CT_INGRESS,
  * bpf_host, bpf_overlay (if coming from the tunnel), or bpf_lxc (if coming
  * from another local pod).
  */
-__section_tail(CILIUM_MAP_POLICY, TEMPLATE_LXC_ID)
+__section_entry
 int handle_policy(struct __ctx_buff *ctx)
 {
 	__u32 src_label = ctx_load_meta(ctx, CB_SRC_LABEL);
@@ -2344,10 +2260,10 @@ out:
  * This program will be tail called from bpf_host for packets sent by
  * a L7 LB.
  */
-#if defined(ENABLE_L7_LB)
-__section_tail(CILIUM_MAP_EGRESSPOLICY, TEMPLATE_LXC_ID)
-int handle_policy_egress(struct __ctx_buff *ctx)
+__section_entry
+int handle_policy_egress(struct __ctx_buff *ctx __maybe_unused)
 {
+#if defined(ENABLE_L7_LB)
 	__u16 proto;
 	int ret;
 	__u32 sec_label = SECLABEL;
@@ -2361,8 +2277,8 @@ int handle_policy_egress(struct __ctx_buff *ctx)
 	ctx_store_meta(ctx, CB_FROM_HOST, FROM_HOST_L7_LB);
 
 	edt_set_aggregate(ctx, 0); /* do not count this traffic again */
-	send_trace_notify(ctx, TRACE_FROM_PROXY, SECLABEL, 0, 0,
-			  0 /*ifindex*/,
+	send_trace_notify(ctx, TRACE_FROM_PROXY, SECLABEL, UNKNOWN_ID,
+			  TRACE_EP_ID_UNKNOWN, TRACE_IFINDEX_UNKNOWN,
 			  TRACE_REASON_UNKNOWN, TRACE_PAYLOAD_LEN);
 
 	switch (proto) {
@@ -2385,12 +2301,15 @@ int handle_policy_egress(struct __ctx_buff *ctx)
 
 out:
 	if (IS_ERR(ret))
-		return send_drop_notify_ext(ctx, sec_label, 0, 0, ret, ext_err,
+		return send_drop_notify_ext(ctx, sec_label, UNKNOWN_ID,
+					    TRACE_EP_ID_UNKNOWN, ret, ext_err,
 					    CTX_ACT_DROP, METRIC_EGRESS);
 
 	return ret;
-}
+#else
+	return 0;
 #endif
+}
 
 /* Attached to the lxc device on the way to the container, only if endpoint
  * routes are enabled.
@@ -2423,8 +2342,8 @@ int cil_to_container(struct __ctx_buff *ctx)
 	}
 #endif
 
-	send_trace_notify(ctx, trace, identity, 0, 0, ctx->ingress_ifindex,
-			  TRACE_REASON_UNKNOWN, TRACE_PAYLOAD_LEN);
+	send_trace_notify(ctx, trace, identity, sec_label, LXC_ID,
+			  ctx->ingress_ifindex, TRACE_REASON_UNKNOWN, TRACE_PAYLOAD_LEN);
 
 #if defined(ENABLE_HOST_FIREWALL) && !defined(ENABLE_ROUTING)
 	/* If the packet comes from the hostns and per-endpoint routes are enabled,
@@ -2439,7 +2358,7 @@ int cil_to_container(struct __ctx_buff *ctx)
 		ctx_store_meta(ctx, CB_FROM_HOST, 1);
 		ctx_store_meta(ctx, CB_DST_ENDPOINT_ID, LXC_ID);
 
-		ret = tail_call_policy_static(ctx, HOST_EP_ID);
+		ret = tail_call_policy(ctx, HOST_EP_ID);
 		return send_drop_notify(ctx, identity, sec_label, LXC_ID,
 					DROP_HOST_NOT_READY, CTX_ACT_DROP,
 					METRIC_INGRESS);

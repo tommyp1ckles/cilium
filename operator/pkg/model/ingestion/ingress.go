@@ -4,10 +4,12 @@
 package ingestion
 
 import (
-	"sort"
+	"slices"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	"k8s.io/utils/ptr"
 
 	"github.com/cilium/cilium/operator/pkg/ingress/annotations"
 	"github.com/cilium/cilium/operator/pkg/model"
@@ -17,7 +19,7 @@ import (
 // Ingress translates an Ingress resource to a HTTPListener.
 // This function does not check IngressClass (via field or annotation).
 // It's expected that only relevant Ingresses will have this function called on them.
-func Ingress(ing networkingv1.Ingress, defaultSecretNamespace, defaultSecretName string, enforcedHTTPS bool, insecureListenerPort, secureListenerPort uint32) []model.HTTPListener {
+func Ingress(ing networkingv1.Ingress, defaultSecretNamespace, defaultSecretName string, enforcedHTTPS bool, insecureListenerPort, secureListenerPort uint32, defaultRequestTimeout time.Duration) []model.HTTPListener {
 	// First, we make a map of HTTPListeners, with the hostname
 	// as the key, so that we can make sure we match up any
 	// TLS config with rules that match it.
@@ -35,6 +37,19 @@ func Ingress(ing networkingv1.Ingress, defaultSecretNamespace, defaultSecretName
 		Version:   "v1",
 		Kind:      "Ingress",
 		UID:       string(ing.UID),
+	}
+
+	// Setup timeout for use in all routes
+	timeout := model.Timeout{}
+	if defaultRequestTimeout != 0 {
+		timeout.Request = ptr.To(defaultRequestTimeout)
+	}
+	if v, err := annotations.GetAnnotationRequestTimeout(&ing); err != nil {
+		// If the annotation is invalid, we log a warning and use the default value
+		log.WithField(logfields.Ingress, ing.Namespace+"/"+ing.Name).
+			Warn("Invalid request timeout annotation, using default value")
+	} else if v != nil {
+		timeout.Request = ptr.To(*v)
 	}
 
 	if ing.Spec.DefaultBackend != nil {
@@ -63,6 +78,7 @@ func Ingress(ing networkingv1.Ingress, defaultSecretNamespace, defaultSecretName
 					Backends: []model.Backend{
 						backend,
 					},
+					Timeout: timeout,
 				},
 			},
 			Port:    insecureListenerPort,
@@ -99,7 +115,9 @@ func Ingress(ing networkingv1.Ingress, defaultSecretNamespace, defaultSecretName
 
 		for _, path := range rule.HTTP.Paths {
 
-			route := model.HTTPRoute{}
+			route := model.HTTPRoute{
+				Timeout: timeout,
+			}
 
 			switch *path.PathType {
 			case networkingv1.PathTypeExact:
@@ -362,7 +380,7 @@ func appendValuesInKeyOrder[T model.HTTPListener | model.TLSPassthroughListener]
 		keys = append(keys, key)
 	}
 
-	sort.Strings(keys)
+	slices.Sort(keys)
 	for _, key := range keys {
 		appendSlice = append(appendSlice, listenerMap[key])
 	}

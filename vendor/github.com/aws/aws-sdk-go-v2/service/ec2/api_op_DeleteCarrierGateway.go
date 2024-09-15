@@ -11,10 +11,13 @@ import (
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
 
-// Deletes a carrier gateway. If you do not delete the route that contains the
-// carrier gateway as the Target, the route is a blackhole route. For information
-// about how to delete a route, see DeleteRoute (https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_DeleteRoute.html)
-// .
+// Deletes a carrier gateway.
+//
+// If you do not delete the route that contains the carrier gateway as the Target,
+// the route is a blackhole route. For information about how to delete a route, see
+// [DeleteRoute].
+//
+// [DeleteRoute]: https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_DeleteRoute.html
 func (c *Client) DeleteCarrierGateway(ctx context.Context, params *DeleteCarrierGatewayInput, optFns ...func(*Options)) (*DeleteCarrierGatewayOutput, error) {
 	if params == nil {
 		params = &DeleteCarrierGatewayInput{}
@@ -110,6 +113,12 @@ func (c *Client) addOperationDeleteCarrierGatewayMiddlewares(stack *middleware.S
 		return err
 	}
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+		return err
+	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
 	if err = addOpDeleteCarrierGatewayValidationMiddleware(stack); err != nil {

@@ -4,201 +4,31 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/netip"
 	"sync"
 
-	"github.com/cilium/hive/cell"
-	"github.com/cilium/stream"
 	"github.com/go-openapi/runtime/middleware"
 	"github.com/google/uuid"
 
 	"github.com/cilium/cilium/api/v1/models"
 	. "github.com/cilium/cilium/api/v1/server/restapi/policy"
 	"github.com/cilium/cilium/pkg/api"
-	"github.com/cilium/cilium/pkg/clustermesh"
-	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
-	"github.com/cilium/cilium/pkg/crypto/certificatemanager"
 	"github.com/cilium/cilium/pkg/endpoint"
 	"github.com/cilium/cilium/pkg/endpoint/regeneration"
-	"github.com/cilium/cilium/pkg/endpointmanager"
-	"github.com/cilium/cilium/pkg/envoy"
 	"github.com/cilium/cilium/pkg/eventqueue"
-	"github.com/cilium/cilium/pkg/identity"
-	"github.com/cilium/cilium/pkg/identity/cache"
-	"github.com/cilium/cilium/pkg/ipcache"
 	ipcacheTypes "github.com/cilium/cilium/pkg/ipcache/types"
-	"github.com/cilium/cilium/pkg/k8s"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/metrics"
 	monitorAPI "github.com/cilium/cilium/pkg/monitor/api"
-	"github.com/cilium/cilium/pkg/node"
-	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
 	policyAPI "github.com/cilium/cilium/pkg/policy/api"
 	"github.com/cilium/cilium/pkg/safetime"
 	"github.com/cilium/cilium/pkg/source"
 	"github.com/cilium/cilium/pkg/time"
-	"github.com/cilium/cilium/pkg/trigger"
 )
-
-// initPolicy initializes the core policy components of the daemon.
-func (d *Daemon) initPolicy() error {
-	// Reuse policy.TriggerMetrics and PolicyTriggerInterval here since
-	// this is only triggered by agent configuration changes for now and
-	// should be counted in pol.TriggerMetrics.
-	rt, err := trigger.NewTrigger(trigger.Parameters{
-		Name:            "datapath-regeneration",
-		MetricsObserver: &policy.TriggerMetrics{},
-		MinInterval:     option.Config.PolicyTriggerInterval,
-		TriggerFunc:     d.datapathRegen,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create datapath regeneration trigger: %w", err)
-	}
-	d.datapathRegenTrigger = rt
-
-	return nil
-}
-
-type policyParams struct {
-	cell.In
-
-	Lifecycle       cell.Lifecycle
-	EndpointManager endpointmanager.EndpointManager
-	CertManager     certificatemanager.CertificateManager
-	SecretManager   certificatemanager.SecretManager
-	CacheStatus     k8s.CacheStatus
-	ClusterInfo     cmtypes.ClusterInfo
-}
-
-type policyOut struct {
-	cell.Out
-
-	IdentityAllocator      CachingIdentityAllocator
-	CacheIdentityAllocator cache.IdentityAllocator
-	RemoteIdentityWatcher  clustermesh.RemoteIdentityWatcher
-	IdentityObservable     stream.Observable[cache.IdentityChange]
-
-	Repository *policy.Repository
-	Updater    *policy.Updater
-	IPCache    *ipcache.IPCache
-}
-
-// newPolicyTrifecta instantiates CachingIdentityAllocator, Repository and IPCache.
-//
-// The three have a circular dependency on each other and therefore require
-// special care.
-func newPolicyTrifecta(params policyParams) (policyOut, error) {
-	if option.Config.EnableWellKnownIdentities {
-		// Must be done before calling policy.NewPolicyRepository() below.
-		num := identity.InitWellKnownIdentities(option.Config, params.ClusterInfo)
-		metrics.Identity.WithLabelValues(identity.WellKnownIdentityType).Add(float64(num))
-	}
-	iao := &identityAllocatorOwner{}
-	idAlloc := cache.NewCachingIdentityAllocator(iao)
-
-	iao.policy = policy.NewStoppedPolicyRepository(
-		idAlloc,
-		idAlloc.GetIdentityCache(),
-		params.CertManager,
-		params.SecretManager,
-	)
-	iao.policy.SetEnvoyRulesFunc(envoy.GetEnvoyHTTPRules)
-
-	policyUpdater, err := policy.NewUpdater(iao.policy, params.EndpointManager)
-	if err != nil {
-		return policyOut{}, fmt.Errorf("failed to create policy update trigger: %w", err)
-	}
-	iao.policyUpdater = policyUpdater
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	ipc := ipcache.NewIPCache(&ipcache.Configuration{
-		Context:           ctx,
-		IdentityAllocator: idAlloc,
-		PolicyHandler:     iao.policy.GetSelectorCache(),
-		DatapathHandler:   params.EndpointManager,
-		CacheStatus:       params.CacheStatus,
-	})
-
-	params.Lifecycle.Append(cell.Hook{
-		OnStart: func(hc cell.HookContext) error {
-			iao.policy.Start()
-			return nil
-		},
-		OnStop: func(hc cell.HookContext) error {
-			cancel()
-
-			// Preserve the order of shutdown but still propagate the error
-			// to hive.
-			err := ipc.Shutdown()
-			policyUpdater.Shutdown()
-			idAlloc.Close()
-
-			return err
-		},
-	})
-
-	return policyOut{
-		IdentityAllocator:      idAlloc,
-		CacheIdentityAllocator: idAlloc,
-		RemoteIdentityWatcher:  idAlloc,
-		IdentityObservable:     idAlloc,
-		Repository:             iao.policy,
-		Updater:                policyUpdater,
-		IPCache:                ipc,
-	}, nil
-}
-
-// TriggerPolicyUpdates triggers policy updates by deferring to the
-// policy.Updater to handle them.
-func (d *Daemon) TriggerPolicyUpdates(force bool, reason string) {
-	d.policyUpdater.TriggerPolicyUpdates(force, reason)
-}
-
-// identityAllocatorOwner is used to break the circular dependency between
-// CachingIdentityAllocator and policy.Repository.
-type identityAllocatorOwner struct {
-	policy        *policy.Repository
-	policyUpdater *policy.Updater
-}
-
-// UpdateIdentities informs the policy package of all identity changes
-// and also triggers policy updates.
-//
-// The caller is responsible for making sure the same identity is not
-// present in both 'added' and 'deleted'.
-func (iao *identityAllocatorOwner) UpdateIdentities(added, deleted cache.IdentityCache) {
-	wg := &sync.WaitGroup{}
-	iao.policy.GetSelectorCache().UpdateIdentities(added, deleted, wg)
-	// Wait for update propagation to endpoints before triggering policy updates
-	wg.Wait()
-	iao.policyUpdater.TriggerPolicyUpdates(false, "one or more identities created or deleted")
-}
-
-// GetNodeSuffix returns the suffix to be appended to kvstore keys of this
-// agent
-func (iao *identityAllocatorOwner) GetNodeSuffix() string {
-	var ip net.IP
-
-	switch {
-	case option.Config.EnableIPv4:
-		ip = node.GetIPv4()
-	case option.Config.EnableIPv6:
-		ip = node.GetIPv6()
-	}
-
-	if ip == nil {
-		log.Fatal("Node IP not available yet")
-	}
-
-	return ip.String()
-}
 
 // PolicyAddEvent is a wrapper around the parameters for policyAdd.
 type PolicyAddEvent struct {
@@ -279,6 +109,9 @@ func (d *Daemon) policyAdd(sourceRules policyAPI.Rules, opts *policy.AddOptions,
 	// updated.
 	var policySelectionWG sync.WaitGroup
 
+	// newRev is the new policy revision after rule updates
+	var newRev uint64
+
 	// Get all endpoints at the time rules were added / updated so we can figure
 	// out which endpoints to regenerate / bump policy revision.
 	allEndpoints := d.endpointManager.GetPolicyEndpoints()
@@ -289,37 +122,72 @@ func (d *Daemon) policyAdd(sourceRules policyAPI.Rules, opts *policy.AddOptions,
 
 	endpointsToRegen := policy.NewEndpointSet(nil)
 
-	if opts != nil {
-		if opts.Replace {
-			for _, r := range sourceRules {
-				oldRules := d.policy.SearchRLocked(r.Labels)
+	// Policies can be upserted one of two ways: by labels or by resource.
+	// Here we replace by resource if specified.
+	// This block of code is, sadly, copy-pasty because DeleteByLabels / AddList return an unexported type.
+	if opts != nil && opts.ReplaceByResource && len(opts.Resource) > 0 {
+		// Update the policy repository with the new rules
+		addedRules, deletedRules, rev := d.policy.ReplaceByResourceLocked(sourceRules, opts.Resource)
+		newRev = rev
+
+		if len(deletedRules) > 0 {
+			// Record any prefix allocations that should be deleted
+			removedPrefixes = append(removedPrefixes, policy.GetCIDRPrefixes(deletedRules.AsPolicyRules())...)
+
+			// Determine which endpoints, if any, need to be regenerated due to removing these rules
+			deletedRules.FindSelectedEndpoints(endpointsToBumpRevision, endpointsToRegen, &policySelectionWG)
+			d.policy.Release(deletedRules)
+		}
+
+		// The information needed by the caller is available at this point, signal
+		// accordingly.
+		resChan <- &PolicyAddResult{
+			newRev: newRev,
+			err:    nil,
+		}
+
+		// Determine which endpoints, if any, need to be regenerated due to being selected by a new rule
+		addedRules.FindSelectedEndpoints(endpointsToBumpRevision, endpointsToRegen, &policySelectionWG)
+
+	} else {
+		// Replacing by labels
+		// This only happens if a policy is specified via the gRPC API. It is much less efficient
+		// due to needing to scan the entire repository to find matching labels.
+		if opts != nil {
+			if opts.Replace {
+				for _, r := range sourceRules {
+					oldRules := d.policy.SearchRLocked(r.Labels)
+					removedPrefixes = append(removedPrefixes, policy.GetCIDRPrefixes(oldRules)...)
+					if len(oldRules) > 0 {
+						deletedRules, _, _ := d.policy.DeleteByLabelsLocked(r.Labels)
+						deletedRules.FindSelectedEndpoints(endpointsToBumpRevision, endpointsToRegen, &policySelectionWG)
+						d.policy.Release(deletedRules)
+					}
+				}
+			}
+			if len(opts.ReplaceWithLabels) > 0 {
+				oldRules := d.policy.SearchRLocked(opts.ReplaceWithLabels)
 				removedPrefixes = append(removedPrefixes, policy.GetCIDRPrefixes(oldRules)...)
 				if len(oldRules) > 0 {
-					deletedRules, _, _ := d.policy.DeleteByLabelsLocked(r.Labels)
-					deletedRules.UpdateRulesEndpointsCaches(endpointsToBumpRevision, endpointsToRegen, &policySelectionWG)
+					deletedRules, _, _ := d.policy.DeleteByLabelsLocked(opts.ReplaceWithLabels)
+					deletedRules.FindSelectedEndpoints(endpointsToBumpRevision, endpointsToRegen, &policySelectionWG)
+					d.policy.Release(deletedRules)
 				}
 			}
 		}
-		if len(opts.ReplaceWithLabels) > 0 {
-			oldRules := d.policy.SearchRLocked(opts.ReplaceWithLabels)
-			removedPrefixes = append(removedPrefixes, policy.GetCIDRPrefixes(oldRules)...)
-			if len(oldRules) > 0 {
-				deletedRules, _, _ := d.policy.DeleteByLabelsLocked(opts.ReplaceWithLabels)
-				deletedRules.UpdateRulesEndpointsCaches(endpointsToBumpRevision, endpointsToRegen, &policySelectionWG)
-			}
+
+		addedRules, rev := d.policy.AddListLocked(sourceRules)
+		newRev = rev
+
+		// The information needed by the caller is available at this point, signal
+		// accordingly.
+		resChan <- &PolicyAddResult{
+			newRev: newRev,
+			err:    nil,
 		}
+
+		addedRules.FindSelectedEndpoints(endpointsToBumpRevision, endpointsToRegen, &policySelectionWG)
 	}
-
-	addedRules, newRev := d.policy.AddListLocked(sourceRules)
-
-	// The information needed by the caller is available at this point, signal
-	// accordingly.
-	resChan <- &PolicyAddResult{
-		newRev: newRev,
-		err:    nil,
-	}
-
-	addedRules.UpdateRulesEndpointsCaches(endpointsToBumpRevision, endpointsToRegen, &policySelectionWG)
 
 	d.policy.Mutex.Unlock()
 
@@ -497,7 +365,6 @@ type PolicyDeleteResult struct {
 // Returns the revision number and an error in case it was not possible to
 // delete the policy.
 func (d *Daemon) PolicyDelete(labels labels.LabelArray, opts *policy.DeleteOptions) (newRev uint64, err error) {
-
 	p := &PolicyDeleteEvent{
 		labels: labels,
 		opts:   opts,
@@ -536,24 +403,44 @@ func (d *Daemon) policyDelete(labels labels.LabelArray, opts *policy.DeleteOptio
 
 	endpointsToRegen := policy.NewEndpointSet(nil)
 
-	deletedRules, rev, deleted := d.policy.DeleteByLabelsLocked(labels)
+	var deleted int
+	var rev uint64
+	var prefixes []netip.Prefix
 
-	// Return an error if a label filter was provided and there are no
-	// rules matching it. A deletion request for all policy entries should
-	// not fail if no policies are loaded.
-	if len(deletedRules) == 0 && len(labels) != 0 {
-		rev := d.policy.GetRevision()
-		d.policy.Mutex.Unlock()
+	if opts.DeleteByResource && len(opts.Resource) > 0 {
+		deletedRules, newRev := d.policy.DeleteByResourceLocked(opts.Resource)
+		rev = newRev
+		deleted = len(deletedRules)
 
-		err := api.New(DeletePolicyNotFoundCode, "policy not found")
+		deletedRules.FindSelectedEndpoints(epsToBumpRevision, endpointsToRegen, &policySelectionWG)
+		d.policy.Release(deletedRules)
+		prefixes = policy.GetCIDRPrefixes(deletedRules.AsPolicyRules())
+	} else {
 
-		res <- &PolicyDeleteResult{
-			newRev: rev,
-			err:    err,
+		deletedRules, newRev, _ := d.policy.DeleteByLabelsLocked(labels)
+		rev = newRev
+		deleted = len(deletedRules)
+
+		// Return an error if a label filter was provided and there are no
+		// rules matching it. A deletion request for all policy entries should
+		// not fail if no policies are loaded.
+		if len(deletedRules) == 0 && len(labels) != 0 {
+			rev := d.policy.GetRevision()
+			d.policy.Mutex.Unlock()
+
+			err := api.New(DeletePolicyNotFoundCode, "policy not found")
+
+			res <- &PolicyDeleteResult{
+				newRev: rev,
+				err:    err,
+			}
+			return
 		}
-		return
+
+		deletedRules.FindSelectedEndpoints(epsToBumpRevision, endpointsToRegen, &policySelectionWG)
+		d.policy.Release(deletedRules)
+		prefixes = policy.GetCIDRPrefixes(deletedRules.AsPolicyRules())
 	}
-	deletedRules.UpdateRulesEndpointsCaches(epsToBumpRevision, endpointsToRegen, &policySelectionWG)
 
 	res <- &PolicyDeleteResult{
 		newRev: rev,
@@ -568,7 +455,6 @@ func (d *Daemon) policyDelete(labels labels.LabelArray, opts *policy.DeleteOptio
 	// We don't treat failures to clean up identities as API failures,
 	// because the policy can still successfully be updated. We're just
 	// not appropriately performing garbage collection.
-	prefixes := policy.GetCIDRPrefixes(deletedRules.AsPolicyRules())
 	log.WithField("prefixes", prefixes).Debug("Policy deleted via API, found prefixes...")
 
 	// Updates to the datapath are serialized via the policy reaction queue.
@@ -668,6 +554,16 @@ func getPolicyHandler(d *Daemon, params GetPolicyParams) middleware.Responder {
 		Revision: int64(repository.GetRevision()),
 		Policy:   policy.JSONMarshalRules(ruleList),
 	}
+
+	// debug potential policy race with cilium-cli:
+	// cilium-cli issues this command to get the current policy revision before updating policy,
+	// when it waits for all the endpoints to have been bumped to the next revision before
+	// proceeding with a test case. It seems that sometimes that happens too early, which could
+	// happen if the policy repository's revision if bumped for any other reason than a policy
+	// add during this wait. Log the current revision number here so that we know what to look
+	// for in this case.
+	log.WithField(logfields.PolicyRevision, policy.Revision).Debug("Policy Get Request")
+
 	return NewGetPolicyOK().WithPayload(policy)
 }
 

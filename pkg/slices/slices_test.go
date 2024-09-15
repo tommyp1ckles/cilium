@@ -4,13 +4,13 @@
 package slices
 
 import (
+	"cmp"
 	"fmt"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"slices"
 	"strconv"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -93,9 +93,7 @@ func TestSortedUniqueFunc(t *testing.T) {
 			input := slices.Clone(tc.input)
 			got := SortedUniqueFunc(
 				input,
-				func(i, j int) bool {
-					return input[i] < input[j]
-				},
+				cmp.Compare,
 				func(a, b int) bool {
 					return a == b
 				},
@@ -303,6 +301,45 @@ func TestSubsetOf(t *testing.T) {
 	}
 }
 
+func TestXorNil(t *testing.T) {
+	testCases := []struct {
+		name     string
+		a        []string
+		b        []string
+		expected bool
+	}{
+		{
+			name:     "both nil",
+			a:        nil,
+			b:        nil,
+			expected: false,
+		},
+		{
+			name:     "first is nil",
+			a:        nil,
+			b:        []string{},
+			expected: true,
+		},
+		{
+			name:     "second is nil",
+			a:        []string{},
+			b:        nil,
+			expected: true,
+		},
+		{
+			name:     "both non-nil",
+			a:        []string{},
+			b:        []string{},
+			expected: false,
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, XorNil(tc.a, tc.b))
+		})
+	}
+}
+
 // BenchmarkUnique runs the Unique function on a slice of size elements, where each element
 // has a probability of 20% of being a duplicate.
 // At each iteration the slice is restored to its original status and reshuffled, in order
@@ -350,19 +387,18 @@ func BenchmarkUniqueFunc(b *testing.B) {
 func benchmarkUnique(b *testing.B, benchUniqueFunc bool) {
 	var benchCases = [...]int{96, 128, 160, 192, 256, 512, 1024}
 
-	r := rand.New(rand.NewSource(time.Now().Unix()))
 	for _, sz := range benchCases {
 		b.Run(strconv.Itoa(sz), func(b *testing.B) {
 			b.ReportAllocs()
 
 			orig := make([]int, 0, sz)
-			orig = append(orig, r.Intn(math.MaxInt))
+			orig = append(orig, rand.IntN(math.MaxInt))
 			for i := 1; i < sz; i++ {
 				var next int
-				if r.Intn(100) < 20 {
-					next = orig[r.Intn(len(orig))]
+				if rand.IntN(100) < 20 {
+					next = orig[rand.IntN(len(orig))]
 				} else {
-					next = r.Intn(math.MaxInt)
+					next = rand.IntN(math.MaxInt)
 				}
 				orig = append(orig, next)
 			}
@@ -403,7 +439,6 @@ func BenchmarkSubsetOf(b *testing.B) {
 		{1024, 8192}, {2048, 8192},
 	}
 
-	r := rand.New(rand.NewSource(time.Now().Unix()))
 	for _, bc := range benchCases {
 		b.Run(
 			fmt.Sprintf("%d-%d", bc.subsetSz, bc.supersetSz),
@@ -412,12 +447,12 @@ func BenchmarkSubsetOf(b *testing.B) {
 
 				subset := make([]string, 0, bc.subsetSz)
 				for i := 0; i < bc.subsetSz; i++ {
-					subset = append(subset, strconv.Itoa(r.Intn(bc.subsetSz)))
+					subset = append(subset, strconv.Itoa(rand.IntN(bc.subsetSz)))
 				}
 
 				superset := make([]string, 0, bc.supersetSz)
 				for i := 0; i < bc.supersetSz; i++ {
-					superset = append(superset, strconv.Itoa(r.Intn(bc.subsetSz)))
+					superset = append(superset, strconv.Itoa(rand.IntN(bc.subsetSz)))
 				}
 
 				b.ResetTimer()

@@ -41,6 +41,9 @@ static __always_inline __maybe_unused bool is_v6_loopback(const union v6addr *da
 }
 
 /* Hack due to missing narrow ctx access. */
+#define ctx_protocol(__ctx) ((__u8)(volatile __u32)(__ctx)->protocol)
+
+/* Hack due to missing narrow ctx access. */
 static __always_inline __maybe_unused __be16
 ctx_dst_port(const struct bpf_sock_addr *ctx)
 {
@@ -105,12 +108,12 @@ bool sock_is_health_check(struct bpf_sock_addr *ctx __maybe_unused)
 static __always_inline __maybe_unused
 __u64 sock_select_slot(struct bpf_sock_addr *ctx)
 {
-	return ctx->protocol == IPPROTO_TCP ?
+	return ctx_protocol(ctx) == IPPROTO_TCP ?
 	       get_prandom_u32() : sock_local_cookie(ctx);
 }
 
 static __always_inline __maybe_unused
-bool sock_proto_enabled(__u32 proto)
+bool sock_proto_enabled(__u8 proto)
 {
 	switch (proto) {
 	case IPPROTO_TCP:
@@ -131,15 +134,6 @@ struct {
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 	__uint(max_entries, LB4_REVERSE_NAT_SK_MAP_SIZE);
 } LB4_REVERSE_NAT_SK_MAP __section_maps_btf;
-
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, struct skip_lb4_key);
-	__type(value, __u8);
-	__uint(pinning, LIBBPF_PIN_BY_NAME);
-	__uint(max_entries, CILIUM_LB_SKIP_MAP_MAX_ENTRIES);
-	__uint(map_flags, BPF_F_NO_PREALLOC);
-} LB4_SKIP_MAP __section_maps_btf;
 
 static __always_inline int sock4_update_revnat(struct bpf_sock_addr *ctx,
 					       const struct lb4_backend *backend,
@@ -245,49 +239,6 @@ sock4_wildcard_lookup_full(struct lb4_key *key __maybe_unused,
 	return NULL;
 }
 
-#ifdef ENABLE_LOCAL_REDIRECT_POLICY
-/* Service translation logic for a local-redirect service can cause packets to
- * be looped back to a service node-local backend after translation. This can
- * happen when the node-local backend itself tries to connect to the service
- * frontend for which it acts as a backend. There are cases where this can break
- * traffic flow if the backend needs to forward the redirected traffic to the
- * actual service frontend. Hence, allow service translation for pod traffic
- * getting redirected to backend (across network namespaces), but skip service
- * translation for backend to itself or another service backend within the same
- * namespace. Currently only v4 and v4-in-v6, but no plain v6 is supported.
- *
- * For example, in EKS cluster, a local-redirect service exists with the AWS
- * metadata IP, port as the frontend <169.254.169.254, 80> and kiam proxy as a
- * backend Pod. When traffic destined to the frontend originates from the kiam
- * Pod in namespace ns1 (host ns when the kiam proxy Pod is deployed in
- * hostNetwork mode or regular Pod ns) and the Pod is selected as a backend, the
- * traffic would get looped back to the proxy Pod. Identify such cases by doing
- * a socket lookup for the backend <ip, port> in its namespace, ns1, and skip
- * service translation.
- */
-static __always_inline bool
-sock4_skip_xlate_from_ctx_to_svc(struct bpf_sock_addr *ctx __maybe_unused,
-				 __be32 address __maybe_unused, __be16 port __maybe_unused)
-{
-#ifdef HAVE_NETNS_COOKIE
-	__net_cookie cookie = get_netns_cookie(ctx);
-	struct skip_lb4_key key;
-	__u8 *val = NULL;
-
-	memset(&key, 0, sizeof(key));
-	key.netns_cookie = cookie;
-	key.address = address;
-	key.port = port;
-	val = map_lookup_elem(&LB4_SKIP_MAP, &key);
-	if (val)
-		return true;
-	return false;
-#else
-	return false;
-#endif
-}
-#endif /* ENABLE_LOCAL_REDIRECT_POLICY */
-
 static __always_inline int __sock4_xlate_fwd(struct bpf_sock_addr *ctx,
 					     struct bpf_sock_addr *ctx_full,
 					     const bool udp_only)
@@ -297,10 +248,14 @@ static __always_inline int __sock4_xlate_fwd(struct bpf_sock_addr *ctx,
 	struct lb4_backend *backend;
 	struct lb4_service *svc;
 	__u16 dst_port = ctx_dst_port(ctx);
+	__u8 protocol = ctx_protocol(ctx);
 	__u32 dst_ip = ctx->user_ip4;
 	struct lb4_key key = {
 		.address	= dst_ip,
 		.dport		= dst_port,
+#if defined(ENABLE_SERVICE_PROTOCOL_DIFFERENTIATION)
+		.proto		= protocol,
+#endif
 	}, orig_key = key;
 	struct lb4_service *backend_slot;
 	bool backend_from_affinity = false;
@@ -312,7 +267,7 @@ static __always_inline int __sock4_xlate_fwd(struct bpf_sock_addr *ctx,
 	if (is_defined(ENABLE_SOCKET_LB_HOST_ONLY) && !in_hostns)
 		return -ENXIO;
 
-	if (!udp_only && !sock_proto_enabled(ctx->protocol))
+	if (!udp_only && !sock_proto_enabled(protocol))
 		return -ENOTSUP;
 
 	/* In case a direct match fails, we try to look-up surrogate
@@ -320,8 +275,13 @@ static __always_inline int __sock4_xlate_fwd(struct bpf_sock_addr *ctx,
 	 * HostPort services.
 	 */
 	svc = lb4_lookup_service(&key, true);
-	if (!svc)
+	if (!svc) {
+		/* Restore the original key's protocol as lb4_lookup_service
+		 * has overwritten it.
+		 */
+		lb4_key_set_protocol(&key, protocol);
 		svc = sock4_wildcard_lookup_full(&key, in_hostns);
+	}
 	if (!svc)
 		return -ENXIO;
 	if (svc->count == 0 && !lb4_svc_is_l7loadbalancer(svc))
@@ -341,7 +301,8 @@ static __always_inline int __sock4_xlate_fwd(struct bpf_sock_addr *ctx,
 
 #ifdef ENABLE_LOCAL_REDIRECT_POLICY
 	if (lb4_svc_is_localredirect(svc) &&
-	    sock4_skip_xlate_from_ctx_to_svc(ctx_full, orig_key.address, orig_key.dport))
+	    lb4_skip_xlate_from_ctx_to_svc(get_netns_cookie(ctx_full),
+					   orig_key.address, orig_key.dport))
 		return -ENXIO;
 #endif /* ENABLE_LOCAL_REDIRECT_POLICY */
 
@@ -395,6 +356,7 @@ static __always_inline int __sock4_xlate_fwd(struct bpf_sock_addr *ctx,
 				 * doesn't hit the reselection again.
 				 */
 				backend_id = 0;
+			barrier();
 		}
 	}
 
@@ -416,6 +378,7 @@ static __always_inline int __sock4_xlate_fwd(struct bpf_sock_addr *ctx,
 		update_metrics(0, METRIC_EGRESS, REASON_LB_NO_BACKEND);
 		return -EHOSTUNREACH;
 	}
+	barrier();
 
 	if (lb4_svc_is_affinity(svc) && !backend_from_affinity)
 		lb4_update_affinity_by_netns(svc, &id, backend_id);
@@ -482,23 +445,32 @@ int cil_sock4_connect(struct bpf_sock_addr *ctx)
 static __always_inline int __sock4_post_bind(struct bpf_sock *ctx,
 					     struct bpf_sock *ctx_full)
 {
+	__u8 protocol = ctx_protocol(ctx);
 	struct lb4_service *svc;
 	struct lb4_key key = {
 		.address	= ctx->src_ip4,
 		.dport		= ctx_src_port(ctx),
+#if defined(ENABLE_SERVICE_PROTOCOL_DIFFERENTIATION)
+		.proto		= protocol,
+#endif
 	};
 
-	if (!sock_proto_enabled(ctx->protocol) ||
+	if (!sock_proto_enabled(protocol) ||
 	    !ctx_in_hostns(ctx_full, NULL))
 		return 0;
 
 	svc = lb4_lookup_service(&key, true);
-	if (!svc)
+	if (!svc) {
 		/* Perform a wildcard lookup for the case where the caller
 		 * tries to bind to loopback or an address with host identity
 		 * (without remote hosts).
+		 *
+		 * Restore the original key's protocol as lb4_lookup_service
+		 * has overwritten it.
 		 */
+		lb4_key_set_protocol(&key, protocol);
 		svc = sock4_wildcard_lookup(&key, false, false, true);
+	}
 
 	/* If the sockaddr of this socket overlaps with a NodePort,
 	 * LoadBalancer or ExternalIP service. We must reject this
@@ -545,7 +517,7 @@ static __always_inline int __sock4_pre_bind(struct bpf_sock_addr *ctx,
 		.peer = {
 			.address	= ctx->user_ip4,
 			.port		= ctx_dst_port(ctx),
-			.proto		= (__u8)ctx->protocol,
+			.proto		= ctx_protocol(ctx),
 		},
 	};
 	int ret;
@@ -561,7 +533,7 @@ int cil_sock4_pre_bind(struct bpf_sock_addr *ctx)
 {
 	int ret = SYS_PROCEED;
 
-	if (!sock_proto_enabled(ctx->protocol) ||
+	if (!sock_proto_enabled(ctx_protocol(ctx)) ||
 	    !ctx_in_hostns(ctx, NULL))
 		return ret;
 	if (sock_is_health_check(ctx) &&
@@ -578,6 +550,7 @@ static __always_inline int __sock4_xlate_rev(struct bpf_sock_addr *ctx,
 {
 	struct ipv4_revnat_entry *val;
 	__u16 dst_port = ctx_dst_port(ctx);
+	__u8 protocol = ctx_protocol(ctx);
 	__u32 dst_ip = ctx->user_ip4;
 	struct ipv4_revnat_tuple key = {
 		.cookie		= sock_local_cookie(ctx_full),
@@ -593,12 +566,20 @@ static __always_inline int __sock4_xlate_rev(struct bpf_sock_addr *ctx,
 		struct lb4_key svc_key = {
 			.address	= val->address,
 			.dport		= val->port,
+#if defined(ENABLE_SERVICE_PROTOCOL_DIFFERENTIATION)
+			.proto		= protocol,
+#endif
 		};
 
 		svc = lb4_lookup_service(&svc_key, true);
-		if (!svc)
+		if (!svc) {
+			/* Restore the original key's protocol as lb4_lookup_service
+			 * has overwritten it.
+			 */
+			lb4_key_set_protocol(&svc_key, protocol);
 			svc = sock4_wildcard_lookup_full(&svc_key,
 						ctx_in_hostns(ctx_full, NULL));
+		}
 		if (!svc || svc->rev_nat_index != val->rev_nat_index ||
 		    (svc->count == 0 && !lb4_svc_is_l7loadbalancer(svc))) {
 			map_delete_elem(&LB4_REVERSE_NAT_SK_MAP, &key);
@@ -658,14 +639,6 @@ struct {
 	__uint(max_entries, LB6_REVERSE_NAT_SK_MAP_SIZE);
 } LB6_REVERSE_NAT_SK_MAP __section_maps_btf;
 
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, struct skip_lb6_key);
-	__type(value, __u8);
-	__uint(pinning, LIBBPF_PIN_BY_NAME);
-	__uint(max_entries, CILIUM_LB_SKIP_MAP_MAX_ENTRIES);
-} LB6_SKIP_MAP __section_maps_btf;
-
 static __always_inline int sock6_update_revnat(struct bpf_sock_addr *ctx,
 					       const struct lb6_backend *backend,
 					       const struct lb6_key *orig_key,
@@ -693,29 +666,6 @@ static __always_inline int sock6_update_revnat(struct bpf_sock_addr *ctx,
 static __always_inline void ctx_get_v6_address(const struct bpf_sock_addr *ctx,
 					       union v6addr *addr);
 
-#ifdef ENABLE_LOCAL_REDIRECT_POLICY
-static __always_inline bool
-sock6_skip_xlate_from_ctx_to_svc(struct bpf_sock_addr *ctx __maybe_unused,
-				 const __be16 port __maybe_unused)
-{
-#ifdef HAVE_NETNS_COOKIE
-	__net_cookie cookie = get_netns_cookie(ctx);
-	struct skip_lb6_key key;
-	__u8 *val = NULL;
-
-	memset(&key, 0, sizeof(key));
-	key.netns_cookie = cookie;
-	ctx_get_v6_address(ctx, &key.address);
-	key.port = port;
-	val = map_lookup_elem(&LB6_SKIP_MAP, &key);
-	if (val)
-		return true;
-	return false;
-#else
-	return false;
-#endif
-}
-#endif /* ENABLE_LOCAL_REDIRECT_POLICY */
 #endif /* ENABLE_IPV6 */
 
 static __always_inline void ctx_get_v6_address(const struct bpf_sock_addr *ctx,
@@ -849,7 +799,7 @@ int sock6_xlate_v4_in_v6(struct bpf_sock_addr *ctx __maybe_unused,
 		return -ENXIO;
 
 	memset(&fake_ctx, 0, sizeof(fake_ctx));
-	fake_ctx.protocol  = ctx->protocol;
+	fake_ctx.protocol  = ctx_protocol(ctx);
 	fake_ctx.user_ip4  = addr6.p4;
 	fake_ctx.user_port = ctx_dst_port(ctx);
 
@@ -879,7 +829,7 @@ sock6_post_bind_v4_in_v6(struct bpf_sock *ctx __maybe_unused)
 		return 0;
 
 	memset(&fake_ctx, 0, sizeof(fake_ctx));
-	fake_ctx.protocol = ctx->protocol;
+	fake_ctx.protocol = ctx_protocol(ctx);
 	fake_ctx.src_ip4  = addr6.p4;
 	fake_ctx.src_port = ctx->src_port;
 
@@ -890,12 +840,16 @@ sock6_post_bind_v4_in_v6(struct bpf_sock *ctx __maybe_unused)
 
 static __always_inline int __sock6_post_bind(struct bpf_sock *ctx)
 {
+	__u8 protocol = ctx_protocol(ctx);
 	struct lb6_service *svc;
 	struct lb6_key key = {
 		.dport		= ctx_src_port(ctx),
+#if defined(ENABLE_SERVICE_PROTOCOL_DIFFERENTIATION)
+		.proto		= protocol,
+#endif
 	};
 
-	if (!sock_proto_enabled(ctx->protocol) ||
+	if (!sock_proto_enabled(protocol) ||
 	    !ctx_in_hostns(ctx, NULL))
 		return 0;
 
@@ -903,6 +857,10 @@ static __always_inline int __sock6_post_bind(struct bpf_sock *ctx)
 
 	svc = lb6_lookup_service(&key, true);
 	if (!svc) {
+		/* Restore the original key's protocol as lb6_lookup_service
+		 * has overwritten it.
+		 */
+		lb6_key_set_protocol(&key, protocol);
 		svc = sock6_wildcard_lookup(&key, false, false, true);
 		if (!svc)
 			return sock6_post_bind_v4_in_v6(ctx);
@@ -943,7 +901,7 @@ sock6_pre_bind_v4_in_v6(struct bpf_sock_addr *ctx __maybe_unused)
 	ctx_get_v6_address(ctx, &addr6);
 
 	memset(&fake_ctx, 0, sizeof(fake_ctx));
-	fake_ctx.protocol  = ctx->protocol;
+	fake_ctx.protocol  = ctx_protocol(ctx);
 	fake_ctx.user_ip4  = addr6.p4;
 	fake_ctx.user_port = ctx_dst_port(ctx);
 
@@ -974,7 +932,7 @@ static __always_inline int __sock6_pre_bind(struct bpf_sock_addr *ctx)
 	struct lb6_health val = {
 		.peer = {
 			.port		= ctx_dst_port(ctx),
-			.proto		= (__u8)ctx->protocol,
+			.proto		= ctx_protocol(ctx),
 		},
 	};
 	int ret = 0;
@@ -996,7 +954,7 @@ int cil_sock6_pre_bind(struct bpf_sock_addr *ctx)
 {
 	int ret = SYS_PROCEED;
 
-	if (!sock_proto_enabled(ctx->protocol) ||
+	if (!sock_proto_enabled(ctx_protocol(ctx)) ||
 	    !ctx_in_hostns(ctx, NULL))
 		return ret;
 	if (sock_is_health_check(ctx) &&
@@ -1017,8 +975,12 @@ static __always_inline int __sock6_xlate_fwd(struct bpf_sock_addr *ctx,
 	struct lb6_backend *backend;
 	struct lb6_service *svc;
 	__u16 dst_port = ctx_dst_port(ctx);
+	__u8 protocol = ctx_protocol(ctx);
 	struct lb6_key key = {
 		.dport		= dst_port,
+#if defined(ENABLE_SERVICE_PROTOCOL_DIFFERENTIATION)
+		.proto		= protocol,
+#endif
 	}, orig_key;
 	struct lb6_service *backend_slot;
 	bool backend_from_affinity = false;
@@ -1030,15 +992,20 @@ static __always_inline int __sock6_xlate_fwd(struct bpf_sock_addr *ctx,
 	if (is_defined(ENABLE_SOCKET_LB_HOST_ONLY) && !in_hostns)
 		return -ENXIO;
 
-	if (!udp_only && !sock_proto_enabled(ctx->protocol))
+	if (!udp_only && !sock_proto_enabled(protocol))
 		return -ENOTSUP;
 
 	ctx_get_v6_address(ctx, &key.address);
 	memcpy(&orig_key, &key, sizeof(key));
 
 	svc = lb6_lookup_service(&key, true);
-	if (!svc)
+	if (!svc) {
+		/* Restore the original key's protocol as lb6_lookup_service
+		 * has overwritten it.
+		 */
+		lb6_key_set_protocol(&key, protocol);
 		svc = sock6_wildcard_lookup_full(&key, in_hostns);
+	}
 	if (!svc)
 		return sock6_xlate_v4_in_v6(ctx, udp_only);
 	if (svc->count == 0 && !lb6_svc_is_l7loadbalancer(svc))
@@ -1050,11 +1017,11 @@ static __always_inline int __sock6_xlate_fwd(struct bpf_sock_addr *ctx,
 	if (sock6_skip_xlate(svc, &orig_key.address))
 		return -EPERM;
 
-#ifdef ENABLE_LOCAL_REDIRECT_POLICY
+#if defined(ENABLE_LOCAL_REDIRECT_POLICY) && defined(HAVE_NETNS_COOKIE)
 	if (lb6_svc_is_localredirect(svc) &&
-	    sock6_skip_xlate_from_ctx_to_svc(ctx, orig_key.dport))
+	    lb6_skip_xlate_from_ctx_to_svc(get_netns_cookie(ctx), orig_key.address, orig_key.dport))
 		return -ENXIO;
-#endif /* ENABLE_LOCAL_REDIRECT_POLICY */
+#endif /* ENABLE_LOCAL_REDIRECT_POLICY && HAVE_NETNS_COOKIE*/
 
 #ifdef ENABLE_L7_LB
 	/* See __sock4_xlate_fwd for commentary. */
@@ -1081,6 +1048,7 @@ static __always_inline int __sock6_xlate_fwd(struct bpf_sock_addr *ctx,
 			backend = __lb6_lookup_backend(backend_id);
 			if (!backend)
 				backend_id = 0;
+			barrier();
 		}
 	}
 
@@ -1102,6 +1070,7 @@ static __always_inline int __sock6_xlate_fwd(struct bpf_sock_addr *ctx,
 		update_metrics(0, METRIC_EGRESS, REASON_LB_NO_BACKEND);
 		return -EHOSTUNREACH;
 	}
+	barrier();
 
 	if (lb6_svc_is_affinity(svc) && !backend_from_affinity)
 		lb6_update_affinity_by_netns(svc, &id, backend_id);
@@ -1192,7 +1161,7 @@ sock6_xlate_rev_v4_in_v6(struct bpf_sock_addr *ctx __maybe_unused)
 		return -ENXIO;
 
 	memset(&fake_ctx, 0, sizeof(fake_ctx));
-	fake_ctx.protocol  = ctx->protocol;
+	fake_ctx.protocol  = ctx_protocol(ctx);
 	fake_ctx.user_ip4  = addr6.p4;
 	fake_ctx.user_port = ctx_dst_port(ctx);
 
@@ -1215,6 +1184,7 @@ static __always_inline int __sock6_xlate_rev(struct bpf_sock_addr *ctx)
 	struct ipv6_revnat_tuple key = {};
 	struct ipv6_revnat_entry *val;
 	__u16 dst_port = ctx_dst_port(ctx);
+	__u8 protocol = ctx_protocol(ctx);
 
 	key.cookie = sock_local_cookie(ctx);
 	key.port = dst_port;
@@ -1229,12 +1199,20 @@ static __always_inline int __sock6_xlate_rev(struct bpf_sock_addr *ctx)
 		struct lb6_key svc_key = {
 			.address	= val->address,
 			.dport		= val->port,
+#if defined(ENABLE_SERVICE_PROTOCOL_DIFFERENTIATION)
+			.proto		= protocol,
+#endif
 		};
 
 		svc = lb6_lookup_service(&svc_key, true);
-		if (!svc)
+		if (!svc) {
+			/* Restore the original key's protocol as lb6_lookup_service
+			 * has overwritten it.
+			 */
+			lb6_key_set_protocol(&svc_key, protocol);
 			svc = sock6_wildcard_lookup_full(&svc_key,
 						ctx_in_hostns(ctx, NULL));
+		}
 		if (!svc || svc->rev_nat_index != val->rev_nat_index ||
 		    (svc->count == 0 && !lb6_svc_is_l7loadbalancer(svc))) {
 			map_delete_elem(&LB6_REVERSE_NAT_SK_MAP, &key);

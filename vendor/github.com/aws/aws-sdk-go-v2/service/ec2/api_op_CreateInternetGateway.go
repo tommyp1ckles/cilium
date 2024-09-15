@@ -12,9 +12,11 @@ import (
 )
 
 // Creates an internet gateway for use with a VPC. After creating the internet
-// gateway, you attach it to a VPC using AttachInternetGateway . For more
-// information, see Internet gateways (https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Internet_Gateway.html)
-// in the Amazon VPC User Guide.
+// gateway, you attach it to a VPC using AttachInternetGateway.
+//
+// For more information, see [Internet gateways] in the Amazon VPC User Guide.
+//
+// [Internet gateways]: https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Internet_Gateway.html
 func (c *Client) CreateInternetGateway(ctx context.Context, params *CreateInternetGatewayInput, optFns ...func(*Options)) (*CreateInternetGatewayOutput, error) {
 	if params == nil {
 		params = &CreateInternetGatewayInput{}
@@ -108,6 +110,12 @@ func (c *Client) addOperationCreateInternetGatewayMiddlewares(stack *middleware.
 		return err
 	}
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+		return err
+	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opCreateInternetGateway(options.Region), middleware.Before); err != nil {

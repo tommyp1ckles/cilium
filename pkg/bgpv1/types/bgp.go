@@ -27,6 +27,9 @@ type RouteSelectionOptions struct {
 	AdvertiseInactiveRoutes bool
 }
 
+// StateNotificationCh is a channel used to notify the state of the BGP instance has changed
+type StateNotificationCh chan struct{}
+
 // Path is an object representing a single routing Path. It is an analogue of GoBGP's Path object,
 // but only contains minimal fields required for Cilium usecases.
 type Path struct {
@@ -107,6 +110,8 @@ type RoutePolicyConditions struct {
 	MatchNeighbors []string
 	// MatchPrefixes matches ANY of the provided prefixes. If empty matches all prefixes.
 	MatchPrefixes []*RoutePolicyPrefixMatch
+	// MatchFamilies matches ANY of the provided address families. If empty matches all address families.
+	MatchFamilies []Family
 }
 
 // RoutePolicyAction defines the action taken on a route matched by a routing policy.
@@ -180,7 +185,8 @@ type RoutePolicy struct {
 
 // RoutePolicyRequest contains parameters for adding or removing a routing policy.
 type RoutePolicyRequest struct {
-	Policy *RoutePolicy
+	DefaultExportAction RoutePolicyAction
+	Policy              *RoutePolicy
 }
 
 // GetPeerStateResponse contains state of peers configured in given instance
@@ -195,10 +201,13 @@ type GetBGPResponse struct {
 
 // ServerParameters contains information for underlying bgp implementation layer to initializing BGP process.
 type ServerParameters struct {
-	Global BGPGlobal
+	Global            BGPGlobal
+	StateNotification StateNotificationCh
 }
 
 // Family holds Address Family Indicator (AFI) and Subsequent Address Family Indicator for Multi-Protocol BGP
+//
+// +deepequal-gen=true
 type Family struct {
 	Afi  Afi
 	Safi Safi

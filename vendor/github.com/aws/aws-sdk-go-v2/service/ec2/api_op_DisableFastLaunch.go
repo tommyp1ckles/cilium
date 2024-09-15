@@ -15,9 +15,10 @@ import (
 // Discontinue Windows fast launch for a Windows AMI, and clean up existing
 // pre-provisioned snapshots. After you disable Windows fast launch, the AMI uses
 // the standard launch process for each new instance. Amazon EC2 must remove all
-// pre-provisioned snapshots before you can enable Windows fast launch again. You
-// can only change these settings for Windows AMIs that you own or that have been
-// shared with you.
+// pre-provisioned snapshots before you can enable Windows fast launch again.
+//
+// You can only change these settings for Windows AMIs that you own or that have
+// been shared with you.
 func (c *Client) DisableFastLaunch(ctx context.Context, params *DisableFastLaunchInput, optFns ...func(*Options)) (*DisableFastLaunchOutput, error) {
 	if params == nil {
 		params = &DisableFastLaunchInput{}
@@ -146,6 +147,12 @@ func (c *Client) addOperationDisableFastLaunchMiddlewares(stack *middleware.Stac
 		return err
 	}
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+		return err
+	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
 	if err = addOpDisableFastLaunchValidationMiddleware(stack); err != nil {

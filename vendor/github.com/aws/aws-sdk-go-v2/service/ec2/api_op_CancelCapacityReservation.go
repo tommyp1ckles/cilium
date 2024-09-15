@@ -11,12 +11,13 @@ import (
 )
 
 // Cancels the specified Capacity Reservation, releases the reserved capacity, and
-// changes the Capacity Reservation's state to cancelled . Instances running in the
-// reserved capacity continue running until you stop them. Stopped instances that
-// target the Capacity Reservation can no longer launch. Modify these instances to
-// either target a different Capacity Reservation, launch On-Demand Instance
-// capacity, or run in any open Capacity Reservation that has matching attributes
-// and sufficient capacity.
+// changes the Capacity Reservation's state to cancelled .
+//
+// Instances running in the reserved capacity continue running until you stop
+// them. Stopped instances that target the Capacity Reservation can no longer
+// launch. Modify these instances to either target a different Capacity
+// Reservation, launch On-Demand Instance capacity, or run in any open Capacity
+// Reservation that has matching attributes and sufficient capacity.
 func (c *Client) CancelCapacityReservation(ctx context.Context, params *CancelCapacityReservationInput, optFns ...func(*Options)) (*CancelCapacityReservationOutput, error) {
 	if params == nil {
 		params = &CancelCapacityReservationInput{}
@@ -112,6 +113,12 @@ func (c *Client) addOperationCancelCapacityReservationMiddlewares(stack *middlew
 		return err
 	}
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+		return err
+	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
 	if err = addOpCancelCapacityReservationValidationMiddleware(stack); err != nil {

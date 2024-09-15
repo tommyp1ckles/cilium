@@ -15,6 +15,7 @@
 {{- $defaultK8sClientQPS := 5 -}}
 {{- $defaultK8sClientBurst := 10 -}}
 {{- $defaultDNSProxyEnableTransparentMode := "false" -}}
+{{- $envoyDS := eq (include "envoyDaemonSetEnabled" .) "true" -}}
 
 {{- /* Default values when 1.8 was initially deployed */ -}}
 {{- if semverCompare ">=1.8" (default "1.8" .Values.upgradeCompatibility) -}}
@@ -92,28 +93,19 @@ metadata:
 data:
 {{- if .Values.etcd.enabled }}
   # The kvstore configuration is used to enable use of a kvstore for state
-  # storage. This can either be provided with an external kvstore or with the
-  # help of cilium-etcd-operator which operates an etcd cluster automatically.
+  # storage. This can be provided with an external kvstore.
   kvstore: etcd
-  {{- if .Values.etcd.k8sService }}
-  kvstore-opt: '{"etcd.config": "/var/lib/etcd-config/etcd.config", "etcd.operator": "true"}'
-  {{- else }}
   kvstore-opt: '{"etcd.config": "/var/lib/etcd-config/etcd.config"}'
-  {{- end }}
 
   # This etcd-config contains the etcd endpoints of your cluster. If you use
   # TLS please make sure you follow the tutorial in https://cilium.link/etcd-config
   etcd-config: |-
     ---
     endpoints:
-      {{- if .Values.etcd.managed }}
-      - https://cilium-etcd-client.{{ .Release.Namespace }}.svc:2379
-      {{- else }}
       {{- range .Values.etcd.endpoints }}
       - {{ . }}
       {{- end }}
-      {{- end }}
-    {{- if or .Values.etcd.ssl .Values.etcd.managed }}
+    {{- if .Values.etcd.ssl }}
     trusted-ca-file: '/var/lib/etcd-secrets/etcd-client-ca.crt'
     key-file: '/var/lib/etcd-secrets/etcd-client.key'
     cert-file: '/var/lib/etcd-secrets/etcd-client.crt'
@@ -133,7 +125,8 @@ data:
 {{- end }}
 
   # Identity allocation mode selects how identities are shared between cilium
-  # nodes by setting how they are stored. The options are "crd" or "kvstore".
+  # nodes by setting how they are stored. The options are "crd", "kvstore" or
+  # "doublewrite-readkvstore" / "doublewrite-readcrd".
   # - "crd" stores identities in kubernetes as CRDs (custom resource definition).
   #   These can be queried with:
   #     kubectl get ciliumid
@@ -142,7 +135,11 @@ data:
   #   backend. Upgrades from these older cilium versions should continue using
   #   the kvstore by commenting out the identity-allocation-mode below, or
   #   setting it to "kvstore".
+  # - "doublewrite" modes store identities in both the kvstore and CRDs. This is useful
+  #   for seamless migrations from the kvstore mode to the crd mode. Consult the
+  #   documentation for more information on how to perform the migration.
   identity-allocation-mode: {{ .Values.identityAllocationMode }}
+
   identity-heartbeat-timeout: {{ include "validateDuration" .Values.operator.identityHeartbeatTimeout | quote }}
   identity-gc-interval: {{ include "validateDuration" .Values.operator.identityGCInterval | quote }}
   cilium-endpoint-gc-interval: {{ include "validateDuration" .Values.operator.endpointGCInterval | quote }}
@@ -222,7 +219,7 @@ data:
   {{- end }}
 {{- end }}
 
-{{- if not .Values.envoy.enabled }}
+{{- if not $envoyDS }}
   # Port to expose Envoy metrics (e.g. "9964"). Envoy metrics listener will be disabled if this
   # field is not set.
   {{- if .Values.envoy.prometheus.enabled }}
@@ -277,8 +274,10 @@ data:
   enable-gateway-api: "true"
   enable-gateway-api-secrets-sync: {{ .Values.gatewayAPI.secretsNamespace.sync | quote }}
   enable-gateway-api-proxy-protocol: {{ .Values.gatewayAPI.enableProxyProtocol | quote }}
-  enable-gateway-api-app-protocol: {{ .Values.gatewayAPI.enableAppProtocol | quote }}
+  enable-gateway-api-app-protocol: {{ or .Values.gatewayAPI.enableAppProtocol .Values.gatewayAPI.enableAlpn | quote }}
+  enable-gateway-api-alpn: {{ .Values.gatewayAPI.enableAlpn | quote }}
   gateway-api-xff-num-trusted-hops: {{ .Values.gatewayAPI.xffNumTrustedHops | quote }}
+  gateway-api-service-externaltrafficpolicy: {{ .Values.gatewayAPI.externalTrafficPolicy | quote }}
   gateway-api-secrets-namespace: {{ .Values.gatewayAPI.secretsNamespace.name | quote }}
   gateway-api-hostnetwork-enabled: {{ .Values.gatewayAPI.hostNetwork.enabled | quote }}
   gateway-api-hostnetwork-nodelabelselector: {{ include "mapToString" .Values.gatewayAPI.hostNetwork.nodes.matchLabels | quote }}
@@ -356,6 +355,13 @@ data:
 
 
 
+
+{{- if .Values.bpf.events.default.rateLimit }}
+  bpf-events-default-rate-limit: {{ .Values.bpf.events.default.rateLimit | quote }}
+{{- end }}
+{{- if .Values.bpf.events.default.burstLimit }}
+  bpf-events-default-burst-limit: {{ .Values.bpf.events.default.burstLimit | quote }}
+{{- end}}
 
 {{- if .Values.bpf.mapDynamicSizeRatio }}
   # Specifies the ratio (0.0-1.0] of total system memory to use for dynamic
@@ -580,6 +586,14 @@ data:
   enable-ipv6-big-tcp: {{ .Values.enableIPv6BIGTCP | quote }}
   enable-ipv6-masquerade: {{ .Values.enableIPv6Masquerade | quote }}
 
+{{- if hasKey .Values.bpf "enableTCX" }}
+  enable-tcx: {{ .Values.bpf.enableTCX | quote }}
+{{- end }}
+
+{{- if hasKey .Values.bpf "datapathMode" }}
+  datapath-mode: {{ .Values.bpf.datapathMode | quote }}
+{{- end }}
+
 {{- if (not (kindIs "invalid" .Values.bpf.masquerade)) }}
   enable-bpf-masquerade: {{ .Values.bpf.masquerade | quote }}
 {{- else if eq $defaultBpfMasquerade "true" }}
@@ -648,6 +662,7 @@ data:
 {{- end }}
 
   auto-direct-node-routes: {{ .Values.autoDirectNodeRoutes | quote }}
+  direct-routing-skip-unreachable: {{ .Values.directRoutingSkipUnreachable | quote }}
 
 {{- if hasKey .Values "bandwidthManager" }}
 {{- if .Values.bandwidthManager.enabled }}
@@ -696,6 +711,10 @@ data:
   enable-runtime-device-detection: "true"
 {{- end }}
 
+{{- if .Values.forceDeviceDetection }}
+  force-device-detection: "true"
+{{- end }}
+
   kube-proxy-replacement: {{ $kubeProxyReplacement | quote }}
 
 {{- if ne $kubeProxyReplacement "disabled" }}
@@ -705,9 +724,13 @@ data:
 {{- if $socketLB }}
 {{- if hasKey $socketLB "enabled" }}
   bpf-lb-sock: {{ $socketLB.enabled | quote }}
+  bpf-lb-sock-terminate-pod-connections: {{ $socketLB.enabled | quote }}
 {{- end }}
 {{- if hasKey $socketLB "hostNamespaceOnly" }}
   bpf-lb-sock-hostns-only: {{ $socketLB.hostNamespaceOnly | quote }}
+{{- end }}
+{{- if hasKey $socketLB "terminatePodConnections" }}
+  bpf-lb-sock-terminate-pod-connections: {{ $socketLB.terminatePodConnections | quote }}
 {{- end }}
 {{- end }}
 
@@ -763,6 +786,13 @@ data:
 {{- end }}
 {{- if hasKey .Values.loadBalancer "serviceTopology" }}
   enable-service-topology: {{ .Values.loadBalancer.serviceTopology | quote }}
+# {{- end }}
+
+{{- if hasKey .Values.loadBalancer "experimental" }}
+  enable-experimental-lb: {{ .Values.loadBalancer.experimental | quote }}
+{{- end }}
+{{- if hasKey .Values.loadBalancer "protocolDifferentiation" }}
+  bpf-lb-proto-diff: {{ .Values.loadBalancer.protocolDifferentiation.enabled | quote }}
 {{- end }}
 
 {{- end }}
@@ -813,7 +843,7 @@ data:
 {{- if and .Values.endpointRoutes .Values.endpointRoutes.enabled }}
   enable-endpoint-routes: {{ .Values.endpointRoutes.enabled | quote }}
 {{- end }}
-{{- if and .Values.k8sNetworkPolicy .Values.k8sNetworkPolicy.enabled }}
+{{- if hasKey .Values.k8sNetworkPolicy "enabled" }}
   enable-k8s-networkpolicy: {{ .Values.k8sNetworkPolicy.enabled | quote }}
 {{- end }}
 {{- if .Values.cni.configMap }}
@@ -840,6 +870,9 @@ data:
 {{- if (not (kindIs "invalid" .Values.cni.externalRouting)) }}
   cni-external-routing: {{ .Values.cni.externalRouting | quote }}
 {{- end}}
+{{- if .Values.cni.enableRouteMTUForCNIChaining }}
+  enable-route-mtu-for-cni-chaining: {{ .Values.cni.enableRouteMTUForCNIChaining | quote }}
+{{- end }}
 {{- if .Values.kubeConfigPath }}
   k8s-kubeconfig-path: {{ .Values.kubeConfigPath | quote }}
 {{- end }}
@@ -852,7 +885,7 @@ data:
 {{- if hasKey .Values "healthChecking" }}
   enable-health-checking: {{ .Values.healthChecking | quote }}
 {{- end }}
-{{- if or .Values.wellKnownIdentities.enabled .Values.etcd.managed }}
+{{- if .Values.wellKnownIdentities.enabled }}
   enable-well-known-identities: "true"
 {{- else }}
   enable-well-known-identities: "false"
@@ -941,8 +974,8 @@ data:
 {{- if .Values.hubble.export.static.enabled }}
   hubble-export-file-path: {{ .Values.hubble.export.static.filePath | quote }}
   hubble-export-fieldmask: {{ .Values.hubble.export.static.fieldMask | join " " | quote }}
-  hubble-export-allowlist: {{ .Values.hubble.export.static.allowList | join "," | quote }}
-  hubble-export-denylist: {{ .Values.hubble.export.static.denyList | join "," | quote }}
+  hubble-export-allowlist: {{ .Values.hubble.export.static.allowList | join " " | quote }}
+  hubble-export-denylist: {{ .Values.hubble.export.static.denyList | join " " | quote }}
 {{- end }}
 {{- if .Values.hubble.export.dynamic.enabled }}
   hubble-flowlogs-config-path: /flowlog-config/flowlogs.yaml
@@ -963,7 +996,7 @@ data:
 {{- if .Values.hubble.dropEventEmitter.enabled }}
   hubble-drop-events: "true"
   hubble-drop-events-interval: {{ .Values.hubble.dropEventEmitter.interval | quote }}
-  hubble-drop-events-reasons: {{ .Values.hubble.dropEventEmitter.reasons | join "," | quote }}
+  hubble-drop-events-reasons: {{ .Values.hubble.dropEventEmitter.reasons | join " " | quote }}
 {{- end }}
 {{- if .Values.hubble.preferIpv6 }}
   hubble-prefer-ipv6: "true"
@@ -1030,6 +1063,10 @@ data:
 
 {{- if .Values.nodeIPAM.enabled }}
   enable-node-ipam: "true"
+{{- end }}
+
+{{- if .Values.LBIPAM.requireLBClass }}
+  lbipam-require-lb-class: "true"
 {{- end }}
 
 {{- if .Values.apiRateLimit }}
@@ -1114,9 +1151,6 @@ data:
 {{- if .Values.bgpControlPlane.enabled }}
   enable-bgp-control-plane: "true"
   bgp-secrets-namespace: {{ .Values.bgpControlPlane.secretsNamespace.name | quote }}
-  bgp-v2-api-enabled: {{ .Values.bgpControlPlane.v2Enabled | quote }}
-{{- else }}
-  enable-bgp-control-plane: "false"
 {{- end }}
 
 {{- if .Values.pmtuDiscovery.enabled }}
@@ -1144,8 +1178,14 @@ data:
   disable-external-ip-mitigation: {{ .Values.bpf.disableExternalIPMitigation | quote }}
 {{- end }}
 
-{{- if .Values.enableCiliumEndpointSlice }}
+{{- if or .Values.ciliumEndpointSlice.enabled .Values.enableCiliumEndpointSlice }}
   enable-cilium-endpoint-slice: "true"
+  {{- if .Values.ciliumEndpointSlice.rateLimits }}
+  ces-rate-limits: {{ .Values.ciliumEndpointSlice.rateLimits | toJson | quote }}
+  {{- end }}
+  {{- if .Values.ciliumEndpointSlice.sliceMode }}
+  ces-slice-mode: {{ .Values.ciliumEndpointSlice.sliceMode | quote }}
+  {{- end }}
 {{- end }}
 
 {{- if hasKey .Values "enableK8sTerminatingEndpoint" }}
@@ -1165,8 +1205,19 @@ data:
   annotate-k8s-node: "true"
 {{- end }}
 
-  k8s-client-qps: {{ .Values.k8sClientRateLimit.qps | default $defaultK8sClientQPS | quote}}
-  k8s-client-burst: {{ .Values.k8sClientRateLimit.burst | default $defaultK8sClientBurst | quote }}
+{{- with .Values.k8sClientRateLimit.qps }}
+  k8s-client-qps: {{ . | quote }}
+{{- end }}
+{{- with .Values.k8sClientRateLimit.burst }}
+  k8s-client-burst: {{ . | quote }}
+{{- end }}
+
+{{- with .Values.k8sClientRateLimit.operator.qps }}
+  operator-k8s-client-qps: {{ .| quote }}
+{{- end }}
+{{- with .Values.k8sClientRateLimit.operator.burst }}
+  operator-k8s-client-burst: {{ .| quote }}
+{{- end }}
 
 {{- if and .Values.operator.setNodeTaints (not .Values.operator.removeNodeTaints) -}}
   {{ fail "Cannot have operator.setNodeTaintsMaxNodes and not operator.removeNodeTaints = false" }}
@@ -1197,6 +1248,9 @@ data:
   {{- else if eq $cniChainingMode "none" }}
   # default DNS proxy to transparent mode in non-chaining modes
   dnsproxy-enable-transparent-mode: {{ $defaultDNSProxyEnableTransparentMode | quote }}
+  {{- end }}
+  {{- if (not (kindIs "invalid" .Values.dnsProxy.socketLingerTimeout)) }}
+  dnsproxy-socket-linger-timeout: {{ .Values.dnsProxy.socketLingerTimeout | quote }}
   {{- end }}
   {{- if .Values.dnsProxy.dnsRejectResponseCode }}
   tofqdns-dns-reject-response-code: {{ .Values.dnsProxy.dnsRejectResponseCode | quote }}
@@ -1258,11 +1312,14 @@ data:
   proxy-max-connection-duration-seconds: {{ .Values.envoy.maxConnectionDurationSeconds | quote }}
   proxy-idle-timeout-seconds: {{ .Values.envoy.idleTimeoutDurationSeconds | quote }}
 
-  external-envoy-proxy: {{ .Values.envoy.enabled | quote }}
+  external-envoy-proxy: {{ include "envoyDaemonSetEnabled" . | quote }}
   envoy-base-id: {{ .Values.envoy.baseID | quote }}
 
 {{- if .Values.envoy.log.path }}
   envoy-log: {{ .Values.envoy.log.path | quote }}
+{{- end }}
+{{- if .Values.envoy.log.defaultLevel }}
+  envoy-default-log-level: {{ .Values.envoy.log.defaultLevel | quote }}
 {{- end }}
 
   envoy-keep-cap-netbindservice: {{ .Values.envoy.securityContext.capabilities.keepCapNetBindService | quote }}
@@ -1271,6 +1328,10 @@ data:
   max-connected-clusters: {{ .Values.clustermesh.maxConnectedClusters | quote }}
 {{- end }}
   clustermesh-enable-endpoint-sync: {{ .Values.clustermesh.enableEndpointSliceSynchronization | quote }}
+  clustermesh-enable-mcs-api: {{ .Values.clustermesh.enableMCSAPISupport | quote }}
+
+  nat-map-stats-entries: {{ .Values.nat.mapStatsEntries | quote }}
+  nat-map-stats-interval: {{ .Values.nat.mapStatsInterval | quote }}
 
 # Extra config allows adding arbitrary properties to the cilium config.
 # By putting it at the end of the ConfigMap, it's also possible to override existing properties.

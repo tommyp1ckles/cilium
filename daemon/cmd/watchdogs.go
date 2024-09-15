@@ -11,8 +11,11 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/cilium/cilium/pkg/controller"
+	"github.com/cilium/cilium/pkg/datapath/loader"
+	datapathOption "github.com/cilium/cilium/pkg/datapath/option"
 	"github.com/cilium/cilium/pkg/endpoint"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/promise"
 	"github.com/cilium/cilium/pkg/time"
 )
@@ -57,7 +60,12 @@ func registerEndpointBPFProgWatchdog(p epBPFProgWatchdogParams) {
 	if p.Config.EndpointBPFProgWatchdogInterval == 0 {
 		return
 	}
-
+	// The watchdog works only for tc BPF, but not when the L4LB has
+	// XDP acceleration enabled. While we could enable it for tc BPF
+	// mode, lets keep same behavior on both settings.
+	if option.Config.DatapathMode == datapathOption.DatapathModeLBOnly {
+		return
+	}
 	var (
 		ctx, cancel = context.WithCancel(context.Background())
 		mgr         = controller.NewManager()
@@ -106,12 +114,13 @@ func (d *Daemon) checkEndpointBPFPrograms(ctx context.Context, p epBPFProgWatchd
 			// Skip Endpoints without BPF datapath
 			continue
 		}
-		loaded, err = d.datapath.Loader().DeviceHasTCProgramLoaded(ep.HostInterface(), ep.RequireEgressProg())
+		loaded, err = loader.DeviceHasSKBProgramLoaded(ep.HostInterface(), ep.RequireEgressProg())
 		if err != nil {
 			log.WithField(logfields.Endpoint, ep.HostInterface()).
 				WithField(logfields.EndpointID, ep.ID).
+				WithField(logfields.CEPName, ep.GetK8sNamespaceAndCEPName()).
 				WithError(err).
-				Error("Unable to assert if endpoint BPF programs need to be reloaded")
+				Warn("Unable to assert if endpoint BPF programs need to be reloaded")
 			return err
 		}
 		// We've detected missing bpf progs for this endpoint.
@@ -130,11 +139,9 @@ func (d *Daemon) checkEndpointBPFPrograms(ctx context.Context, p epBPFProgWatchd
 				"Consider investigating whether other software running on this machine is removing Cilium's endpoint BPF programs. " +
 				"If endpoint BPF programs are removed, the associated pods will lose connectivity and only reinstating the programs will restore connectivity.",
 		)
-	wg, err := d.TriggerReloadWithoutCompile(epBPFProgWatchdog)
+	err = d.orchestrator.Reinitialize(d.ctx)
 	if err != nil {
 		log.WithError(err).Error("Failed to reload Cilium endpoints BPF programs")
-	} else {
-		wg.Wait()
 	}
 
 	return err

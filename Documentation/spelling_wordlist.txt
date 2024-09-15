@@ -36,6 +36,7 @@ Dockerfile
 Dockerfiles
 Donenfeld
 ECMP
+EKS
 ENI
 Efx
 Engleder
@@ -47,6 +48,7 @@ Fsnotify
 GCP
 GKE
 Gartrell
+GatewayClass
 Gbit
 GiB
 Gospodarek
@@ -98,6 +100,7 @@ Pepelnjak
 Pfaff
 PodCIDR
 Polytechnique
+Portworx
 QCon
 QLogic
 RuleParser
@@ -182,6 +185,7 @@ bcc
 behaviour
 benchmarking
 bgp
+blackholing
 blockedConfigOverrides
 bnxt
 bookinfo
@@ -194,6 +198,7 @@ bugfix
 bugfixes
 bugtool
 buildx
+burstLimit
 bytecode
 cBPF
 callee
@@ -257,6 +262,7 @@ ctf
 customConf
 daemonset
 datacenter
+datagram
 datagrams
 datapath
 datastore
@@ -294,6 +300,7 @@ eBGP
 eBPF
 eXpress
 ebpf
+edts
 effectful
 egressing
 elfutils
@@ -310,6 +317,7 @@ etcd
 eth
 ethernet
 ethtool
+existingSecret
 extTrafficPolicy
 extern
 externalIPs
@@ -317,6 +325,7 @@ externalTrafficPolicy
 extraConfig
 facto
 failover
+fcfs
 fec
 filesystem
 filesystems
@@ -327,6 +336,7 @@ fromCIDR
 fromCIDRSet
 fromEndpoints
 frontend
+frontends
 fs
 func
 gRPC
@@ -384,6 +394,7 @@ impactful
 ingressing
 init
 initContainer
+initContainers
 initialDelaySeconds
 inlined
 inlines
@@ -401,6 +412,7 @@ ipcache
 ipmasq
 iproute
 ipsec
+ipsets
 iptables
 ipv
 istio
@@ -424,6 +436,9 @@ jsgt
 jsle
 jslt
 json
+k8sServiceHost
+k8sServiceLookupConfigMapName
+k8sServiceLookupNamespace
 kTLS
 kafka
 kallsyms
@@ -471,6 +486,7 @@ llc
 llvm
 loadBalancerClass
 loadBalancerIP
+loadBalancerSourceRanges
 loadbalancer
 loadbalancers
 loadbalancing
@@ -504,6 +520,7 @@ memcd
 microservice
 microservices
 minikube
+misconfiguration
 misconfigures
 mitigations
 mlx
@@ -535,6 +552,7 @@ netdevices
 netdevsim
 netfilter
 netfront
+netkit
 netns
 netperf
 netsec
@@ -560,6 +578,7 @@ openapi
 openssl
 originatingTLS
 os
+oseq
 otx
 pahole
 parsable
@@ -595,6 +614,7 @@ prerequirement
 prestop
 printf
 priori
+proc
 profiler
 programmability
 prometheus
@@ -609,6 +629,9 @@ qede
 qemu
 queryable
 queueing
+rST
+rateLimit
+ratelimiter
 rc
 reStructuredText
 reachability
@@ -617,6 +640,7 @@ rebased
 rebasing
 recompiles
 reconfigurations
+reconnections
 recv
 regenerations
 regexes
@@ -627,6 +651,8 @@ repo
 repos
 reproducibility
 requireIPv
+requireLBClass
+resync
 retpoline
 retransmission
 retransmissions
@@ -636,7 +662,6 @@ roadmap
 rollout
 routable
 routingMode
-rST
 runnable
 runtimes
 sandboxing
@@ -647,6 +672,7 @@ secretName
 secretsNamespace
 selftest
 selftests
+serverinfo
 serviceAccount
 serviceMonitor
 setrlimit
@@ -700,6 +726,7 @@ tcpdump
 tcplife
 tcptop
 tcptracer
+tcx
 templating
 terminatingTLS
 terminationGracePeriodSeconds
@@ -716,12 +743,14 @@ toGroups
 tofqdns
 tolerations
 toolchain
+toto
 traceparent
 tracepoint
 tracepoints
 tracestate
 transpiling
 tsne
+tunings
 tunnelProtocol
 ubuntu
 udp
@@ -779,6 +808,7 @@ webservice
 whitespace
 wildcarded
 workqueue
+workstream
 www
 xDS
 xdp

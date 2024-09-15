@@ -11,18 +11,18 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"testing"
 	"time"
 
-	. "github.com/cilium/checkmate"
 	cilium "github.com/cilium/proxy/go/cilium/api"
 	envoy_config_core "github.com/cilium/proxy/go/envoy/config/core/v3"
 	envoy_config_route "github.com/cilium/proxy/go/envoy/config/route/v3"
 	envoy_type_matcher "github.com/cilium/proxy/go/envoy/type/matcher/v3"
+	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sTypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
 
-	"github.com/cilium/cilium/pkg/checker"
 	"github.com/cilium/cilium/pkg/common"
 	"github.com/cilium/cilium/pkg/endpoint"
 	"github.com/cilium/cilium/pkg/endpoint/regeneration"
@@ -33,11 +33,11 @@ import (
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	"github.com/cilium/cilium/pkg/k8s/types"
 	"github.com/cilium/cilium/pkg/labels"
-	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/policy/api"
 	"github.com/cilium/cilium/pkg/testutils"
+	testidentity "github.com/cilium/cilium/pkg/testutils/identity"
 	testipcache "github.com/cilium/cilium/pkg/testutils/ipcache"
 )
 
@@ -181,9 +181,9 @@ var (
 
 // getXDSNetworkPolicies returns the representation of the xDS network policies
 // as a map of IP addresses to NetworkPolicy objects
-func (ds *DaemonSuite) getXDSNetworkPolicies(c *C, resourceNames []string) map[string]*cilium.NetworkPolicy {
+func (ds *DaemonSuite) getXDSNetworkPolicies(t *testing.T, resourceNames []string) map[string]*cilium.NetworkPolicy {
 	networkPolicies, err := ds.d.envoyXdsServer.GetNetworkPolicies(resourceNames)
-	c.Assert(err, IsNil)
+	require.Nil(t, err)
 	return networkPolicies
 }
 
@@ -210,12 +210,12 @@ func prepareEndpointDirs() (cleanup func(), err error) {
 	}, nil
 }
 
-func (ds *DaemonSuite) prepareEndpoint(c *C, identity *identity.Identity, qa bool) *endpoint.Endpoint {
+func (ds *DaemonSuite) prepareEndpoint(t *testing.T, identity *identity.Identity, qa bool) *endpoint.Endpoint {
 	testEndpointID := testProdEndpointID
 	if qa {
 		testEndpointID = testQAEndpointID
 	}
-	e := endpoint.NewTestEndpointWithState(c, ds.d, ds.d, testipcache.NewMockIPCache(), ds.d.l7Proxy, ds.d.identityAllocator, testEndpointID, endpoint.StateWaitingForIdentity)
+	e := endpoint.NewTestEndpointWithState(t, ds.d, ds.d, testipcache.NewMockIPCache(), ds.d.l7Proxy, ds.d.identityAllocator, testEndpointID, endpoint.StateWaitingForIdentity)
 	e.SetPropertyValue(endpoint.PropertyFakeEndpoint, false)
 	e.SetPropertyValue(endpoint.PropertyWithouteBPFDatapath, true)
 	e.SetPropertyValue(endpoint.PropertySkipBPFPolicy, true)
@@ -229,21 +229,26 @@ func (ds *DaemonSuite) prepareEndpoint(c *C, identity *identity.Identity, qa boo
 	e.SetIdentity(identity, true)
 
 	ready := e.SetState(endpoint.StateWaitingToRegenerate, "test")
-	c.Assert(ready, Equals, true)
+	require.Equal(t, true, ready)
 	buildSuccess := <-e.Regenerate(regenerationMetadata)
-	c.Assert(buildSuccess, Equals, true)
+	require.Equal(t, true, buildSuccess)
 
 	return e
 }
 
-func (ds *DaemonSuite) regenerateEndpoint(c *C, e *endpoint.Endpoint) {
+func (ds *DaemonSuite) regenerateEndpoint(t *testing.T, e *endpoint.Endpoint) {
 	ready := e.SetState(endpoint.StateWaitingToRegenerate, "test")
-	c.Assert(ready, Equals, true)
+	require.Equal(t, true, ready)
 	buildSuccess := <-e.Regenerate(regenerationMetadata)
-	c.Assert(buildSuccess, Equals, true)
+	require.Equal(t, true, buildSuccess)
 }
 
-func (ds *DaemonSuite) TestUpdateConsumerMap(c *C) {
+func TestUpdateConsumerMapEtcd(t *testing.T) {
+	ds := setupDaemonEtcdSuite(t)
+	ds.testUpdateConsumerMap(t)
+}
+
+func (ds *DaemonSuite) testUpdateConsumerMap(t *testing.T) {
 	rules := api.Rules{
 		{
 			EndpointSelector: api.NewESFromLabels(lblBar),
@@ -302,56 +307,56 @@ func (ds *DaemonSuite) TestUpdateConsumerMap(c *C) {
 	ds.d.envoyXdsServer.RemoveAllNetworkPolicies()
 
 	_, err3 := ds.d.PolicyAdd(rules, policyAddOptions)
-	c.Assert(err3, Equals, nil)
+	require.Equal(t, nil, err3)
 
 	// Prepare the identities necessary for testing
 	qaBarLbls := labels.Labels{lblBar.Key: lblBar, lblQA.Key: lblQA}
 	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true, identity.InvalidIdentity)
-	c.Assert(err, Equals, nil)
+	require.Equal(t, nil, err)
 	defer ds.d.identityAllocator.Release(context.Background(), qaBarSecLblsCtx, false)
 	prodBarLbls := labels.Labels{lblBar.Key: lblBar, lblProd.Key: lblProd}
 	prodBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), prodBarLbls, true, identity.InvalidIdentity)
-	c.Assert(err, Equals, nil)
+	require.Equal(t, nil, err)
 	defer ds.d.identityAllocator.Release(context.Background(), prodBarSecLblsCtx, false)
 	qaFooLbls := labels.Labels{lblFoo.Key: lblFoo, lblQA.Key: lblQA}
 	qaFooSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaFooLbls, true, identity.InvalidIdentity)
-	c.Assert(err, Equals, nil)
+	require.Equal(t, nil, err)
 	defer ds.d.identityAllocator.Release(context.Background(), qaFooSecLblsCtx, false)
 	prodFooLbls := labels.Labels{lblFoo.Key: lblFoo, lblProd.Key: lblProd}
 	prodFooSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), prodFooLbls, true, identity.InvalidIdentity)
-	c.Assert(err, Equals, nil)
+	require.Equal(t, nil, err)
 	defer ds.d.identityAllocator.Release(context.Background(), prodFooSecLblsCtx, false)
 	prodFooJoeLbls := labels.Labels{lblFoo.Key: lblFoo, lblProd.Key: lblProd, lblJoe.Key: lblJoe}
 	prodFooJoeSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), prodFooJoeLbls, true, identity.InvalidIdentity)
-	c.Assert(err, Equals, nil)
+	require.Equal(t, nil, err)
 	defer ds.d.identityAllocator.Release(context.Background(), prodFooJoeSecLblsCtx, false)
 
 	// Prepare endpoints
 	cleanup, err2 := prepareEndpointDirs()
-	c.Assert(err2, Equals, nil)
+	require.Equal(t, nil, err2)
 	defer cleanup()
 
-	eQABar := ds.prepareEndpoint(c, qaBarSecLblsCtx, true)
-	c.Assert(eQABar.Allows(qaBarSecLblsCtx.ID), Equals, false)
-	c.Assert(eQABar.Allows(prodBarSecLblsCtx.ID), Equals, false)
-	c.Assert(eQABar.Allows(qaFooSecLblsCtx.ID), Equals, true)
-	c.Assert(eQABar.Allows(prodFooSecLblsCtx.ID), Equals, false)
+	eQABar := ds.prepareEndpoint(t, qaBarSecLblsCtx, true)
+	require.Equal(t, false, eQABar.Allows(qaBarSecLblsCtx.ID))
+	require.Equal(t, false, eQABar.Allows(prodBarSecLblsCtx.ID))
+	require.Equal(t, true, eQABar.Allows(qaFooSecLblsCtx.ID))
+	require.Equal(t, false, eQABar.Allows(prodFooSecLblsCtx.ID))
 
-	eProdBar := ds.prepareEndpoint(c, prodBarSecLblsCtx, false)
-	c.Assert(eProdBar.Allows(0), Equals, false)
-	c.Assert(eProdBar.Allows(qaBarSecLblsCtx.ID), Equals, false)
-	c.Assert(eProdBar.Allows(prodBarSecLblsCtx.ID), Equals, false)
-	c.Assert(eProdBar.Allows(qaFooSecLblsCtx.ID), Equals, false)
-	c.Assert(eProdBar.Allows(prodFooSecLblsCtx.ID), Equals, true)
-	c.Assert(eProdBar.Allows(prodFooJoeSecLblsCtx.ID), Equals, true)
+	eProdBar := ds.prepareEndpoint(t, prodBarSecLblsCtx, false)
+	require.Equal(t, false, eProdBar.Allows(0))
+	require.Equal(t, false, eProdBar.Allows(qaBarSecLblsCtx.ID))
+	require.Equal(t, false, eProdBar.Allows(prodBarSecLblsCtx.ID))
+	require.Equal(t, false, eProdBar.Allows(qaFooSecLblsCtx.ID))
+	require.Equal(t, true, eProdBar.Allows(prodFooSecLblsCtx.ID))
+	require.Equal(t, true, eProdBar.Allows(prodFooJoeSecLblsCtx.ID))
 
 	// Check that both policies have been updated in the xDS cache for the L7
 	// proxies.
-	networkPolicies := ds.getXDSNetworkPolicies(c, nil)
-	c.Assert(networkPolicies, HasLen, 4)
+	networkPolicies := ds.getXDSNetworkPolicies(t, nil)
+	require.Len(t, networkPolicies, 4)
 
 	qaBarNetworkPolicy := networkPolicies[QAIPv4Addr.String()]
-	c.Assert(qaBarNetworkPolicy, Not(IsNil))
+	require.NotNil(t, qaBarNetworkPolicy)
 	expectedRemotePolicies := []uint32{
 		uint32(qaFooSecLblsCtx.ID),
 		// The prodFoo* identities are allowed by FromEndpoints but rejected by
@@ -390,10 +395,10 @@ func (ds *DaemonSuite) TestUpdateConsumerMap(c *C) {
 			{Protocol: envoy_config_core.SocketAddress_TCP},
 		},
 	}
-	c.Assert(qaBarNetworkPolicy, checker.ExportedEquals, expectedNetworkPolicy)
+	require.Equal(t, expectedNetworkPolicy, qaBarNetworkPolicy)
 
 	prodBarNetworkPolicy := networkPolicies[ProdIPv4Addr.String()]
-	c.Assert(prodBarNetworkPolicy, Not(IsNil))
+	require.NotNil(t, prodBarNetworkPolicy)
 	expectedRemotePolicies = []uint32{
 		// The qaFoo identity is allowed by FromEndpoints but rejected by
 		// FromRequires, so it is not included in the remote policies:
@@ -433,18 +438,23 @@ func (ds *DaemonSuite) TestUpdateConsumerMap(c *C) {
 			{Protocol: envoy_config_core.SocketAddress_TCP},
 		},
 	}
-	c.Assert(prodBarNetworkPolicy, checker.ExportedEquals, expectedNetworkPolicy)
+	require.Equal(t, expectedNetworkPolicy, prodBarNetworkPolicy)
 }
 
-func (ds *DaemonSuite) TestL4_L7_Shadowing(c *C) {
+func TestL4L7ShadowingEtcd(t *testing.T) {
+	ds := setupDaemonEtcdSuite(t)
+	ds.testL4L7Shadowing(t)
+}
+
+func (ds *DaemonSuite) testL4L7Shadowing(t *testing.T) {
 	// Prepare the identities necessary for testing
 	qaBarLbls := labels.Labels{lblBar.Key: lblBar, lblQA.Key: lblQA}
 	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true, identity.InvalidIdentity)
-	c.Assert(err, Equals, nil)
+	require.Equal(t, nil, err)
 	defer ds.d.identityAllocator.Release(context.Background(), qaBarSecLblsCtx, false)
 	qaFooLbls := labels.Labels{lblFoo.Key: lblFoo, lblQA.Key: lblQA}
 	qaFooSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaFooLbls, true, identity.InvalidIdentity)
-	c.Assert(err, Equals, nil)
+	require.Equal(t, nil, err)
 	defer ds.d.identityAllocator.Release(context.Background(), qaFooSecLblsCtx, false)
 
 	rules := api.Rules{
@@ -478,21 +488,21 @@ func (ds *DaemonSuite) TestL4_L7_Shadowing(c *C) {
 	ds.d.envoyXdsServer.RemoveAllNetworkPolicies()
 
 	_, err = ds.d.PolicyAdd(rules, policyAddOptions)
-	c.Assert(err, Equals, nil)
+	require.Equal(t, nil, err)
 
 	// Prepare endpoints
 	cleanup, err := prepareEndpointDirs()
-	c.Assert(err, Equals, nil)
+	require.Equal(t, nil, err)
 	defer cleanup()
 
-	eQABar := ds.prepareEndpoint(c, qaBarSecLblsCtx, true)
-	c.Assert(eQABar.Allows(qaBarSecLblsCtx.ID), Equals, false)
-	c.Assert(eQABar.Allows(qaFooSecLblsCtx.ID), Equals, false)
+	eQABar := ds.prepareEndpoint(t, qaBarSecLblsCtx, true)
+	require.Equal(t, false, eQABar.Allows(qaBarSecLblsCtx.ID))
+	require.Equal(t, false, eQABar.Allows(qaFooSecLblsCtx.ID))
 
 	// Check that both policies have been updated in the xDS cache for the L7
 	// proxies.
-	networkPolicies := ds.getXDSNetworkPolicies(c, nil)
-	c.Assert(networkPolicies, HasLen, 2)
+	networkPolicies := ds.getXDSNetworkPolicies(t, nil)
+	require.Len(t, networkPolicies, 2)
 
 	qaBarNetworkPolicy := networkPolicies[QAIPv4Addr.String()]
 	expectedNetworkPolicy := &cilium.NetworkPolicy{
@@ -516,21 +526,26 @@ func (ds *DaemonSuite) TestL4_L7_Shadowing(c *C) {
 			{Protocol: envoy_config_core.SocketAddress_TCP},
 		},
 	}
-	c.Assert(qaBarNetworkPolicy, checker.ExportedEquals, expectedNetworkPolicy)
+	require.Equal(t, expectedNetworkPolicy, qaBarNetworkPolicy)
+}
+
+func TestL4L7ShadowingShortCircuitEtcd(t *testing.T) {
+	ds := setupDaemonEtcdSuite(t)
+	ds.testL4L7ShadowingShortCircuit(t)
 }
 
 // HTTP rules here have no side effects, so the L4 allow-all rule is
 // short-circuiting the HTTP rules (i.e., the network policy sent to
 // envoy does not even have the HTTP rules).
-func (ds *DaemonSuite) TestL4_L7_ShadowingShortCircuit(c *C) {
+func (ds *DaemonSuite) testL4L7ShadowingShortCircuit(t *testing.T) {
 	// Prepare the identities necessary for testing
 	qaBarLbls := labels.Labels{lblBar.Key: lblBar, lblQA.Key: lblQA}
 	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true, identity.InvalidIdentity)
-	c.Assert(err, Equals, nil)
+	require.Equal(t, nil, err)
 	defer ds.d.identityAllocator.Release(context.Background(), qaBarSecLblsCtx, false)
 	qaFooLbls := labels.Labels{lblFoo.Key: lblFoo, lblQA.Key: lblQA}
 	qaFooSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaFooLbls, true, identity.InvalidIdentity)
-	c.Assert(err, Equals, nil)
+	require.Equal(t, nil, err)
 	defer ds.d.identityAllocator.Release(context.Background(), qaFooSecLblsCtx, false)
 
 	rules := api.Rules{
@@ -564,21 +579,21 @@ func (ds *DaemonSuite) TestL4_L7_ShadowingShortCircuit(c *C) {
 	ds.d.envoyXdsServer.RemoveAllNetworkPolicies()
 
 	_, err = ds.d.PolicyAdd(rules, policyAddOptions)
-	c.Assert(err, Equals, nil)
+	require.Equal(t, nil, err)
 
 	// Prepare endpoints
 	cleanup, err := prepareEndpointDirs()
-	c.Assert(err, Equals, nil)
+	require.Equal(t, nil, err)
 	defer cleanup()
 
-	eQABar := ds.prepareEndpoint(c, qaBarSecLblsCtx, true)
-	c.Assert(eQABar.Allows(qaBarSecLblsCtx.ID), Equals, false)
-	c.Assert(eQABar.Allows(qaFooSecLblsCtx.ID), Equals, false)
+	eQABar := ds.prepareEndpoint(t, qaBarSecLblsCtx, true)
+	require.Equal(t, false, eQABar.Allows(qaBarSecLblsCtx.ID))
+	require.Equal(t, false, eQABar.Allows(qaFooSecLblsCtx.ID))
 
 	// Check that both policies have been updated in the xDS cache for the L7
 	// proxies.
-	networkPolicies := ds.getXDSNetworkPolicies(c, nil)
-	c.Assert(networkPolicies, HasLen, 2)
+	networkPolicies := ds.getXDSNetworkPolicies(t, nil)
+	require.Len(t, networkPolicies, 2)
 
 	qaBarNetworkPolicy := networkPolicies[QAIPv4Addr.String()]
 	expectedNetworkPolicy := &cilium.NetworkPolicy{
@@ -596,25 +611,27 @@ func (ds *DaemonSuite) TestL4_L7_ShadowingShortCircuit(c *C) {
 			{Protocol: envoy_config_core.SocketAddress_TCP},
 		},
 	}
-	c.Assert(qaBarNetworkPolicy, checker.ExportedEquals, expectedNetworkPolicy)
+	require.Equal(t, expectedNetworkPolicy, qaBarNetworkPolicy)
 }
 
-func (ds *DaemonSuite) TestL3_dependent_L7(c *C) {
-	logging.SetLogLevelToDebug()
-	defer logging.SetDefaultLogLevel()
+func TestL3DependentL7Etcd(t *testing.T) {
+	ds := setupDaemonEtcdSuite(t)
+	ds.testL3DependentL7(t)
+}
 
+func (ds *DaemonSuite) testL3DependentL7(t *testing.T) {
 	// Prepare the identities necessary for testing
 	qaBarLbls := labels.Labels{lblBar.Key: lblBar, lblQA.Key: lblQA}
 	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true, identity.InvalidIdentity)
-	c.Assert(err, Equals, nil)
+	require.Equal(t, nil, err)
 	defer ds.d.identityAllocator.Release(context.Background(), qaBarSecLblsCtx, false)
 	qaFooLbls := labels.Labels{lblFoo.Key: lblFoo, lblQA.Key: lblQA}
 	qaFooSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaFooLbls, true, identity.InvalidIdentity)
-	c.Assert(err, Equals, nil)
+	require.Equal(t, nil, err)
 	defer ds.d.identityAllocator.Release(context.Background(), qaFooSecLblsCtx, false)
 	qaJoeLbls := labels.Labels{lblJoe.Key: lblJoe, lblQA.Key: lblQA}
 	qaJoeSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaJoeLbls, true, identity.InvalidIdentity)
-	c.Assert(err, Equals, nil)
+	require.Equal(t, nil, err)
 	defer ds.d.identityAllocator.Release(context.Background(), qaJoeSecLblsCtx, false)
 
 	rules := api.Rules{
@@ -654,22 +671,22 @@ func (ds *DaemonSuite) TestL3_dependent_L7(c *C) {
 	ds.d.envoyXdsServer.RemoveAllNetworkPolicies()
 
 	_, err = ds.d.PolicyAdd(rules, policyAddOptions)
-	c.Assert(err, Equals, nil)
+	require.Equal(t, nil, err)
 
 	// Prepare endpoints
 	cleanup, err := prepareEndpointDirs()
-	c.Assert(err, Equals, nil)
+	require.Equal(t, nil, err)
 	defer cleanup()
 
-	eQABar := ds.prepareEndpoint(c, qaBarSecLblsCtx, true)
-	c.Assert(eQABar.Allows(qaBarSecLblsCtx.ID), Equals, false)
-	c.Assert(eQABar.Allows(qaFooSecLblsCtx.ID), Equals, false)
-	c.Assert(eQABar.Allows(qaJoeSecLblsCtx.ID), Equals, true)
+	eQABar := ds.prepareEndpoint(t, qaBarSecLblsCtx, true)
+	require.Equal(t, false, eQABar.Allows(qaBarSecLblsCtx.ID))
+	require.Equal(t, false, eQABar.Allows(qaFooSecLblsCtx.ID))
+	require.Equal(t, true, eQABar.Allows(qaJoeSecLblsCtx.ID))
 
 	// Check that both policies have been updated in the xDS cache for the L7
 	// proxies.
-	networkPolicies := ds.getXDSNetworkPolicies(c, nil)
-	c.Assert(networkPolicies, HasLen, 2)
+	networkPolicies := ds.getXDSNetworkPolicies(t, nil)
+	require.Len(t, networkPolicies, 2)
 
 	qaBarNetworkPolicy := networkPolicies[QAIPv4Addr.String()]
 	expectedNetworkPolicy := &cilium.NetworkPolicy{
@@ -700,10 +717,15 @@ func (ds *DaemonSuite) TestL3_dependent_L7(c *C) {
 			{Protocol: envoy_config_core.SocketAddress_TCP},
 		},
 	}
-	c.Assert(qaBarNetworkPolicy, checker.ExportedEquals, expectedNetworkPolicy)
+	require.Equal(t, expectedNetworkPolicy, qaBarNetworkPolicy)
 }
 
-func (ds *DaemonSuite) TestReplacePolicy(c *C) {
+func TestReplacePolicyEtcd(t *testing.T) {
+	ds := setupDaemonEtcdSuite(t)
+	ds.testReplacePolicy(t)
+}
+
+func (ds *DaemonSuite) testReplacePolicy(t *testing.T) {
 	lbls := labels.ParseLabelArray("foo", "bar")
 	rules := api.Rules{
 		{
@@ -730,9 +752,9 @@ func (ds *DaemonSuite) TestReplacePolicy(c *C) {
 	}
 
 	_, err := ds.d.PolicyAdd(rules, policyAddOptions)
-	c.Assert(err, IsNil)
+	require.Nil(t, err)
 	ds.d.policy.Mutex.RLock()
-	c.Assert(len(ds.d.policy.SearchRLocked(lbls)), Equals, 2)
+	require.Equal(t, 2, len(ds.d.policy.SearchRLocked(lbls)))
 	ds.d.policy.Mutex.RUnlock()
 	rules[0].Egress = []api.EgressRule{
 		{
@@ -746,16 +768,21 @@ func (ds *DaemonSuite) TestReplacePolicy(c *C) {
 	}
 	_, err = ds.d.PolicyAdd(rules, &policy.AddOptions{Replace: true})
 
-	c.Assert(err, IsNil)
+	require.Nil(t, err)
 	ds.d.policy.Mutex.RLock()
-	c.Assert(len(ds.d.policy.SearchRLocked(lbls)), Equals, 2)
+	require.Equal(t, 2, len(ds.d.policy.SearchRLocked(lbls)))
 	ds.d.policy.Mutex.RUnlock()
 }
 
-func (ds *DaemonSuite) TestRemovePolicy(c *C) {
+func TestRemovePolicyEtcd(t *testing.T) {
+	ds := setupDaemonEtcdSuite(t)
+	ds.testRemovePolicy(t)
+}
+
+func (ds *DaemonSuite) testRemovePolicy(t *testing.T) {
 	qaBarLbls := labels.Labels{lblBar.Key: lblBar, lblQA.Key: lblQA}
 	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true, identity.InvalidIdentity)
-	c.Assert(err, Equals, nil)
+	require.Equal(t, nil, err)
 	defer ds.d.identityAllocator.Release(context.Background(), qaBarSecLblsCtx, false)
 
 	rules := api.Rules{
@@ -816,34 +843,39 @@ func (ds *DaemonSuite) TestRemovePolicy(c *C) {
 	ds.d.envoyXdsServer.RemoveAllNetworkPolicies()
 
 	_, err3 := ds.d.PolicyAdd(rules, policyAddOptions)
-	c.Assert(err3, Equals, nil)
+	require.Equal(t, nil, err3)
 
 	cleanup, err2 := prepareEndpointDirs()
-	c.Assert(err2, Equals, nil)
+	require.Equal(t, nil, err2)
 	defer cleanup()
 
 	// Create the endpoint and generate its policy.
-	e := ds.prepareEndpoint(c, qaBarSecLblsCtx, true)
+	e := ds.prepareEndpoint(t, qaBarSecLblsCtx, true)
 
 	// Check that the policy has been updated in the xDS cache for the L7
 	// proxies.
-	networkPolicies := ds.getXDSNetworkPolicies(c, nil)
-	c.Assert(networkPolicies, HasLen, 2)
+	networkPolicies := ds.getXDSNetworkPolicies(t, nil)
+	require.Len(t, networkPolicies, 2)
 	qaBarNetworkPolicy := networkPolicies[QAIPv4Addr.String()]
-	c.Assert(qaBarNetworkPolicy, Not(IsNil))
+	require.NotNil(t, qaBarNetworkPolicy)
 
 	// Delete the endpoint.
 	e.Delete(endpoint.DeleteConfig{})
 
 	// Check that the policy has been removed from the xDS cache.
-	networkPolicies = ds.getXDSNetworkPolicies(c, nil)
-	c.Assert(networkPolicies, HasLen, 0)
+	networkPolicies = ds.getXDSNetworkPolicies(t, nil)
+	require.Len(t, networkPolicies, 0)
 }
 
-func (ds *DaemonSuite) TestIncrementalPolicy(c *C) {
+func TestIncrementalPolicyEtcd(t *testing.T) {
+	ds := setupDaemonEtcdSuite(t)
+	ds.testIncrementalPolicy(t)
+}
+
+func (ds *DaemonSuite) testIncrementalPolicy(t *testing.T) {
 	qaBarLbls := labels.Labels{lblBar.Key: lblBar, lblQA.Key: lblQA}
 	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true, identity.InvalidIdentity)
-	c.Assert(err, Equals, nil)
+	require.Equal(t, nil, err)
 	defer ds.d.identityAllocator.Release(context.Background(), qaBarSecLblsCtx, false)
 
 	rules := api.Rules{
@@ -904,22 +936,22 @@ func (ds *DaemonSuite) TestIncrementalPolicy(c *C) {
 	ds.d.envoyXdsServer.RemoveAllNetworkPolicies()
 
 	_, err3 := ds.d.PolicyAdd(rules, policyAddOptions)
-	c.Assert(err3, Equals, nil)
+	require.Equal(t, nil, err3)
 
 	cleanup, err2 := prepareEndpointDirs()
-	c.Assert(err2, Equals, nil)
+	require.Equal(t, nil, err2)
 	defer cleanup()
 
 	// Create the endpoint and generate its policy.
-	eQABar := ds.prepareEndpoint(c, qaBarSecLblsCtx, true)
+	eQABar := ds.prepareEndpoint(t, qaBarSecLblsCtx, true)
 	// Check that the policy has been updated in the xDS cache for the L7
 	// proxies.
-	networkPolicies := ds.getXDSNetworkPolicies(c, nil)
-	c.Assert(networkPolicies, HasLen, 2)
+	networkPolicies := ds.getXDSNetworkPolicies(t, nil)
+	require.Len(t, networkPolicies, 2)
 	qaBarNetworkPolicy := networkPolicies[QAIPv4Addr.String()]
-	c.Assert(qaBarNetworkPolicy, Not(IsNil))
+	require.NotNil(t, qaBarNetworkPolicy)
 
-	c.Assert(qaBarNetworkPolicy.IngressPerPortPolicies, HasLen, 1)
+	require.Len(t, qaBarNetworkPolicy.IngressPerPortPolicies, 1)
 
 	expectedIngressPolicy := &cilium.PortNetworkPolicy{
 		Port:     80,
@@ -930,31 +962,31 @@ func (ds *DaemonSuite) TestIncrementalPolicy(c *C) {
 			},
 		},
 	}
-	c.Assert(qaBarNetworkPolicy.IngressPerPortPolicies[0], checker.ExportedEquals, expectedIngressPolicy)
+	require.Equal(t, expectedIngressPolicy, qaBarNetworkPolicy.IngressPerPortPolicies[0])
 
 	// Allocate identities needed for this test
 	qaFooLbls := labels.Labels{lblFoo.Key: lblFoo, lblQA.Key: lblQA}
 	qaFooID, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaFooLbls, true, identity.InvalidIdentity)
-	c.Assert(err, Equals, nil)
+	require.Equal(t, nil, err)
 	defer ds.d.identityAllocator.Release(context.Background(), qaFooID, false)
 
 	// Regenerate endpoint
-	ds.regenerateEndpoint(c, eQABar)
+	ds.regenerateEndpoint(t, eQABar)
 
 	// Check that the policy has been updated in the xDS cache for the L7
 	// proxies. The plumbing of the identity when `AllocateIdentity` is performed
 	// down to the `SelectorCache` is asynchronous, so use waiting with a
 	// timeout.
 	err = testutils.WaitUntil(func() bool {
-		networkPolicies = ds.getXDSNetworkPolicies(c, nil)
+		networkPolicies = ds.getXDSNetworkPolicies(t, nil)
 		if len(networkPolicies) != 2 {
 			return false
 		}
 		qaBarNetworkPolicy = networkPolicies[QAIPv4Addr.String()]
 		return qaBarNetworkPolicy != nil && len(qaBarNetworkPolicy.IngressPerPortPolicies) == 2
 	}, time.Second*1)
-	c.Assert(err, IsNil)
-	c.Assert(qaBarNetworkPolicy, checker.ExportedEquals, &cilium.NetworkPolicy{
+	require.Nil(t, err)
+	require.EqualExportedValues(t, &cilium.NetworkPolicy{
 		EndpointIps:      []string{QAIPv6Addr.String(), QAIPv4Addr.String()},
 		EndpointId:       uint64(eQABar.ID),
 		ConntrackMapName: "global",
@@ -981,17 +1013,22 @@ func (ds *DaemonSuite) TestIncrementalPolicy(c *C) {
 		EgressPerPortPolicies: []*cilium.PortNetworkPolicy{ // Allow-all policy.
 			{Protocol: envoy_config_core.SocketAddress_TCP},
 		},
-	})
+	}, qaBarNetworkPolicy)
 
 	// Delete the endpoint.
 	eQABar.Delete(endpoint.DeleteConfig{})
 
 	// Check that the policy has been removed from the xDS cache.
-	networkPolicies = ds.getXDSNetworkPolicies(c, nil)
-	c.Assert(networkPolicies, HasLen, 0)
+	networkPolicies = ds.getXDSNetworkPolicies(t, nil)
+	require.Len(t, networkPolicies, 0)
 }
 
-func (ds *DaemonSuite) Test_addCiliumNetworkPolicyV2(c *C) {
+func TestAddCiliumNetworkPolicyV2Etcd(t *testing.T) {
+	ds := setupDaemonEtcdSuite(t)
+	ds.testAddCiliumNetworkPolicyV2(t)
+}
+
+func (ds *DaemonSuite) testAddCiliumNetworkPolicyV2(t *testing.T) {
 	uuid := k8sTypes.UID("13bba160-ddca-13e8-b697-0800273b04ff")
 	type args struct {
 		ciliumV2Store cache.Store
@@ -1035,7 +1072,7 @@ func (ds *DaemonSuite) Test_addCiliumNetworkPolicyV2(c *C) {
 			},
 			setupWanted: func() wanted {
 				r := policy.NewPolicyRepository(nil, nil, nil, nil)
-				r.AddList(api.Rules{
+				r.MustAddList(api.Rules{
 					api.NewRule().
 						WithEndpointSelector(api.EndpointSelector{
 							LabelSelector: &slim_metav1.LabelSelector{
@@ -1066,7 +1103,7 @@ func (ds *DaemonSuite) Test_addCiliumNetworkPolicyV2(c *C) {
 				r := policy.NewPolicyRepository(nil, nil, nil, nil)
 				lbls := utils.GetPolicyLabels("production", "db", uuid, utils.ResourceTypeCiliumNetworkPolicy)
 				lbls = append(lbls, labels.ParseLabelArray("foo=bar")...).Sort()
-				r.AddList(api.Rules{
+				r.MustAddList(api.Rules{
 					{
 						EndpointSelector: api.EndpointSelector{
 							LabelSelector: &slim_metav1.LabelSelector{
@@ -1107,7 +1144,7 @@ func (ds *DaemonSuite) Test_addCiliumNetworkPolicyV2(c *C) {
 			},
 			setupWanted: func() wanted {
 				r := policy.NewPolicyRepository(nil, nil, nil, nil)
-				r.AddList(api.Rules{
+				r.MustAddList(api.Rules{
 					api.NewRule().
 						WithEndpointSelector(api.EndpointSelector{
 							LabelSelector: &slim_metav1.LabelSelector{
@@ -1136,7 +1173,7 @@ func (ds *DaemonSuite) Test_addCiliumNetworkPolicyV2(c *C) {
 			name: "have a rule without user labels and update it with user labels, all other rules should be deleted",
 			setupArgs: func() args {
 				r := policy.NewPolicyRepository(nil, nil, nil, nil)
-				r.AddList(api.Rules{
+				r.MustAddList(api.Rules{
 					{
 						EndpointSelector: api.EndpointSelector{
 							LabelSelector: &slim_metav1.LabelSelector{
@@ -1180,7 +1217,7 @@ func (ds *DaemonSuite) Test_addCiliumNetworkPolicyV2(c *C) {
 				r := policy.NewPolicyRepository(nil, nil, nil, nil)
 				lbls := utils.GetPolicyLabels("production", "db", uuid, utils.ResourceTypeCiliumNetworkPolicy)
 				lbls = append(lbls, labels.ParseLabelArray("foo=bar")...).Sort()
-				r.AddList(api.Rules{
+				r.MustAddList(api.Rules{
 					api.NewRule().
 						WithEndpointSelector(api.EndpointSelector{
 							LabelSelector: &slim_metav1.LabelSelector{
@@ -1204,7 +1241,7 @@ func (ds *DaemonSuite) Test_addCiliumNetworkPolicyV2(c *C) {
 			name: "have a rule policy installed with multiple rules and apply an empty spec should delete all rules installed",
 			setupArgs: func() args {
 				r := policy.NewPolicyRepository(nil, nil, nil, nil)
-				r.AddList(api.Rules{
+				r.MustAddList(api.Rules{
 					{
 						EndpointSelector: api.EndpointSelector{
 							LabelSelector: &slim_metav1.LabelSelector{
@@ -1251,7 +1288,7 @@ func (ds *DaemonSuite) Test_addCiliumNetworkPolicyV2(c *C) {
 			},
 			setupWanted: func() wanted {
 				r := policy.NewPolicyRepository(nil, nil, nil, nil)
-				r.AddList(api.Rules{
+				r.MustAddList(api.Rules{
 					{
 						EndpointSelector: api.EndpointSelector{
 							LabelSelector: &slim_metav1.LabelSelector{
@@ -1293,6 +1330,9 @@ func (ds *DaemonSuite) Test_addCiliumNetworkPolicyV2(c *C) {
 		args := tt.setupArgs()
 		want := tt.setupWanted()
 
+		args.repo.GetSelectorCache().SetLocalIdentityNotifier(testidentity.NewDummyIdentityNotifier())
+		want.repo.GetSelectorCache().SetLocalIdentityNotifier(testidentity.NewDummyIdentityNotifier())
+
 		// Policy queues must be drained and shutdown completely. Otherwise,
 		// the following overwrite of policy will cause races between it and
 		// the goroutines its spun off in the background.
@@ -1300,7 +1340,7 @@ func (ds *DaemonSuite) Test_addCiliumNetworkPolicyV2(c *C) {
 		ds.d.policy = args.repo
 
 		rules, policyImportErr := args.cnp.Parse()
-		c.Assert(policyImportErr, checker.DeepEquals, want.err)
+		require.EqualValues(t, want.err, policyImportErr)
 
 		// Only add policies if we have successfully parsed them. Otherwise, if
 		// parsing fails, `rules` is nil, which would wipe out the repo.
@@ -1309,15 +1349,9 @@ func (ds *DaemonSuite) Test_addCiliumNetworkPolicyV2(c *C) {
 				ReplaceWithLabels: args.cnp.GetIdentityLabels(),
 				Source:            metrics.LabelEventSourceK8s,
 			})
-			c.Assert(policyImportErr, IsNil)
+			require.Nil(t, policyImportErr)
 		}
-
-		c.Assert(
-			args.repo.GetRulesList().Policy,
-			checker.DeepEquals,
-			want.repo.GetRulesList().Policy,
-			Commentf("Test name: %q", tt.name),
-		)
+		require.EqualValuesf(t, want.repo.GetRulesList().Policy, args.repo.GetRulesList().Policy, "Test name: %q", tt.name)
 	}
 }
 

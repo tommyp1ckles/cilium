@@ -13,8 +13,9 @@ import (
 
 // Modifies attributes of a specified VPC endpoint. The attributes that you can
 // modify depend on the type of VPC endpoint (interface, gateway, or Gateway Load
-// Balancer). For more information, see the Amazon Web Services PrivateLink Guide (https://docs.aws.amazon.com/vpc/latest/privatelink/)
-// .
+// Balancer). For more information, see the [Amazon Web Services PrivateLink Guide].
+//
+// [Amazon Web Services PrivateLink Guide]: https://docs.aws.amazon.com/vpc/latest/privatelink/
 func (c *Client) ModifyVpcEndpoint(ctx context.Context, params *ModifyVpcEndpointInput, optFns ...func(*Options)) (*ModifyVpcEndpointOutput, error) {
 	if params == nil {
 		params = &ModifyVpcEndpointInput{}
@@ -154,6 +155,12 @@ func (c *Client) addOperationModifyVpcEndpointMiddlewares(stack *middleware.Stac
 		return err
 	}
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+		return err
+	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
 	if err = addOpModifyVpcEndpointValidationMiddleware(stack); err != nil {

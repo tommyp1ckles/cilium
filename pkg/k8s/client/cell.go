@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -30,6 +29,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/connrotation"
+	mcsapi_clientset "sigs.k8s.io/mcs-api/pkg/client/clientset/versioned"
+	mcsapi_fake "sigs.k8s.io/mcs-api/pkg/client/clientset/versioned/fake"
 
 	"github.com/cilium/cilium/pkg/controller"
 	cilium_clientset "github.com/cilium/cilium/pkg/k8s/client/clientset/versioned"
@@ -42,7 +43,6 @@ import (
 	slim_clientset "github.com/cilium/cilium/pkg/k8s/slim/k8s/client/clientset/versioned"
 	slim_fake "github.com/cilium/cilium/pkg/k8s/slim/k8s/client/clientset/versioned/fake"
 	k8sversion "github.com/cilium/cilium/pkg/k8s/version"
-	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/version"
 )
@@ -53,14 +53,28 @@ var Cell = cell.Module(
 	"k8s-client",
 	"Kubernetes Client",
 
-	cell.Config(defaultConfig),
+	cell.Config(defaultSharedConfig),
+	cell.Config(defaultClientParams),
+	cell.Provide(NewClientConfig),
 	cell.Provide(newClientset),
+)
+
+// client.ClientBuilderCell provides a function to create a new composite Clientset,
+// allowing a controller to use its own Clientset with a different user agent.
+var ClientBuilderCell = cell.Module(
+	"k8s-client-builder",
+	"Kubernetes Client Builder",
+
+	cell.Config(defaultSharedConfig),
+	cell.Provide(NewClientConfig),
+	cell.Provide(NewClientBuilder),
 )
 
 var k8sHeartbeatControllerGroup = controller.NewGroup("k8s-heartbeat")
 
 // Type aliases for the clientsets to avoid name collision on 'Clientset' when composing them.
 type (
+	MCSAPIClientset     = mcsapi_clientset.Clientset
 	KubernetesClientset = kubernetes.Clientset
 	SlimClientset       = slim_clientset.Clientset
 	APIExtClientset     = slim_apiext_clientset.Clientset
@@ -69,6 +83,7 @@ type (
 
 // Clientset is a composition of the different client sets used by Cilium.
 type Clientset interface {
+	mcsapi_clientset.Interface
 	kubernetes.Interface
 	apiext_clientset.Interface
 	cilium_clientset.Interface
@@ -99,6 +114,7 @@ type compositeClientset struct {
 	started  bool
 	disabled bool
 
+	*MCSAPIClientset
 	*KubernetesClientset
 	*APIExtClientset
 	*CiliumClientset
@@ -113,6 +129,10 @@ type compositeClientset struct {
 }
 
 func newClientset(lc cell.Lifecycle, log logrus.FieldLogger, cfg Config) (Clientset, error) {
+	return newClientsetForUserAgent(lc, log, cfg, "")
+}
+
+func newClientsetForUserAgent(lc cell.Lifecycle, log logrus.FieldLogger, cfg Config, name string) (Clientset, error) {
 	if !cfg.isEnabled() {
 		return &compositeClientset{disabled: true}, nil
 	}
@@ -128,7 +148,17 @@ func newClientset(lc cell.Lifecycle, log logrus.FieldLogger, cfg Config) (Client
 		config:     cfg,
 	}
 
-	restConfig, err := createConfig(cfg.K8sAPIServer, cfg.K8sKubeConfigPath, cfg.K8sClientQPS, cfg.K8sClientBurst)
+	cmdName := "cilium"
+	if len(os.Args[0]) != 0 {
+		cmdName = filepath.Base(os.Args[0])
+	}
+	userAgent := fmt.Sprintf("%s/%s", cmdName, version.Version)
+
+	if name != "" {
+		userAgent = fmt.Sprintf("%s %s", userAgent, name)
+	}
+
+	restConfig, err := createConfig(cfg.K8sAPIServer, cfg.K8sKubeConfigPath, cfg.K8sClientQPS, cfg.K8sClientBurst, userAgent)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create k8s client rest configuration: %w", err)
 	}
@@ -161,6 +191,11 @@ func newClientset(lc cell.Lifecycle, log logrus.FieldLogger, cfg Config) (Client
 	client.APIExtClientset, err = slim_apiext_clientset.NewForConfigAndClient(restConfig, httpClient)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create apiext k8s client: %w", err)
+	}
+
+	client.MCSAPIClientset, err = mcsapi_clientset.NewForConfigAndClient(restConfig, httpClient)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create mcsapi k8s client: %w", err)
 	}
 
 	client.KubernetesClientset, err = kubernetes.NewForConfigAndClient(restConfig, httpClient)
@@ -286,16 +321,11 @@ func (c *compositeClientset) startHeartbeat() {
 // 1. kubeCfgPath
 // 2. apiServerURL (https if specified)
 // 3. rest.InClusterConfig().
-func createConfig(apiServerURL, kubeCfgPath string, qps float32, burst int) (*rest.Config, error) {
+func createConfig(apiServerURL, kubeCfgPath string, qps float32, burst int, userAgent string) (*rest.Config, error) {
 	var (
 		config *rest.Config
 		err    error
 	)
-	cmdName := "cilium"
-	if len(os.Args[0]) != 0 {
-		cmdName = filepath.Base(os.Args[0])
-	}
-	userAgent := fmt.Sprintf("%s/%s", cmdName, version.Version)
 
 	switch {
 	// If the apiServerURL and the kubeCfgPath are empty then we can try getting
@@ -314,6 +344,7 @@ func createConfig(apiServerURL, kubeCfgPath string, qps float32, burst int) (*re
 		}
 		config.Host = apiServerURL
 	default:
+		//exhaustruct:ignore
 		config = &rest.Config{Host: apiServerURL, UserAgent: userAgent}
 	}
 
@@ -363,12 +394,12 @@ func (c *compositeClientset) waitForConn(ctx context.Context) error {
 }
 
 func setDialer(cfg Config, restConfig *rest.Config) func() {
-	if cfg.K8sHeartbeatTimeout == 0 {
+	if cfg.K8sClientConnectionTimeout == 0 || cfg.K8sClientConnectionKeepAlive == 0 {
 		return func() {}
 	}
 	ctx := (&net.Dialer{
-		Timeout:   cfg.K8sHeartbeatTimeout,
-		KeepAlive: cfg.K8sHeartbeatTimeout,
+		Timeout:   cfg.K8sClientConnectionTimeout,
+		KeepAlive: cfg.K8sClientConnectionKeepAlive,
 	}).DialContext
 	dialer := connrotation.NewDialer(ctx)
 	restConfig.Dial = dialer.DialContext
@@ -428,6 +459,7 @@ func isConnReady(c kubernetes.Interface) error {
 var FakeClientCell = cell.Provide(NewFakeClientset)
 
 type (
+	MCSAPIFakeClientset     = mcsapi_fake.Clientset
 	KubernetesFakeClientset = fake.Clientset
 	SlimFakeClientset       = slim_fake.Clientset
 	CiliumFakeClientset     = cilium_fake.Clientset
@@ -437,6 +469,7 @@ type (
 type FakeClientset struct {
 	disabled bool
 
+	*MCSAPIFakeClientset
 	*KubernetesFakeClientset
 	*CiliumFakeClientset
 	*APIExtFakeClientset
@@ -466,10 +499,12 @@ func (c *FakeClientset) Disable() {
 }
 
 func (c *FakeClientset) Config() Config {
+	//exhaustruct:ignore
 	return Config{}
 }
 
 func (c *FakeClientset) RestConfig() *rest.Config {
+	//exhaustruct:ignore
 	return &rest.Config{}
 }
 
@@ -478,6 +513,7 @@ func NewFakeClientset() (*FakeClientset, Clientset) {
 		SlimFakeClientset:       slim_fake.NewSimpleClientset(),
 		CiliumFakeClientset:     cilium_fake.NewSimpleClientset(),
 		APIExtFakeClientset:     apiext_fake.NewSimpleClientset(),
+		MCSAPIFakeClientset:     mcsapi_fake.NewSimpleClientset(),
 		KubernetesFakeClientset: fake.NewSimpleClientset(),
 		enabled:                 true,
 	}
@@ -485,22 +521,28 @@ func NewFakeClientset() (*FakeClientset, Clientset) {
 	return &client, &client
 }
 
-// NewStandaloneClientset creates a clientset outside hive. To be removed once
-// remaining uses of k8s.Init()/k8s.Client()/etc. have been converted.
-func NewStandaloneClientset(cfg Config) (Clientset, error) {
-	log := logging.DefaultLogger
-	lc := &cell.DefaultLifecycle{}
+type ClientBuilderFunc func(name string) (Clientset, error)
 
-	clientset, err := newClientset(lc, log, cfg)
-	if err != nil {
-		return nil, err
+// NewClientBuilder returns a function that creates a new Clientset with the given
+// name appended to the user agent, or returns an error if the Clientset cannot be
+// created.
+func NewClientBuilder(lc cell.Lifecycle, log logrus.FieldLogger, cfg Config) ClientBuilderFunc {
+	return func(name string) (Clientset, error) {
+		c, err := newClientsetForUserAgent(lc, log, cfg, name)
+		if err != nil {
+			return nil, err
+		}
+		return c, nil
 	}
+}
 
-	if err := lc.Start(slog.Default(), context.Background()); err != nil {
-		return nil, err
+var FakeClientBuilderCell = cell.Provide(FakeClientBuilder)
+
+func FakeClientBuilder() ClientBuilderFunc {
+	fc, _ := NewFakeClientset()
+	return func(_ string) (Clientset, error) {
+		return fc, nil
 	}
-
-	return clientset, err
 }
 
 func init() {

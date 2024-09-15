@@ -31,12 +31,14 @@ func (c *Client) DescribeMacHosts(ctx context.Context, params *DescribeMacHostsI
 type DescribeMacHostsInput struct {
 
 	// The filters.
+	//
 	//   - availability-zone - The Availability Zone of the EC2 Mac Dedicated Host.
+	//
 	//   - instance-type - The instance type size that the EC2 Mac Dedicated Host is
 	//   configured to support.
 	Filters []types.Filter
 
-	// The IDs of the EC2 Mac Dedicated Hosts.
+	//  The IDs of the EC2 Mac Dedicated Hosts.
 	HostIds []string
 
 	// The maximum number of results to return for the request in a single page. The
@@ -53,7 +55,7 @@ type DescribeMacHostsInput struct {
 
 type DescribeMacHostsOutput struct {
 
-	// Information about the EC2 Mac Dedicated Hosts.
+	//  Information about the EC2 Mac Dedicated Hosts.
 	MacHosts []types.MacHost
 
 	// The token to use to retrieve the next page of results.
@@ -120,6 +122,12 @@ func (c *Client) addOperationDescribeMacHostsMiddlewares(stack *middleware.Stack
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
+		return err
+	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opDescribeMacHosts(options.Region), middleware.Before); err != nil {
 		return err
 	}
@@ -140,14 +148,6 @@ func (c *Client) addOperationDescribeMacHostsMiddlewares(stack *middleware.Stack
 	}
 	return nil
 }
-
-// DescribeMacHostsAPIClient is a client that implements the DescribeMacHosts
-// operation.
-type DescribeMacHostsAPIClient interface {
-	DescribeMacHosts(context.Context, *DescribeMacHostsInput, ...func(*Options)) (*DescribeMacHostsOutput, error)
-}
-
-var _ DescribeMacHostsAPIClient = (*Client)(nil)
 
 // DescribeMacHostsPaginatorOptions is the paginator options for DescribeMacHosts
 type DescribeMacHostsPaginatorOptions struct {
@@ -215,6 +215,9 @@ func (p *DescribeMacHostsPaginator) NextPage(ctx context.Context, optFns ...func
 	}
 	params.MaxResults = limit
 
+	optFns = append([]func(*Options){
+		addIsPaginatorUserAgent,
+	}, optFns...)
 	result, err := p.client.DescribeMacHosts(ctx, &params, optFns...)
 	if err != nil {
 		return nil, err
@@ -233,6 +236,14 @@ func (p *DescribeMacHostsPaginator) NextPage(ctx context.Context, optFns ...func
 
 	return result, nil
 }
+
+// DescribeMacHostsAPIClient is a client that implements the DescribeMacHosts
+// operation.
+type DescribeMacHostsAPIClient interface {
+	DescribeMacHosts(context.Context, *DescribeMacHostsInput, ...func(*Options)) (*DescribeMacHostsOutput, error)
+}
+
+var _ DescribeMacHostsAPIClient = (*Client)(nil)
 
 func newServiceMetadataMiddleware_opDescribeMacHosts(region string) *awsmiddleware.RegisterServiceMetadata {
 	return &awsmiddleware.RegisterServiceMetadata{

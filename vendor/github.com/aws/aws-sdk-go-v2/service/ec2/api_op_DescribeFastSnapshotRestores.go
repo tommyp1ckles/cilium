@@ -36,18 +36,23 @@ type DescribeFastSnapshotRestoresInput struct {
 	DryRun *bool
 
 	// The filters. The possible values are:
+	//
 	//   - availability-zone : The Availability Zone of the snapshot.
+	//
 	//   - owner-id : The ID of the Amazon Web Services account that enabled fast
 	//   snapshot restore on the snapshot.
+	//
 	//   - snapshot-id : The ID of the snapshot.
+	//
 	//   - state : The state of fast snapshot restores for the snapshot ( enabling |
 	//   optimizing | enabled | disabling | disabled ).
 	Filters []types.Filter
 
 	// The maximum number of items to return for this request. To get the next page of
 	// items, make another request with the token returned in the output. For more
-	// information, see Pagination (https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Query-Requests.html#api-pagination)
-	// .
+	// information, see [Pagination].
+	//
+	// [Pagination]: https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Query-Requests.html#api-pagination
 	MaxResults *int32
 
 	// The token returned from a previous paginated request. Pagination continues from
@@ -127,6 +132,12 @@ func (c *Client) addOperationDescribeFastSnapshotRestoresMiddlewares(stack *midd
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
+		return err
+	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opDescribeFastSnapshotRestores(options.Region), middleware.Before); err != nil {
 		return err
 	}
@@ -148,21 +159,14 @@ func (c *Client) addOperationDescribeFastSnapshotRestoresMiddlewares(stack *midd
 	return nil
 }
 
-// DescribeFastSnapshotRestoresAPIClient is a client that implements the
-// DescribeFastSnapshotRestores operation.
-type DescribeFastSnapshotRestoresAPIClient interface {
-	DescribeFastSnapshotRestores(context.Context, *DescribeFastSnapshotRestoresInput, ...func(*Options)) (*DescribeFastSnapshotRestoresOutput, error)
-}
-
-var _ DescribeFastSnapshotRestoresAPIClient = (*Client)(nil)
-
 // DescribeFastSnapshotRestoresPaginatorOptions is the paginator options for
 // DescribeFastSnapshotRestores
 type DescribeFastSnapshotRestoresPaginatorOptions struct {
 	// The maximum number of items to return for this request. To get the next page of
 	// items, make another request with the token returned in the output. For more
-	// information, see Pagination (https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Query-Requests.html#api-pagination)
-	// .
+	// information, see [Pagination].
+	//
+	// [Pagination]: https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Query-Requests.html#api-pagination
 	Limit int32
 
 	// Set to true if pagination should stop if the service returns a pagination token
@@ -225,6 +229,9 @@ func (p *DescribeFastSnapshotRestoresPaginator) NextPage(ctx context.Context, op
 	}
 	params.MaxResults = limit
 
+	optFns = append([]func(*Options){
+		addIsPaginatorUserAgent,
+	}, optFns...)
 	result, err := p.client.DescribeFastSnapshotRestores(ctx, &params, optFns...)
 	if err != nil {
 		return nil, err
@@ -243,6 +250,14 @@ func (p *DescribeFastSnapshotRestoresPaginator) NextPage(ctx context.Context, op
 
 	return result, nil
 }
+
+// DescribeFastSnapshotRestoresAPIClient is a client that implements the
+// DescribeFastSnapshotRestores operation.
+type DescribeFastSnapshotRestoresAPIClient interface {
+	DescribeFastSnapshotRestores(context.Context, *DescribeFastSnapshotRestoresInput, ...func(*Options)) (*DescribeFastSnapshotRestoresOutput, error)
+}
+
+var _ DescribeFastSnapshotRestoresAPIClient = (*Client)(nil)
 
 func newServiceMetadataMiddleware_opDescribeFastSnapshotRestores(region string) *awsmiddleware.RegisterServiceMetadata {
 	return &awsmiddleware.RegisterServiceMetadata{

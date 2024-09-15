@@ -1,7 +1,8 @@
 name: Build Commits
 
 # Any change in triggers needs to be reflected in the concurrency group.
-on: [pull_request]
+on:
+  pull_request: {}
 
 permissions: read-all
 
@@ -13,7 +14,7 @@ jobs:
   build_commits:
     name: Check if build works for every commit
     runs-on: ubuntu-22.04
-    timeout-minutes: 90
+    timeout-minutes: 180
     steps:
       - name: Collect Workflow Telemetry
         uses: catchpoint/workflow-telemetry-action@94c3c3d9567a0205de6da68a76c428ce4e769af1 # v2.0.0
@@ -25,37 +26,18 @@ jobs:
           git config --global user.name "GitHub Actions"
           git config --global user.email "github-actions@users.noreply.github.com"
 
-      - name: Install Go
-        uses: actions/setup-go@0c52d547c9bc32b1aa3301fd7a9cb496313a4491 # v5.0.0
-        with:
-          # renovate: datasource=golang-version depName=go
-          go-version: 1.22.2
-
-      - name: Set clang directory
-        id: set_clang_dir
-        run: echo "clang_dir=$HOME/.clang" >> $GITHUB_OUTPUT
-
-      - name: Install LLVM and Clang prerequisites
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libtinfo5
-
-      - name: Install LLVM and Clang
-        uses: KyleMayes/install-llvm-action@8b37482c5a2997a3ab5dbf6561f8109e2eaa7d3b # v2.0.2
-        with:
-          version: "17.0.6"
-          directory: ${{ steps.set_clang_dir.outputs.clang_dir }}
-
-      - name: Install ginkgo
-        run: |
-          go install github.com/onsi/ginkgo/ginkgo@cc0216944b25a88d3259699a029d4e601fb8a222 # v1.12.1
-
       - name: Checkout code
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+
+      - name: Install Go
+        uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+        with:
+          # renovate: datasource=golang-version depName=go
+          go-version: 1.23.1
 
       - name: Check if build works for every commit
         run: |
@@ -93,6 +75,29 @@ jobs:
             src:
               - 'pkg/**'
               - 'test/**'
+
+      - name: Set clang directory
+        if: steps.test-tree.outputs.src == 'true'
+        id: set_clang_dir
+        run: echo "clang_dir=$HOME/.clang" >> $GITHUB_OUTPUT
+
+      - name: Install LLVM and Clang prerequisites
+        if: steps.test-tree.outputs.src == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libtinfo5
+
+      - name: Install LLVM and Clang
+        if: steps.test-tree.outputs.src == 'true'
+        uses: KyleMayes/install-llvm-action@e0a8dc9cb8a22e8a7696e8a91a4e9581bec13181 # v2.0.5
+        with:
+          version: "17.0.6"
+          directory: ${{ steps.set_clang_dir.outputs.clang_dir }}
+
+      - name: Install ginkgo
+        if: steps.test-tree.outputs.src == 'true'
+        run: |
+          go install github.com/onsi/ginkgo/ginkgo@cc0216944b25a88d3259699a029d4e601fb8a222 # v1.12.1
 
       # Runs only if code under test/ is changed.
       - name: Check if ginkgo test suite build works for every commit

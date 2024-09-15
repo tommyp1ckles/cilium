@@ -4,13 +4,39 @@
 package ciliumidentity
 
 import (
-	"github.com/cilium/cilium/pkg/identity/key"
-	"github.com/cilium/cilium/pkg/labels"
-	"github.com/cilium/cilium/pkg/labelsfilter"
+	"context"
+
+	"github.com/cilium/cilium/pkg/k8s/resource"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 )
 
-func GetCIDKeyFromK8sLabels(k8sLabels map[string]string) *key.GlobalIdentity {
-	lbls := labels.Map2Labels(k8sLabels, labels.LabelSourceK8s)
-	idLabels, _ := labelsfilter.Filter(lbls)
-	return &key.GlobalIdentity{LabelArray: idLabels.LabelArray()}
+func cidResourceKey(cidName string) resource.Key {
+	return resource.Key{Name: cidName}
+}
+
+type CIDItem struct {
+	key resource.Key
+}
+
+func (c CIDItem) Key() resource.Key {
+	return c.key
+}
+
+func (c CIDItem) Reconcile(reconciler *reconciler) error {
+	return reconciler.reconcileCID(c.key)
+}
+func (c CIDItem) Meter(enqueuedLatency float64, processingLatency float64, isErr bool, metrics *Metrics) {
+	metrics.meterLatency(LabelValueCID, enqueuedLatency, processingLatency)
+	metrics.markEvent(LabelValueCID, isErr)
+}
+
+func (c *Controller) processCiliumIdentityEvents(ctx context.Context) error {
+	for event := range c.ciliumIdentity.Events(ctx) {
+		if event.Kind == resource.Upsert || event.Kind == resource.Delete {
+			c.logger.Debug("Got CID event", logfields.Type, event.Kind, logfields.CIDName, event.Key.String())
+			c.enqueueReconciliation(CIDItem{cidResourceKey(event.Object.Name)}, 0)
+		}
+		event.Done(nil)
+	}
+	return nil
 }

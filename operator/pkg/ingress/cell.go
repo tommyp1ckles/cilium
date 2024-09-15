@@ -5,9 +5,10 @@ package ingress
 
 import (
 	"fmt"
+	"log/slog"
+	"time"
 
 	"github.com/cilium/hive/cell"
-	"github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
 	networkingv1 "k8s.io/api/networking/v1"
 	ctrlRuntime "sigs.k8s.io/controller-runtime"
@@ -26,15 +27,16 @@ var Cell = cell.Module(
 	"ingress",
 	"Manages the Kubernetes Ingress controllers",
 
-	cell.Config(ingressConfig{
-		EnableIngressController:     false,
-		EnforceIngressHTTPS:         true,
-		EnableIngressProxyProtocol:  false,
-		EnableIngressSecretsSync:    true,
-		IngressSecretsNamespace:     "cilium-secrets",
-		IngressLBAnnotationPrefixes: []string{"lbipam.cilium.io", "service.beta.kubernetes.io", "service.kubernetes.io", "cloud.google.com"},
-		IngressSharedLBServiceName:  "cilium-ingress",
-		IngressDefaultLBMode:        "dedicated",
+	cell.Config(IngressConfig{
+		EnableIngressController:      false,
+		EnforceIngressHTTPS:          true,
+		EnableIngressProxyProtocol:   false,
+		EnableIngressSecretsSync:     true,
+		IngressSecretsNamespace:      "cilium-secrets",
+		IngressDefaultRequestTimeout: time.Duration(0),
+		IngressLBAnnotationPrefixes:  []string{"lbipam.cilium.io", "service.beta.kubernetes.io", "service.kubernetes.io", "cloud.google.com"},
+		IngressSharedLBServiceName:   "cilium-ingress",
+		IngressDefaultLBMode:         "dedicated",
 
 		IngressHostnetworkEnabled:            false,
 		IngressHostnetworkSharedListenerPort: 0,
@@ -44,7 +46,7 @@ var Cell = cell.Module(
 	cell.Provide(registerSecretSync),
 )
 
-type ingressConfig struct {
+type IngressConfig struct {
 	KubeProxyReplacement                 string
 	EnableNodePort                       bool
 	EnableIngressController              bool
@@ -57,13 +59,14 @@ type ingressConfig struct {
 	IngressDefaultLBMode                 string
 	IngressDefaultSecretNamespace        string
 	IngressDefaultSecretName             string
+	IngressDefaultRequestTimeout         time.Duration
 	IngressHostnetworkEnabled            bool
 	IngressHostnetworkSharedListenerPort uint32
 	IngressHostnetworkNodelabelselector  string
 	IngressDefaultXffNumTrustedHops      uint32
 }
 
-func (r ingressConfig) Flags(flags *pflag.FlagSet) {
+func (r IngressConfig) Flags(flags *pflag.FlagSet) {
 	flags.String("kube-proxy-replacement", r.KubeProxyReplacement, "Enable only selected features (will panic if any selected feature cannot be enabled) (\"false\"), or enable all features (will panic if any feature cannot be enabled) (\"true\") (default \"false\")")
 	flags.Bool("enable-node-port", r.EnableNodePort, "Enable NodePort type services by Cilium")
 	flags.Bool("enable-ingress-controller", r.EnableIngressController, "Enables cilium ingress controller. This must be enabled along with enable-envoy-config in cilium agent.")
@@ -76,20 +79,26 @@ func (r ingressConfig) Flags(flags *pflag.FlagSet) {
 	flags.String("ingress-default-lb-mode", r.IngressDefaultLBMode, "Default loadbalancer mode for Ingress. Applicable values: dedicated, shared")
 	flags.String("ingress-default-secret-namespace", r.IngressDefaultSecretNamespace, "Default secret namespace for Ingress.")
 	flags.String("ingress-default-secret-name", r.IngressDefaultSecretName, "Default secret name for Ingress.")
+	flags.Duration("ingress-default-request-timeout", r.IngressDefaultRequestTimeout, "Default request timeout for Ingress.")
 	flags.Bool("ingress-hostnetwork-enabled", r.IngressHostnetworkEnabled, "Exposes ingress listeners on the host network.")
 	flags.Uint32("ingress-hostnetwork-shared-listener-port", r.IngressHostnetworkSharedListenerPort, "Port on the host network that gets used for the shared listener (HTTP, HTTPS & TLS passthrough)")
 	flags.String("ingress-hostnetwork-nodelabelselector", r.IngressHostnetworkNodelabelselector, "Label selector that matches the nodes where the ingress listeners should be exposed. It's a list of comma-separated key-value label pairs. e.g. 'kubernetes.io/os=linux,kubernetes.io/hostname=kind-worker'")
 	flags.Uint32("ingress-default-xff-num-trusted-hops", r.IngressDefaultXffNumTrustedHops, "The number of additional ingress proxy hops from the right side of the HTTP header to trust when determining the origin client's IP address.")
 }
 
+// IsEnabled returns true if the Ingress Controller is enabled.
+func (r IngressConfig) IsEnabled() bool {
+	return r.EnableIngressController
+}
+
 type ingressParams struct {
 	cell.In
 
-	Logger             logrus.FieldLogger
+	Logger             *slog.Logger
 	CtrlRuntimeManager ctrlRuntime.Manager
 	AgentConfig        *option.DaemonConfig
 	OperatorConfig     *operatorOption.OperatorConfig
-	IngressConfig      ingressConfig
+	IngressConfig      IngressConfig
 }
 
 func registerReconciler(params ingressParams) error {
@@ -132,6 +141,7 @@ func registerReconciler(params ingressParams) error {
 		params.IngressConfig.IngressDefaultSecretNamespace,
 		params.IngressConfig.IngressDefaultSecretName,
 		params.IngressConfig.EnforceIngressHTTPS,
+		params.IngressConfig.IngressDefaultRequestTimeout,
 
 		params.IngressConfig.IngressHostnetworkEnabled,
 		params.IngressConfig.IngressHostnetworkSharedListenerPort,

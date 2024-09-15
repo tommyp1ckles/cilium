@@ -11,8 +11,10 @@ import (
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
 
-// Cancels one or more Spot Instance requests. Canceling a Spot Instance request
-// does not terminate running Spot Instances associated with the request.
+// Cancels one or more Spot Instance requests.
+//
+// Canceling a Spot Instance request does not terminate running Spot Instances
+// associated with the request.
 func (c *Client) CancelSpotInstanceRequests(ctx context.Context, params *CancelSpotInstanceRequestsInput, optFns ...func(*Options)) (*CancelSpotInstanceRequestsOutput, error) {
 	if params == nil {
 		params = &CancelSpotInstanceRequestsInput{}
@@ -110,6 +112,12 @@ func (c *Client) addOperationCancelSpotInstanceRequestsMiddlewares(stack *middle
 		return err
 	}
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+		return err
+	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
 	if err = addOpCancelSpotInstanceRequestsValidationMiddleware(stack); err != nil {

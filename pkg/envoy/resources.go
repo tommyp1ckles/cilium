@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"sort"
+	"slices"
 	"sync"
 
 	envoyAPI "github.com/cilium/proxy/go/cilium/api"
@@ -76,6 +76,9 @@ func newNPHDSCache(ipcache IPCacheEventSource) NPHDSCache {
 }
 
 var observerOnce = sync.Once{}
+
+func (cache *NPHDSCache) MarkRestorePending()   {}
+func (cache *NPHDSCache) MarkRestoreCompleted() {}
 
 // HandleResourceVersionAck is required to implement ResourceVersionAckObserver.
 // We use this to start the IP Cache listener on the first ACK so that we only
@@ -159,7 +162,7 @@ func (cache *NPHDSCache) handleIPUpsert(npHost *envoyAPI.NetworkPolicyHosts, ide
 		hostAddresses = make([]string, 0, len(npHost.HostAddresses)+1)
 		hostAddresses = append(hostAddresses, npHost.HostAddresses...)
 		hostAddresses = append(hostAddresses, cidrStr)
-		sort.Strings(hostAddresses)
+		slices.Sort(hostAddresses)
 	}
 
 	newNpHost := envoyAPI.NetworkPolicyHosts{

@@ -13,6 +13,8 @@ import (
 	"github.com/cilium/cilium/pkg/time"
 )
 
+var _ ServiceManager = &Service{}
+
 // ServiceManager provides an interface for service related operations.
 // It is implemented by service handler which main responsibility is to reflect
 // service-related changes into BPF maps used by datapath BPF programs.
@@ -28,6 +30,9 @@ type ServiceManager interface {
 
 	// GetDeepCopyServices returns a deep-copy of all installed services.
 	GetDeepCopyServices() []*lb.SVC
+
+	// GetServiceIDs returns a list of IDs of all installed services.
+	GetServiceIDs() []lb.ServiceID
 
 	// GetDeepCopyServiceByFrontend returns a deep-copy of the service that matches the Frontend address.
 	GetDeepCopyServiceByFrontend(frontend lb.L3n4Addr) (*lb.SVC, bool)
@@ -46,7 +51,7 @@ type ServiceManager interface {
 	InitMaps(ipv6, ipv4, sockMaps, restore bool) error
 
 	// RegisterL7LBServiceRedirect makes the given service to be locally redirected to the given proxy port.
-	RegisterL7LBServiceRedirect(serviceName lb.ServiceName, resourceName L7LBResourceName, proxyPort uint16) error
+	RegisterL7LBServiceRedirect(serviceName lb.ServiceName, resourceName L7LBResourceName, proxyPort uint16, frontendPorts []uint16) error
 
 	// DeregisterL7LBServiceRedirect deregisters a Service from being redirected to a L7 LB.
 	DeregisterL7LBServiceRedirect(serviceName lb.ServiceName, resourceName L7LBResourceName) error
@@ -69,9 +74,14 @@ type ServiceManager interface {
 	SyncWithK8sFinished(localOnly bool, localServices sets.Set[k8s.ServiceID]) (stale []k8s.ServiceID, err error)
 
 	// UpdateBackendsState updates all the service(s) with the updated state of
-	// the given backends. It also persists the updated backend states to the BPF maps.
-	UpdateBackendsState(backends []*lb.Backend) error
+	// the given backends, and returns the updated services.
+	// It also persists the updated backend states to the BPF maps.
+	UpdateBackendsState(backends []*lb.Backend) ([]lb.L3n4Addr, error)
 
 	// UpsertService inserts or updates the given service.
 	UpsertService(*lb.SVC) (bool, lb.ID, error)
+
+	// TerminateUDPConnectionsToBackend terminates UDP connections to the passed
+	// backend with address when socket-LB is enabled.
+	TerminateUDPConnectionsToBackend(l3n4Addr *lb.L3n4Addr)
 }

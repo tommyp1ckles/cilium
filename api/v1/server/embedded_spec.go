@@ -37,7 +37,7 @@ func init() {
   "paths": {
     "/bgp/peers": {
       "get": {
-        "description": "Retrieves current operational state of BGP peers created by \nCilium BGP virtual router. This includes session state, uptime,\ninformation per address family, etc.\n",
+        "description": "Retrieves current operational state of BGP peers created by\nCilium BGP virtual router. This includes session state, uptime,\ninformation per address family, etc.\n",
         "tags": [
           "bgp"
         ],
@@ -1745,69 +1745,6 @@ func init() {
           }
         }
       }
-    },
-    "/statedb/dump": {
-      "get": {
-        "produces": [
-          "application/octet-stream"
-        ],
-        "tags": [
-          "statedb"
-        ],
-        "summary": "Dump StateDB contents",
-        "responses": {
-          "200": {
-            "description": "Success",
-            "schema": {
-              "type": "string",
-              "format": "binary"
-            }
-          }
-        }
-      }
-    },
-    "/statedb/query/{table}": {
-      "get": {
-        "produces": [
-          "application/octet-stream"
-        ],
-        "tags": [
-          "statedb"
-        ],
-        "summary": "Perform a query against a StateDB table",
-        "parameters": [
-          {
-            "$ref": "#/parameters/statedb-table"
-          },
-          {
-            "$ref": "#/parameters/statedb-index"
-          },
-          {
-            "$ref": "#/parameters/statedb-key"
-          },
-          {
-            "$ref": "#/parameters/statedb-lowerbound"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success",
-            "schema": {
-              "type": "string",
-              "format": "binary"
-            }
-          },
-          "400": {
-            "description": "Invalid parameters",
-            "schema": {
-              "$ref": "#/definitions/Error"
-            }
-          },
-          "404": {
-            "description": "Table or Index not found"
-          }
-        }
-      }
     }
   },
   "definitions": {
@@ -1851,6 +1788,14 @@ func init() {
       "additionalProperties": {
         "type": "string"
       }
+    },
+    "AttachMode": {
+      "description": "Core datapath attachment mode",
+      "type": "string",
+      "enum": [
+        "tc",
+        "tcx"
+      ]
     },
     "BPFMap": {
       "description": "BPF map definition and content",
@@ -1964,6 +1909,10 @@ func init() {
           "description": "Indicator if this backend is preferred in the context of clustermesh service affinity. The value is set based\non related annotation of global service. Applicable for active state only.",
           "type": "boolean"
         },
+        "protocol": {
+          "description": "Layer 4 protocol (TCP, UDP, etc)",
+          "type": "string"
+        },
         "state": {
           "description": "State of the backend for load-balancing service traffic",
           "type": "string",
@@ -1979,6 +1928,10 @@ func init() {
           "type": "integer",
           "format": "uint16",
           "x-nullable": true
+        },
+        "zone": {
+          "description": "Optional name of the zone in which this backend runs",
+          "type": "string"
         }
       }
     },
@@ -2022,11 +1975,11 @@ func init() {
       "description": "BGP graceful restart parameters negotiated with the peer.\n\n+k8s:deepcopy-gen=true",
       "properties": {
         "enabled": {
-          "description": "When set, graceful restart capability is negotiated for all AFI/SAFIs of \nthis peer.",
+          "description": "When set, graceful restart capability is negotiated for all AFI/SAFIs of\nthis peer.",
           "type": "boolean"
         },
         "restart-time-seconds": {
-          "description": "This is the time advertised to peer for the BGP session to be re-established \nafter a restart. After this period, peer will remove stale routes. \n(RFC 4724 section 4.2)",
+          "description": "This is the time advertised to peer for the BGP session to be re-established\nafter a restart. After this period, peer will remove stale routes.\n(RFC 4724 section 4.2)",
           "type": "integer"
         }
       }
@@ -2260,6 +2213,13 @@ func init() {
           "type": "array",
           "items": {
             "type": "string"
+          }
+        },
+        "match-families": {
+          "description": "Matches any of the provided address families. If empty matches all address families.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/BgpFamily"
           }
         },
         "match-neighbors": {
@@ -2679,9 +2639,17 @@ func init() {
           "description": "Configured compatibility mode for --egress-multi-home-ip-rule-compat",
           "type": "boolean"
         },
+        "enableRouteMTUForCNIChaining": {
+          "description": "Enable route MTU for pod netns when CNI chaining is used",
+          "type": "boolean"
+        },
         "immutable": {
           "description": "Immutable configuration (read-only)",
           "$ref": "#/definitions/ConfigurationMap"
+        },
+        "ipLocalReservedPorts": {
+          "description": "Comma-separated list of IP ports should be reserved in the workload network namespace",
+          "type": "string"
         },
         "ipam-mode": {
           "description": "Configured IPAM mode",
@@ -2731,7 +2699,9 @@ func init() {
       "description": "Datapath mode",
       "type": "string",
       "enum": [
-        "veth"
+        "veth",
+        "netkit",
+        "netkit-l2"
       ]
     },
     "DebugInfo": {
@@ -2907,6 +2877,10 @@ func init() {
         },
         "k8s-pod-name": {
           "description": "Kubernetes pod name",
+          "type": "string"
+        },
+        "k8s-uid": {
+          "description": "Kubernetes pod UID",
           "type": "string"
         },
         "labels": {
@@ -4706,6 +4680,10 @@ func init() {
           "description": "Number of nodes in the cluster",
           "type": "integer"
         },
+        "num-service-exports": {
+          "description": "Number of MCS-API service exports in the cluster",
+          "type": "integer"
+        },
         "num-shared-services": {
           "description": "Number of services in the cluster",
           "type": "integer"
@@ -4743,6 +4721,11 @@ func init() {
           "description": "Whether the configuration has been correctly retrieved",
           "type": "boolean"
         },
+        "service-exports-enabled": {
+          "description": "Whether or not MCS-API ServiceExports is enabled by the cluster (null means unsupported).",
+          "type": "boolean",
+          "x-nullable": true
+        },
         "sync-canaries": {
           "description": "Whether the remote cluster supports per-prefix \"synced\" canaries",
           "type": "boolean"
@@ -4763,6 +4746,11 @@ func init() {
         "nodes": {
           "description": "Nodes synchronization status",
           "type": "boolean"
+        },
+        "service-exports": {
+          "description": "MCS-API service exports synchronization status (null means that the component is not watching service exports)",
+          "type": "boolean",
+          "x-nullable": true
         },
         "services": {
           "description": "Services synchronization status",
@@ -5033,6 +5021,10 @@ func init() {
       "description": "Health and status information of daemon\n\n+k8s:deepcopy-gen=true",
       "type": "object",
       "properties": {
+        "attach-mode": {
+          "description": "Status of core datapath attachment mode",
+          "$ref": "#/definitions/AttachMode"
+        },
         "auth-certificate-provider": {
           "description": "Status of Mutual Authentication certificate provider",
           "$ref": "#/definitions/Status"
@@ -5080,6 +5072,10 @@ func init() {
         "controllers": {
           "description": "Status of all endpoint controllers",
           "$ref": "#/definitions/ControllerStatuses"
+        },
+        "datapath-mode": {
+          "description": "Status of datapath mode",
+          "$ref": "#/definitions/DatapathMode"
         },
         "encryption": {
           "description": "Status of transparent encryption",
@@ -5488,34 +5484,6 @@ func init() {
       "name": "source",
       "in": "query"
     },
-    "statedb-index": {
-      "type": "string",
-      "description": "StateDB index name",
-      "name": "index",
-      "in": "query",
-      "required": true
-    },
-    "statedb-key": {
-      "type": "string",
-      "description": "Query key (base64 encoded)",
-      "name": "key",
-      "in": "query",
-      "required": true
-    },
-    "statedb-lowerbound": {
-      "type": "boolean",
-      "description": "If true perform a LowerBound search",
-      "name": "lowerbound",
-      "in": "query",
-      "required": true
-    },
-    "statedb-table": {
-      "type": "string",
-      "description": "StateDB table name",
-      "name": "table",
-      "in": "path",
-      "required": true
-    },
     "trace-selector": {
       "description": "Context to provide policy evaluation on",
       "name": "trace-selector",
@@ -5546,7 +5514,7 @@ func init() {
   "paths": {
     "/bgp/peers": {
       "get": {
-        "description": "Retrieves current operational state of BGP peers created by \nCilium BGP virtual router. This includes session state, uptime,\ninformation per address family, etc.\n",
+        "description": "Retrieves current operational state of BGP peers created by\nCilium BGP virtual router. This includes session state, uptime,\ninformation per address family, etc.\n",
         "tags": [
           "bgp"
         ],
@@ -7477,85 +7445,6 @@ func init() {
           }
         }
       }
-    },
-    "/statedb/dump": {
-      "get": {
-        "produces": [
-          "application/octet-stream"
-        ],
-        "tags": [
-          "statedb"
-        ],
-        "summary": "Dump StateDB contents",
-        "responses": {
-          "200": {
-            "description": "Success",
-            "schema": {
-              "type": "string",
-              "format": "binary"
-            }
-          }
-        }
-      }
-    },
-    "/statedb/query/{table}": {
-      "get": {
-        "produces": [
-          "application/octet-stream"
-        ],
-        "tags": [
-          "statedb"
-        ],
-        "summary": "Perform a query against a StateDB table",
-        "parameters": [
-          {
-            "type": "string",
-            "description": "StateDB table name",
-            "name": "table",
-            "in": "path",
-            "required": true
-          },
-          {
-            "type": "string",
-            "description": "StateDB index name",
-            "name": "index",
-            "in": "query",
-            "required": true
-          },
-          {
-            "type": "string",
-            "description": "Query key (base64 encoded)",
-            "name": "key",
-            "in": "query",
-            "required": true
-          },
-          {
-            "type": "boolean",
-            "description": "If true perform a LowerBound search",
-            "name": "lowerbound",
-            "in": "query",
-            "required": true
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success",
-            "schema": {
-              "type": "string",
-              "format": "binary"
-            }
-          },
-          "400": {
-            "description": "Invalid parameters",
-            "schema": {
-              "$ref": "#/definitions/Error"
-            }
-          },
-          "404": {
-            "description": "Table or Index not found"
-          }
-        }
-      }
     }
   },
   "definitions": {
@@ -7599,6 +7488,14 @@ func init() {
       "additionalProperties": {
         "type": "string"
       }
+    },
+    "AttachMode": {
+      "description": "Core datapath attachment mode",
+      "type": "string",
+      "enum": [
+        "tc",
+        "tcx"
+      ]
     },
     "BPFMap": {
       "description": "BPF map definition and content",
@@ -7712,6 +7609,10 @@ func init() {
           "description": "Indicator if this backend is preferred in the context of clustermesh service affinity. The value is set based\non related annotation of global service. Applicable for active state only.",
           "type": "boolean"
         },
+        "protocol": {
+          "description": "Layer 4 protocol (TCP, UDP, etc)",
+          "type": "string"
+        },
         "state": {
           "description": "State of the backend for load-balancing service traffic",
           "type": "string",
@@ -7727,6 +7628,10 @@ func init() {
           "type": "integer",
           "format": "uint16",
           "x-nullable": true
+        },
+        "zone": {
+          "description": "Optional name of the zone in which this backend runs",
+          "type": "string"
         }
       }
     },
@@ -7770,11 +7675,11 @@ func init() {
       "description": "BGP graceful restart parameters negotiated with the peer.\n\n+k8s:deepcopy-gen=true",
       "properties": {
         "enabled": {
-          "description": "When set, graceful restart capability is negotiated for all AFI/SAFIs of \nthis peer.",
+          "description": "When set, graceful restart capability is negotiated for all AFI/SAFIs of\nthis peer.",
           "type": "boolean"
         },
         "restart-time-seconds": {
-          "description": "This is the time advertised to peer for the BGP session to be re-established \nafter a restart. After this period, peer will remove stale routes. \n(RFC 4724 section 4.2)",
+          "description": "This is the time advertised to peer for the BGP session to be re-established\nafter a restart. After this period, peer will remove stale routes.\n(RFC 4724 section 4.2)",
           "type": "integer"
         }
       }
@@ -8008,6 +7913,13 @@ func init() {
           "type": "array",
           "items": {
             "type": "string"
+          }
+        },
+        "match-families": {
+          "description": "Matches any of the provided address families. If empty matches all address families.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/BgpFamily"
           }
         },
         "match-neighbors": {
@@ -8479,9 +8391,17 @@ func init() {
           "description": "Configured compatibility mode for --egress-multi-home-ip-rule-compat",
           "type": "boolean"
         },
+        "enableRouteMTUForCNIChaining": {
+          "description": "Enable route MTU for pod netns when CNI chaining is used",
+          "type": "boolean"
+        },
         "immutable": {
           "description": "Immutable configuration (read-only)",
           "$ref": "#/definitions/ConfigurationMap"
+        },
+        "ipLocalReservedPorts": {
+          "description": "Comma-separated list of IP ports should be reserved in the workload network namespace",
+          "type": "string"
         },
         "ipam-mode": {
           "description": "Configured IPAM mode",
@@ -8545,7 +8465,9 @@ func init() {
       "description": "Datapath mode",
       "type": "string",
       "enum": [
-        "veth"
+        "veth",
+        "netkit",
+        "netkit-l2"
       ]
     },
     "DebugInfo": {
@@ -8730,6 +8652,10 @@ func init() {
         },
         "k8s-pod-name": {
           "description": "Kubernetes pod name",
+          "type": "string"
+        },
+        "k8s-uid": {
+          "description": "Kubernetes pod UID",
           "type": "string"
         },
         "labels": {
@@ -10923,6 +10849,10 @@ func init() {
           "description": "Number of nodes in the cluster",
           "type": "integer"
         },
+        "num-service-exports": {
+          "description": "Number of MCS-API service exports in the cluster",
+          "type": "integer"
+        },
         "num-shared-services": {
           "description": "Number of services in the cluster",
           "type": "integer"
@@ -10960,6 +10890,11 @@ func init() {
           "description": "Whether the configuration has been correctly retrieved",
           "type": "boolean"
         },
+        "service-exports-enabled": {
+          "description": "Whether or not MCS-API ServiceExports is enabled by the cluster (null means unsupported).",
+          "type": "boolean",
+          "x-nullable": true
+        },
         "sync-canaries": {
           "description": "Whether the remote cluster supports per-prefix \"synced\" canaries",
           "type": "boolean"
@@ -10980,6 +10915,11 @@ func init() {
         "nodes": {
           "description": "Nodes synchronization status",
           "type": "boolean"
+        },
+        "service-exports": {
+          "description": "MCS-API service exports synchronization status (null means that the component is not watching service exports)",
+          "type": "boolean",
+          "x-nullable": true
         },
         "services": {
           "description": "Services synchronization status",
@@ -11318,6 +11258,10 @@ func init() {
       "description": "Health and status information of daemon\n\n+k8s:deepcopy-gen=true",
       "type": "object",
       "properties": {
+        "attach-mode": {
+          "description": "Status of core datapath attachment mode",
+          "$ref": "#/definitions/AttachMode"
+        },
         "auth-certificate-provider": {
           "description": "Status of Mutual Authentication certificate provider",
           "$ref": "#/definitions/Status"
@@ -11365,6 +11309,10 @@ func init() {
         "controllers": {
           "description": "Status of all endpoint controllers",
           "$ref": "#/definitions/ControllerStatuses"
+        },
+        "datapath-mode": {
+          "description": "Status of datapath mode",
+          "$ref": "#/definitions/DatapathMode"
         },
         "encryption": {
           "description": "Status of transparent encryption",
@@ -11772,34 +11720,6 @@ func init() {
       "description": "Source from which FQDN entries come from",
       "name": "source",
       "in": "query"
-    },
-    "statedb-index": {
-      "type": "string",
-      "description": "StateDB index name",
-      "name": "index",
-      "in": "query",
-      "required": true
-    },
-    "statedb-key": {
-      "type": "string",
-      "description": "Query key (base64 encoded)",
-      "name": "key",
-      "in": "query",
-      "required": true
-    },
-    "statedb-lowerbound": {
-      "type": "boolean",
-      "description": "If true perform a LowerBound search",
-      "name": "lowerbound",
-      "in": "query",
-      "required": true
-    },
-    "statedb-table": {
-      "type": "string",
-      "description": "StateDB table name",
-      "name": "table",
-      "in": "path",
-      "required": true
     },
     "trace-selector": {
       "description": "Context to provide policy evaluation on",

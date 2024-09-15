@@ -33,8 +33,9 @@ func (c *Client) DescribeInstanceAttribute(ctx context.Context, params *Describe
 
 type DescribeInstanceAttributeInput struct {
 
-	// The instance attribute. Note: The enaSupport attribute is not supported at this
-	// time.
+	// The instance attribute.
+	//
+	// Note: The enaSupport attribute is not supported at this time.
 	//
 	// This member is required.
 	Attribute types.InstanceAttributeName
@@ -176,6 +177,12 @@ func (c *Client) addOperationDescribeInstanceAttributeMiddlewares(stack *middlew
 		return err
 	}
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+		return err
+	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
 	if err = addOpDescribeInstanceAttributeValidationMiddleware(stack); err != nil {
