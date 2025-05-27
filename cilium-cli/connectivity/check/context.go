@@ -1026,6 +1026,11 @@ func (ct *ConnectivityTest) CurlCommand(peer TestPeer, ipFam features.IPFamily, 
 	}, opts...))
 }
 
+func (ct *ConnectivityTest) SimulatePacketTooBig(host string, ipFam features.IPFamily) []string {
+
+	return []string{}
+}
+
 func (ct *ConnectivityTest) PingCommand(peer TestPeer, ipFam features.IPFamily, extraArgs ...string) []string {
 	cmd := []string{"ping", "-c", "1"}
 

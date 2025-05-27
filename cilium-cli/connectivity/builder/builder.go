@@ -301,6 +301,7 @@ func concurrentTests(connTests []*check.ConnectivityTest) error {
 		bgpControlPlane{},
 		multicast{},
 		strictModeEncryption{},
+		pathMTU{},
 	}
 	return injectTests(tests, connTests...)
 }

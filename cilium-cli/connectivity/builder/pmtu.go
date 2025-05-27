@@ -1,0 +1,19 @@
+package builder
+
+import (
+	_ "embed"
+
+	"github.com/cilium/cilium/cilium-cli/connectivity/check"
+	"github.com/cilium/cilium/cilium-cli/connectivity/tests"
+)
+
+//go:embed manifests/pmtu.yaml
+var pathMTUPolicy string
+
+type pathMTU struct{}
+
+func (t pathMTU) build(ct *check.ConnectivityTest, _ map[string]string) {
+	newTest("pmtu", ct).
+		WithCiliumPolicy(pathMTUPolicy).
+		WithScenarios(tests.PathMTU())
+}

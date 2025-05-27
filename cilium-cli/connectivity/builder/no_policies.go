@@ -21,5 +21,6 @@ func (t noPolicies) build(ct *check.ConnectivityTest, _ map[string]string) {
 			tests.PodToHost(),
 			tests.HostToPod(),
 			tests.PodToCIDR(tests.WithRetryAll()),
+			tests.PathMTU(),
 		)
 }

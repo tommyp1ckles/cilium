@@ -56,8 +56,24 @@ runs:
             ./contrib/scripts/kind.sh ${{ inputs.kind-params }} 0.0.0.0 6443
           fi
 
+    - name: create external link capable of responding to ICMPv6. 
+      uses: cilium/little-vm-helper@e87948476ca97050b1f149ab2aec379d0de19b84 # v0.0.23
+      with:
+        provision: 'false'
+        cmd: |
+          ip link set veth1 netns yavin
+          ip netns add yavin
+          ip link add veth0 type veth peer name veth1
+          ip addr add 2001:db8::1/64 dev veth0
+          ip link set veth0 up
+          ip netns exec yavin ip addr add 2001:db8::2/64 dev veth1
+          ip netns exec yavin ip link set veth1 up
+          ip netns exec yavin ip link set lo up
+
     - name: Copy kubeconfig
       shell: bash
       run: |
         mkdir ~/.kube
         scp -o StrictHostKeyChecking=no -P 2222 root@localhost:/root/.kube/config ~/.kube/config
+
+
