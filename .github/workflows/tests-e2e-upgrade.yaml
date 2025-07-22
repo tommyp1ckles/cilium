@@ -171,6 +171,7 @@ jobs:
           if [ "${{ matrix.secondary-network }}" = "true" ]; then
             EXTRA_CLI_FLAGS+=("\"--secondary-network-iface=eth1\"")
           fi
+          EXTRA_CLI_FLAGS+=("\"--include-pmtu-tests\"")
 
           if [ "${{ matrix.encryption-strict-mode }}" = "true" ]; then
             # "Test Cilium after upgrade" ran strict-mode-encryption test which caused temporary drops.
