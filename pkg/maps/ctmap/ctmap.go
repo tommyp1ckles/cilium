@@ -674,6 +674,10 @@ func DeleteIfUpgradeNeeded() {
 	}
 }
 
+func Maps(ipv4, ipv6 bool) []*Map {
+	return maps(ipv4, ipv6)
+}
+
 // maps returns the global connection tracking maps.
 // protocol will not be returned.
 func maps(ipv4, ipv6 bool) []*Map {
@@ -683,6 +687,7 @@ func maps(ipv4, ipv6 bool) []*Map {
 		result = append(result, newMap(MapNameAny4Global, mapTypeIPv4AnyGlobal))
 	}
 	if ipv6 {
+
 		result = append(result, newMap(MapNameTCP6Global, mapTypeIPv6TCPGlobal))
 		result = append(result, newMap(MapNameAny6Global, mapTypeIPv6AnyGlobal))
 	}

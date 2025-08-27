@@ -11,7 +11,7 @@ operator:
 ipam:
   mode: kubernetes
 ipv6:
-  enabled: true
+  enabled: false
 ipv4:
   enabled: true
 bpf:
@@ -22,3 +22,29 @@ readinessProbe:
   failureThreshold: 9999
 startupProbe:
   failureThreshold: 9999
+
+securityContext:
+  privileged: true
+
+bpf:
+  monitorAggregation: none
+operator:
+  enabled: true
+  replicas: 1
+  image:
+    override: ~
+    repository: quay.io/cilium/operator
+    tag: local
+    useDigest: false
+    pullPolicy: IfNotPresent
+    suffix: ""
+
+ipam:
+  mode: kubernetes
+
+ipv4NativeRoutingCIDR: 10.0.0.0/8
+ipv6NativeRoutingCIDR: c::/32
+
+kubeProxyReplacement: true
+k8sServiceHost: clab-bgp-cplane-devel-control-plane
+k8sServicePort: 6443
