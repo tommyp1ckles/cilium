@@ -9,6 +9,9 @@
 #include "eps.h"
 #include "l3.h"
 #include "token_bucket.h"
+#include "icmp.h"
+#include "icmp6.h"
+#include "metrics.h"
 
 DECLARE_CONFIG(bool, enable_netkit, "Use netkit devices for pods")
 
@@ -199,6 +202,22 @@ static __always_inline int ipv6_local_delivery(struct __ctx_buff *ctx, int l3_of
 	if (ret != CTX_ACT_OK)
 		return ret;
 
+#if !defined(ENABLE_NODEPORT)
+	/* In tunnel + kube-proxy mode, local_delivery hands the packet to the
+	 * kernel stack without a CT lookup, so REASON_MTU_ERROR_MSG would never
+	 * be incremented. Emit it here while we still have visibility of the packet.
+	 */
+	if (from_tunnel) {
+		void *data, *data_end;
+		struct ipv6hdr *ip6;
+
+		if (revalidate_data(ctx, &data, &data_end, &ip6) &&
+		    unlikely(is_icmp6_pmtu(ctx, ip6, l3_off)))
+			update_metrics(ctx_full_len(ctx), METRIC_INGRESS,
+				       REASON_MTU_ERROR_MSG);
+	}
+#endif /* !ENABLE_NODEPORT */
+
 	return local_delivery(ctx, seclabel, magic, ep, direction, from_host,
 			      from_tunnel, 0);
 }
@@ -224,6 +243,15 @@ static __always_inline int ipv4_local_delivery(struct __ctx_buff *ctx, int l3_of
 	ret = ipv4_l3(ctx, l3_off, (__u8 *)&router_mac, (__u8 *)&lxc_mac, ip4);
 	if (ret != CTX_ACT_OK)
 		return ret;
+
+#if !defined(ENABLE_NODEPORT)
+	/* In tunnel + kube-proxy mode, local_delivery hands the packet to the
+	 * kernel stack without a CT lookup, so REASON_MTU_ERROR_MSG would never
+	 * be incremented. Emit it here while we still have visibility of the packet.
+	 */
+	if (from_tunnel && unlikely(is_icmp4_pmtu(ctx, ip4, l3_off)))
+		update_metrics(ctx_full_len(ctx), METRIC_INGRESS, REASON_MTU_ERROR_MSG);
+#endif /* !ENABLE_NODEPORT */
 
 	return local_delivery(ctx, seclabel, magic, ep, direction, from_host,
 			      from_tunnel, cluster_id);

@@ -120,4 +120,18 @@ int generate_icmp4_reply(struct __ctx_buff *ctx, __u8 icmp_type, __u8 icmp_code)
 
 	return 0;
 }
+
+static __always_inline bool
+is_icmp4_pmtu(struct __ctx_buff *ctx, const struct iphdr *ip4, int nh_off)
+{
+	struct icmphdr hdr;
+
+	if (ip4->protocol != IPPROTO_ICMP)
+		return false;
+
+	if (ctx_load_bytes(ctx, nh_off + sizeof(struct iphdr), &hdr, 2) < 0)
+		return false;
+
+	return hdr.type == ICMP_DEST_UNREACH && hdr.code == ICMP_FRAG_NEEDED;
+}
 #endif /* ENABLE_IPV4 */
