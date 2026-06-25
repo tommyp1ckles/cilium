@@ -10,11 +10,12 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	eniTypes "github.com/cilium/cilium/pkg/aws/eni/types"
+	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	k8sConst "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 	k8sUtils "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/utils"
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
@@ -260,13 +261,31 @@ var (
 }`)...)
 )
 
+func sanitizeCNPRules(cnp *CiliumNetworkPolicy) error {
+	if cnp.Spec != nil {
+		if err := cnp.Spec.Sanitize(); err != nil {
+			return err
+		}
+	}
+
+	if cnp.Specs != nil {
+		for _, rule := range cnp.Specs {
+			if err := rule.Sanitize(); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
 func TestParseSpec(t *testing.T) {
 	es := api.NewESFromMatchRequirements(
 		map[string]string{
-			fmt.Sprintf("%s.role", labels.LabelSourceAny): "backend",
+			fmt.Sprintf("%s:role", labels.LabelSourceAny): "backend",
 		},
 		[]slim_metav1.LabelSelectorRequirement{{
-			Key:      fmt.Sprintf("%s.role", labels.LabelSourceAny),
+			Key:      fmt.Sprintf("%s:role", labels.LabelSourceAny),
 			Operator: "NotIn",
 			Values:   []string{"production"},
 		}},
@@ -296,11 +315,11 @@ func TestParseSpec(t *testing.T) {
 
 	expectedES := api.NewESFromMatchRequirements(
 		map[string]string{
-			fmt.Sprintf("%s.role", labels.LabelSourceAny):                           "backend",
-			fmt.Sprintf("%s.%s", labels.LabelSourceK8s, k8sConst.PodNamespaceLabel): "default",
+			fmt.Sprintf("%s:role", labels.LabelSourceAny):                           "backend",
+			fmt.Sprintf("%s:%s", labels.LabelSourceK8s, k8sConst.PodNamespaceLabel): "default",
 		},
 		[]slim_metav1.LabelSelectorRequirement{{
-			Key:      fmt.Sprintf("%s.role", labels.LabelSourceAny),
+			Key:      fmt.Sprintf("%s:role", labels.LabelSourceAny),
 			Operator: "NotIn",
 			Values:   []string{"production"},
 		}},
@@ -310,23 +329,31 @@ func TestParseSpec(t *testing.T) {
 	// Sanitize rule to populate aggregated selectors.
 	expectedSpecRule.Sanitize()
 
-	rules, err := expectedPolicyRule.Parse()
+	logger := hivetest.Logger(t)
+
+	rules, err := expectedPolicyRule.Parse(logger, cmtypes.PolicyAnyCluster)
 	require.NoError(t, err)
-	require.Equal(t, 1, len(rules))
-	require.EqualValues(t, *expectedSpecRule, *rules[0])
+	require.Len(t, rules, 1)
+	require.Equal(t, *expectedSpecRule, *rules[0])
 
 	b, err := json.Marshal(expectedPolicyRule)
 	require.NoError(t, err)
 	var expectedPolicyRuleUnmarshalled CiliumNetworkPolicy
 	err = json.Unmarshal(b, &expectedPolicyRuleUnmarshalled)
 	require.NoError(t, err)
-	expectedPolicyRuleUnmarshalled.Parse()
-	require.EqualValues(t, *expectedPolicyRule, expectedPolicyRuleUnmarshalled)
+	expectedPolicyRuleUnmarshalled.Parse(logger, cmtypes.PolicyAnyCluster)
+	require.Equal(t, *expectedPolicyRule, expectedPolicyRuleUnmarshalled)
 
 	cnpl := CiliumNetworkPolicy{}
 	err = json.Unmarshal(ciliumRule, &cnpl)
 	require.NoError(t, err)
-	require.EqualValues(t, *expectedPolicyRuleWithLabel, cnpl)
+
+	err = sanitizeCNPRules(&cnpl)
+	require.NoError(t, err)
+	err = sanitizeCNPRules(expectedPolicyRuleWithLabel)
+	require.NoError(t, err)
+
+	require.Equal(t, *expectedPolicyRuleWithLabel, cnpl)
 
 	empty := &CiliumNetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
@@ -335,7 +362,7 @@ func TestParseSpec(t *testing.T) {
 			UID:       uuidRule,
 		},
 	}
-	_, err = empty.Parse()
+	_, err = empty.Parse(logger, cmtypes.PolicyAnyCluster)
 	require.EqualValues(t, ErrEmptyCNP, err)
 
 	emptyCCNP := &CiliumClusterwideNetworkPolicy{
@@ -344,17 +371,17 @@ func TestParseSpec(t *testing.T) {
 			UID:  uuidRule,
 		},
 	}
-	_, err = emptyCCNP.Parse()
+	_, err = emptyCCNP.Parse(logger, cmtypes.PolicyAnyCluster)
 	require.EqualValues(t, ErrEmptyCCNP, err)
 }
 
 func TestParseRules(t *testing.T) {
 	es := api.NewESFromMatchRequirements(
 		map[string]string{
-			fmt.Sprintf("%s.role", labels.LabelSourceAny): "backend",
+			fmt.Sprintf("%s:role", labels.LabelSourceAny): "backend",
 		},
 		[]slim_metav1.LabelSelectorRequirement{{
-			Key:      fmt.Sprintf("%s.role", labels.LabelSourceAny),
+			Key:      fmt.Sprintf("%s:role", labels.LabelSourceAny),
 			Operator: "NotIn",
 			Values:   []string{"production"},
 		}},
@@ -384,11 +411,11 @@ func TestParseRules(t *testing.T) {
 
 	expectedES := api.NewESFromMatchRequirements(
 		map[string]string{
-			fmt.Sprintf("%s.role", labels.LabelSourceAny):                           "backend",
-			fmt.Sprintf("%s.%s", labels.LabelSourceK8s, k8sConst.PodNamespaceLabel): "default",
+			fmt.Sprintf("%s:role", labels.LabelSourceAny):                           "backend",
+			fmt.Sprintf("%s:%s", labels.LabelSourceK8s, k8sConst.PodNamespaceLabel): "default",
 		},
 		[]slim_metav1.LabelSelectorRequirement{{
-			Key:      fmt.Sprintf("%s.role", labels.LabelSourceAny),
+			Key:      fmt.Sprintf("%s:role", labels.LabelSourceAny),
 			Operator: "NotIn",
 			Values:   []string{"production"},
 		}},
@@ -400,11 +427,13 @@ func TestParseRules(t *testing.T) {
 		expectedSpecRules[i].Sanitize()
 	}
 
-	rules, err := expectedPolicyRuleList.Parse()
+	logger := hivetest.Logger(t)
+
+	rules, err := expectedPolicyRuleList.Parse(logger, cmtypes.PolicyAnyCluster)
 	require.NoError(t, err)
-	require.Equal(t, 2, len(rules))
+	require.Len(t, rules, 2)
 	for i, rule := range rules {
-		require.EqualValues(t, expectedSpecRules[i], rule)
+		require.Equal(t, expectedSpecRules[i], rule)
 	}
 
 	b, err := json.Marshal(expectedPolicyRuleList)
@@ -412,13 +441,19 @@ func TestParseRules(t *testing.T) {
 	var expectedPolicyRuleUnmarshalled CiliumNetworkPolicy
 	err = json.Unmarshal(b, &expectedPolicyRuleUnmarshalled)
 	require.NoError(t, err)
-	expectedPolicyRuleUnmarshalled.Parse()
-	require.EqualValues(t, *expectedPolicyRuleList, expectedPolicyRuleUnmarshalled)
+	expectedPolicyRuleUnmarshalled.Parse(logger, cmtypes.PolicyAnyCluster)
+	require.Equal(t, *expectedPolicyRuleList, expectedPolicyRuleUnmarshalled)
 
 	cnpl := CiliumNetworkPolicy{}
 	err = json.Unmarshal(ciliumRuleList, &cnpl)
 	require.NoError(t, err)
-	require.EqualValues(t, *expectedPolicyRuleListWithLabel, cnpl)
+
+	err = sanitizeCNPRules(&cnpl)
+	require.NoError(t, err)
+	err = sanitizeCNPRules(expectedPolicyRuleListWithLabel)
+	require.NoError(t, err)
+
+	require.Equal(t, *expectedPolicyRuleListWithLabel, cnpl)
 }
 
 func TestParseWithNodeSelector(t *testing.T) {
@@ -472,6 +507,8 @@ func TestParseWithNodeSelector(t *testing.T) {
 	rule.EndpointSelector = emptySelector
 	rule.NodeSelector = prevEPSelector
 
+	logger := hivetest.Logger(t)
+
 	// Expect CNP parse error because it's not allowed to have a NodeSelector.
 	cnpl := CiliumNetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
@@ -481,7 +518,7 @@ func TestParseWithNodeSelector(t *testing.T) {
 		},
 		Spec: &rule,
 	}
-	_, err := cnpl.Parse()
+	_, err := cnpl.Parse(logger, cmtypes.PolicyAnyCluster)
 	require.ErrorContains(t, err, "Invalid CiliumNetworkPolicy spec: rule cannot have NodeSelector")
 
 	// CCNP parse is allowed to have a NodeSelector.
@@ -493,7 +530,7 @@ func TestParseWithNodeSelector(t *testing.T) {
 		},
 		Spec: cnpl.Spec,
 	}
-	_, err = ccnpl.Parse()
+	_, err = ccnpl.Parse(logger, cmtypes.PolicyAnyCluster)
 	require.NoError(t, err)
 
 	// CCNPs are received as CNP and initially parsed as CNP. Create a CNP with
@@ -506,7 +543,7 @@ func TestParseWithNodeSelector(t *testing.T) {
 		},
 		Spec: &rule,
 	}
-	_, err = ccnplAsCNP.Parse()
+	_, err = ccnplAsCNP.Parse(logger, cmtypes.PolicyAnyCluster)
 	require.NoError(t, err)
 
 	// Now test a CNP and CCNP with an EndpointSelector only.
@@ -514,20 +551,33 @@ func TestParseWithNodeSelector(t *testing.T) {
 	rule.NodeSelector = emptySelector
 
 	// CNP and CCNP parse is allowed to have an EndpointSelector.
-	_, err = cnpl.Parse()
+	_, err = cnpl.Parse(logger, cmtypes.PolicyAnyCluster)
 	require.NoError(t, err)
-	_, err = ccnpl.Parse()
+	_, err = ccnpl.Parse(logger, cmtypes.PolicyAnyCluster)
 	require.NoError(t, err)
-	_, err = ccnplAsCNP.Parse()
+	_, err = ccnplAsCNP.Parse(logger, cmtypes.PolicyAnyCluster)
 	require.NoError(t, err)
+
+	// Now test the case where nodeSelector is in Specs (plural) instead of Spec (singular).
+	// This should also be rejected for namespaced CNPs.
+	rule.EndpointSelector = emptySelector
+	rule.NodeSelector = prevEPSelector
+	cnplWithSpecs := CiliumNetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "default",
+			Name:      "rule",
+			UID:       uuidRule,
+		},
+		Specs: api.Rules{&rule}, // Using Specs instead of Spec
+	}
+	_, err = cnplWithSpecs.Parse(logger, cmtypes.PolicyAnyCluster)
+	require.ErrorContains(t, err, "Invalid CiliumNetworkPolicy spec: rule cannot have NodeSelector")
 }
 
 func TestCiliumNodeInstanceID(t *testing.T) {
-	require.Equal(t, "", (*CiliumNode)(nil).InstanceID())
-	require.Equal(t, "", (&CiliumNode{}).InstanceID())
+	require.Empty(t, (*CiliumNode)(nil).InstanceID())
+	require.Empty(t, (&CiliumNode{}).InstanceID())
 	require.Equal(t, "foo", (&CiliumNode{Spec: NodeSpec{InstanceID: "foo"}}).InstanceID())
-	require.Equal(t, "foo", (&CiliumNode{Spec: NodeSpec{InstanceID: "foo", ENI: eniTypes.ENISpec{InstanceID: "bar"}}}).InstanceID())
-	require.Equal(t, "bar", (&CiliumNode{Spec: NodeSpec{ENI: eniTypes.ENISpec{InstanceID: "bar"}}}).InstanceID())
 }
 
 func BenchmarkSpecEquals(b *testing.B) {
@@ -618,7 +668,7 @@ func BenchmarkSpecEquals(b *testing.B) {
 	b.Run("Reflected SpecEquals", func(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			reflect.DeepEqual(r.Spec, o.Spec)
 			reflect.DeepEqual(r.Specs, o.Specs)
 		}
@@ -626,7 +676,7 @@ func BenchmarkSpecEquals(b *testing.B) {
 	b.Run("Generated SpecEquals", func(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			r.DeepEqual(o)
 		}
 	})
@@ -646,43 +696,43 @@ func TestGetIP(t *testing.T) {
 	ip := n.GetIP(false)
 	// Return the only IP present
 	require.NotNil(t, ip)
-	require.Equal(t, true, ip.Equal(net.ParseIP("192.0.2.3")))
+	require.True(t, ip.Equal(net.ParseIP("192.0.2.3")))
 
 	n.Spec.Addresses = append(n.Spec.Addresses, NodeAddress{IP: "w.x.y.z", Type: addressing.NodeExternalIP})
 	ip = n.GetIP(false)
 	// Invalid external IPv4 address should return the existing external IPv4 address
 	require.NotNil(t, ip)
-	require.Equal(t, true, ip.Equal(net.ParseIP("192.0.2.3")))
+	require.True(t, ip.Equal(net.ParseIP("192.0.2.3")))
 
 	n.Spec.Addresses = append(n.Spec.Addresses, NodeAddress{IP: "198.51.100.2", Type: addressing.NodeInternalIP})
 	ip = n.GetIP(false)
 	// The next priority should be NodeInternalIP
 	require.NotNil(t, ip)
-	require.Equal(t, true, ip.Equal(net.ParseIP("198.51.100.2")))
+	require.True(t, ip.Equal(net.ParseIP("198.51.100.2")))
 
 	n.Spec.Addresses = append(n.Spec.Addresses, NodeAddress{IP: "2001:DB8::1", Type: addressing.NodeExternalIP})
 	ip = n.GetIP(true)
 	// The next priority should be NodeExternalIP and IPv6
 	require.NotNil(t, ip)
-	require.Equal(t, true, ip.Equal(net.ParseIP("2001:DB8::1")))
+	require.True(t, ip.Equal(net.ParseIP("2001:DB8::1")))
 
 	n.Spec.Addresses = append(n.Spec.Addresses, NodeAddress{IP: "w.x.y.z", Type: addressing.NodeExternalIP})
 	ip = n.GetIP(true)
 	// Invalid external IPv6 address should return the existing external IPv6 address
 	require.NotNil(t, ip)
-	require.Equal(t, true, ip.Equal(net.ParseIP("2001:DB8::1")))
+	require.True(t, ip.Equal(net.ParseIP("2001:DB8::1")))
 
 	n.Spec.Addresses = append(n.Spec.Addresses, NodeAddress{IP: "2001:DB8::2", Type: addressing.NodeInternalIP})
 	ip = n.GetIP(true)
 	// The next priority should be NodeInternalIP and IPv6
 	require.NotNil(t, ip)
-	require.Equal(t, true, ip.Equal(net.ParseIP("2001:DB8::2")))
+	require.True(t, ip.Equal(net.ParseIP("2001:DB8::2")))
 
 	n.Spec.Addresses = append(n.Spec.Addresses, NodeAddress{IP: "198.51.100.2", Type: addressing.NodeInternalIP})
 	ip = n.GetIP(false)
 	// Should still return NodeInternalIP and IPv4
 	require.NotNil(t, ip)
-	require.Equal(t, true, ip.Equal(net.ParseIP("198.51.100.2")))
+	require.True(t, ip.Equal(net.ParseIP("198.51.100.2")))
 
 	n.Spec.Addresses = []NodeAddress{{IP: "w.x.y.z", Type: addressing.NodeExternalIP}}
 	ip = n.GetIP(false)

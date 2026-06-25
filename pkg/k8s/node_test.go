@@ -5,16 +5,24 @@ package k8s
 
 import (
 	"net"
+	"net/netip"
 	"testing"
 
+	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/cilium/cilium/pkg/annotation"
 	"github.com/cilium/cilium/pkg/cidr"
+	iputil "github.com/cilium/cilium/pkg/ip"
+	ipamTypes "github.com/cilium/cilium/pkg/ipam/types"
+	ciliumv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	"github.com/cilium/cilium/pkg/loadbalancer"
+	"github.com/cilium/cilium/pkg/node/addressing"
 	nodeAddressing "github.com/cilium/cilium/pkg/node/addressing"
+	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/source"
 )
@@ -49,14 +57,14 @@ func TestParseNode(t *testing.T) {
 		},
 	}
 
-	n := ParseNode(k8sNode, source.Local)
+	n := ParseNode(hivetest.Logger(t), k8sNode, source.Local)
 	require.Equal(t, "node1", n.Name)
 	require.NotNil(t, n.IPv4AllocCIDR)
 	require.Equal(t, "10.1.0.0/16", n.IPv4AllocCIDR.String())
 	require.NotNil(t, n.IPv6AllocCIDR)
 	require.Equal(t, "f00d:aaaa:bbbb:cccc:dddd:eeee::/112", n.IPv6AllocCIDR.String())
 	require.Equal(t, "m5.xlarge", n.Labels["type"])
-	require.Equal(t, 2, len(n.IPAddresses))
+	require.Len(t, n.IPAddresses, 2)
 	require.Equal(t, "10.254.9.9", n.IPAddresses[0].IP.String())
 	require.Equal(t, nodeAddressing.NodeCiliumInternalIP, n.IPAddresses[0].Type)
 	require.Equal(t, "fd00:10:244:1::8ace", n.IPAddresses[1].IP.String())
@@ -80,7 +88,7 @@ func TestParseNode(t *testing.T) {
 		},
 	}
 
-	n = ParseNode(k8sNode, source.Local)
+	n = ParseNode(hivetest.Logger(t), k8sNode, source.Local)
 	require.Equal(t, "node2", n.Name)
 	require.NotNil(t, n.IPv4AllocCIDR)
 	require.Equal(t, "10.1.0.0/16", n.IPv4AllocCIDR.String())
@@ -99,7 +107,7 @@ func TestParseNode(t *testing.T) {
 		},
 	}
 
-	n = ParseNode(k8sNode, source.Local)
+	n = ParseNode(hivetest.Logger(t), k8sNode, source.Local)
 	require.Equal(t, "node2", n.Name)
 	require.NotNil(t, n.IPv4AllocCIDR)
 	require.Equal(t, "10.254.0.0/16", n.IPv4AllocCIDR.String())
@@ -120,7 +128,7 @@ func TestParseNode(t *testing.T) {
 		},
 	}
 
-	n = ParseNode(k8sNode, source.Local)
+	n = ParseNode(hivetest.Logger(t), k8sNode, source.Local)
 	require.Equal(t, "node2", n.Name)
 	require.NotNil(t, n.IPv4AllocCIDR)
 	require.Equal(t, "10.1.0.0/16", n.IPv4AllocCIDR.String())
@@ -176,11 +184,11 @@ func TestParseNode(t *testing.T) {
 		},
 	}
 
-	n = ParseNode(k8sNode, source.Local)
+	n = ParseNode(hivetest.Logger(t), k8sNode, source.Local)
 	require.Equal(t, "node2", n.Name)
 	require.NotNil(t, n.IPv4AllocCIDR)
 	require.Equal(t, "10.1.0.0/16", n.IPv4AllocCIDR.String())
-	require.Equal(t, len(expected), len(n.IPAddresses))
+	require.Len(t, n.IPAddresses, len(expected))
 	addrsFound := 0
 	for _, addr := range n.IPAddresses {
 		for _, expect := range expected {
@@ -220,7 +228,7 @@ func TestParseNodeWithoutAnnotations(t *testing.T) {
 		},
 	}
 
-	n := ParseNode(k8sNode, source.Local)
+	n := ParseNode(hivetest.Logger(t), k8sNode, source.Local)
 	require.Equal(t, "node1", n.Name)
 	require.NotNil(t, n.IPv4AllocCIDR)
 	require.Equal(t, "10.1.0.0/16", n.IPv4AllocCIDR.String())
@@ -245,7 +253,7 @@ func TestParseNodeWithoutAnnotations(t *testing.T) {
 		},
 	}
 
-	n = ParseNode(k8sNode, source.Local)
+	n = ParseNode(hivetest.Logger(t), k8sNode, source.Local)
 	require.Equal(t, "node2", n.Name)
 	require.Nil(t, n.IPv4AllocCIDR)
 	require.NotNil(t, n.IPv6AllocCIDR)
@@ -336,16 +344,20 @@ func Test_ParseNodeAddressType(t *testing.T) {
 				ciliumNodeType: gotNodeAddress,
 				errExists:      gotErr != nil,
 			}
-			require.EqualValues(t, tt.want, res)
+			require.Equal(t, tt.want, res)
 		})
 	}
 }
 
 func TestParseNodeWithService(t *testing.T) {
-	prevAnnotateK8sNode := option.Config.AnnotateK8sNode
+	oldAnnotateK8sNode := option.Config.AnnotateK8sNode
+
+	var lbConfig loadbalancer.Config
 	option.Config.AnnotateK8sNode = false
+	lbConfig.LBMode = loadbalancer.LBModeSNAT
+	lbConfig.LBAlgorithm = loadbalancer.LBAlgorithmRandom
 	defer func() {
-		option.Config.AnnotateK8sNode = prevAnnotateK8sNode
+		option.Config.AnnotateK8sNode = oldAnnotateK8sNode
 	}()
 
 	k8sNode := &slim_corev1.Node{
@@ -360,7 +372,7 @@ func TestParseNodeWithService(t *testing.T) {
 		},
 	}
 
-	n1 := ParseNode(k8sNode, source.Local)
+	n1 := ParseNode(hivetest.Logger(t), k8sNode, source.Local)
 	require.Equal(t, "node1", n1.Name)
 	require.NotNil(t, n1.IPv4AllocCIDR)
 	require.Equal(t, "10.1.0.0/16", n1.IPv4AllocCIDR.String())
@@ -375,41 +387,63 @@ func TestParseNodeWithService(t *testing.T) {
 		},
 	}
 
-	n2 := ParseNode(k8sNode, source.Local)
+	n2 := ParseNode(hivetest.Logger(t), k8sNode, source.Local)
 	require.Equal(t, "node2", n2.Name)
 	require.NotNil(t, n2.IPv4AllocCIDR)
 	require.Equal(t, "10.2.0.0/16", n2.IPv4AllocCIDR.String())
-	require.Equal(t, "", n2.Labels[annotation.ServiceNodeExposure])
+	require.Empty(t, n2.Labels[annotation.ServiceNodeExposure])
+}
 
-	objMeta := slim_metav1.ObjectMeta{
-		Name:      "foo",
-		Namespace: "bar",
-		Annotations: map[string]string{
-			annotation.ServiceNodeExposure: "beefy",
-		},
-	}
-	k8sSvc := &slim_corev1.Service{
-		ObjectMeta: objMeta,
-		Spec: slim_corev1.ServiceSpec{
-			ClusterIP: "127.0.0.1",
-			Selector: map[string]string{
-				"foo": "bar",
+func TestParseCiliumNode(t *testing.T) {
+	nodeResource := &ciliumv2.CiliumNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "foo", Namespace: "default"},
+		Spec: ciliumv2.NodeSpec{
+			Addresses: []ciliumv2.NodeAddress{
+				{Type: addressing.NodeInternalIP, IP: "2.2.2.2"},
+				{Type: addressing.NodeExternalIP, IP: "3.3.3.3"},
+				{Type: addressing.NodeInternalIP, IP: "c0de::1"},
+				{Type: addressing.NodeExternalIP, IP: "c0de::2"},
 			},
-			Type: slim_corev1.ServiceTypeClusterIP,
+			Encryption: ciliumv2.EncryptionSpec{
+				Key: 10,
+			},
+			IPAM: ipamTypes.IPAMSpec{
+				PodCIDRs: []iputil.Prefix{
+					iputil.PrefixFrom(netip.MustParsePrefix("10.10.0.0/16")),
+					iputil.PrefixFrom(netip.MustParsePrefix("c0de::/96")),
+					iputil.PrefixFrom(netip.MustParsePrefix("10.20.0.0/16")),
+					iputil.PrefixFrom(netip.MustParsePrefix("c0fe::/96")),
+				},
+			},
+			HealthAddressing: ciliumv2.HealthAddressingSpec{
+				IPv4: "1.1.1.1",
+				IPv6: "c0de::1",
+			},
+			IngressAddressing: ciliumv2.AddressPair{
+				IPV4: "1.1.1.2",
+				IPV6: "c0de::2",
+			},
 		},
 	}
 
-	id, svc := ParseService(k8sSvc, nil)
-	require.EqualValues(t, ServiceID{Namespace: "bar", Name: "foo"}, id)
-	require.EqualValues(t, &Service{
-		ExtTrafficPolicy:         loadbalancer.SVCTrafficPolicyCluster,
-		IntTrafficPolicy:         loadbalancer.SVCTrafficPolicyCluster,
-		FrontendIPs:              []net.IP{net.ParseIP("127.0.0.1")},
-		Selector:                 map[string]string{"foo": "bar"},
-		Annotations:              map[string]string{annotation.ServiceNodeExposure: "beefy"},
-		Ports:                    map[loadbalancer.FEPortName]*loadbalancer.L4Addr{},
-		NodePorts:                map[loadbalancer.FEPortName]NodePortToFrontend{},
-		LoadBalancerSourceRanges: map[string]*cidr.CIDR{},
-		Type:                     loadbalancer.SVCTypeClusterIP,
-	}, svc)
+	n := ParseCiliumNode(nodeResource)
+	require.Equal(t, nodeTypes.Node{
+		Name:   "foo",
+		Source: source.CustomResource,
+		IPAddresses: []nodeTypes.Address{
+			{Type: addressing.NodeInternalIP, IP: net.ParseIP("2.2.2.2")},
+			{Type: addressing.NodeExternalIP, IP: net.ParseIP("3.3.3.3")},
+			{Type: addressing.NodeInternalIP, IP: net.ParseIP("c0de::1")},
+			{Type: addressing.NodeExternalIP, IP: net.ParseIP("c0de::2")},
+		},
+		EncryptionKey:           uint8(10),
+		IPv4AllocCIDR:           cidr.MustParseCIDR("10.10.0.0/16"),
+		IPv6AllocCIDR:           cidr.MustParseCIDR("c0de::/96"),
+		IPv4SecondaryAllocCIDRs: []*cidr.CIDR{cidr.MustParseCIDR("10.20.0.0/16")},
+		IPv6SecondaryAllocCIDRs: []*cidr.CIDR{cidr.MustParseCIDR("c0fe::/96")},
+		IPv4HealthIP:            net.ParseIP("1.1.1.1"),
+		IPv6HealthIP:            net.ParseIP("c0de::1"),
+		IPv4IngressIP:           net.ParseIP("1.1.1.2"),
+		IPv6IngressIP:           net.ParseIP("c0de::2"),
+	}, n)
 }

@@ -4,20 +4,14 @@
 package api
 
 import (
-	"context"
 	"fmt"
+	"slices"
 	"strings"
 )
 
 // Exists returns true if the HTTP rule already exists in the list of rules
 func (h *PortRuleHTTP) Exists(rules L7Rules) bool {
-	for _, existingRule := range rules.HTTP {
-		if h.Equal(existingRule) {
-			return true
-		}
-	}
-
-	return false
+	return slices.ContainsFunc(rules.HTTP, h.Equal)
 }
 
 // Equal returns true if both HTTP rules are equal
@@ -62,24 +56,7 @@ func (h *HeaderMatch) Equal(o *HeaderMatch) bool {
 
 // Exists returns true if the DNS rule already exists in the list of rules
 func (d *PortRuleDNS) Exists(rules L7Rules) bool {
-	for _, existingRule := range rules.DNS {
-		if d.Equal(existingRule) {
-			return true
-		}
-	}
-
-	return false
-}
-
-// Exists returns true if the L7 rule already exists in the list of rules
-func (h *PortRuleL7) Exists(rules L7Rules) bool {
-	for _, existingRule := range rules.L7 {
-		if h.Equal(existingRule) {
-			return true
-		}
-	}
-
-	return false
+	return slices.ContainsFunc(rules.DNS, d.Equal)
 }
 
 // Equal returns true if both rules are equal
@@ -87,25 +64,14 @@ func (d *PortRuleDNS) Equal(o PortRuleDNS) bool {
 	return d != nil && d.MatchName == o.MatchName && d.MatchPattern == o.MatchPattern
 }
 
-// Equal returns true if both L7 rules are equal
-func (h *PortRuleL7) Equal(o PortRuleL7) bool {
-	if len(*h) != len(o) {
-		return false
-	}
-	for k, v := range *h {
-		if v2, ok := o[k]; !ok || v2 != v {
-			return false
-		}
-	}
-	return true
-}
-
 // Validate returns an error if the layer 4 protocol is not valid
 func (l4 L4Proto) Validate() error {
 	switch l4 {
-	case ProtoAny, ProtoTCP, ProtoUDP, ProtoSCTP:
+	case ProtoAny, ProtoTCP, ProtoUDP, ProtoSCTP,
+		ProtoVRRP, ProtoIGMP,
+		ProtoGRE, ProtoIPIP, ProtoIPv6, ProtoESP, ProtoAH:
 	default:
-		return fmt.Errorf("invalid protocol %q, must be { tcp | udp | sctp | any }", l4)
+		return fmt.Errorf("invalid protocol %q, must be { tcp | udp | sctp | vrrp | igmp | gre | ipip | ipv6 | esp | ah | any }", l4)
 	}
 
 	return nil
@@ -179,19 +145,4 @@ func ParseQualifiedName(qualifiedName string) (namespace, name, resourceName str
 		return "", "", qualifiedName
 	}
 	return parts[0], parts[1], parts[2]
-}
-
-// ExtractCidrSet abstracts away some of the logic from the CreateDerivative methods
-func ExtractCidrSet(ctx context.Context, groups []Groups) ([]CIDRRule, error) {
-	var cidrSet []CIDRRule
-	for _, group := range groups {
-		c, err := group.GetCidrSet(ctx)
-		if err != nil {
-			return cidrSet, err
-		}
-		if len(c) > 0 {
-			cidrSet = append(cidrSet, c...)
-		}
-	}
-	return cidrSet, nil
 }

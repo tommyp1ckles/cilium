@@ -5,34 +5,50 @@ package operator
 
 import (
 	"context"
-	"path"
+	"errors"
+	"log/slog"
+	"sync/atomic"
 
 	"k8s.io/utils/ptr"
 
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/clustermesh/common"
+	"github.com/cilium/cilium/pkg/clustermesh/endpointslice"
 	mcsapitypes "github.com/cilium/cilium/pkg/clustermesh/mcsapi/types"
+	"github.com/cilium/cilium/pkg/clustermesh/observer"
+	serviceStore "github.com/cilium/cilium/pkg/clustermesh/store"
 	"github.com/cilium/cilium/pkg/clustermesh/types"
 	"github.com/cilium/cilium/pkg/clustermesh/wait"
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/kvstore/store"
 	"github.com/cilium/cilium/pkg/lock"
-	serviceStore "github.com/cilium/cilium/pkg/service/store"
+	"github.com/cilium/cilium/pkg/logging/logfields"
+)
+
+var (
+	// ErrObserverNotRegistered is the error returned when referencing an observer
+	// which has not been registered.
+	ErrObserverNotRegistered = errors.New("observer not registered")
 )
 
 // remoteCluster implements the clustermesh business logic on top of
 // common.RemoteCluster.
 type remoteCluster struct {
+	logger *slog.Logger
 	// name is the name of the cluster
 	name string
 
 	clusterMeshEnableEndpointSync bool
 	clusterMeshEnableMCSAPI       bool
+	clusterMeshServiceModeV2      types.ServiceModeV2
 
 	// remoteServices is the shared store representing services in remote clusters
 	remoteServices store.WatchStore
 	// remoteServiceExports is the shared store representing service exports in remote clusters
 	remoteServiceExports store.WatchStore
+
+	// observers are observers watching additional prefixes.
+	observers map[observer.Name]observer.Observer
 
 	storeFactory store.Factory
 
@@ -41,6 +57,9 @@ type remoteCluster struct {
 
 	// status is the function which fills the common part of the status.
 	status common.StatusFunc
+
+	// registered represents whether the observers have been registered.
+	registered atomic.Bool
 
 	// synced tracks the initial synchronization with the remote cluster.
 	synced synced
@@ -51,7 +70,7 @@ func (rc *remoteCluster) Run(ctx context.Context, backend kvstore.BackendOperati
 	if config.Capabilities.SyncedCanaries {
 		mgr = rc.storeFactory.NewWatchStoreManager(backend, rc.name)
 	} else {
-		mgr = store.NewWatchStoreManagerImmediate(rc.name)
+		mgr = store.NewWatchStoreManagerImmediate(rc.logger)
 	}
 
 	adapter := func(prefix string) string { return prefix }
@@ -60,14 +79,27 @@ func (rc *remoteCluster) Run(ctx context.Context, backend kvstore.BackendOperati
 	}
 
 	if rc.clusterMeshEnableEndpointSync {
-		mgr.Register(adapter(serviceStore.ServiceStorePrefix), func(ctx context.Context) {
-			rc.remoteServices.Watch(ctx, backend, path.Join(adapter(serviceStore.ServiceStorePrefix), rc.name))
-		})
+		if rc.clusterMeshServiceModeV2.ShouldWatchLegacyServices() &&
+			config.Capabilities.EndpointSlicesExportMode != types.EndpointSlicesExportModeEndpointSlicesOnly {
+			mgr.Register(adapter(serviceStore.ServiceStorePrefix), func(ctx context.Context) {
+				rc.remoteServices.Watch(ctx, backend, kvstore.JoinKey(adapter(serviceStore.ServiceStorePrefix), rc.name))
+			})
+		} else {
+			if rc.clusterMeshServiceModeV2.ShouldWatchLegacyServices() {
+				rc.logger.Error("Remote cluster does not support legacy service resources while Cilium is configured to watch them. "+
+					"EndpointSliceSync will not take into account any backends from this cluster!",
+					logfields.ClusterName, rc.name)
+			}
+			// Drain any existing services in case the remote cluster no longer supports them
+			rc.remoteServices.Drain()
+			// Mimic that services are synced if not enabled
+			rc.synced.services.Stop()
+		}
 	}
 
 	if rc.clusterMeshEnableMCSAPI && config.Capabilities.ServiceExportsEnabled != nil {
 		mgr.Register(adapter(mcsapitypes.ServiceExportStorePrefix), func(ctx context.Context) {
-			rc.remoteServiceExports.Watch(ctx, backend, path.Join(adapter(mcsapitypes.ServiceExportStorePrefix), rc.name))
+			rc.remoteServiceExports.Watch(ctx, backend, kvstore.JoinKey(adapter(mcsapitypes.ServiceExportStorePrefix), rc.name))
 		})
 	} else {
 		// Drain the remote service exports in case the remote cluster no longer supports them
@@ -75,6 +107,13 @@ func (rc *remoteCluster) Run(ctx context.Context, backend kvstore.BackendOperati
 		// Mimic that service exports are synced if not enabled
 		rc.synced.serviceExports.Stop()
 	}
+
+	for _, obs := range rc.observers {
+		obs.Register(mgr, backend, config)
+	}
+
+	rc.registered.Store(true)
+	defer rc.registered.Store(false)
 
 	close(ready)
 	for _, clusterAddHook := range rc.clusterAddHooks {
@@ -87,6 +126,18 @@ func (rc *remoteCluster) Stop() {
 	rc.synced.Stop()
 }
 
+// RevokeCache performs a partial revocation of the remote cluster's cache, draining only remote
+// services and serviceExports (and possible extra observers that may implement revocation). This
+// prevents the operator from maintaining state for potentially stale information.
+func (rc *remoteCluster) RevokeCache(ctx context.Context) {
+	rc.remoteServices.Drain()
+	rc.remoteServiceExports.Drain()
+
+	for _, obs := range rc.observers {
+		obs.Revoke()
+	}
+}
+
 func (rc *remoteCluster) Remove(context.Context) {
 	for _, clusterDeleteHook := range rc.clusterDeleteHooks {
 		clusterDeleteHook(rc.name)
@@ -96,12 +147,17 @@ func (rc *remoteCluster) Remove(context.Context) {
 	// would break existing connections on restart.
 	rc.remoteServices.Drain()
 	rc.remoteServiceExports.Drain()
+
+	for _, obs := range rc.observers {
+		obs.Drain()
+	}
 }
 
 type synced struct {
 	wait.SyncedCommon
 	services       *lock.StoppableWaitGroup
 	serviceExports *lock.StoppableWaitGroup
+	observers      map[observer.Name]chan struct{}
 }
 
 func newSynced() synced {
@@ -109,6 +165,7 @@ func newSynced() synced {
 		SyncedCommon:   wait.NewSyncedCommon(),
 		services:       lock.NewStoppableWaitGroup(),
 		serviceExports: lock.NewStoppableWaitGroup(),
+		observers:      make(map[observer.Name]chan struct{}),
 	}
 }
 
@@ -126,14 +183,36 @@ func (s *synced) ServiceExports(ctx context.Context) error {
 	return s.Wait(ctx, s.serviceExports.WaitChannel())
 }
 
+// ObserverSynced returns after that either the given named observer has
+// received the initial list of entries from the remote clusters, the
+// remote cluster is disconnected, or the given context is canceled.
+// It returns an error if the target observer is not registered.
+func (s *synced) Observer(ctx context.Context, name observer.Name) error {
+	wait, ok := s.observers[name]
+	if !ok {
+		return ErrObserverNotRegistered
+	}
+
+	return s.Wait(ctx, wait)
+}
+
 func (rc *remoteCluster) Status() *models.RemoteCluster {
 	status := rc.status()
 
+	get := func(name observer.Name) observer.Status {
+		obs, ok := rc.observers[name]
+		if ok {
+			return obs.Status()
+		}
+		return observer.Status{}
+	}
+
 	status.NumSharedServices = int64(rc.remoteServices.NumEntries())
 	status.NumServiceExports = int64(rc.remoteServiceExports.NumEntries())
+	isServicesWatched := rc.clusterMeshEnableEndpointSync && rc.clusterMeshServiceModeV2.ShouldWatchLegacyServices()
 
 	status.Synced = &models.RemoteClusterSynced{
-		Services: !rc.clusterMeshEnableEndpointSync || rc.remoteServices.Synced(),
+		Services: !isServicesWatched || rc.remoteServices.Synced(),
 		// The operator does not watch nodes, endpoints and identities, hence
 		// let's pretend them to be synchronized by default.
 		Nodes:      true,
@@ -144,11 +223,23 @@ func (rc *remoteCluster) Status() *models.RemoteCluster {
 		rc.clusterMeshEnableMCSAPI {
 		status.Synced.ServiceExports = ptr.To(rc.remoteServiceExports.Synced())
 	}
+	if get(endpointslice.Name).Enabled {
+		status.Synced.EndpointSlices = new(get(endpointslice.Name).Synced)
+	}
 
 	status.Ready = status.Ready &&
 		status.Synced.Nodes && status.Synced.Services &&
 		(status.Synced.ServiceExports == nil || *status.Synced.ServiceExports) &&
 		status.Synced.Identities && status.Synced.Endpoints
+
+	// We mark the status as ready only after being sure that all observers
+	// have been registered, as at that point we expect that [status.Enabled]
+	// is set if the reflector is enabled for the current configuration.
+	status.Ready = status.Ready && rc.registered.Load()
+	for _, obs := range rc.observers {
+		var st = obs.Status()
+		status.Ready = status.Ready && (!st.Enabled || st.Synced)
+	}
 
 	return status
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/blang/semver/v4"
 	v1 "k8s.io/api/core/v1"
 
+	ciliumdef "github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/versioncheck"
 )
 
@@ -22,16 +23,15 @@ const (
 	HostFirewall       Feature = "host-firewall"
 	ICMPPolicy         Feature = "icmp-policy"
 	PortRanges         Feature = "port-ranges"
+	L7PortRanges       Feature = "l7-port-ranges"
 	Tunnel             Feature = "tunnel"
+	TunnelPort         Feature = "tunnel-port"
 	EndpointRoutes     Feature = "endpoint-routes"
 
-	KPRMode                Feature = "kpr-mode"
-	KPRExternalIPs         Feature = "kpr-external-ips"
-	KPRGracefulTermination Feature = "kpr-graceful-termination"
-	KPRHostPort            Feature = "kpr-hostport"
-	KPRSocketLB            Feature = "kpr-socket-lb"
-	KPRNodePort            Feature = "kpr-nodeport"
-	KPRSessionAffinity     Feature = "kpr-session-affinity"
+	KPR                     Feature = "kpr"
+	KPRSocketLB             Feature = "kpr-socket-lb"
+	KPRSocketLBHostnsOnly   Feature = "kpr-socket-lb-hostns-only"
+	KPRNodePortAcceleration Feature = "kpr-nodeport-acceleration"
 
 	BPFLBExternalClusterIP Feature = "bpf-lb-external-clusterip"
 
@@ -41,19 +41,56 @@ const (
 
 	HealthChecking Feature = "health-checking"
 
-	EncryptionPod  Feature = "encryption-pod"
-	EncryptionNode Feature = "encryption-node"
+	EncryptionPod              Feature = "encryption-pod"
+	EncryptionNode             Feature = "encryption-node"
+	EncryptionStrictMode       Feature = "enable-encryption-strict-mode"
+	EncryptionStrictModeEgress Feature = "enable-encryption-strict-mode-egress"
 
 	IPv4 Feature = "ipv4"
 	IPv6 Feature = "ipv6"
 
 	Flavor Feature = "flavor"
 
-	SecretBackendK8s Feature = "secret-backend-k8s"
+	// The following settings control Policy Secrets tests.
+	//
+	// Cilium can be in three states for Policy Secrets:
+	//
+	// * Policy Secrets can be read by the agent from anywhere in the cluster (via either
+	//   direct read or from the configured secret namespace via secret
+	//   synchonrization by the Cilium Operator).
+	// * Policy Secrets can be read by the agent, but only from the configured Secrets
+	//   namespace. This is an advanced use case, and is included for migration purposes.
+	// * Policy Secrets cannot be read.
+
+	// PolicySecretsOnlyFromSecretsNamespace sets if Cilium  will look only
+	// in the configured secrets namespace for Policy Secrets, or if it will look
+	// in the entire cluster.
+	//
+	// If it's `true`, then Cilium will only read Secrets from the configured namespace.
+	//
+	// If it's `false`, then the Cilium agent will be granted Read access to _all_ Secrets
+	// in the cluster.
+	//
+	// This feature replaces the existing `tls.secretsBackend: k8s` one. SecretsBackend
+	// will be removed in a future release.
+	//
+	// This feature has Helm automation to mirror the setting of secretsBackend in the meantime.
+	PolicySecretsOnlyFromSecretsNamespace Feature = "policy-secrets-only-from-secrets-namespace"
+
+	// PolicySecretSync controls whether the Cilium Operator will synchronize Secrets referenced
+	// in Network Policy into the configured Secrets namespace.
+	//
+	// This has important interactions with
+	PolicySecretSync Feature = "enable-policy-secrets-sync"
+	// For connectivity tests, we only care if Secrets can be read from the cluster
+	// _somehow_, whether that is via direct read or secret sync is not important.
+	// So, this feature tracks if we can read Policy secrets _somehow_.
+	PolicySecretsReadable Feature = "policy-secrets-readable"
 
 	CNP  Feature = "cilium-network-policy"
 	CCNP Feature = "cilium-clusterwide-network-policy"
 	KNP  Feature = "k8s-network-policy"
+	KCNP Feature = "k8s-cluster-network-policy"
 
 	// Whether or not CIDR selectors can match node IPs
 	CIDRMatchNodes Feature = "cidr-match-nodes"
@@ -62,23 +99,37 @@ const (
 
 	IngressController Feature = "ingress-controller"
 
-	EgressGateway Feature = "enable-ipv4-egress-gateway"
+	EgressGateway Feature = "enable-egress-gateway"
 	GatewayAPI    Feature = "enable-gateway-api"
 
 	EnableEnvoyConfig Feature = "enable-envoy-config"
-
-	WireguardEncapsulate Feature = "wireguard-encapsulate"
 
 	CiliumIPAMMode Feature = "ipam"
 
 	IPsecEnabled                  Feature = "enable-ipsec"
 	ClusterMeshEnableEndpointSync Feature = "clustermesh-enable-endpoint-sync"
 
+	PolicyDefaultLocalCLuster Feature = "policy-default-local-cluster"
+
 	LocalRedirectPolicy Feature = "enable-local-redirect-policy"
 
 	BGPControlPlane Feature = "enable-bgp-control-plane"
 
 	NodeLocalDNS Feature = "node-local-dns"
+
+	Multicast Feature = "multicast-enabled"
+
+	L7LoadBalancer Feature = "loadbalancer-l7"
+
+	RHEL Feature = "rhel"
+
+	ExternalEnvoyProxy Feature = "external-envoy-proxy"
+
+	Ztunnel Feature = "enable-ztunnel"
+
+	DefaultGlobalNamespace Feature = "clustermesh-default-global-namespace"
+
+	SubnetTopology Feature = "subnet-topology"
 )
 
 // Feature is the name of a Cilium Feature (e.g. l7-proxy, cni chaining mode etc)
@@ -108,6 +159,13 @@ func (s Status) String() string {
 	return fmt.Sprintf("%s:%s", str, s.Mode)
 }
 
+func (s Status) shortString() string {
+	if s.Enabled {
+		return "enabled"
+	}
+	return "disabled"
+}
+
 // Set contains the Status of a collection of Features.
 type Set map[Feature]Status
 
@@ -117,10 +175,13 @@ func (fs Set) MatchRequirements(reqs ...Requirement) (bool, string) {
 	for _, req := range reqs {
 		status := fs[req.Feature]
 		if req.requiresEnabled && (req.enabled != status.Enabled) {
-			return false, fmt.Sprintf("Feature %s is disabled", req.Feature)
+			return false, fmt.Sprintf("Feature %s is %s", req.Feature, status.shortString())
 		}
 		if req.requiresMode && (req.mode != status.Mode) {
 			return false, fmt.Sprintf("requires Feature %s mode %s, got %s", req.Feature, req.mode, status.Mode)
+		}
+		if req.requireModeIsNot && (req.mode == status.Mode) {
+			return false, fmt.Sprintf("requires Feature %s not equal to %s", req.Feature, req.mode)
 		}
 	}
 
@@ -149,7 +210,7 @@ func (fs Set) DeriveFeatures() error {
 		Enabled: (fs[CNIChaining].Enabled && fs[CNIChaining].Mode == "portmap" &&
 			// cilium/cilium#12541: Host firewall doesn't work with portmap CNI chaining
 			!fs[HostFirewall].Enabled) ||
-			fs[KPRHostPort].Enabled,
+			fs[KPR].Enabled,
 	}
 
 	return nil
@@ -163,8 +224,9 @@ type Requirement struct {
 	requiresEnabled bool
 	enabled         bool
 
-	requiresMode bool
-	mode         string
+	requiresMode     bool
+	requireModeIsNot bool
+	mode             string
 }
 
 // RequireEnabled constructs a Requirement which expects the
@@ -197,11 +259,24 @@ func RequireMode(feature Feature, mode string) Requirement {
 	}
 }
 
-// ExtractFromVersionedConfigMap extracts features based on Cilium version and cilium-config
-// ConfigMap.
-func (fs Set) ExtractFromVersionedConfigMap(ciliumVersion semver.Version, cm *v1.ConfigMap) {
-	fs[Tunnel] = ExtractTunnelFeatureFromVersionedConfigMap(ciliumVersion, cm)
+// RequiredModeIsNot constructs a Requirement which expects the Feature to not
+// be in the given mode
+//
+// When evaluating a set of requirements with MatchRequirements,
+// having a RequireMode requirement of the same feature and mode will cause
+// conflicting results.
+func RequireModeIsNot(feature Feature, mode string) Requirement {
+	return Requirement{
+		Feature:          feature,
+		requireModeIsNot: true,
+		mode:             mode,
+	}
+}
+
+// ExtractFromCiliumVersion extracts features based on Cilium version.
+func (fs Set) ExtractFromCiliumVersion(ciliumVersion semver.Version) {
 	fs[PortRanges] = ExtractPortRanges(ciliumVersion)
+	fs[L7PortRanges] = ExtractL7PortRanges(ciliumVersion)
 }
 
 func ExtractPortRanges(ciliumVersion semver.Version) Status {
@@ -211,17 +286,25 @@ func ExtractPortRanges(ciliumVersion semver.Version) Status {
 	}
 }
 
-func ExtractTunnelFeatureFromVersionedConfigMap(ciliumVersion semver.Version, cm *v1.ConfigMap) Status {
-	if versioncheck.MustCompile("<1.14.0")(ciliumVersion) {
-		enabled, proto := true, "vxlan"
-		if v, ok := cm.Data["tunnel"]; ok {
-			if enabled = v != "disabled"; enabled {
-				proto = v
-			}
+func ExtractL7PortRanges(ciliumVersion semver.Version) Status {
+	enabled := versioncheck.MustCompile(">=1.17.0")(ciliumVersion)
+	return Status{
+		Enabled: enabled,
+	}
+}
+
+func ExtractTunnelFeatureFromConfigMap(cm *v1.ConfigMap) (Status, Status) {
+	getTunnelPortFeature := func(tunnelProtocol string) Status {
+		tunnelPort, ok := cm.Data["tunnel-port"]
+		switch {
+		case !ok && tunnelProtocol == "vxlan":
+			tunnelPort = fmt.Sprintf("%d", ciliumdef.TunnelPortVXLAN)
+		case !ok && tunnelProtocol == "geneve":
+			tunnelPort = fmt.Sprintf("%d", ciliumdef.TunnelPortGeneve)
 		}
 		return Status{
-			Enabled: enabled,
-			Mode:    proto,
+			Enabled: ok,
+			Mode:    tunnelPort,
 		}
 	}
 
@@ -238,7 +321,7 @@ func ExtractTunnelFeatureFromVersionedConfigMap(ciliumVersion semver.Version, cm
 	return Status{
 		Enabled: mode != "native",
 		Mode:    tunnelProto,
-	}
+	}, getTunnelPortFeature(tunnelProto)
 }
 
 // ExtractFromConfigMap extracts features from the Cilium ConfigMap.
@@ -277,7 +360,7 @@ func (fs Set) ExtractFromConfigMap(cm *v1.ConfigMap) {
 	}
 
 	fs[EgressGateway] = Status{
-		Enabled: cm.Data["enable-ipv4-egress-gateway"] == "true",
+		Enabled: cm.Data[string(EgressGateway)] == "true" || cm.Data["enable-ipv4-egress-gateway"] == "true",
 	}
 
 	fs[CIDRMatchNodes] = Status{
@@ -292,10 +375,6 @@ func (fs Set) ExtractFromConfigMap(cm *v1.ConfigMap) {
 		Enabled: cm.Data[string(EnableEnvoyConfig)] == "true",
 	}
 
-	fs[WireguardEncapsulate] = Status{
-		Enabled: cm.Data[string(WireguardEncapsulate)] == "true",
-	}
-
 	fs[CiliumIPAMMode] = Status{
 		Mode: cm.Data[string(CiliumIPAMMode)],
 	}
@@ -308,6 +387,10 @@ func (fs Set) ExtractFromConfigMap(cm *v1.ConfigMap) {
 		Enabled: cm.Data[string(ClusterMeshEnableEndpointSync)] == "true",
 	}
 
+	fs[PolicyDefaultLocalCLuster] = Status{
+		Enabled: cm.Data[string(PolicyDefaultLocalCLuster)] == "true",
+	}
+
 	fs[LocalRedirectPolicy] = Status{
 		Enabled: cm.Data[string(LocalRedirectPolicy)] == "true",
 	}
@@ -318,6 +401,48 @@ func (fs Set) ExtractFromConfigMap(cm *v1.ConfigMap) {
 
 	fs[BGPControlPlane] = Status{
 		Enabled: cm.Data[string(BGPControlPlane)] == "true",
+	}
+
+	fs[Multicast] = Status{
+		Enabled: cm.Data[string(Multicast)] == "true",
+	}
+
+	fs[EncryptionStrictModeEgress] = Status{
+		// EncryptionStrictMode is deprecated, but we still support it for backwards compatibility until Cilium 1.19
+		// is EOL.
+		Enabled: cm.Data[string(EncryptionStrictMode)] == "true" || cm.Data[string(EncryptionStrictModeEgress)] == "true",
+	}
+
+	// This could be enabled via ClusterRole check as well, so only
+	// check if it's false.
+	if !fs[PolicySecretsOnlyFromSecretsNamespace].Enabled {
+		fs[PolicySecretsOnlyFromSecretsNamespace] = Status{
+			Enabled: cm.Data[string(PolicySecretSync)] == "true",
+		}
+	}
+
+	fs[PolicySecretSync] = Status{
+		Enabled: cm.Data[string(PolicySecretSync)] == "true",
+	}
+
+	fs[L7LoadBalancer] = Status{
+		Enabled: cm.Data[string(L7LoadBalancer)] == "envoy",
+	}
+
+	st, ok := cm.Data[string(SubnetTopology)]
+	fs[SubnetTopology] = Status{
+		Enabled: ok,
+		Mode:    st,
+	}
+
+	fs[Tunnel], fs[TunnelPort] = ExtractTunnelFeatureFromConfigMap(cm)
+
+	fs[Ztunnel] = Status{
+		Enabled: cm.Data["enable-ztunnel"] == "true",
+	}
+
+	fs[DefaultGlobalNamespace] = Status{
+		Enabled: cm.Data[string(DefaultGlobalNamespace)] == "true",
 	}
 }
 

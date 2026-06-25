@@ -6,11 +6,9 @@
 
 .. _gsg_ipam_crd_multi_pool:
 
-*******************************************
-CRD-Backed by Cilium Multi-Pool IPAM (Beta)
-*******************************************
-
-.. include:: ../../beta.rst
+************************************
+CRD-Backed by Cilium Multi-Pool IPAM
+************************************
 
 This is a quick tutorial walking through how to enable multi-pool IPAM backed by the
 ``CiliumPodIPPool`` CRD. The purpose of this tutorial is to show how components are configured and
@@ -24,10 +22,6 @@ Enable Multi-pool IPAM mode
 #. Setup Cilium for Kubernetes using helm with the options:
 
    * ``--set ipam.mode=multi-pool``
-   * ``--set routingMode=native``
-   * ``--set autoDirectNodeRoutes=true``
-   * ``--set ipv4NativeRoutingCIDR=10.0.0.0/8``
-   * ``--set endpointRoutes.enabled=true``
    * ``--set kubeProxyReplacement=true``
    * ``--set bpf.masquerade=true``
 
@@ -60,7 +54,7 @@ Validate installation
        [...]
 
 #. Validate that the ``CiliumPodIPPool`` resource for the ``default`` pool was created with the
-   CIDRs specified in the ``ipam.operator.multiPoolMap.default.*`` Helm values:
+   CIDRs specified in the ``ipam.operator.autoCreateCiliumPodIPPools.default.*`` Helm values:
 
    .. code-block:: shell-session
 
@@ -172,11 +166,11 @@ Validate installation
 
    .. code-block:: shell-session
 
-       $ kubectl create namespace cilium-test
-       $ kubectl annotate namespace cilium-test ipam.cilium.io/ip-pool=mars
+       $ kubectl create namespace cilium-test-1
+       $ kubectl annotate namespace cilium-test-1 ipam.cilium.io/ip-pool=mars
 
-   All new pods created in the namespace ``cilium-test`` will be assigned IPv4 addresses from the
-   ``mars`` pool.  Run the Cilium connectivity tests (which use namespace ``cilium-test`` by default
+   All new pods created in the namespace ``cilium-test-1`` will be assigned IPv4 addresses from the
+   ``mars`` pool.  Run the Cilium connectivity tests (which use namespace ``cilium-test-1`` by default
    to create their workloads) to verify connectivity:
 
    .. code-block:: shell-session

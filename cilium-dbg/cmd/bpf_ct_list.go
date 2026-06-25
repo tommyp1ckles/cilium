@@ -23,10 +23,9 @@ import (
 // bpfCtListCmd represents the bpf_ct_list command
 var (
 	bpfCtListCmd = &cobra.Command{
-		Use:     "list ( global | endpoint | cluster ) [identifier]",
+		Use:     "list [cluster <identifier>]",
 		Aliases: []string{"ls"},
 		Short:   "List connection tracking entries",
-		PreRun:  requireEndpointIDorGlobal,
 		Run: func(cmd *cobra.Command, args []string) {
 			t, id, err := parseArgs(args)
 			if err != nil {
@@ -53,22 +52,13 @@ func init() {
 
 func parseArgs(args []string) (string, uint32, error) {
 	if len(args) == 0 {
-		return "", 0, fmt.Errorf("no CT map type provided")
+		return "global", 0, nil
 	}
 
 	t := args[0]
 	switch t {
-	case "global":
+	case "global": // backwards compatibility
 		return t, 0, nil
-	case "endpoint":
-		if len(args) != 2 {
-			return "", 0, fmt.Errorf("missing endpointID")
-		}
-		id, err := strconv.ParseUint(args[1], 10, 32)
-		if err != nil {
-			return "", 0, fmt.Errorf("invalid endpointID: %w", err)
-		}
-		return t, uint32(id), nil
 	case "cluster":
 		if len(args) != 2 {
 			return "", 0, fmt.Errorf("missing clusterID")
@@ -89,15 +79,13 @@ func parseArgs(args []string) (string, uint32, error) {
 func getMaps(t string, id uint32) []ctmap.CtMap {
 	var m []*ctmap.Map
 	var r []ctmap.CtMap
+	ipv4, ipv6 := getIpEnableStatuses()
 	if t == "global" {
-		m = ctmap.GlobalMaps(true, getIpv6EnableStatus())
-	}
-	if t == "endpoint" {
-		m = ctmap.LocalMaps(&dummyEndpoint{ID: int(id)}, true, true)
+		m = ctmap.Maps(ipv4, ipv6)
 	}
 	if t == "cluster" {
 		// Ignoring the error, as we already validated the cluster ID.
-		m, _ = ctmap.GetClusterCTMaps(id, true, getIpv6EnableStatus())
+		m, _ = ctmap.GetClusterCTMaps(id, ipv4, ipv6)
 	}
 	for _, v := range m {
 		r = append(r, v)
@@ -146,14 +134,14 @@ func doDumpEntries(m ctmap.CtMap) {
 		}
 	}
 
-	out, err = ctmap.DumpEntriesWithTimeDiff(m, clockSource)
+	out, err = m.DumpEntriesWithTimeDiff(clockSource)
 	if err != nil {
 		Fatalf("Error while dumping BPF Map: %s", err)
 	}
 	fmt.Println(out)
 }
 
-func dumpCt(maps []ctmap.CtMap, args ...interface{}) {
+func dumpCt(maps []ctmap.CtMap, args ...any) {
 	entries := make([]ctmap.CtMapRecord, 0)
 
 	t := args[0].(string)
@@ -164,7 +152,7 @@ func dumpCt(maps []ctmap.CtMap, args ...interface{}) {
 			if os.IsNotExist(err) {
 				msg := "Unable to open %s: %s."
 				if t != "global" {
-					msg = "Unable to open %s: %s: please try using \"cilium bpf ct list global\"."
+					msg = "Unable to open %s: %s: please try using \"cilium bpf ct list\"."
 				}
 				fmt.Fprintf(os.Stderr, msg+" Skipping.\n", path, err)
 				continue

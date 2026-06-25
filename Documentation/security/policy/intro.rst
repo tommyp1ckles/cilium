@@ -62,6 +62,11 @@ block any traffic, even if it is the first policy to apply to an endpoint. An
 administrator can safely apply this policy cluster-wide, without the risk that
 it transitions an endpoint in to default-deny and causes legitimate traffic to be dropped.
 
+.. warning::
+  ``EnableDefaultDeny`` does not apply to :ref:`layer-7 policy <l7_policy>`.
+  Adding a layer-7 rule that does not include a layer-7 allow-all will cause drops,
+  even when default-deny is explicitly disabled.
+
 .. code-block:: yaml
 
   apiVersion: cilium.io/v2
@@ -96,6 +101,33 @@ it transitions an endpoint in to default-deny and causes legitimate traffic to b
             rules:
               dns:
                 - matchPattern: "*"
+
+Policy Deny Response Handling
+==============================
+
+By default, when network policy denies egress traffic from a pod, Cilium silently drops the packets.
+This means applications experience connection timeouts rather than immediate connection failures when attempting to reach forbidden destinations.
+
+However, some applications may benefit from receiving explicit rejection notifications instead of experiencing connection timeouts.
+This can provide faster feedback to applications and improve user experience by reducing wait times.
+
+This behavior can be configured with the ``--policy-deny-response`` option:
+
+**none** (default)
+  Silently drop denied packets. Applications will experience connection timeouts when policy denies traffic.
+
+**icmp** (experimental)
+  Send an ICMP Destination Unreachable response back to the source pod when egress traffic is denied by policy.
+  This provides immediate feedback to applications that the connection was rejected.
+
+.. note::
+   This is an experimental feature and only applies to ipv4 and ipv6 egress pod traffic denied by network policy.
+   Ingress traffic denial behavior is not supported currently. Check :gh-issue:`41859` for updates
+
+.. warning::
+   When using ``--policy-deny-response=icmp``, ensure that ICMP ingress traffic is allowed by your network policies. 
+   If ICMP traffic is blocked by ingress policies, applications will not receive 
+   the rejection notifications and will still experience connection timeouts.
 
 .. _policy_rule:
 

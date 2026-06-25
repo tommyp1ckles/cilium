@@ -13,7 +13,7 @@ export DOCKER_BUILDKIT=1
 ifdef ARCH
   # Default to multi-arch builds, always create the builder for all the platforms we support
   DOCKER_PLATFORMS := linux/arm64,linux/amd64
-  DOCKER_BUILDER := $(shell docker buildx ls | grep -E -e "[a-zA-Z0-9-]+ \*" | cut -d ' ' -f1)
+  DOCKER_BUILDER := $(shell docker buildx ls --format '{{ .Name }}' | head -n1)
   ifneq (,$(filter $(DOCKER_BUILDER),default desktop-linux))
     DOCKER_BUILDKIT_DRIVER :=
     ifdef DOCKER_BUILDKIT_IMAGE
@@ -36,7 +36,7 @@ else
 endif
 DOCKER_EXISTS := $(shell command -v docker 2>/dev/null)
 ifdef DOCKER_EXISTS
-DOCKER_BUILDER := $(shell docker buildx ls | grep -E -e "[a-zA-Z0-9-]+ \*" | cut -d ' ' -f1)
+DOCKER_BUILDER := $(shell docker buildx ls --format '{{ .Name }}' | head -n1)
 endif
 
 ##@ Docker Images
@@ -45,7 +45,7 @@ builder-info: ## Print information about the docker builder that will be used fo
 	@echo "Using Docker Buildx builder \"$(DOCKER_BUILDER)\" with build flags \"$(DOCKER_FLAGS)\"."
 
 # Generic rule for augmented .dockerignore files.
-GIT_IGNORE_FILES := $(shell find . -not -path "./vendor*" -name .gitignore -print)
+GIT_IGNORE_FILES := $(shell find . -not -path "./vendor*" -name .gitignore | awk -F/ '{ print NF, $$0 }' | sort -n | cut -d" " -f2-)
 .PRECIOUS: %.dockerignore
 %.dockerignore: $(GIT_IGNORE_FILES) Makefile.docker
 	@-mkdir -p $(dir $@)
@@ -92,7 +92,7 @@ endif
 	$(QUIET) $(CONTAINER_ENGINE) buildx build -f $(subst %,$$*,$(2)) \
 		$(DOCKER_BUILD_FLAGS) $(DOCKER_FLAGS) \
 		$(if $(BASE_IMAGE),--build-arg BASE_IMAGE=$(BASE_IMAGE),) \
-		--build-arg MODIFIERS="NOSTRIP=$${NOSTRIP} NOOPT=${NOOPT} LOCKDEBUG=${LOCKDEBUG} RACE=${RACE} V=${V} LIBNETWORK_PLUGIN=${LIBNETWORK_PLUGIN} ${ADDITIONAL_MODIFIERS}" \
+		--build-arg MODIFIERS="NOSTRIP=$${NOSTRIP} NOOPT=${NOOPT} LOCKDEBUG=${LOCKDEBUG} RACE=${RACE} V=${V} ${ADDITIONAL_MODIFIERS}" \
 		--build-arg CILIUM_SHA=$(firstword $(GIT_VERSION)) \
 		--build-arg OPERATOR_VARIANT=$(IMAGE_NAME) \
 		--build-arg DEBUG_HOLD=$(DEBUG_HOLD) \
@@ -125,14 +125,14 @@ $(eval $(call DOCKER_IMAGE_TEMPLATE,dev-docker-image,images/cilium/Dockerfile,ci
 # dev-docker-image-debug
 $(eval $(call DOCKER_IMAGE_TEMPLATE,dev-docker-image-debug,images/cilium/Dockerfile,cilium-dev,$(DOCKER_IMAGE_TAG),debug))
 
-# docker-plugin-image
-$(eval $(call DOCKER_IMAGE_TEMPLATE,docker-plugin-image,images/cilium-docker-plugin/Dockerfile,docker-plugin,$(DOCKER_IMAGE_TAG),release))
-
 # docker-hubble-relay-image
 $(eval $(call DOCKER_IMAGE_TEMPLATE,docker-hubble-relay-image,images/hubble-relay/Dockerfile,hubble-relay,$(DOCKER_IMAGE_TAG),release))
 
 # docker-clustermesh-apiserver-image
 $(eval $(call DOCKER_IMAGE_TEMPLATE,docker-clustermesh-apiserver-image,images/clustermesh-apiserver/Dockerfile,clustermesh-apiserver,$(DOCKER_IMAGE_TAG),release))
+
+# docker-standalone-dns-proxy-image
+$(eval $(call DOCKER_IMAGE_TEMPLATE,docker-standalone-dns-proxy-image,images/standalone-dns-proxy/Dockerfile,standalone-dns-proxy,$(DOCKER_IMAGE_TAG),release))
 
 # docker-operator-images.
 # We eat the ending of "operator" in to the stem ('%') to allow this pattern
@@ -144,9 +144,9 @@ $(eval $(call DOCKER_IMAGE_TEMPLATE,dev-docker-opera%-image-debug,images/operato
 #
 # docker-*-all targets are mainly used from the CI
 #
-docker-images-all: docker-cilium-image docker-plugin-image docker-hubble-relay-image docker-clustermesh-apiserver-image docker-operator-images-all ## Build all Cilium related docker images.
+docker-images-all: docker-cilium-image docker-hubble-relay-image docker-clustermesh-apiserver-image docker-operator-images-all docker-standalone-dns-proxy-image ## Build all Cilium related docker images.
 
-docker-images-all-unstripped: docker-cilium-image-unstripped docker-plugin-image-unstripped docker-hubble-relay-image-unstripped docker-clustermesh-apiserver-image-unstripped docker-operator-images-all-unstripped ## Build all Cilium related unstripped docker images.
+docker-images-all-unstripped: docker-cilium-image-unstripped docker-hubble-relay-image-unstripped docker-clustermesh-apiserver-image-unstripped docker-operator-images-all-unstripped docker-standalone-dns-proxy-image-unstripped ## Build all Cilium related unstripped docker images.
 
 docker-operator-images-all: docker-operator-image docker-operator-aws-image docker-operator-azure-image docker-operator-alibabacloud-image docker-operator-generic-image ## Build all variants of cilium-operator images.
 

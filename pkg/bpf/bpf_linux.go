@@ -8,11 +8,10 @@ package bpf
 import (
 	"errors"
 	"fmt"
-	"os"
+	"log/slog"
 	"path"
 
 	"github.com/cilium/ebpf"
-	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 
 	"github.com/cilium/cilium/pkg/logging/logfields"
@@ -40,73 +39,13 @@ func createMap(spec *ebpf.MapSpec, opts *ebpf.MapOptions) (*ebpf.Map, error) {
 	return m, err
 }
 
-func objCheck(m *ebpf.Map, path string, mapType ebpf.MapType, keySize, valueSize, maxEntries, flags uint32) bool {
-	scopedLog := log.WithField(logfields.Path, path)
-	mismatch := false
-
-	if m.Type() != mapType {
-		scopedLog.WithFields(logrus.Fields{
-			"old": m.Type(),
-			"new": mapType,
-		}).Warning("Map type mismatch for BPF map")
-		mismatch = true
-	}
-
-	if m.KeySize() != keySize {
-		scopedLog.WithFields(logrus.Fields{
-			"old": m.KeySize(),
-			"new": keySize,
-		}).Warning("Key-size mismatch for BPF map")
-		mismatch = true
-	}
-
-	if m.ValueSize() != valueSize {
-		scopedLog.WithFields(logrus.Fields{
-			"old": m.ValueSize(),
-			"new": valueSize,
-		}).Warning("Value-size mismatch for BPF map")
-		mismatch = true
-	}
-
-	if m.MaxEntries() != maxEntries {
-		scopedLog.WithFields(logrus.Fields{
-			"old": m.MaxEntries(),
-			"new": maxEntries,
-		}).Warning("Max entries mismatch for BPF map")
-		mismatch = true
-	}
-	if m.Flags() != flags {
-		scopedLog.WithFields(logrus.Fields{
-			"old": m.Flags(),
-			"new": flags,
-		}).Warning("Flags mismatch for BPF map")
-		mismatch = true
-	}
-
-	if mismatch {
-		if m.Type() == ebpf.ProgramArray {
-			return false
-		}
-
-		scopedLog.Warning("Removing map to allow for property upgrade (expect map data loss)")
-
-		// Kernel still holds map reference count via attached prog.
-		// Only exception is prog array, but that is already resolved
-		// differently.
-		os.Remove(path)
-		return true
-	}
-
-	return false
-}
-
 // OpenOrCreateMap attempts to load the pinned map at "pinDir/<spec.Name>" if
 // the spec is marked as Pinned. Any parent directories of pinDir are
 // automatically created. Any pinned maps incompatible with the given spec are
 // removed and recreated.
 //
 // If spec.Pinned is 0, a new Map is always created.
-func OpenOrCreateMap(spec *ebpf.MapSpec, pinDir string) (*ebpf.Map, error) {
+func OpenOrCreateMap(logger *slog.Logger, spec *ebpf.MapSpec, pinDir string) (*ebpf.Map, error) {
 	var opts ebpf.MapOptions
 	if spec.Pinning != 0 {
 		if pinDir == "" {
@@ -121,6 +60,27 @@ func OpenOrCreateMap(spec *ebpf.MapSpec, pinDir string) (*ebpf.Map, error) {
 		}
 
 		opts.PinPath = pinDir
+
+		// On upgrade (no flag -> flag): remove BPF_F_RDONLY_PROG from spec
+		// to reuse the existing map, since the datapath functions correctly
+		// with a more privileged (read-write) map.
+		// On downgrade (flag -> no flag): unpin the existing map to force
+		// recreation without the flag, since BPF programs need write access.
+		pinPath := path.Join(pinDir, spec.Name)
+		if existing, err := ebpf.LoadPinnedMap(pinPath, nil); err == nil {
+			if info, err := existing.Info(); err == nil {
+				const bpfFRdonlyProg = unix.BPF_F_RDONLY_PROG
+				switch {
+				case spec.Flags&bpfFRdonlyProg != 0 && info.Flags&bpfFRdonlyProg == 0:
+					// Upgrade: strip flag from spec to reuse existing map.
+					spec.Flags &^= bpfFRdonlyProg
+				case spec.Flags&bpfFRdonlyProg == 0 && info.Flags&bpfFRdonlyProg != 0:
+					// Downgrade: unpin to force recreation without the flag.
+					existing.Unpin()
+				}
+			}
+			existing.Close()
+		}
 	}
 
 	m, err := createMap(spec, &opts)
@@ -132,13 +92,24 @@ func OpenOrCreateMap(spec *ebpf.MapSpec, pinDir string) (*ebpf.Map, error) {
 		}
 		defer m.Close()
 
-		log.WithField(logfields.Path, path.Join(pinDir, spec.Name)).
-			WithFields(logrus.Fields{
-				"old": fmt.Sprintf("Type:%s KeySize:%d ValueSize:%d MaxEntries:%d Flags:%d",
-					m.Type(), m.KeySize(), m.ValueSize(), m.MaxEntries(), m.Flags()),
-				"new": fmt.Sprintf("Type:%s KeySize:%d ValueSize:%d MaxEntries:%d Flags:%d",
-					spec.Type, spec.KeySize, spec.ValueSize, spec.MaxEntries, spec.Flags),
-			}).Info("Unpinning map with incompatible properties")
+		logger.Info(
+			"Unpinning map with incompatible properties",
+			logfields.Path, path.Join(pinDir, spec.Name),
+			logfields.Old, []any{
+				logfields.Type, m.Type(),
+				logfields.KeySize, m.KeySize(),
+				logfields.ValueSize, m.ValueSize(),
+				logfields.MaxEntries, m.MaxEntries(),
+				logfields.Flags, m.Flags(),
+			},
+			logfields.New, []any{
+				logfields.Type, spec.Type,
+				logfields.KeySize, spec.KeySize,
+				logfields.ValueSize, spec.ValueSize,
+				logfields.MaxEntries, spec.MaxEntries,
+				logfields.Flags, spec.Flags,
+			},
+		)
 
 		// Existing map incompatible with spec. Unpin so it can be recreated.
 		if err := m.Unpin(); err != nil {

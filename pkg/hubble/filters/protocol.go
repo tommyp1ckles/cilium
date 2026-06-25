@@ -17,9 +17,9 @@ func filterByProtocol(protocols []string) (FilterFunc, error) {
 	for _, p := range protocols {
 		proto := strings.ToLower(p)
 		switch proto {
-		case "icmp", "icmpv4", "icmpv6", "tcp", "udp", "sctp":
+		case "icmp", "icmpv4", "icmpv6", "tcp", "udp", "sctp", "vrrp", "igmp":
 			l4Protocols = append(l4Protocols, proto)
-		case "dns", "http", "kafka":
+		case "dns", "http":
 			l7Protocols = append(l7Protocols, proto)
 		default:
 			return nil, fmt.Errorf("unknown protocol: %q", p)
@@ -54,6 +54,14 @@ func filterByProtocol(protocols []string) (FilterFunc, error) {
 				if l4.GetSCTP() != nil {
 					return true
 				}
+			case "vrrp":
+				if l4.GetVRRP() != nil {
+					return true
+				}
+			case "igmp":
+				if l4.GetIGMP() != nil {
+					return true
+				}
 			}
 		}
 
@@ -66,10 +74,6 @@ func filterByProtocol(protocols []string) (FilterFunc, error) {
 				}
 			case "http":
 				if l7.GetHttp() != nil {
-					return true
-				}
-			case "kafka":
-				if l7.GetKafka() != nil {
 					return true
 				}
 			}

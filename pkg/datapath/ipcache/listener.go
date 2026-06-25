@@ -4,28 +4,27 @@
 package ipcache
 
 import (
+	"context"
+	"log/slog"
 	"net"
+	"net/netip"
 
-	"github.com/sirupsen/logrus"
+	"go4.org/netipx"
 
 	"github.com/cilium/cilium/pkg/bpf"
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
+	"github.com/cilium/cilium/pkg/datapath/tunnel"
 	"github.com/cilium/cilium/pkg/ipcache"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	ipcacheMap "github.com/cilium/cilium/pkg/maps/ipcache"
 	monitorAPI "github.com/cilium/cilium/pkg/monitor/api"
 	"github.com/cilium/cilium/pkg/node"
-	"github.com/cilium/cilium/pkg/option"
-)
-
-var (
-	log = logging.DefaultLogger.WithField(logfields.LogSubsys, "datapath-ipcache")
 )
 
 // monitorNotify is an interface to notify the monitor about ipcache changes.
 type monitorNotify interface {
-	SendEvent(typ int, event interface{}) error
+	SendEvent(typ int, event any) error
 }
 
 type Map interface {
@@ -36,24 +35,33 @@ type Map interface {
 // BPFListener implements the ipcache.IPIdentityMappingBPFListener
 // interface with an IPCache store that is backed by BPF maps.
 type BPFListener struct {
+	logger *slog.Logger
 	// bpfMap is the BPF map that this listener will update when events are
 	// received from the IPCache.
 	bpfMap Map
 
 	// monitorNotify is used to notify the monitor about ipcache updates
 	monitorNotify monitorNotify
+
+	// tunnelConf holds the tunneling configuration.
+	tunnelConf tunnel.Config
+
+	localNodeStore *node.LocalNodeStore
 }
 
 // NewListener returns a new listener to push IPCache entries into BPF maps.
-func NewListener(m Map, mn monitorNotify) *BPFListener {
+func NewListener(m Map, mn monitorNotify, tunnelConf tunnel.Config, logger *slog.Logger, localNodeStore *node.LocalNodeStore) *BPFListener {
 	return &BPFListener{
-		bpfMap:        m,
-		monitorNotify: mn,
+		logger:         logger,
+		bpfMap:         m,
+		monitorNotify:  mn,
+		tunnelConf:     tunnelConf,
+		localNodeStore: localNodeStore,
 	}
 }
 
 func (l *BPFListener) notifyMonitor(modType ipcache.CacheModification,
-	cidr net.IPNet, oldHostIP, newHostIP net.IP, oldID *ipcache.Identity,
+	prefix netip.Prefix, oldHostIP, newHostIP net.IP, oldID *ipcache.Identity,
 	newID ipcache.Identity, encryptKey uint8, k8sMeta *ipcache.K8sMetadata) {
 	var (
 		k8sNamespace, k8sPodName string
@@ -78,11 +86,11 @@ func (l *BPFListener) notifyMonitor(modType ipcache.CacheModification,
 
 	switch modType {
 	case ipcache.Upsert:
-		msg := monitorAPI.IPCacheUpsertedMessage(cidr.String(), newIdentity, oldIdentityPtr,
+		msg := monitorAPI.IPCacheUpsertedMessage(prefix.String(), newIdentity, oldIdentityPtr,
 			newHostIP, oldHostIP, encryptKey, k8sNamespace, k8sPodName)
 		l.monitorNotify.SendEvent(monitorAPI.MessageTypeAgent, msg)
 	case ipcache.Delete:
-		msg := monitorAPI.IPCacheDeletedMessage(cidr.String(), newIdentity, oldIdentityPtr,
+		msg := monitorAPI.IPCacheDeletedMessage(prefix.String(), newIdentity, oldIdentityPtr,
 			newHostIP, oldHostIP, encryptKey, k8sNamespace, k8sPodName)
 		l.monitorNotify.SendEvent(monitorAPI.MessageTypeAgent, msg)
 	}
@@ -97,21 +105,18 @@ func (l *BPFListener) notifyMonitor(modType ipcache.CacheModification,
 // is not required to upsert the new pair.
 func (l *BPFListener) OnIPIdentityCacheChange(modType ipcache.CacheModification, cidrCluster cmtypes.PrefixCluster,
 	oldHostIP, newHostIP net.IP, oldID *ipcache.Identity, newID ipcache.Identity,
-	encryptKey uint8, k8sMeta *ipcache.K8sMetadata) {
-	cidr := cidrCluster.AsIPNet()
+	encryptKey uint8, k8sMeta *ipcache.K8sMetadata, endpointFlags uint8) {
+	prefix := cidrCluster.AsPrefix()
 
-	scopedLog := log
-	if option.Config.Debug {
-		scopedLog = log.WithFields(logrus.Fields{
-			logfields.IPAddr:       cidr,
-			logfields.Identity:     newID,
-			logfields.Modification: modType,
-		})
-	}
+	scopedLog := l.logger.With(
+		logfields.IPAddr, prefix,
+		logfields.Identity, newID,
+		logfields.Modification, modType,
+	)
 
 	scopedLog.Debug("Daemon notified of IP-Identity cache state change")
 
-	l.notifyMonitor(modType, cidr, oldHostIP, newHostIP, oldID, newID, encryptKey, k8sMeta)
+	l.notifyMonitor(modType, prefix, oldHostIP, newHostIP, oldID, newID, encryptKey, k8sMeta)
 
 	// TODO - see if we can factor this into an interface under something like
 	// pkg/datapath instead of in the daemon directly so that the code is more
@@ -119,46 +124,54 @@ func (l *BPFListener) OnIPIdentityCacheChange(modType ipcache.CacheModification,
 
 	// Update BPF Maps.
 
-	key := ipcacheMap.NewKey(cidr.IP, cidr.Mask, uint16(cidrCluster.ClusterID()))
+	key := ipcacheMap.NewKey(prefix, uint16(cidrCluster.ClusterID()))
 
 	switch modType {
 	case ipcache.Upsert:
-		value := ipcacheMap.RemoteEndpointInfo{
-			SecurityIdentity: uint32(newID.ID),
-			Key:              encryptKey,
-		}
-
+		var tunnelEndpoint netip.Addr
 		if newHostIP != nil {
+			ln, err := l.localNodeStore.Get(context.Background())
+			if err != nil {
+				logging.Fatal(l.logger, "Failed to retrieve local node")
+			}
+
 			// If the hostIP is specified and it doesn't point to
 			// the local host, then the ipcache should be populated
 			// with the hostIP so that this traffic can be guided
 			// to a tunnel endpoint destination.
-			nodeIPv4 := node.GetIPv4()
-			if ip4 := newHostIP.To4(); ip4 != nil && !ip4.Equal(nodeIPv4) {
-				copy(value.TunnelEndpoint[:], ip4)
+			switch l.tunnelConf.UnderlayProtocol() {
+			case tunnel.IPv4:
+				nodeIPv4 := ln.GetNodeIP(false)
+				if ip4 := newHostIP.To4(); ip4 != nil && !ip4.Equal(nodeIPv4) {
+					tunnelEndpoint, _ = netipx.FromStdIP(ip4)
+				}
+			case tunnel.IPv6:
+				nodeIPv6 := ln.GetNodeIP(true)
+				if !newHostIP.Equal(nodeIPv6) {
+					tunnelEndpoint, _ = netipx.FromStdIP(newHostIP)
+				}
 			}
 		}
+		value := ipcacheMap.NewValue(uint32(newID.ID), tunnelEndpoint, encryptKey,
+			ipcacheMap.RemoteEndpointInfoFlags(endpointFlags))
 		err := l.bpfMap.Update(&key, &value)
 		if err != nil {
-			scopedLog.WithError(err).WithFields(logrus.Fields{
-				"key":                  key.String(),
-				"value":                value.String(),
-				logfields.IPAddr:       cidr,
-				logfields.Identity:     newID,
-				logfields.Modification: modType,
-			}).Warning("unable to update bpf map")
+			scopedLog.Warn(
+				"unable to update bpf map",
+				logfields.Error, err,
+				logfields.Key, key,
+				logfields.Value, value,
+			)
 		}
 	case ipcache.Delete:
 		err := l.bpfMap.Delete(&key)
 		if err != nil {
-			scopedLog.WithError(err).WithFields(logrus.Fields{
-				"key":                  key.String(),
-				logfields.IPAddr:       cidr,
-				logfields.Identity:     newID,
-				logfields.Modification: modType,
-			}).Warning("unable to delete from bpf map")
+			scopedLog.Warn(
+				"unable to delete from bpf map",
+				logfields.Key, key,
+			)
 		}
 	default:
-		scopedLog.Warning("cache modification type not supported")
+		scopedLog.Warn("cache modification type not supported")
 	}
 }

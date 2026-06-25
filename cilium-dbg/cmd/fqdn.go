@@ -100,7 +100,7 @@ func cleanFQDNCache() {
 }
 
 func listFQDNCache() {
-	var lookups []*models.DNSLookup = []*models.DNSLookup{}
+	var lookups = []*models.DNSLookup{}
 
 	if fqdnEndpointID != "" {
 		params := policy.NewGetFqdnCacheIDParams()
@@ -169,7 +169,7 @@ func listFQDNCache() {
 }
 
 func listFQDNNames() {
-	result, err := client.Policy.GetFqdnNames(nil)
+	result, err := client.Policy.GetFqdnNames(policy.NewGetFqdnNamesParams())
 	if err != nil {
 		Fatalf("Error: %s\n", err)
 	}

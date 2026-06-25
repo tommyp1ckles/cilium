@@ -17,10 +17,10 @@ the local area network. This feature is primarily intended for on-premises
 deployments within networks without BGP based routing such as office or 
 campus networks.
 
-When used, this feature will respond to ARP queries for ExternalIPs and/or 
+When used, this feature will respond to ARP/NDP queries for ExternalIPs and/or 
 LoadBalancer IPs. These IPs are Virtual IPs (not installed on network 
 devices) on multiple nodes, so for each service one node at a time will respond
-to the ARP queries and respond with its MAC address. This node will perform 
+to ARP/NDP queries and respond with its MAC address. This node will perform 
 load balancing with the service load balancing feature, thus acting as a 
 north/south load balancer.
 
@@ -40,18 +40,15 @@ The L2 Announcements feature and all the requirements can be enabled as follows:
 .. tabs::
     .. group-tab:: Helm
 
-        .. parsed-literal::
-
-            $ helm upgrade cilium |CHART_RELEASE| \\
-               --namespace kube-system \\
-               --reuse-values \\
-               --set l2announcements.enabled=true \\
-               --set k8sClientRateLimit.qps={QPS} \\
-               --set k8sClientRateLimit.burst={BURST} \\
-               --set kubeProxyReplacement=true \\
-               --set k8sServiceHost=${API_SERVER_IP} \\
-               --set k8sServicePort=${API_SERVER_PORT}
-               
+        .. cilium-helm-upgrade::
+           :namespace: kube-system
+           :extra-args: --reuse-values
+           :set: l2announcements.enabled=true
+                 k8sClientRateLimit.qps={QPS}
+                 k8sClientRateLimit.burst={BURST}
+                 kubeProxyReplacement=true
+                 k8sServiceHost=${API_SERVER_IP}
+                 k8sServicePort=${API_SERVER_PORT}
 
     .. group-tab:: ConfigMap
 
@@ -75,16 +72,11 @@ Prerequisites
 * All devices on which L2 Aware LB will be announced should be enabled and included in the 
   ``--devices`` flag or ``devices`` Helm option if explicitly set, see :ref:`NodePort Devices`.
 
-* The ``externalIPs.enabled=true`` Helm option must be set, if usage of externalIPs
-  is desired. Otherwise service load balancing for external IPs is disabled.
-
 Limitations
 ###########
 
-* The feature currently does not support IPv6/NDP.
-
 * Due to the way L3->L2 translation protocols work, one node receives all 
-  ARP requests for a specific IP, so no load balancing can happen before traffic hits the cluster.
+  ARP/NDP requests for a specific IP, so no load balancing can happen before traffic hits the cluster.
 
 * The feature currently has no traffic balancing mechanism so nodes within the
   same policy might be asymmetrically loaded. For details see :ref:`l2_announcements_leader_election`.
@@ -161,7 +153,7 @@ devices specified in the ``devices`` Helm option, see :ref:`NodePort Devices`.
 
 .. note::
     This selector is NOT a security feature, services will still be available 
-    via interfaces when not advertised (for example by hard-coding ARP entries).
+    via interfaces when not advertised (for example by hard-coding ARP/NDP entries).
 
 IP Types
 --------
@@ -171,7 +163,7 @@ are announced. They are both set to ``false`` by default, so a functional policy
 have one or both set to ``true``.
 
 If ``externalIPs`` is ``true`` all IPs in `.spec.externalIPs <https://kubernetes.io/docs/concepts/services-networking/service/#external-ips>`__
-field are announced. These IPs are are managed by service authors.
+field are announced. These IPs are managed by service authors.
 
 If ``loadBalancerIPs`` is ``true`` all IPs in the service's ``.status.loadbalancer.ingress`` field
 are announced. These can be assigned by :ref:`lb_ipam` which can be configured
@@ -305,20 +297,18 @@ There are three Helm options that can be tuned with regards to leases:
 .. tabs::
     .. group-tab:: Helm
 
-        .. parsed-literal::
-
-            $ helm upgrade cilium |CHART_RELEASE| \\
-               --namespace kube-system \\
-               --reuse-values \\
-               --set l2announcements.enabled=true \\
-               --set kubeProxyReplacement=true \\
-               --set k8sServiceHost=${API_SERVER_IP} \\
-               --set k8sServicePort=${API_SERVER_PORT} \\
-               --set k8sClientRateLimit.qps={QPS} \\
-               --set k8sClientRateLimit.burst={BURST} \\
-               --set l2announcements.leaseDuration=3s \\
-               --set l2announcements.leaseRenewDeadline=1s \\
-               --set l2announcements.leaseRetryPeriod=200ms
+        .. cilium-helm-upgrade::
+           :namespace: kube-system
+           :extra-args: --reuse-values
+           :set: l2announcements.enabled=true
+                 kubeProxyReplacement=true
+                 k8sServiceHost=${API_SERVER_IP}
+                 k8sServicePort=${API_SERVER_PORT}
+                 k8sClientRateLimit.qps={QPS}
+                 k8sClientRateLimit.burst={BURST}
+                 l2announcements.leaseDuration=3s
+                 l2announcements.leaseRenewDeadline=1s
+                 l2announcements.leaseRetryPeriod=200ms
 
     .. group-tab:: ConfigMap
 
@@ -351,8 +341,8 @@ default limit is quickly reached when utilizing L2 announcements and thus users
 should size the client rate limit accordingly.
 
 In a worst case scenario, services are distributed unevenly, so we will assume
-a peek load based on the renew deadline. In complex scenarios with multiple 
-policies over disjunct sets of node, max QPS per node will be lower.
+a peak load based on the renew deadline. In complex scenarios with multiple 
+policies over disjointed sets of node, max QPS per node will be lower.
 
 .. code-block:: text
 
@@ -386,10 +376,6 @@ Such clients might experience longer downtime then configured in the leases
 since they will only re-query via ARP when TTL in their internal tables 
 has been reached.
 
-.. note::
-   Since this feature has no IPv6 support yet, only ARP messages are sent, no 
-   Unsolicited Neighbor Advertisements are sent.
-
 Troubleshooting
 ###############
 
@@ -421,7 +407,7 @@ Next, ensure you have at least one policy configured, L2 announcements will not 
     NAME      AGE
     policy1   6m16s
 
-L2 announcements should not create a lease for very service matched by the policy. We can check the leases like so:
+L2 announcements should now create a lease for every service matched by the policy. We can check the leases like so:
 
 .. code-block:: shell-session
 
@@ -487,7 +473,7 @@ Finally, take the name of the cilium agent pod and inspect the l2-announce state
     $ kubectl -n kube-system get pod -l 'app.kubernetes.io/name=cilium-agent' -o wide | grep <node-name>
     <agent-pod>   1/1     Running   0          35m   172.19.0.3   kind-worker          <none>           <none>
 
-    $ kubectl -n kube-system exec pod/<agent-pod> -- cilium-dbg statedb l2-announce
+    $ kubectl -n kube-system exec pod/<agent-pod> -- cilium-dbg shell -- db/show l2-announce
     # IP        NetworkInterface
     10.0.10.0   eth0
 
@@ -498,8 +484,8 @@ If the filter seems correct or isn't specified, inspect the known devices:
 
 .. code-block:: shell-session
 
-    $ kubectl -n kube-system exec ds/cilium -- cilium-dbg statedb devices
-    # Name            Index   Selected   Type     MTU     HWAddr              Flags                    Addresses
+    $ kubectl -n kube-system exec ds/cilium -- cilium-dbg shell -- db/show devices
+    Name              Index   Selected   Type     MTU     HWAddr              Flags                    Addresses
     lxc5d23398605f6   10      false      veth     1500    b6:ed:d8:d2:dd:ec   up|broadcast|multicast   fe80::b4ed:d8ff:fed2:ddec
     lxc3bf03c00d6e3   12      false      veth     1500    8a:d1:0c:91:8a:d3   up|broadcast|multicast   fe80::88d1:cff:fe91:8ad3
     eth0              50      true       veth     1500    02:42:ac:13:00:03   up|broadcast|multicast   172.19.0.3, fc00:c111::3, fe80::42:acff:fe13:3
@@ -570,31 +556,48 @@ L2 Pod Announcements
 ####################
 
 L2 Pod Announcements announce Pod IP addresses on the L2 network using
-Gratuitous ARP replies. When enabled, the node transmits Gratuitous ARP
-replies for every locally created pod, on the configured network
-interface. This feature is enabled separately from the above L2
-announcements feature.
+Gratuitous ARP replies / Neighbor Discovery Advertisements. When enabled, the
+node transmits Gratuitous ARP replies / NDP Advertisements for every locally
+created pod, on the configured network interface(s). This feature is enabled
+separately from the above L2 announcements feature.
 
 To enable L2 Pod Announcements, set the following:
 
 .. tabs::
     .. group-tab:: Helm
 
-        .. parsed-literal::
-
-            $ helm upgrade cilium |CHART_RELEASE| \\
-               --namespace kube-system \\
-               --reuse-values \\
-               --set l2podAnnouncements.enabled=true \\
-               --set l2podAnnouncements.interface=eth0
-
+        .. cilium-helm-upgrade::
+           :namespace: kube-system
+           :extra-args: --reuse-values
+           :set: l2podAnnouncements.enabled=true
+                 l2podAnnouncements.interfacePattern='^eth0$'
 
     .. group-tab:: ConfigMap
 
         .. code-block:: yaml
 
             enable-l2-pod-announcements: true
-            l2-pod-announcements-interface: eth0
+            l2-pod-announcements-interface-pattern: "^eth0$"
+
+The ``l2podAnnouncements.interfacePattern``/``l2-pod-announcements-interface-pattern`` option takes
+a regex matching the interfaces used to send announcements. To match multiple interfaces, use a regex
+pattern like ``^(eth0|ens1)$``.
+
+.. tabs::
+    .. group-tab:: Helm
+
+        .. cilium-helm-upgrade::
+           :namespace: kube-system
+           :extra-args: --reuse-values
+           :set: l2podAnnouncements.enabled=true
+                 l2podAnnouncements.interfacePattern='^(eth0|ens1)$'
+
+    .. group-tab:: ConfigMap
+
+        .. code-block:: yaml
+
+            enable-l2-pod-announcements: true
+            l2-pod-announcements-interface-pattern: "^(eth0|ens1)$"
 
 .. note::
    Since this feature has no IPv6 support yet, only ARP messages are

@@ -4,6 +4,7 @@
 package defaults
 
 import (
+	"crypto/sha256"
 	"time"
 )
 
@@ -31,6 +32,7 @@ const (
 	RelayContainerName  = "hubble-relay"
 	RelayDeploymentName = "hubble-relay"
 	RelayConfigMapName  = "hubble-relay-config"
+	RelayPodSelector    = "app.kubernetes.io/name=hubble-relay"
 
 	HubbleUIDeploymentName = "hubble-ui"
 
@@ -52,7 +54,6 @@ const (
 	ClusterMeshAdminSecretName             = "clustermesh-apiserver-admin-cert"
 	ClusterMeshClientSecretName            = "clustermesh-apiserver-client-cert"
 	ClusterMeshRemoteSecretName            = "clustermesh-apiserver-remote-cert"
-	ClusterMeshExternalWorkloadSecretName  = "clustermesh-apiserver-external-workload-cert"
 	ClusterMeshConnectionModeBidirectional = "bidirectional"
 	ClusterMeshConnectionModeMesh          = "mesh"
 	ClusterMeshConnectionModeUnicast       = "unicast"
@@ -64,19 +65,6 @@ const (
 
 	ConnectivityCheckNamespace = "cilium-test"
 
-	// renovate: datasource=docker
-	ConnectivityCheckAlpineCurlImage = "quay.io/cilium/alpine-curl:v1.10.0@sha256:913e8c9f3d960dde03882defa0edd3a919d529c2eb167caa7f54194528bde364"
-	// renovate: datasource=docker
-	ConnectivityPerformanceImage = "quay.io/cilium/network-perf:a816f935930cb2b40ba43230643da4d5751a5711@sha256:679d3a370c696f63884da4557a4466f3b5569b4719bb4f86e8aac02fbe390eea"
-	// renovate: datasource=docker
-	ConnectivityCheckJSONMockImage = "quay.io/cilium/json-mock:v1.3.8@sha256:5aad04835eda9025fe4561ad31be77fd55309af8158ca8663a72f6abb78c2603"
-	// renovate: datasource=docker
-	ConnectivityDNSTestServerImage = "docker.io/coredns/coredns:1.11.3@sha256:9caabbf6238b189a65d0d6e6ac138de60d6a1c419e5a341fbbb7c78382559c6e"
-	// renovate: datasource=docker
-	ConnectivityTestConnDisruptImage = "quay.io/cilium/test-connection-disruption:v0.0.14@sha256:c3fd56e326ae16f6cb63dbb2e26b4e47ec07a123040623e11399a7fe1196baa0"
-	// renovate: datasource=docker
-	ConnectivityTestFRRImage = "quay.io/frrouting/frr:10.1.0@sha256:cb2b672ee9856553c7552593dccd3de916f8acfe04655216abcd44137f6ccaf7"
-
 	ConfigMapName = "cilium-config"
 
 	StatusWaitDuration = 5 * time.Minute
@@ -87,10 +75,12 @@ const (
 	FlowWaitTimeout   = 10 * time.Second
 	FlowRetryInterval = 500 * time.Millisecond
 
-	PolicyWaitTimeout = 15 * time.Second
+	PolicyWaitTimeout = 30 * time.Second
 
 	ConnectRetry      = 3
 	ConnectRetryDelay = 3 * time.Second
+
+	CurlParallel = 0
 
 	ConnectTimeout = 2 * time.Second
 	RequestTimeout = 10 * time.Second
@@ -109,15 +99,17 @@ const (
 
 	// Default timeout for Connectivity Test Suite (disabled by default)
 	ConnectivityTestSuiteTimeout = 0 * time.Minute
+
+	LogLevelError   = "error"
+	LogLevelWarning = "warning"
 )
 
 var (
-	// Version is the default Cilium version to be installed. It is set during build based on
-	// the version in stable.txt.
-	Version string
-
 	// HelmRepository specifies Helm repository to download Cilium charts from.
-	HelmRepository = "https://helm.cilium.io"
+	HelmRepoIDLen    = 4
+	HelmRepository   = "https://helm.cilium.io"
+	HelmRepositoryID = sha256.Sum256([]byte(HelmRepository))
+	HelmMaxHistory   = 10
 
 	// CiliumScheduleAffinity is the node affinity to prevent Cilium from being schedule on
 	// nodes labeled with CiliumNoScheduleLabel.
@@ -154,16 +146,48 @@ var (
 		"Unsupported protocol for NAT masquerade",
 		"Invalid source ip",
 		"Unknown L3 target address",
-		"No tunnel/encapsulation endpoint (datapath BUG!)",
 		"Host datapath not ready",
 		"Unknown ICMPv4 code",
+		"Unknown ICMPv6 code",
 		"Forbidden ICMPv6 message",
+		"No egress gateway found",
 	}
 
 	ExpectedXFRMErrors = []string{
 		"inbound_forward_header", // XfrmFwdHdrError
 		"inbound_other",          // XfrmInError
 		"inbound_state_invalid",  // XfrmInStateInvalid
+	}
+
+	LogCodeOwners  = false
+	LogCheckLevels = []string{
+		LogLevelError,
+		LogLevelWarning,
+	}
+
+	ConnectivityCheckImagesTest = map[string]string{
+		// renovate: datasource=docker
+		"ConnectivityCheckAlpineCurlImage": "quay.io/cilium/alpine-curl:v1.10.0@sha256:913e8c9f3d960dde03882defa0edd3a919d529c2eb167caa7f54194528bde364",
+		// renovate: datasource=docker
+		"ConnectivityCheckJSONMockImage": "quay.io/cilium/json-mock:v1.3.9@sha256:c98b26177a5a60020e5aa404896d55f0ab573d506f42acfb4aa4f5705a5c6f56",
+		// renovate: datasource=docker
+		"ConnectivityDNSTestServerImage": "registry.k8s.io/coredns/coredns:v1.14.2@sha256:e7e6440cfd1e919280958f5b5a6ab2b184d385bba774c12ad2a9e1e4183f90d9",
+		// renovate: datasource=docker
+		"ConnectivityTestConnDisruptImage": "quay.io/cilium/test-connection-disruption:v0.0.17@sha256:62374cfd0e87e6541244331ccf477a21c527c3eefa9d841b97af79996939be0c",
+		// renovate: datasource=docker
+		"ConnectivityTestFRRImage": "quay.io/frrouting/frr:10.5.3@sha256:37b42d2b340c322edc5f20dc4598373adb6e813e95cc9d4a18f64f9a37c98a4c",
+		// renovate: datasource=docker
+		"ConnectivityTestSocatImage": "docker.io/alpine/socat:1.8.0.3@sha256:bfd2550379212e087dc18db2f4611f43477be4b575d660c8f18c5b9a1b2e2757",
+	}
+
+	ConnectivityCheckOptionalImagesTest = map[string]string{
+		// renovate: datasource=docker
+		"ConnectivityTestEchoImage": "gcr.io/k8s-staging-gateway-api/echo-advanced:v20251204-v1.4.1",
+	}
+
+	ConnectivityCheckImagesPerf = map[string]string{
+		// renovate: datasource=docker
+		"ConnectivityPerformanceImage": "quay.io/cilium/network-perf:3.20-1772622563-6fd6a90@sha256:3bb01019a14a17d07b29bbc39cdd57da7c4115f5d1a626164f4b1f296f6a9001",
 	}
 
 	// The following variables are set at compile time via LDFLAGS.

@@ -4,16 +4,18 @@
 package dropeventemitter
 
 import (
-	"context"
 	"fmt"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	flowpb "github.com/cilium/cilium/api/v1/flow"
+	"github.com/cilium/cilium/api/v1/models"
+	"github.com/cilium/cilium/pkg/container/set"
+	"github.com/cilium/cilium/pkg/endpoint"
 	"github.com/cilium/cilium/pkg/identity"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
-
-	"github.com/stretchr/testify/assert"
 )
 
 const (
@@ -49,8 +51,7 @@ func TestEndpointToString(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			e := &DropEventEmitter{}
-			str := e.endpointToString(tt.ip, tt.endpoint)
+			str := endpointToString(tt.ip, tt.endpoint)
 			assert.Equal(t, str, tt.expect)
 		})
 	}
@@ -80,8 +81,7 @@ func TestL4protocolToString(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			e := &DropEventEmitter{}
-			str := e.l4protocolToString(tt.l4)
+			str := l4protocolToString(tt.l4)
 			assert.Equal(t, str, tt.expect)
 		})
 	}
@@ -178,16 +178,16 @@ func TestProcessFlow(t *testing.T) {
 				Events:        make(chan string, 3),
 				IncludeObject: true,
 			}
-			e := &DropEventEmitter{
-				reasons:    []string{"policy_denied"},
+			e := &dropEventEmitter{
+				reasons:    []flowpb.DropReason{flowpb.DropReason_POLICY_DENIED},
 				recorder:   fakeRecorder,
 				k8sWatcher: &fakeK8SWatcher{},
 			}
-			if err := e.ProcessFlow(context.Background(), tt.flow); err != nil {
+			if err := e.ProcessFlow(t.Context(), tt.flow); err != nil {
 				t.Errorf("DropEventEmitter.ProcessFlow() error = %v", err)
 			}
 			if tt.expect == "" {
-				assert.Len(t, fakeRecorder.Events, 0)
+				assert.Empty(t, fakeRecorder.Events)
 			} else {
 				assert.Len(t, fakeRecorder.Events, 1)
 				event := <-fakeRecorder.Events
@@ -200,8 +200,242 @@ func TestProcessFlow(t *testing.T) {
 	}
 }
 
-type fakeK8SWatcher struct {
+func TestGetLocalEndpoint(t *testing.T) {
+	tests := []struct {
+		name   string
+		flow   *flowpb.Flow
+		expect *endpoint.Endpoint
+	}{
+		{
+			name: "ingress",
+			flow: &flowpb.Flow{
+				TrafficDirection: flowpb.TrafficDirection_INGRESS,
+				Destination:      &flowpb.Endpoint{ID: 1},
+			},
+			expect: &endpoint.Endpoint{ID: 1},
+		},
+		{
+			name: "egress",
+			flow: &flowpb.Flow{
+				TrafficDirection: flowpb.TrafficDirection_EGRESS,
+				Source:           &flowpb.Endpoint{ID: 2},
+			},
+			expect: &endpoint.Endpoint{ID: 2},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := &dropEventEmitter{
+				endpointsLookup: &fakeEndpointsLookup{},
+			}
+			ep := e.getLocalEndpoint(tt.flow)
+			assert.Equal(t, tt.expect, ep)
+		})
+	}
 }
+
+func TestGetPolicyRulesFromEndpoint(t *testing.T) {
+	tests := []struct {
+		name           string
+		direction      flowpb.TrafficDirection
+		endpoint       endpointInterface
+		expect         []*models.PolicyRule
+		expectRevision uint64
+		expectErr      error
+	}{
+		{
+			name:      "ingress",
+			direction: flowpb.TrafficDirection_INGRESS,
+			endpoint:  &fakeEndpoint{},
+			expect: []*models.PolicyRule{
+				{
+					DerivedFromRules: [][]string{{
+						"ingress-rule",
+					}},
+				},
+			},
+			expectRevision: 1,
+			expectErr:      nil,
+		},
+		{
+			name:      "egress",
+			direction: flowpb.TrafficDirection_EGRESS,
+			endpoint:  &fakeEndpoint{},
+			expect: []*models.PolicyRule{
+				{
+					DerivedFromRules: [][]string{{
+						"egress-rule",
+					}},
+				},
+			},
+			expectRevision: 1,
+			expectErr:      nil,
+		},
+		{
+			name:           "Endpoint is nil",
+			endpoint:       nil,
+			expect:         nil,
+			expectRevision: 0,
+			expectErr:      nil,
+		},
+		{
+			name:           "GetRealizedL4PolicyRuleOriginModel returns error",
+			endpoint:       &fakeEndpointError{},
+			expect:         nil,
+			expectRevision: 0,
+			expectErr:      fmt.Errorf("error"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rules, revision, err := getPolicyRulesFromEndpoint(tt.direction, tt.endpoint)
+			assert.Equal(t, tt.expectErr, err)
+			assert.Equal(t, tt.expect, rules)
+			assert.Equal(t, tt.expectRevision, revision)
+		})
+	}
+}
+
+func TestParsePolicyRules(t *testing.T) {
+	tests := []struct {
+		name                  string
+		rules                 []*models.PolicyRule
+		expectPolicies        set.Set[string]
+		expectClusterPolicies set.Set[string]
+	}{
+		{
+			name: "Rules with namespaced network policies",
+			rules: []*models.PolicyRule{
+				{
+					DerivedFromRules: [][]string{{
+						"k8s:io.cilium.k8s.policy.name=foo",
+						"k8s:io.cilium.k8s.policy.namespace=bar",
+						"k8s:io.cilium.k8s.policy.derived-from=CiliumNetworkPolicy",
+					}},
+				},
+			},
+			expectPolicies: set.NewSet("CiliumNetworkPolicy/foo"),
+		},
+		{
+			name: "Rules with clusterwide network policies",
+			rules: []*models.PolicyRule{
+				{
+					DerivedFromRules: [][]string{{
+						"k8s:io.cilium.k8s.policy.name=foo",
+						"k8s:io.cilium.k8s.policy.derived-from=CiliumClusterwideNetworkPolicy",
+					}},
+				},
+			},
+			expectClusterPolicies: set.NewSet("CiliumClusterwideNetworkPolicy/foo"),
+		},
+		{
+			name: "Rules with both namespaced and clusterwide network policies",
+			rules: []*models.PolicyRule{
+				{
+					DerivedFromRules: [][]string{{
+						"k8s:io.cilium.k8s.policy.name=foo",
+						"k8s:io.cilium.k8s.policy.namespace=bar",
+						"k8s:io.cilium.k8s.policy.derived-from=CiliumNetworkPolicy",
+					}},
+				},
+				{
+					DerivedFromRules: [][]string{{
+						"k8s:io.cilium.k8s.policy.name=foowide",
+						"k8s:io.cilium.k8s.policy.derived-from=CiliumClusterwideNetworkPolicy",
+					}},
+				},
+			},
+			expectPolicies:        set.NewSet("CiliumNetworkPolicy/foo"),
+			expectClusterPolicies: set.NewSet("CiliumClusterwideNetworkPolicy/foowide"),
+		},
+		{
+			name:                  "Rules is nil",
+			rules:                 nil,
+			expectPolicies:        set.NewSet[string](),
+			expectClusterPolicies: set.NewSet[string](),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actualPolicies, actualClusterPolicies := parsePolicyRules(tt.rules, 1)
+			assert.Equal(t, tt.expectPolicies, actualPolicies)
+			assert.Equal(t, tt.expectClusterPolicies, actualClusterPolicies)
+		})
+	}
+}
+
+func TestParsePolicyCorrelation(t *testing.T) {
+	tests := []struct {
+		name                  string
+		direction             flowpb.TrafficDirection
+		ingressDeniedBy       []*flowpb.Policy
+		egressDeniedBy        []*flowpb.Policy
+		expectPolicies        set.Set[string]
+		expectClusterPolicies set.Set[string]
+	}{
+		{
+			name:      "Egress with network policy",
+			direction: flowpb.TrafficDirection_EGRESS,
+			egressDeniedBy: []*flowpb.Policy{
+				{
+					Name:      "foo",
+					Namespace: "bar",
+					Kind:      "CiliumNetworkPolicy",
+				},
+			},
+			expectPolicies: set.NewSet("CiliumNetworkPolicy/foo"),
+		},
+		{
+			name:      "Ingress with network policy",
+			direction: flowpb.TrafficDirection_INGRESS,
+			ingressDeniedBy: []*flowpb.Policy{
+				{
+					Name:      "foo",
+					Namespace: "bar",
+					Kind:      "CiliumNetworkPolicy",
+				},
+			},
+			expectPolicies: set.NewSet("CiliumNetworkPolicy/foo"),
+		},
+		{
+			name:      "Egress with clusterwide network policy",
+			direction: flowpb.TrafficDirection_EGRESS,
+			egressDeniedBy: []*flowpb.Policy{
+				{
+					Name: "foo",
+					Kind: "CiliumClusterwideNetworkPolicy",
+				},
+			},
+			expectClusterPolicies: set.NewSet("CiliumClusterwideNetworkPolicy/foo"),
+		},
+		{
+			name:      "Egress with both namespaced and clusterwide network policies",
+			direction: flowpb.TrafficDirection_EGRESS,
+			egressDeniedBy: []*flowpb.Policy{
+				{
+					Name: "foowide",
+					Kind: "CiliumClusterwideNetworkPolicy",
+				},
+				{
+					Name:      "foo",
+					Namespace: "bar",
+					Kind:      "CiliumNetworkPolicy",
+				},
+			},
+			expectPolicies:        set.NewSet("CiliumNetworkPolicy/foo"),
+			expectClusterPolicies: set.NewSet("CiliumClusterwideNetworkPolicy/foowide"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actualPolicies, actualClusterPolicies := parsePolicyCorrelation(tt.direction, tt.ingressDeniedBy, tt.egressDeniedBy)
+			assert.Equal(t, tt.expectPolicies, actualPolicies)
+			assert.Equal(t, tt.expectClusterPolicies, actualClusterPolicies)
+		})
+	}
+}
+
+type fakeK8SWatcher struct{}
 
 func (k *fakeK8SWatcher) GetCachedNamespace(namespace string) (*slim_corev1.Namespace, error) {
 	return nil, nil
@@ -216,4 +450,39 @@ func (k *fakeK8SWatcher) GetCachedPod(namespace, name string) (*slim_corev1.Pod,
 		}, nil
 	}
 	return nil, fmt.Errorf("pod not found in cache : %s", name)
+}
+
+type fakeEndpointsLookup struct{}
+
+func (e *fakeEndpointsLookup) LookupCiliumID(id uint16) *endpoint.Endpoint {
+	return &endpoint.Endpoint{
+		ID: id,
+	}
+}
+
+type fakeEndpoint struct{}
+
+func (e *fakeEndpoint) GetRealizedL4PolicyRuleOriginModel() (*models.L4Policy, uint64, error) {
+	return &models.L4Policy{
+		Ingress: []*models.PolicyRule{
+			{
+				DerivedFromRules: [][]string{{
+					"ingress-rule",
+				}},
+			},
+		},
+		Egress: []*models.PolicyRule{
+			{
+				DerivedFromRules: [][]string{{
+					"egress-rule",
+				}},
+			},
+		},
+	}, 1, nil
+}
+
+type fakeEndpointError struct{}
+
+func (e *fakeEndpointError) GetRealizedL4PolicyRuleOriginModel() (*models.L4Policy, uint64, error) {
+	return nil, 0, fmt.Errorf("error")
 }

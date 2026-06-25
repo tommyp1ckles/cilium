@@ -6,71 +6,94 @@ package ipam
 import (
 	"errors"
 	"fmt"
-	"net"
-	"strings"
+	"log/slog"
+	"maps"
+	"net/netip"
+	"slices"
 
-	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
+	"go4.org/netipx"
 	"golang.org/x/sys/unix"
 
+	"github.com/cilium/cilium/pkg/datapath/linux/safenetlink"
+	iputil "github.com/cilium/cilium/pkg/ip"
 	"github.com/cilium/cilium/pkg/ipam/service/ipallocator"
-	"github.com/cilium/cilium/pkg/ipam/types"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
 )
 
-// A podCIDRPool manages the allocation of IPs in multiple pod CIDRs.
-// It maintains one IP allocator for each pod CIDR in the pool.
-// Unused pod CIDRs which have been marked as released, but not yet deleted
+// A cidrPool manages the allocation of IPs in multiple CIDRs.
+// It maintains one IP allocator for each CIDR in the pool.
+// Unused CIDRs which have been marked as released, but not yet deleted
 // from the local CiliumNode CRD by the operator are put into the released set.
-// Once the operator removes a released pod CIDR from the CiliumNode CRD spec,
+// Once the operator removes a released CIDR from the CiliumNode CRD spec,
 // it is also deleted from the release set.
-// Pod CIDRs which have been erroneously deleted from the CiliumNode CRD spec
+// CIDRs which have been erroneously deleted from the CiliumNode CRD spec
 // (either by a buggy operator or by manual/human changes CRD) are marked in
-// the removed map. If IP addresses have been allocated from such a pod CIDR,
+// the removed map. If IP addresses have been allocated from such a CIDR,
 // its allocator is kept around. But no new IPs will be allocated from this
-// pod CIDR. By keeping removed CIDRs in the CiliumNode CRD status, we indicate
-// to the operator that we would like to re-gain ownership over that pod CIDR.
-type podCIDRPool struct {
+// CIDR. By keeping removed CIDRs in the CiliumNode CRD status, we indicate
+// to the operator that we would like to re-gain ownership over that CIDR.
+type cidrPool struct {
+	logger       *slog.Logger
 	mutex        lock.Mutex
 	ipAllocators []*ipallocator.Range
-	released     map[string]struct{} // key is a CIDR string, e.g. 10.20.30.0/24
-	removed      map[string]struct{} // key is a CIDR string, e.g. 10.20.30.0/24
+	released     map[netip.Prefix]struct{}
+	removed      map[netip.Prefix]struct{}
+	// allowFirstIP and allowLastIP make the pool include the first and last IPs
+	// of each CIDR (normally reserved as network/broadcast). This is used for
+	// delegated prefixes where the range is exclusively assigned.
+	allowFirstIP bool
+	allowLastIP  bool
 }
 
-// newPodCIDRPool creates a new pod CIDR pool.
-func newPodCIDRPool() *podCIDRPool {
-	return &podCIDRPool{
-		released: map[string]struct{}{},
-		removed:  map[string]struct{}{},
+// newCIDRPool creates a new CIDR pool.
+func newCIDRPool(logger *slog.Logger, allowFirstIP, allowLastIP bool) *cidrPool {
+	return &cidrPool{
+		logger:       logger,
+		released:     map[netip.Prefix]struct{}{},
+		removed:      map[netip.Prefix]struct{}{},
+		allowFirstIP: allowFirstIP,
+		allowLastIP:  allowLastIP,
 	}
 }
 
-func (p *podCIDRPool) allocate(ip net.IP) error {
+// cidrRangeOpts returns the ipallocator range options matching the pool's
+// first/last IP settings. Delegated prefixes set both, so the network and
+// broadcast addresses of each CIDR become allocatable.
+func (p *cidrPool) cidrRangeOpts() []ipallocator.CIDRRangeOption {
+	var opts []ipallocator.CIDRRangeOption
+	if p.allowFirstIP {
+		opts = append(opts, ipallocator.WithAllowFirstIP())
+	}
+	if p.allowLastIP {
+		opts = append(opts, ipallocator.WithAllowLastIP())
+	}
+	return opts
+}
+
+func (p *cidrPool) allocate(addr netip.Addr) error {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
 	for _, ipAllocator := range p.ipAllocators {
-		cidrNet := ipAllocator.CIDR()
-		if cidrNet.Contains(ip) {
-			return ipAllocator.Allocate(ip)
+		if ipAllocator.CIDR().Contains(addr) {
+			return ipAllocator.Allocate(addr)
 		}
 	}
 
-	return fmt.Errorf("IP %s not in range of any pod CIDR", ip)
+	return fmt.Errorf("IP %s not in range of any CIDR", addr)
 }
 
-func (p *podCIDRPool) allocateNext() (net.IP, error) {
+func (p *cidrPool) allocateNext() (netip.Addr, error) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
-	// When allocating a random IP, we try the pod CIDRs in the order they are
+	// When allocating a random IP, we try the CIDRs in the order they are
 	// listed in the CRD. This avoids internal fragmentation.
 	for _, ipAllocator := range p.ipAllocators {
-		cidrNet := ipAllocator.CIDR()
-		cidrStr := cidrNet.String()
-		if _, removed := p.removed[cidrStr]; removed {
+		if _, removed := p.removed[ipAllocator.CIDR()]; removed {
 			continue
 		}
 		if ipAllocator.Free() == 0 {
@@ -79,30 +102,27 @@ func (p *podCIDRPool) allocateNext() (net.IP, error) {
 		return ipAllocator.AllocateNext()
 	}
 
-	return nil, errors.New("all pod CIDR ranges are exhausted")
+	return netip.Addr{}, errors.New("all CIDR ranges are exhausted")
 }
 
-func (p *podCIDRPool) release(ip net.IP) {
+func (p *cidrPool) release(addr netip.Addr) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
 	for _, ipAllocator := range p.ipAllocators {
-		cidrNet := ipAllocator.CIDR()
-		if cidrNet.Contains(ip) {
-			ipAllocator.Release(ip)
+		if ipAllocator.CIDR().Contains(addr) {
+			ipAllocator.Release(addr)
 			return
 		}
 	}
 }
 
-func (p *podCIDRPool) hasAvailableIPs() bool {
+func (p *cidrPool) hasAvailableIPs() bool {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
 	for _, ipAllocator := range p.ipAllocators {
-		cidrNet := ipAllocator.CIDR()
-		cidrStr := cidrNet.String()
-		if _, removed := p.removed[cidrStr]; removed {
+		if _, removed := p.removed[ipAllocator.CIDR()]; removed {
 			continue
 		}
 		if ipAllocator.Free() > 0 {
@@ -113,7 +133,7 @@ func (p *podCIDRPool) hasAvailableIPs() bool {
 	return false
 }
 
-func (p *podCIDRPool) inUseIPCount() (count int) {
+func (p *cidrPool) inUseIPCount() (count int) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
@@ -123,52 +143,47 @@ func (p *podCIDRPool) inUseIPCount() (count int) {
 	return count
 }
 
-func (p *podCIDRPool) inUsePodCIDRs() []types.IPAMPodCIDR {
+func (p *cidrPool) inUseCIDRs() []iputil.Prefix {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
-	return p.inUsePodCIDRsLocked()
+	return p.inUseCIDRsLocked()
 }
 
-func (p *podCIDRPool) inUsePodCIDRsLocked() []types.IPAMPodCIDR {
-	podCIDRs := make([]types.IPAMPodCIDR, 0, len(p.ipAllocators))
+func (p *cidrPool) inUseCIDRsLocked() []iputil.Prefix {
+	CIDRs := make([]iputil.Prefix, 0, len(p.ipAllocators))
 	for _, ipAllocator := range p.ipAllocators {
-		ipnet := ipAllocator.CIDR()
-		podCIDRs = append(podCIDRs, types.IPAMPodCIDR(ipnet.String()))
+		CIDRs = append(CIDRs, iputil.PrefixFrom(ipAllocator.CIDR()))
 	}
-	return podCIDRs
+	return CIDRs
 }
 
-func (p *podCIDRPool) dump() (ipToOwner map[string]string, usedIPs, freeIPs, numPodCIDRs int, err error) {
+func (p *cidrPool) dump() (ipToOwner map[string]string, usedIPs, freeIPs, numCIDRs int, err error) {
 	// TODO(gandro): Use the Snapshot interface to avoid locking during dump
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
 	ipToOwner = map[string]string{}
 	for _, ipAllocator := range p.ipAllocators {
-		cidrNet := ipAllocator.CIDR()
-		cidrStr := cidrNet.String()
 		usedIPs += ipAllocator.Used()
-		if _, removed := p.removed[cidrStr]; !removed {
+		if _, removed := p.removed[ipAllocator.CIDR()]; !removed {
 			freeIPs += ipAllocator.Free()
 		}
-		ipAllocator.ForEach(func(ip net.IP) {
-			ipToOwner[ip.String()] = ""
+		ipAllocator.ForEach(func(addr netip.Addr) {
+			ipToOwner[addr.String()] = ""
 		})
 	}
-	numPodCIDRs = len(p.ipAllocators)
+	numCIDRs = len(p.ipAllocators)
 
 	return
 }
 
-func (p *podCIDRPool) capacity() (freeIPs int) {
+func (p *cidrPool) capacity() (freeIPs int) {
 	// TODO(gandro): Use the Snapshot interface to avoid locking during dump
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
 	for _, ipAllocator := range p.ipAllocators {
-		cidrNet := ipAllocator.CIDR()
-		cidrStr := cidrNet.String()
-		if _, removed := p.removed[cidrStr]; !removed {
+		if _, removed := p.removed[ipAllocator.CIDR()]; !removed {
 			freeIPs += ipAllocator.Free()
 		}
 	}
@@ -177,7 +192,7 @@ func (p *podCIDRPool) capacity() (freeIPs int) {
 }
 
 // releaseExcessCIDRsMultiPool implements the logic for multi-pool IPAM
-func (p *podCIDRPool) releaseExcessCIDRsMultiPool(neededIPs int) {
+func (p *cidrPool) releaseExcessCIDRsMultiPool(neededIPs int) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
@@ -186,21 +201,54 @@ func (p *podCIDRPool) releaseExcessCIDRsMultiPool(neededIPs int) {
 		totalFree += ipAllocator.Free()
 	}
 
-	// Iterate over pod CIDRs in reverse order, so we prioritize releasing
-	// later pod CIDRs.
-	retainedAllocators := []*ipallocator.Range{}
-	for i := len(p.ipAllocators) - 1; i >= 0; i-- {
-		ipAllocator := p.ipAllocators[i]
-		cidrNet := ipAllocator.CIDR()
-		cidrStr := cidrNet.String()
+	// Reclaim previously-released CIDRs when demand has grown back and we
+	// no longer have enough free IPs. A CIDR stays in p.released only while
+	// it is still advertised in the CiliumNode (updatePool removes it from
+	// the set as soon as the operator stops advertising it), so reclaiming
+	// here never re-adds a CIDR that has actually been detached. Without
+	// this, a released-but-still-attached prefix is stranded forever: the
+	// operator may not detach it (e.g. release-excess-ips disabled), so it
+	// never leaves the advertised set, while updatePool refuses to recreate
+	// its allocator because it is still in p.released. The result is
+	// permanent exhaustion until the agent restarts.
+	if totalFree < neededIPs && len(p.released) > 0 {
+		// Reclaim in a deterministic order to avoid churn across calls.
+		reclaim := slices.SortedFunc(maps.Keys(p.released), func(a, b netip.Prefix) int {
+			if c := a.Addr().Compare(b.Addr()); c != 0 {
+				return c
+			}
+			return a.Bits() - b.Bits()
+		})
 
-		// If the pod CIDR is not used and releasing it would
+		rangeOpts := p.cidrRangeOpts()
+		for _, prefix := range reclaim {
+			if totalFree >= neededIPs {
+				break
+			}
+			ipAllocator := ipallocator.NewCIDRRange(prefix, rangeOpts...)
+			if ipAllocator.Free() == 0 {
+				continue // too-small CIDR, keep it released
+			}
+			p.ipAllocators = append(p.ipAllocators, ipAllocator)
+			delete(p.released, prefix)
+			totalFree += ipAllocator.Free()
+			p.logger.Debug("reclaiming released CIDR", logfields.CIDR, prefix)
+		}
+	}
+
+	// Iterate over CIDRs in reverse order, so we prioritize releasing
+	// later CIDRs.
+	retainedAllocators := []*ipallocator.Range{}
+	for _, ipAllocator := range slices.Backward(p.ipAllocators) {
+		cidr := ipAllocator.CIDR()
+
+		// If the CIDR is not used and releasing it would
 		// not take us below the release threshold, then release it immediately
 		free := ipAllocator.Free()
 		if ipAllocator.Used() == 0 && totalFree-free >= neededIPs {
-			p.released[cidrStr] = struct{}{}
+			p.released[cidr] = struct{}{}
 			totalFree -= free
-			log.WithField(logfields.CIDR, cidrStr).Debug("releasing pod CIDR")
+			p.logger.Debug("releasing CIDR", logfields.CIDR, cidr)
 		} else {
 			retainedAllocators = append(retainedAllocators, ipAllocator)
 		}
@@ -209,129 +257,134 @@ func (p *podCIDRPool) releaseExcessCIDRsMultiPool(neededIPs int) {
 	p.ipAllocators = retainedAllocators
 }
 
-func (p *podCIDRPool) updatePool(podCIDRs []string) {
+func (p *cidrPool) updatePool(prefixes []netip.Prefix) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
 	if option.Config.Debug {
-		log.WithFields(logrus.Fields{
-			logfields.NewCIDR: podCIDRs,
-			logfields.OldCIDR: p.inUsePodCIDRsLocked(),
-		}).Debug("Updating IPAM pool")
+		p.logger.Debug(
+			"Updating IPAM pool",
+			logfields.NewCIDR, prefixes,
+			logfields.OldCIDR, p.inUseCIDRsLocked(),
+		)
 	}
 
-	// Parse the pod CIDRs, ignoring invalid CIDRs, and de-duplicating them.
-	cidrNets := make([]*net.IPNet, 0, len(podCIDRs))
-	cidrStrSet := make(map[string]struct{}, len(podCIDRs))
-	for _, podCIDR := range podCIDRs {
-		_, cidr, err := net.ParseCIDR(podCIDR)
-		if err != nil {
-			log.WithError(err).WithField(logfields.CIDR, podCIDR).Error("ignoring invalid pod CIDR")
+	// De-duplicate prefixes.
+	prefixSet := make(map[netip.Prefix]struct{}, len(prefixes))
+	for _, prefix := range prefixes {
+		if _, ok := prefixSet[prefix]; ok {
+			p.logger.Error(
+				"ignoring duplicate CIDR",
+				logfields.CIDR, prefix,
+			)
 			continue
 		}
-		if _, ok := cidrStrSet[cidr.String()]; ok {
-			log.WithField(logfields.CIDR, podCIDR).Error("ignoring duplicate pod CIDR")
-			continue
-		}
-		cidrNets = append(cidrNets, cidr)
-		cidrStrSet[cidr.String()] = struct{}{}
+		prefixSet[prefix] = struct{}{}
 	}
 
-	// Forget any released pod CIDRs no longer present in the CRD.
-	for cidrStr := range p.released {
-		if _, ok := cidrStrSet[cidrStr]; !ok {
-			log.WithField(logfields.CIDR, cidrStr).Debug("removing released pod CIDR")
-			delete(p.released, cidrStr)
+	// Forget any released CIDRs no longer present in the CRD.
+	for prefix := range p.released {
+		if _, ok := prefixSet[prefix]; !ok {
+			p.logger.Debug(
+				"removing released CIDR",
+				logfields.CIDR, prefix,
+			)
+			delete(p.released, prefix)
 		}
 
 		if option.Config.EnableUnreachableRoutes {
-			if err := cleanupUnreachableRoutes(cidrStr); err != nil {
-				log.WithFields(logrus.Fields{
-					logfields.CIDR:  cidrStr,
-					logrus.ErrorKey: err,
-				}).Warning("failed to remove unreachable routes for pod cidr")
+			if err := cleanupUnreachableRoutes(prefix); err != nil {
+				p.logger.Warn(
+					"failed to remove unreachable routes for cidr",
+					logfields.Error, err,
+					logfields.CIDR, prefix,
+				)
 			}
 		}
 	}
 
 	// newIPAllocators is the new slice of IP allocators.
-	newIPAllocators := make([]*ipallocator.Range, 0, len(podCIDRs))
+	newIPAllocators := make([]*ipallocator.Range, 0, len(prefixes))
 
-	// addedCIDRs is the set of pod CIDRs that have a corresponding allocator
-	existingAllocators := make(map[string]struct{}, len(p.ipAllocators))
+	// existingAllocators is the set of CIDRs that have a corresponding allocator
+	existingAllocators := make(map[netip.Prefix]struct{}, len(p.ipAllocators))
 
 	// Add existing IP allocators to newIPAllocators in order.
 	for _, ipAllocator := range p.ipAllocators {
-		cidrNet := ipAllocator.CIDR()
-		cidrStr := cidrNet.String()
-		if _, ok := cidrStrSet[cidrStr]; !ok {
+		cidr := ipAllocator.CIDR()
+		if _, ok := prefixSet[cidr]; !ok {
 			if ipAllocator.Used() == 0 {
 				continue
 			}
-			log.WithField(logfields.CIDR, cidrStr).Error("in-use pod CIDR was removed from spec")
-			p.removed[cidrStr] = struct{}{}
+			p.logger.Error(
+				"in-use CIDR was removed from spec",
+				logfields.CIDR, cidr,
+			)
+			p.removed[cidr] = struct{}{}
 		}
 		newIPAllocators = append(newIPAllocators, ipAllocator)
-		existingAllocators[cidrStr] = struct{}{}
+		existingAllocators[cidr] = struct{}{}
 	}
 
 	// Create and add new IP allocators to newIPAllocators.
-	for _, cidrNet := range cidrNets {
-		cidrStr := cidrNet.String()
-		if _, ok := existingAllocators[cidrStr]; ok {
+	rangeOpts := p.cidrRangeOpts()
+	for _, prefix := range prefixes {
+		if _, ok := existingAllocators[prefix]; ok {
 			continue
 		}
-		ipAllocator := ipallocator.NewCIDRRange(cidrNet)
+		if _, ok := p.released[prefix]; ok {
+			continue
+		}
+		ipAllocator := ipallocator.NewCIDRRange(prefix, rangeOpts...)
 		if ipAllocator.Free() == 0 {
-			log.WithField(logfields.CIDR, cidrNet.String()).Error("skipping too-small pod CIDR")
-			p.released[cidrNet.String()] = struct{}{}
+			p.logger.Error(
+				"skipping too-small CIDR",
+				logfields.CIDR, prefix,
+			)
+			p.released[prefix] = struct{}{}
 			continue
 		}
-		log.WithField(logfields.CIDR, cidrStr).Debug("created new pod CIDR allocator")
+		p.logger.Debug(
+			"created new CIDR allocator",
+			logfields.CIDR, prefix,
+		)
 		newIPAllocators = append(newIPAllocators, ipAllocator)
-		existingAllocators[cidrStr] = struct{}{} // Protect against duplicate CIDRs.
+		existingAllocators[prefix] = struct{}{} // Protect against duplicate CIDRs.
 	}
 
 	if len(p.ipAllocators) > 0 && len(newIPAllocators) == 0 {
-		log.Warning("Removed last pod CIDR allocator")
+		p.logger.Warn("Removed last CIDR allocator")
 	}
 
 	p.ipAllocators = newIPAllocators
 }
 
-func podCIDRFamily(podCIDR string) Family {
-	if strings.Contains(podCIDR, ":") {
+func prefixFamily(prefix netip.Prefix) Family {
+	if prefix.Addr().Is6() {
 		return IPv6
 	}
 	return IPv4
 }
 
-// containsCIDR checks if the outer IPNet contains the inner IPNet
-func containsCIDR(outer, inner *net.IPNet) bool {
-	outerMask, _ := outer.Mask.Size()
-	innerMask, _ := inner.Mask.Size()
-	return outerMask <= innerMask && outer.Contains(inner.IP)
+// containsPrefix checks if the outer prefix fully contains the inner prefix.
+func containsPrefix(outer, inner netip.Prefix) bool {
+	return outer.Bits() <= inner.Bits() && outer.Contains(inner.Addr())
 }
 
-// cleanupUnreachableRoutes remove all unreachable routes for the given pod CIDR.
+// cleanupUnreachableRoutes removes all unreachable routes for the given prefix.
 // This is only needed if EnableUnreachableRoutes has been set.
-func cleanupUnreachableRoutes(podCIDR string) error {
-	_, removedCIDR, err := net.ParseCIDR(podCIDR)
-	if err != nil {
-		return err
-	}
-
+func cleanupUnreachableRoutes(prefix netip.Prefix) error {
 	var family int
-	switch podCIDRFamily(podCIDR) {
+	switch prefixFamily(prefix) {
 	case IPv4:
 		family = netlink.FAMILY_V4
 	case IPv6:
 		family = netlink.FAMILY_V6
 	default:
-		return errors.New("unknown pod cidr family")
+		return errors.New("unknown cidr family")
 	}
 
-	routes, err := netlink.RouteListFiltered(family, &netlink.Route{
+	routes, err := safenetlink.RouteListFiltered(family, &netlink.Route{
 		Table: unix.RT_TABLE_MAIN,
 		Type:  unix.RTN_UNREACHABLE,
 	}, netlink.RT_FILTER_TABLE|netlink.RT_FILTER_TYPE)
@@ -341,7 +394,14 @@ func cleanupUnreachableRoutes(podCIDR string) error {
 
 	var errs error
 	for _, route := range routes {
-		if !containsCIDR(removedCIDR, route.Dst) {
+		if route.Dst == nil {
+			continue
+		}
+		routePrefix, ok := netipx.FromStdIPNet(route.Dst)
+		if !ok {
+			continue
+		}
+		if !containsPrefix(prefix, routePrefix) {
 			continue
 		}
 

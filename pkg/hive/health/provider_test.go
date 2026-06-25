@@ -10,9 +10,8 @@ import (
 	"github.com/cilium/hive"
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/hivetest"
-	"github.com/stretchr/testify/assert"
-
 	"github.com/cilium/statedb"
+	"github.com/stretchr/testify/assert"
 
 	"github.com/cilium/cilium/pkg/hive/health/types"
 )
@@ -30,8 +29,12 @@ func TestProvider(t *testing.T) {
 	h := hive.New(
 		statedb.Cell,
 		cell.Provide(newHealthV2Provider),
+		cell.Provide(newHealthHistory),
 		cell.ProvidePrivate(newTablesPrivate),
-		cell.Invoke(func(statusTable statedb.RWTable[types.Status], db *statedb.DB, p types.Provider, sd hive.Shutdowner) error {
+		cell.Provide(func() HistoryDir {
+			return HistoryDir(t.TempDir())
+		}),
+		cell.Invoke(func(statusTable statedb.RWTable[types.Status], db *statedb.DB, p types.Provider, history *healthHistory, sd hive.Shutdowner) error {
 			h := p.ForModule(cell.FullModuleID{"foo", "bar"})
 			hm2 := p.ForModule(cell.FullModuleID{"foo", "bar2"})
 			hm2.NewScope("zzz").OK("yay2")
@@ -53,12 +56,12 @@ func TestProvider(t *testing.T) {
 			assert.Len(degraded, 1)
 			assert.Equal("noo", degraded[0].Message)
 			assert.Equal("err0", degraded[0].Error)
-			assert.Equal(degraded[0].Count, uint64(1))
+			assert.Equal(uint64(1), degraded[0].Count)
 
 			ok := byLevel(db, statusTable, types.LevelOK)
 			assert.Len(ok, 2)
 
-			assert.Len(byLevel(db, statusTable, types.LevelStopped), 0)
+			assert.Empty(byLevel(db, statusTable, types.LevelStopped))
 
 			h2.Stopped("done")
 			all = allStatus(db, statusTable)
@@ -66,6 +69,7 @@ func TestProvider(t *testing.T) {
 			for _, s := range all {
 				if s.ID.String() == "foo.bar.zzz.xxx" {
 					assert.NotZero(s.Stopped)
+					assert.EqualValues(types.LevelStopped, s.Level)
 					continue
 				}
 				assert.Zero(s.Stopped)

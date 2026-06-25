@@ -6,7 +6,7 @@ package clustermesh
 import (
 	"context"
 	"os"
-	"path"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,13 +14,11 @@ import (
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/goleak"
 
-	"github.com/cilium/cilium/operator/watchers"
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	"github.com/cilium/cilium/pkg/hive"
 	"github.com/cilium/cilium/pkg/kvstore"
-	"github.com/cilium/cilium/pkg/promise"
+	"github.com/cilium/cilium/pkg/lock"
 )
 
 const (
@@ -29,6 +27,7 @@ const (
 )
 
 type fakeUserMgmtClient struct {
+	mu      lock.RWMutex
 	created map[string]string
 	deleted map[string]int
 }
@@ -39,36 +38,23 @@ func (f *fakeUserMgmtClient) init() {
 }
 
 func (f *fakeUserMgmtClient) UserEnforcePresence(_ context.Context, name string, roles []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	// The existing value (if any) is concatenated, to detect if this is called twice for the same name
 	f.created[name] = f.created[name] + strings.Join(roles, "|")
 	return nil
 }
 
 func (f *fakeUserMgmtClient) UserEnforceAbsence(_ context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	f.deleted[name]++
 	return nil
 }
 
-func TestMain(m *testing.M) {
-	goleak.VerifyTestMain(
-		m,
-		// To ignore goroutine started from sigs.k8s.io/controller-runtime/pkg/log.go
-		// init function
-		goleak.IgnoreTopFunction("time.Sleep"),
-		// Delaying workqueues used by resource.Resource[T].Events leaks this waitingLoop goroutine.
-		// It does stop when shutting down but is not guaranteed to before we actually exit.
-		goleak.IgnoreTopFunction("k8s.io/client-go/util/workqueue.(*delayingType).waitingLoop"),
-	)
-}
-
 func TestUsersManagement(t *testing.T) {
-	defer func() {
-		// force cleanup of goroutines run from initialization of watchers.nodeQueue,
-		// otherwise goleak complains
-		watchers.NodeQueueShutDown()
-		time.Sleep(50 * time.Millisecond)
-	}()
-
 	var client fakeUserMgmtClient
 	client.init()
 
@@ -76,7 +62,7 @@ func TestUsersManagement(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll(tmpdir)
 
-	cfgPath := path.Join(tmpdir, "users.yaml")
+	cfgPath := filepath.Join(tmpdir, "users.yaml")
 	require.NoError(t, os.WriteFile(cfgPath, []byte(users1), 0600))
 
 	hive := hive.New(
@@ -91,17 +77,14 @@ func TestUsersManagement(t *testing.T) {
 			return cmtypes.ClusterInfo{ID: 10, Name: "fred"}
 		}),
 
-		cell.Provide(func(lc cell.Lifecycle) promise.Promise[kvstore.BackendOperationsUserMgmt] {
-			resolver, promise := promise.New[kvstore.BackendOperationsUserMgmt]()
-			resolver.Resolve(&client)
-			return promise
+		cell.Provide(func() kvstore.BackendOperationsUserMgmt {
+			return &client
 		}),
 
 		cell.Invoke(registerUsersManager),
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	tlog := hivetest.Logger(t)
 	if err := hive.Start(tlog, ctx); err != nil {
@@ -115,6 +98,9 @@ func TestUsersManagement(t *testing.T) {
 	}()
 
 	require.Eventuallyf(t, func() bool {
+		client.mu.Lock()
+		defer client.mu.Unlock()
+
 		return len(client.created) == 3 && len(client.deleted) == 0
 	}, time.Second, 10*time.Millisecond,
 		"Failed waiting for events to be triggered: created: %v, deleted: %v",
@@ -130,11 +116,14 @@ func TestUsersManagement(t *testing.T) {
 	// We first write to a different file and then rename it, to avoid the possible
 	// race condition caused by truncate + write if we detect the event sufficiently
 	// fast (i.e., we first read an empty file, and then the expected one).
-	cfgPath2 := path.Join(tmpdir, "users.yaml.2")
+	cfgPath2 := filepath.Join(tmpdir, "users.yaml.2")
 	require.NoError(t, os.WriteFile(cfgPath2, []byte(users2), 0600))
 	require.NoError(t, os.Rename(cfgPath2, cfgPath))
 
 	require.Eventuallyf(t, func() bool {
+		client.mu.Lock()
+		defer client.mu.Unlock()
+
 		return len(client.created) == 2 && len(client.deleted) == 1
 	}, time.Second, 10*time.Millisecond,
 		"Failed waiting for events to be triggered: created: %v, deleted: %v",

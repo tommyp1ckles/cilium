@@ -6,16 +6,14 @@ package cmd
 import (
 	"context"
 	"errors"
-	"log/slog"
-	"path"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cilium/hive/cell"
-	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 
-	agentK8s "github.com/cilium/cilium/daemon/k8s"
 	"github.com/cilium/cilium/pkg/allocator"
 	"github.com/cilium/cilium/pkg/hive"
 	"github.com/cilium/cilium/pkg/identity"
@@ -53,11 +51,10 @@ func migrateIdentityCmd() *cobra.Command {
 
 	hive := hive.New(
 		k8sClient.Cell,
-		agentK8s.LocalNodeCell,
-		cell.Invoke(func(lc cell.Lifecycle, clientset k8sClient.Clientset, resources agentK8s.LocalNodeResources, shutdowner hive.Shutdowner) {
+		cell.Invoke(func(lc cell.Lifecycle, clientset k8sClient.Clientset, shutdowner hive.Shutdowner) {
 			lc.Append(cell.Hook{
 				OnStart: func(ctx cell.HookContext) error {
-					return migrateIdentities(ctx, clientset, resources, shutdowner)
+					return migrateIdentities(ctx, clientset, shutdowner)
 				},
 			})
 		}),
@@ -65,12 +62,8 @@ func migrateIdentityCmd() *cobra.Command {
 	hive.RegisterFlags(cmd.Flags())
 
 	cmd.Run = func(cmd *cobra.Command, args []string) {
-		// The internal packages log things. Make sure they follow the setup of
-		// the CLI tool.
-		logging.DefaultLogger.SetFormatter(log.Formatter)
-
-		if err := hive.Run(slog.Default()); err != nil {
-			log.Fatal(err)
+		if err := hive.Run(log); err != nil {
+			logging.Fatal(log, err.Error())
 		}
 	}
 
@@ -96,29 +89,24 @@ func migrateIdentityCmd() *cobra.Command {
 //
 // NOTE: It is assumed that the migration is from k8s to k8s installations. The
 // key labels different when running in non-k8s mode.
-func migrateIdentities(ctx cell.HookContext, clientset k8sClient.Clientset, resources agentK8s.LocalNodeResources, shutdowner hive.Shutdowner) error {
-	defer shutdowner.Shutdown(nil)
-
-	// Setup global configuration
-	// These are defined in cilium/cmd/kvstore.go
-	option.Config.KVStore = kvStore
-	option.Config.KVStoreOpt = kvStoreOpts
+func migrateIdentities(ctx cell.HookContext, clientset k8sClient.Clientset, shutdowner hive.Shutdowner) error {
+	defer shutdowner.Shutdown()
 
 	// This allows us to initialize a CRD allocator
 	option.Config.IdentityAllocationMode = option.IdentityAllocationModeCRD // force CRD mode to make ciliumid
 
 	// Init Identity backends
 	initCtx, initCancel := context.WithTimeout(ctx, opTimeout)
-	kvstoreBackend := initKVStore(initCtx)
+	kvstoreBackend := initKVStore(ctx, initCtx)
 
-	crdBackend, crdAllocator := initK8s(initCtx, clientset, resources)
+	crdBackend, crdAllocator := initK8s(initCtx, clientset)
 	initCancel()
 
 	log.Info("Listing identities in kvstore")
 	listCtx, listCancel := context.WithTimeout(ctx, opTimeout)
 	kvstoreIDs, err := getKVStoreIdentities(listCtx, kvstoreBackend)
 	if err != nil {
-		log.WithError(err).Fatal("Unable to initialize Identity Allocator with CRD backend to allocate identities with already allocated IDs")
+		logging.Fatal(log, "Unable to initialize Identity Allocator with CRD backend to allocate identities with already allocated IDs", logfields.Error, err)
 	}
 	listCancel()
 
@@ -126,10 +114,10 @@ func migrateIdentities(ctx cell.HookContext, clientset k8sClient.Clientset, reso
 	alreadyAllocatedKeys := make(map[idpool.ID]allocator.AllocatorKey) // IDs that are already allocated, maybe with different labels
 
 	for id, key := range kvstoreIDs {
-		scopedLog := log.WithFields(logrus.Fields{
-			logfields.Identity:       id,
-			logfields.IdentityLabels: key.GetKey(),
-		})
+		scopedLog := log.With(
+			logfields.Identity, id,
+			logfields.IdentityLabels, key.GetKey(),
+		)
 
 		ctx, cancel := context.WithTimeout(ctx, opTimeout)
 		_, err := crdBackend.AllocateID(ctx, id, key)
@@ -138,10 +126,16 @@ func migrateIdentities(ctx cell.HookContext, clientset k8sClient.Clientset, reso
 			alreadyAllocatedKeys[id] = key
 
 		case err != nil:
-			scopedLog.WithField(logfields.Key, key).WithError(err).Error("Cannot allocate CRD ID. This key will be allocated with a new numeric identity")
+			scopedLog.Error(
+				"Cannot allocate CRD ID. This key will be allocated with a new numeric identity",
+				logfields.Error, err,
+				logfields.Key, key,
+			)
 
 		default:
-			scopedLog.Info("Migrated identity")
+			scopedLog.Info(
+				"Migrated identity",
+			)
 		}
 		cancel()
 	}
@@ -151,24 +145,27 @@ func migrateIdentities(ctx cell.HookContext, clientset k8sClient.Clientset, reso
 	// 2- The same ID but with different labels. This is not ideal. A new ID is
 	// allocated as a fallback.
 	for id, key := range alreadyAllocatedKeys {
-		scopedLog := log.WithFields(logrus.Fields{
-			logfields.Identity:       id,
-			logfields.IdentityLabels: key.GetKey(),
-		})
+		scopedLog := log.With(
+			logfields.Identity, id,
+			logfields.IdentityLabels, key.GetKey(),
+		)
 
 		getCtx, getCancel := context.WithTimeout(ctx, opTimeout)
 		upstreamKey, err := crdBackend.GetByID(getCtx, id)
 		getCancel()
-		scopedLog.Debugf("Looking at upstream key with this ID: %+v", upstreamKey)
+		scopedLog.Debug(
+			"Looking at upstream key",
+			logfields.Key, upstreamKey,
+		)
 		switch {
 		case err != nil:
-			log.WithError(err).Error("ID already allocated but we cannot verify whether it is the same key. It may not be migrated")
+			scopedLog.Error("ID already allocated but we cannot verify whether it is the same key. It may not be migrated", logfields.Error, err)
 			continue
 
 		// nil returns mean the key doesn't exist. This shouldn't happen, but treat
 		// it like a mismatch and allocate it. The allocator will find it if it has
 		// been re-allocated via master key protection.
-		case upstreamKey == nil && err == nil:
+		case upstreamKey == nil:
 			// fallthrough
 
 		case key.GetKey() == upstreamKey.GetKey():
@@ -176,10 +173,10 @@ func migrateIdentities(ctx cell.HookContext, clientset k8sClient.Clientset, reso
 			continue
 		}
 
-		scopedLog = log.WithFields(logrus.Fields{
-			logfields.OldIdentity:    id,
-			logfields.IdentityLabels: key.GetKey(),
-		})
+		scopedLog = log.With(
+			logfields.IdentityOld, id,
+			logfields.IdentityLabels, key.GetKey(),
+		)
 		scopedLog.Warn("ID is allocated to a different key in CRD. A new ID will be allocated for the this key")
 
 		ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
@@ -187,42 +184,44 @@ func migrateIdentities(ctx cell.HookContext, clientset k8sClient.Clientset, reso
 		newID, actuallyAllocated, _, err := crdAllocator.Allocate(ctx, key)
 		switch {
 		case err != nil:
-			log.WithError(err).Errorf("Cannot allocate new CRD ID for %v", key)
+			scopedLog.Error(
+				"Cannot allocate CRD ID",
+				logfields.Error, err,
+				logfields.Key, key,
+			)
 			continue
 
 		case !actuallyAllocated:
 			scopedLog.Debug("Expected to allocate ID but this ID->key mapping re-existed")
 		}
 
-		log.WithFields(logrus.Fields{
-			logfields.OldIdentity:    id,
-			logfields.Identity:       newID,
-			logfields.IdentityLabels: key.GetKey(),
-		}).Info("New ID allocated for key in CRD")
+		scopedLog.Info(
+			"New ID allocated for key in CRD",
+			logfields.IdentityOld, id,
+			logfields.IdentityNew, newID,
+			logfields.IdentityLabels, key.GetKey(),
+		)
 	}
 	return nil
 }
 
 // initK8s connects to k8s with a allocator.Backend and an initialized
 // allocator.Allocator, using the k8s config passed into the command.
-func initK8s(ctx context.Context, clientset k8sClient.Clientset, resources agentK8s.LocalNodeResources) (crdBackend allocator.Backend, crdAllocator *allocator.Allocator) {
+func initK8s(ctx context.Context, clientset k8sClient.Clientset) (crdBackend allocator.Backend, crdAllocator *allocator.Allocator) {
 	log.Info("Setting up kubernetes client")
 
-	if err := agentK8s.WaitForNodeInformation(ctx, log, resources.LocalNode, resources.LocalCiliumNode); err != nil {
-		log.WithError(err).Fatal("Unable to connect to get node spec from apiserver")
-	}
-
 	// Update CRDs to ensure ciliumIdentity is present
-	ciliumClient.RegisterCRDs(clientset)
+	ciliumClient.RegisterCRDs(log, clientset)
 
 	// Create a CRD Backend
-	crdBackend, err := identitybackend.NewCRDBackend(identitybackend.CRDBackendConfiguration{
-		Store:   nil,
-		Client:  clientset,
-		KeyFunc: (&cacheKey.GlobalIdentity{}).PutKeyFromMap,
+	crdBackend, err := identitybackend.NewCRDBackend(log, identitybackend.CRDBackendConfiguration{
+		Store:    nil,
+		StoreSet: &atomic.Bool{},
+		Client:   clientset,
+		KeyFunc:  (&cacheKey.GlobalIdentity{}).PutKeyFromMap,
 	})
 	if err != nil {
-		log.WithError(err).Fatal("Cannot create CRD identity backend")
+		logging.Fatal(log, "Cannot create CRD identity backend", logfields.Error, err)
 	}
 
 	// Create a real allocator with CRD as the backend. This mimics the setup in
@@ -232,15 +231,14 @@ func initK8s(ctx context.Context, clientset k8sClient.Clientset, resources agent
 	//    allocator.WithPrefixMask(idpool.ID(option.Config.ClusterID<<identity.ClusterIDShift)))
 	minID := idpool.ID(identity.GetMinimalAllocationIdentity(option.Config.ClusterID))
 	maxID := idpool.ID(identity.GetMaximumAllocationIdentity(option.Config.ClusterID))
-	crdAllocator, err = allocator.NewAllocator(&cacheKey.GlobalIdentity{}, crdBackend,
-		allocator.WithMax(maxID), allocator.WithMin(minID))
+	crdAllocator, err = allocator.NewAllocator(log, &cacheKey.GlobalIdentity{}, crdBackend, allocator.WithMax(maxID), allocator.WithMin(minID))
 	if err != nil {
-		log.WithError(err).Fatal("Unable to initialize Identity Allocator with CRD backend to allocate identities with already allocated IDs")
+		logging.Fatal(log, "Unable to initialize Identity Allocator with CRD backend to allocate identities with already allocated IDs", logfields.Error, err)
 	}
 
 	// Wait for the initial sync to complete
 	if err := crdAllocator.WaitForInitialSync(ctx); err != nil {
-		log.WithError(err).Fatal("Error waiting for k8s identity allocator to sync. No identities have been migrated.")
+		logging.Fatal(log, "Error waiting for k8s identity allocator to sync. No identities have been migrated.", logfields.Error, err)
 	}
 
 	return crdBackend, crdAllocator
@@ -248,14 +246,14 @@ func initK8s(ctx context.Context, clientset k8sClient.Clientset, resources agent
 
 // initKVStore connects to the kvstore with a allocator.Backend, initialised to
 // find identities at the default cilium paths.
-func initKVStore(ctx context.Context) (kvstoreBackend allocator.Backend) {
+func initKVStore(ctx, wctx context.Context) (kvstoreBackend allocator.Backend) {
 	log.Info("Setting up kvstore client")
-	setupKvstore(ctx)
+	client := setupKvstore(ctx, log)
 
-	idPath := path.Join(cache.IdentitiesPath, "id")
-	kvstoreBackend, err := kvstoreallocator.NewKVStoreBackend(kvstoreallocator.KVStoreBackendConfiguration{BasePath: cache.IdentitiesPath, Suffix: idPath, Typ: &cacheKey.GlobalIdentity{}, Backend: kvstore.Client()})
+	idPath := kvstore.JoinKey(cache.IdentitiesPath, "id")
+	kvstoreBackend, err := kvstoreallocator.NewKVStoreBackend(log, kvstoreallocator.KVStoreBackendConfiguration{BasePath: cache.IdentitiesPath, Suffix: idPath, Typ: &cacheKey.GlobalIdentity{}, Backend: client})
 	if err != nil {
-		log.WithError(err).Fatal("Cannot create kvstore identity backend")
+		logging.Fatal(log, "Cannot create kvstore identity backend", logfields.Error, err)
 	}
 
 	return kvstoreBackend
@@ -265,23 +263,38 @@ func initKVStore(ctx context.Context) (kvstoreBackend allocator.Backend) {
 // the listing to complete.
 func getKVStoreIdentities(ctx context.Context, kvstoreBackend allocator.Backend) (identities map[idpool.ID]allocator.AllocatorKey, err error) {
 	identities = make(map[idpool.ID]allocator.AllocatorKey)
-	stopChan := make(chan struct{})
+	listDone := make(chan struct{})
 
-	go kvstoreBackend.ListAndWatch(ctx, kvstoreListHandler{
-		onUpsert: func(id idpool.ID, key allocator.AllocatorKey) {
-			log.Debugf("kvstore listed ID: %+v -> %+v", id, key)
-			identities[id] = key
-		},
-		onListDone: func() {
-			close(stopChan)
-		},
-	}, stopChan)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	// Make sure that the watcher terminated before returning, to prevent parallel
+	// modifications to the identities map afterwards.
+	defer wg.Wait()
+
+	cctx, cancel := context.WithCancel(ctx)
+	go func() {
+		defer wg.Done()
+		kvstoreBackend.ListAndWatch(cctx, kvstoreListHandler{
+			onUpsert: func(id idpool.ID, key allocator.AllocatorKey) {
+				log.Debug(
+					"kvstore listed ID",
+					logfields.Identity, id,
+					logfields.Key, key,
+				)
+				identities[id] = key
+			},
+			onListDone: func() {
+				close(listDone)
+				cancel()
+			},
+		})
+	}()
 	// This makes the ListAndWatch exit after the initial listing or on a timeout
 	// that exits this function
 
 	// Wait for the listing to complete
 	select {
-	case <-stopChan:
+	case <-listDone:
 		log.Debug("kvstore ID list complete")
 
 	case <-ctx.Done():

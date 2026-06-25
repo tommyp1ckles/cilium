@@ -55,6 +55,7 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sDatapathServicesTest", func()
 
 	JustAfterEach(func() {
 		kubectl.ValidateNoErrorsInLogs(CurrentGinkgoTestDescription().Duration)
+		kubectl.CollectFeatures()
 	})
 
 	AfterAll(func() {
@@ -116,13 +117,13 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sDatapathServicesTest", func()
 				testFailBind(kubectl, ni)
 			})
 
-			SkipContextIf(helpers.RunsOnAKS, "with L7 policy", func() {
+			Context("with L7 policy", func() {
 				AfterAll(func() {
 					kubectl.Delete(demoPolicyL7)
 					// Remove CT entries to avoid packet drops which could happen
 					// due to matching stale entries with proxy_redirect = 1
 					kubectl.CiliumExecMustSucceedOnAll(context.TODO(),
-						"cilium-dbg bpf ct flush global", "Unable to flush CT maps")
+						"cilium-dbg bpf ct flush", "Unable to flush CT maps")
 				})
 
 				It("Tests NodePort with L7 Policy", func() {
@@ -186,7 +187,7 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sDatapathServicesTest", func()
 			})
 		})
 
-		SkipContextIf(func() bool { return helpers.RunsWithKubeProxyReplacement() || helpers.RunsOnAKS() }, "TFTP with DNS Proxy port collision", func() {
+		SkipContextIf(func() bool { return helpers.RunsWithKubeProxyReplacement() }, "TFTP with DNS Proxy port collision", func() {
 			var (
 				demoPolicy    string
 				ciliumPodK8s1 string
@@ -280,7 +281,7 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sDatapathServicesTest", func()
 		})
 
 		SkipContextIf(func() bool {
-			return helpers.RunsWithKubeProxyReplacement() || helpers.RunsOnAKS()
+			return helpers.RunsWithKubeProxyReplacement()
 		}, "with L7 policy", func() {
 			var demoPolicyL7 string
 
@@ -292,7 +293,7 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sDatapathServicesTest", func()
 				kubectl.Delete(demoPolicyL7)
 				// Same reason as in other L7 test above
 				kubectl.CiliumExecMustSucceedOnAll(context.TODO(),
-					"cilium-dbg bpf ct flush global", "Unable to flush CT maps")
+					"cilium-dbg bpf ct flush", "Unable to flush CT maps")
 			})
 
 			It("Tests NodePort with L7 Policy", func() {
@@ -321,14 +322,6 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sDatapathServicesTest", func()
 				yamls = append(yamls, path)
 			}
 
-			By(`Connectivity config:: helpers.DualStackSupported(): %v
-Primary Interface %s   :: IPv4: (%s, %s), IPv6: (%s, %s)
-Secondary Interface %s :: IPv4: (%s, %s), IPv6: (%s, %s)`,
-				helpers.DualStackSupported(), ni.PrivateIface,
-				ni.K8s1IP, ni.K8s2IP, ni.PrimaryK8s1IPv6, ni.PrimaryK8s2IPv6,
-				helpers.SecondaryIface, ni.SecondaryK8s1IPv4, ni.SecondaryK8s2IPv4,
-				ni.SecondaryK8s1IPv6, ni.SecondaryK8s2IPv6)
-
 			// Wait for all pods to be in ready state.
 			err := kubectl.WaitforPods(helpers.DefaultNamespace, "", helpers.HelperTimeout)
 			Expect(err).Should(BeNil())
@@ -342,35 +335,7 @@ Secondary Interface %s :: IPv4: (%s, %s), IPv6: (%s, %s)`,
 		})
 
 		It("Tests NodePort with sessionAffinity from outside", func() {
-			testSessionAffinity(kubectl, ni, true, true)
-		})
-
-		It("Tests externalIPs", func() {
-			testExternalIPs(kubectl, ni)
-		})
-
-		It("Tests GH#10983", func() {
-			var data v1.Service
-
-			// We need two NodePort services with the same single endpoint,
-			// so thus we choose the "test-nodeport{-local,}-k8s2" svc.
-			// Both svcs will be accessed via the k8s2 node, because
-			// "test-nodeport-local-k8s2" has the local external traffic
-			// policy.
-			err := kubectl.Get(helpers.DefaultNamespace, "svc test-nodeport-local-k8s2").Unmarshal(&data)
-			Expect(err).Should(BeNil(), "Can not retrieve service")
-			svc1URL := getHTTPLink(ni.K8s2IP, data.Spec.Ports[0].NodePort)
-			err = kubectl.Get(helpers.DefaultNamespace, "svc test-nodeport-k8s2").Unmarshal(&data)
-			Expect(err).Should(BeNil(), "Can not retrieve service")
-			svc2URL := getHTTPLink(ni.K8s2IP, data.Spec.Ports[0].NodePort)
-
-			// Send two requests from the same src IP and port to the endpoint
-			// via two different NodePort svc to trigger the stale conntrack
-			// entry issue. Once it's fixed, the second request should not
-			// fail.
-			testCurlFromOutsideWithLocalPort(kubectl, ni, svc1URL, 1, false, 64002)
-			time.Sleep(120 * time.Second) // to reuse the source port
-			testCurlFromOutsideWithLocalPort(kubectl, ni, svc2URL, 1, false, 64002)
+			testSessionAffinity(kubectl, ni)
 		})
 
 		It("Tests security id propagation in N/S LB requests fwd-ed over tunnel", func() {
@@ -424,48 +389,12 @@ Secondary Interface %s :: IPv4: (%s, %s), IPv6: (%s, %s)`,
 			}
 		})
 
-		It("Tests with direct routing and DSR", func() {
-			DeployCiliumOptionsAndDNS(kubectl, ciliumFilename, map[string]string{
-				"loadBalancer.mode":    "dsr",
-				"routingMode":          "native",
-				"autoDirectNodeRoutes": "true",
-			})
-
-			testDSR(kubectl, ni, ni.K8s1IP, "service test-nodeport-k8s2", 64000)
-			if helpers.DualStackSupported() {
-				testDSR(kubectl, ni, ni.PrimaryK8s1IPv6, "service test-nodeport-k8s2-ipv6", 64001)
-			}
-			testNodePortExternal(kubectl, ni, false, true, true)
-		})
-
-		It("Tests with XDP, direct routing, SNAT and Random", func() {
-			DeployCiliumOptionsAndDNS(kubectl, ciliumFilename, map[string]string{
-				"loadBalancer.acceleration": "testing-only",
-				"loadBalancer.mode":         "snat",
-				"loadBalancer.algorithm":    "random",
-				"routingMode":               "native",
-				"autoDirectNodeRoutes":      "true",
-				"devices":                   fmt.Sprintf(`'{%s}'`, ni.PrivateIface),
-			})
-			testNodePortExternal(kubectl, ni, false, false, false)
-		})
-
-		It("Tests with XDP, vxlan tunnel, SNAT and Random", func() {
-			DeployCiliumOptionsAndDNS(kubectl, ciliumFilename, map[string]string{
-				"loadBalancer.acceleration": "testing-only",
-				"loadBalancer.mode":         "snat",
-				"loadBalancer.algorithm":    "random",
-				"tunnelProtocol":            "vxlan",
-				"devices":                   fmt.Sprintf(`'{%s}'`, ni.PrivateIface),
-			})
-			testNodePortExternal(kubectl, ni, false, false, false)
-		})
-
 		It("Tests with XDP, direct routing, SNAT and Maglev", func() {
 			DeployCiliumOptionsAndDNS(kubectl, ciliumFilename, map[string]string{
 				"loadBalancer.acceleration": "testing-only",
 				"loadBalancer.mode":         "snat",
 				"loadBalancer.algorithm":    "maglev",
+				"l2NeighDiscovery.enabled":  "true",
 				"maglev.tableSize":          "251",
 				"routingMode":               "native",
 				"autoDirectNodeRoutes":      "true",
@@ -484,6 +413,7 @@ Secondary Interface %s :: IPv4: (%s, %s), IPv6: (%s, %s)`,
 				"loadBalancer.acceleration": "testing-only",
 				"loadBalancer.mode":         "hybrid",
 				"loadBalancer.algorithm":    "random",
+				"l2NeighDiscovery.enabled":  "true",
 				"routingMode":               "native",
 				"autoDirectNodeRoutes":      "true",
 				"devices":                   fmt.Sprintf(`'{%s}'`, ni.PrivateIface),
@@ -496,6 +426,7 @@ Secondary Interface %s :: IPv4: (%s, %s), IPv6: (%s, %s)`,
 				"loadBalancer.acceleration": "testing-only",
 				"loadBalancer.mode":         "hybrid",
 				"loadBalancer.algorithm":    "maglev",
+				"l2NeighDiscovery.enabled":  "true",
 				"maglev.tableSize":          "251",
 				"routingMode":               "native",
 				"autoDirectNodeRoutes":      "true",
@@ -512,6 +443,7 @@ Secondary Interface %s :: IPv4: (%s, %s), IPv6: (%s, %s)`,
 				"loadBalancer.acceleration": "testing-only",
 				"loadBalancer.mode":         "dsr",
 				"loadBalancer.algorithm":    "random",
+				"l2NeighDiscovery.enabled":  "true",
 				"routingMode":               "native",
 				"autoDirectNodeRoutes":      "true",
 				"devices":                   fmt.Sprintf(`'{%s}'`, ni.PrivateIface),
@@ -524,6 +456,7 @@ Secondary Interface %s :: IPv4: (%s, %s), IPv6: (%s, %s)`,
 				"loadBalancer.acceleration": "testing-only",
 				"loadBalancer.mode":         "dsr",
 				"loadBalancer.algorithm":    "maglev",
+				"l2NeighDiscovery.enabled":  "true",
 				"maglev.tableSize":          "251",
 				"routingMode":               "native",
 				"autoDirectNodeRoutes":      "true",
@@ -540,6 +473,7 @@ Secondary Interface %s :: IPv4: (%s, %s), IPv6: (%s, %s)`,
 				"loadBalancer.acceleration": "testing-only",
 				"loadBalancer.mode":         "dsr",
 				"loadBalancer.algorithm":    "maglev",
+				"l2NeighDiscovery.enabled":  "true",
 				"maglev.tableSize":          "251",
 				"routingMode":               "native",
 				"tunnelProtocol":            "geneve",
@@ -619,24 +553,7 @@ Secondary Interface %s :: IPv4: (%s, %s), IPv6: (%s, %s)`,
 			testNodePortExternal(kubectl, ni, false, true, false)
 		})
 
-		It("Supports IPv4 fragments", func() {
-			options := map[string]string{}
-			// On GKE we need to disable endpoint routes as fragment tracking
-			// isn't compatible with that options. See #15958.
-			if helpers.RunsOnGKE() {
-				options["gke.enabled"] = "false"
-				options["routingMode"] = "native"
-			}
-
-			DeployCiliumOptionsAndDNS(kubectl, ciliumFilename, options)
-
-			cmd := fmt.Sprintf("cilium-dbg config %s=%s", helpers.OptionConntrackAccounting, helpers.OptionEnabled)
-			kubectl.CiliumExecMustSucceedOnAll(context.TODO(), cmd, "Unable to enable ConntrackAccounting option")
-			kubectl.CiliumPreFlightCheck()
-			testIPv4FragmentSupport(kubectl, ni)
-		})
-
-		SkipContextIf(helpers.RunsOnGKE, "With host policy", func() {
+		Context("With host policy", func() {
 			hostPolicyFilename := "ccnp-host-policy-nodeport-tests.yaml"
 			var ccnpHostPolicy string
 
@@ -673,42 +590,6 @@ Secondary Interface %s :: IPv4: (%s, %s), IPv6: (%s, %s)`,
 
 			It("Tests NodePort", func() {
 				testNodePort(kubectl, ni, true, true, 0)
-			})
-		})
-
-		It("ClusterIP cannot be accessed externally when access is disabled",
-			func() {
-				Expect(curlClusterIPFromExternalHost(kubectl, ni)).
-					ShouldNot(helpers.CMDSuccess(),
-						"External host %s unexpectedly connected to ClusterIP when lbExternalClusterIP was unset", ni.OutsideNodeName)
-			})
-
-		Context("With ClusterIP external access", func() {
-			var (
-				svcIP string
-			)
-			BeforeAll(func() {
-				DeployCiliumOptionsAndDNS(kubectl, ciliumFilename, map[string]string{
-					"bpf.lbExternalClusterIP": "true",
-					// Enable Maglev to check if the Maglev LUT for ClusterIP is properly populated,
-					// and external clients can access ClusterIP with it.
-					"loadBalancer.algorithm": "maglev",
-				})
-				clusterIP, _, err := kubectl.GetServiceHostPort(helpers.DefaultNamespace, appServiceName)
-				svcIP = clusterIP
-				Expect(err).Should(BeNil(), "Cannot get service %s", appServiceName)
-				res := kubectl.AddIPRoute(ni.OutsideNodeName, svcIP, ni.K8s1IP, false)
-				Expect(res).Should(helpers.CMDSuccess(), "Error adding IP route for %s via %s", svcIP, ni.K8s1IP)
-			})
-
-			AfterAll(func() {
-				res := kubectl.DelIPRoute(ni.OutsideNodeName, svcIP, ni.K8s1IP)
-				Expect(res).Should(helpers.CMDSuccess(), "Error removing IP route for %s via %s", svcIP, ni.K8s1IP)
-			})
-
-			It("ClusterIP can be accessed when external access is enabled", func() {
-				Expect(curlClusterIPFromExternalHost(kubectl, ni)).
-					Should(helpers.CMDSuccess(), "Could not curl ClusterIP %s from external host", svcIP)
 			})
 		})
 	})

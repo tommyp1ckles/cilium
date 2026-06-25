@@ -4,12 +4,11 @@
 package parser
 
 import (
-	"io"
 	"testing"
 	"time"
 
+	"github.com/cilium/hive/hivetest"
 	"github.com/google/uuid"
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -24,15 +23,8 @@ import (
 	"github.com/cilium/cilium/pkg/proxy/accesslog"
 )
 
-var log *logrus.Logger
-
-func init() {
-	log = logrus.New()
-	log.SetOutput(io.Discard)
-}
-
 func Test_InvalidPayloads(t *testing.T) {
-	p, err := New(log, nil, nil, nil, nil, nil, nil, nil)
+	p, err := New(hivetest.Logger(t), nil, nil, nil, nil, nil, nil, nil)
 	assert.NoError(t, err)
 
 	_, err = p.Decode(nil)
@@ -57,11 +49,11 @@ func Test_InvalidPayloads(t *testing.T) {
 }
 
 func Test_ParserDispatch(t *testing.T) {
-	p, err := New(log, nil, nil, nil, nil, nil, nil, nil)
+	p, err := New(hivetest.Logger(t), nil, nil, nil, nil, nil, nil, nil)
 	assert.NoError(t, err)
 
 	// Test L3/L4 record
-	tn := monitor.TraceNotifyV0{
+	tn := monitor.TraceNotify{
 		Type: byte(api.MessageTypeTrace),
 	}
 	data, err := testutils.CreateL3L4Payload(tn)
@@ -77,6 +69,7 @@ func Test_ParserDispatch(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, flowpb.FlowType_L3_L4, e.GetFlow().GetType())
 	assert.Equal(t, id.String(), e.GetFlow().GetUuid())
+	assert.Equal(t, &flowpb.Emitter{Name: v1.FlowEmitter, Version: v1.FlowEmitterVersion}, e.GetFlow().GetEmitter())
 
 	// Test L7 dispatch
 	node := "k8s1"
@@ -94,10 +87,11 @@ func Test_ParserDispatch(t *testing.T) {
 	assert.Equal(t, node, e.GetFlow().GetNodeName())
 	assert.Equal(t, flowpb.FlowType_L7, e.GetFlow().GetType())
 	assert.Equal(t, id.String(), e.GetFlow().GetUuid())
+	assert.Equal(t, &flowpb.Emitter{Name: v1.FlowEmitter, Version: v1.FlowEmitterVersion}, e.GetFlow().GetEmitter())
 }
 
 func Test_EventType_RecordLost(t *testing.T) {
-	p, err := New(log, nil, nil, nil, nil, nil, nil, nil)
+	p, err := New(hivetest.Logger(t), nil, nil, nil, nil, nil, nil, nil)
 	assert.NoError(t, err)
 
 	ts := time.Now()

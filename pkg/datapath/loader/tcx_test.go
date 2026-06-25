@@ -10,18 +10,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
-
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
+	"github.com/cilium/hive/hivetest"
+	"github.com/stretchr/testify/require"
 
 	"github.com/cilium/cilium/pkg/datapath/linux/probes"
 	"github.com/cilium/cilium/pkg/testutils"
 	"github.com/cilium/cilium/pkg/testutils/netns"
 )
 
-func TestAttachDetachTCX(t *testing.T) {
+func TestPrivilegedAttachDetachTCX(t *testing.T) {
 	testutils.PrivilegedTest(t)
+	logger := hivetest.Logger(t)
 
 	skipTCXUnsupported(t)
 
@@ -31,8 +32,8 @@ func TestAttachDetachTCX(t *testing.T) {
 		linkDir := testutils.TempBPFFS(t)
 
 		// Attaching the same program twice should result in a link create and update.
-		require.NoError(t, upsertTCXProgram(lo, prog, "cil_test", linkDir, directionToParent(dirEgress)))
-		require.NoError(t, upsertTCXProgram(lo, prog, "cil_test", linkDir, directionToParent(dirEgress)))
+		require.NoError(t, upsertTCXProgram(logger, lo, prog, "cil_test", linkDir, directionToParent(dirEgress)))
+		require.NoError(t, upsertTCXProgram(logger, lo, prog, "cil_test", linkDir, directionToParent(dirEgress)))
 
 		// Query tcx programs.
 		hasPrograms, err := hasCiliumTCXLinks(lo, ebpf.AttachTCXEgress)
@@ -40,7 +41,7 @@ func TestAttachDetachTCX(t *testing.T) {
 		require.True(t, hasPrograms)
 
 		// Detach the program.
-		err = detachSKBProgram(lo, "cil_test", linkDir, directionToParent(dirEgress))
+		err = detachSKBProgram(logger, lo, "cil_test", linkDir, directionToParent(dirEgress))
 		require.NoError(t, err)
 
 		// bpf_prog_query is eventually-consistent, retries may be necessary.
@@ -54,7 +55,7 @@ func TestAttachDetachTCX(t *testing.T) {
 	})
 }
 
-func TestHasCiliumTCXLinks(t *testing.T) {
+func TestPrivilegedHasCiliumTCXLinks(t *testing.T) {
 	testutils.PrivilegedTest(t)
 
 	skipTCXUnsupported(t)

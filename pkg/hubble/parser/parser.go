@@ -6,7 +6,8 @@
 package parser
 
 import (
-	"github.com/sirupsen/logrus"
+	"log/slog"
+
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
@@ -42,7 +43,7 @@ type Parser struct {
 
 // New creates a new parser
 func New(
-	log logrus.FieldLogger,
+	log *slog.Logger,
 	endpointGetter getters.EndpointGetter,
 	identityGetter getters.IdentityGetter,
 	dnsGetter getters.DNSGetter,
@@ -53,7 +54,7 @@ func New(
 	opts ...options.Option,
 ) (*Parser, error) {
 
-	l34, err := threefour.New(log, endpointGetter, identityGetter, dnsGetter, ipGetter, serviceGetter, linkGetter)
+	l34, err := threefour.New(log, endpointGetter, identityGetter, dnsGetter, ipGetter, serviceGetter, linkGetter, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -63,12 +64,12 @@ func New(
 		return nil, err
 	}
 
-	dbg, err := debug.New(log, endpointGetter)
+	dbg, err := debug.New(log, endpointGetter, opts...)
 	if err != nil {
 		return nil, err
 	}
 
-	sock, err := sock.New(log, endpointGetter, identityGetter, dnsGetter, ipGetter, serviceGetter, cgroupGetter)
+	sock, err := sock.New(log, endpointGetter, identityGetter, dnsGetter, ipGetter, serviceGetter, cgroupGetter, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +114,13 @@ func (p *Parser) Decode(monitorEvent *observerTypes.MonitorEvent) (*v1.Event, er
 			return nil, errors.ErrEmptyData
 		}
 
-		flow := &pb.Flow{}
+		flow := &pb.Flow{
+			Emitter: &pb.Emitter{
+				Name:    v1.FlowEmitter,
+				Version: v1.FlowEmitterVersion,
+			},
+			Uuid: monitorEvent.UUID.String(),
+		}
 		switch payload.Data[0] {
 		case monitorAPI.MessageTypeDebug:
 			// Debug and TraceSock are both perf ring buffer events without any
@@ -134,7 +141,6 @@ func (p *Parser) Decode(monitorEvent *observerTypes.MonitorEvent) (*v1.Event, er
 				return nil, err
 			}
 		}
-		flow.Uuid = monitorEvent.UUID.String()
 		// FIXME: Time and NodeName are now part of GetFlowsResponse. We
 		// populate these fields for compatibility with old clients.
 		flow.Time = ts
@@ -144,7 +150,13 @@ func (p *Parser) Decode(monitorEvent *observerTypes.MonitorEvent) (*v1.Event, er
 	case *observerTypes.AgentEvent:
 		switch payload.Type {
 		case monitorAPI.MessageTypeAccessLog:
-			flow := &pb.Flow{}
+			flow := &pb.Flow{
+				Emitter: &pb.Emitter{
+					Name:    v1.FlowEmitter,
+					Version: v1.FlowEmitterVersion,
+				},
+				Uuid: monitorEvent.UUID.String(),
+			}
 			logrecord, ok := payload.Message.(accesslog.LogRecord)
 			if !ok {
 				return nil, errors.ErrInvalidAgentMessageType
@@ -152,7 +164,6 @@ func (p *Parser) Decode(monitorEvent *observerTypes.MonitorEvent) (*v1.Event, er
 			if err := p.l7.Decode(&logrecord, flow); err != nil {
 				return nil, err
 			}
-			flow.Uuid = monitorEvent.UUID.String()
 			// FIXME: Time and NodeName are now part of GetFlowsResponse. We
 			// populate these fields for compatibility with old clients.
 			flow.Time = ts
@@ -170,13 +181,20 @@ func (p *Parser) Decode(monitorEvent *observerTypes.MonitorEvent) (*v1.Event, er
 			return nil, errors.ErrUnknownEventType
 		}
 	case *observerTypes.LostEvent:
-		ev.Event = &pb.LostEvent{
+		lostEvent := &pb.LostEvent{
 			Source:        lostEventSourceToProto(payload.Source),
 			NumEventsLost: payload.NumLostEvents,
 			Cpu: &wrapperspb.Int32Value{
 				Value: int32(payload.CPU),
 			},
 		}
+		if !payload.First.IsZero() {
+			lostEvent.First = timestamppb.New(payload.First)
+		}
+		if !payload.Last.IsZero() {
+			lostEvent.Last = timestamppb.New(payload.Last)
+		}
+		ev.Event = lostEvent
 		return ev, nil
 	case nil:
 		return ev, errors.ErrEmptyData

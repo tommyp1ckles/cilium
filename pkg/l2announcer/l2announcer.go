@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/netip"
@@ -18,12 +19,12 @@ import (
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/job"
 	"github.com/cilium/statedb"
-	"github.com/sirupsen/logrus"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
+	"k8s.io/client-go/util/workqueue"
 
 	daemon_k8s "github.com/cilium/cilium/daemon/k8s"
 	"github.com/cilium/cilium/pkg/datapath/tables"
@@ -32,11 +33,13 @@ import (
 	cilium_api_v2alpha1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
 	"github.com/cilium/cilium/pkg/k8s/resource"
-	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	"github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/labels"
 	slim_meta_v1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	"github.com/cilium/cilium/pkg/k8s/utils"
+	"github.com/cilium/cilium/pkg/loadbalancer"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/shortener"
 	"github.com/cilium/cilium/pkg/time"
 )
 
@@ -46,28 +49,29 @@ var Cell = cell.Module(
 
 	cell.Provide(NewL2Announcer),
 	cell.Provide(l2AnnouncementPolicyResource),
+	cell.Invoke(func(*L2Announcer) {}), // register and start L2 announcer
 )
 
-func l2AnnouncementPolicyResource(lc cell.Lifecycle, cs k8sClient.Clientset) (resource.Resource[*cilium_api_v2alpha1.CiliumL2AnnouncementPolicy], error) {
+func l2AnnouncementPolicyResource(lc cell.Lifecycle, cs k8sClient.Clientset,
+	mp workqueue.MetricsProvider) (resource.Resource[*cilium_api_v2alpha1.CiliumL2AnnouncementPolicy], error) {
 	if !cs.IsEnabled() {
 		return nil, nil
 	}
 	lw := utils.ListerWatcherFromTyped(
 		cs.CiliumV2alpha1().CiliumL2AnnouncementPolicies(),
 	)
-	return resource.New[*cilium_api_v2alpha1.CiliumL2AnnouncementPolicy](lc, lw, resource.WithMetric("CiliumL2AnnouncementPolicy")), nil
+	return resource.New[*cilium_api_v2alpha1.CiliumL2AnnouncementPolicy](lc, lw, mp, resource.WithMetric("CiliumL2AnnouncementPolicy")), nil
 }
 
 type l2AnnouncerParams struct {
 	cell.In
 
-	Lifecycle cell.Lifecycle
-	Logger    logrus.FieldLogger
-	Health    cell.Health
+	Logger *slog.Logger
 
 	DaemonConfig         *option.DaemonConfig
 	Clientset            k8sClient.Clientset
-	Services             resource.Resource[*slim_corev1.Service]
+	Services             statedb.Table[*loadbalancer.Service]
+	Frontends            statedb.Table[*loadbalancer.Frontend]
 	L2AnnouncementPolicy resource.Resource[*cilium_api_v2alpha1.CiliumL2AnnouncementPolicy]
 	LocalNodeResource    daemon_k8s.LocalCiliumNodeResource
 	L2AnnounceTable      statedb.RWTable[*tables.L2AnnounceEntry]
@@ -83,7 +87,6 @@ type l2AnnouncerParams struct {
 type L2Announcer struct {
 	params l2AnnouncerParams
 
-	svcStore    resource.Store[*slim_corev1.Service]
 	policyStore resource.Store[*cilium_api_v2alpha1.CiliumL2AnnouncementPolicy]
 	localNode   *v2.CiliumNode
 
@@ -93,10 +96,10 @@ type L2Announcer struct {
 	devicesUpdatedSig chan struct{}
 
 	// selectedPolicies matching the current node.
-	selectedPolicies map[resource.Key]*selectedPolicy
+	selectedPolicies map[types.NamespacedName]*selectedPolicy
 	// Services which are selected by one or more policies for which we thus want to participate in leader election.
 	// Indexed by service key.
-	selectedServices map[resource.Key]*selectedService
+	selectedServices map[types.NamespacedName]*selectedService
 	// A list of devices which can be matched by the policies
 	devices []string
 }
@@ -106,8 +109,8 @@ func NewL2Announcer(params l2AnnouncerParams) *L2Announcer {
 	const leaderElectionBufferSize = 16
 	announcer := &L2Announcer{
 		params:            params,
-		selectedServices:  make(map[resource.Key]*selectedService),
-		selectedPolicies:  make(map[resource.Key]*selectedPolicy),
+		selectedServices:  make(map[types.NamespacedName]*selectedService),
+		selectedPolicies:  make(map[types.NamespacedName]*selectedPolicy),
 		leaderChannel:     make(chan leaderElectionEvent, leaderElectionBufferSize),
 		devicesUpdatedSig: make(chan struct{}, 1),
 	}
@@ -135,18 +138,27 @@ func NewL2Announcer(params l2AnnouncerParams) *L2Announcer {
 }
 
 func (l2a *L2Announcer) run(ctx context.Context, health cell.Health) error {
-	var err error
-	l2a.svcStore, err = l2a.params.Services.Store(ctx)
+	// Start watching the 'services' table for changes.
+	wtxn := l2a.params.StateDB.WriteTxn(l2a.params.Services)
+	svcChangeIter, err := l2a.params.Services.Changes(wtxn)
+	wtxn.Commit()
 	if err != nil {
-		return fmt.Errorf("get service store: %w", err)
+		return err
+	}
+	// Wait for services to initialize
+	_, servicesInitialized := l2a.params.Services.Initialized(l2a.params.StateDB.ReadTxn())
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-servicesInitialized:
 	}
 
+	// Grab the store for policies. This blocks until it has initialized.
 	l2a.policyStore, err = l2a.params.L2AnnouncementPolicy.Store(ctx)
 	if err != nil {
 		return fmt.Errorf("get policy store: %w", err)
 	}
 
-	svcChan := l2a.params.Services.Events(ctx)
 	policyChan := l2a.params.L2AnnouncementPolicy.Events(ctx)
 	localNodeChan := l2a.params.LocalNodeResource.Events(ctx)
 
@@ -162,7 +174,10 @@ func (l2a *L2Announcer) run(ctx context.Context, health cell.Health) error {
 		}
 
 		if err := l2a.processLocalNodeEvent(ctx, event); err != nil {
-			l2a.params.Logger.WithError(err).Warn("Error processing local node event")
+			l2a.params.Logger.Warn(
+				"Error processing local node event",
+				logfields.Error, err,
+			)
 		}
 
 		if l2a.localNode != nil {
@@ -172,18 +187,20 @@ func (l2a *L2Announcer) run(ctx context.Context, health cell.Health) error {
 
 loop:
 	for {
+		svcChanges, svcWatch := svcChangeIter.Next(l2a.params.StateDB.ReadTxn())
+		for event := range svcChanges {
+			if err := l2a.processSvcEvent(event); err != nil {
+				l2a.params.Logger.Warn("Error processing service event",
+					logfields.Error, err,
+				)
+			}
+		}
+
 		select {
 		case <-ctx.Done():
 			break loop
-		case event, more := <-svcChan:
-			// resource closed, shutting down
-			if !more {
-				break loop
-			}
 
-			if err := l2a.processSvcEvent(event); err != nil {
-				l2a.params.Logger.WithError(err).Warn("Error processing service event")
-			}
+		case <-svcWatch:
 
 		case event, more := <-policyChan:
 			// resource closed, shutting down
@@ -192,7 +209,9 @@ loop:
 			}
 
 			if err := l2a.processPolicyEvent(ctx, event); err != nil {
-				l2a.params.Logger.WithError(err).Warn("Error processing policy event")
+				l2a.params.Logger.Warn("Error processing policy event",
+					logfields.Error, err,
+				)
 			}
 
 		case event, more := <-localNodeChan:
@@ -202,12 +221,16 @@ loop:
 			}
 
 			if err := l2a.processLocalNodeEvent(ctx, event); err != nil {
-				l2a.params.Logger.WithError(err).Warn("Error processing local node event")
+				l2a.params.Logger.Warn("Error processing local node event",
+					logfields.Error, err,
+				)
 			}
 
 		case event := <-l2a.leaderChannel:
 			if err := l2a.processLeaderEvent(event); err != nil {
-				l2a.params.Logger.WithError(err).Warn("Error processing leader event")
+				l2a.params.Logger.Warn("Error processing leader event",
+					logfields.Error, err,
+				)
 			}
 
 		case <-watchDevices:
@@ -219,7 +242,9 @@ loop:
 			}
 			l2a.devices = deviceNames
 			if err := l2a.processDevicesChanged(ctx); err != nil {
-				l2a.params.Logger.WithError(err).Warn("Error processing devices changed signal")
+				l2a.params.Logger.Warn("Error processing devices changed signal",
+					logfields.Error, err,
+				)
 			}
 		}
 	}
@@ -285,7 +310,7 @@ func (l2a *L2Announcer) processPolicyEvent(ctx context.Context, event resource.E
 		}
 
 	case resource.Delete:
-		err = l2a.delPolicy(event.Key)
+		err = l2a.delPolicy(types.NamespacedName{Namespace: event.Key.Namespace, Name: event.Key.Name})
 		if err != nil {
 			err = fmt.Errorf("delete policy: %w", err)
 		}
@@ -298,25 +323,31 @@ func (l2a *L2Announcer) processPolicyEvent(ctx context.Context, event resource.E
 	return err
 }
 
-func (l2a *L2Announcer) upsertSvc(svc *slim_corev1.Service) error {
-	key := serviceKey(svc)
+func (l2a *L2Announcer) upsertSvc(svc *loadbalancer.Service) error {
+	txn := l2a.params.StateDB.ReadTxn()
 
-	// Ignore services if there is no noExternal or LB IP assigned.
-	noExternal := svc.Spec.ExternalIPs == nil
-	noLB := true
-	for _, v := range svc.Status.LoadBalancer.Ingress {
-		if v.IP != "" {
-			noLB = false
-			break
+	// Lookup associated frontends
+	fes := l2a.params.Frontends.List(txn, loadbalancer.FrontendByServiceName(svc.Name))
+	var lbAddresses, externalAddresses []netip.Addr
+	for fe := range fes {
+		if fe.Type == loadbalancer.SVCTypeExternalIPs {
+			externalAddresses = append(externalAddresses, fe.Address.Addr())
+		}
+		if fe.Type == loadbalancer.SVCTypeLoadBalancer {
+			lbAddresses = append(lbAddresses, fe.Address.Addr())
 		}
 	}
+	key := serviceKey(svc)
+	noExternal := len(externalAddresses) == 0
+	noLB := len(lbAddresses) == 0
 	if noExternal && noLB {
+		// Ignore services if there is no noExternal or LB IP assigned.
 		return l2a.delSvc(key)
 	}
 
 	// Ignore services managed by an unsupported load balancer class.
-	if svc.Spec.LoadBalancerClass != nil &&
-		*svc.Spec.LoadBalancerClass != cilium_api_v2alpha1.L2AnnounceLoadBalancerClass {
+	if svc.LoadBalancerClass != nil &&
+		*svc.LoadBalancerClass != cilium_api_v2alpha1.L2AnnounceLoadBalancerClass {
 		return l2a.delSvc(key)
 	}
 
@@ -324,6 +355,8 @@ func (l2a *L2Announcer) upsertSvc(svc *slim_corev1.Service) error {
 	if found {
 		// Update service object, labels or IPs may have changed
 		ss.svc = svc
+		ss.externalAddresses = externalAddresses
+		ss.lbAddresses = lbAddresses
 
 		// Since labels may have changed, remove all matching policies, re-match against all known policies.
 		ss.byPolicies = nil
@@ -355,7 +388,7 @@ func (l2a *L2Announcer) upsertSvc(svc *slim_corev1.Service) error {
 	}
 
 	// Service is not selected, check if any policies match.
-	var matchingPolicies []resource.Key
+	var matchingPolicies []types.NamespacedName
 	for policyKey, selectedPolicy := range l2a.selectedPolicies {
 		if selectedPolicy.serviceSelector.Matches(svcAndMetaLabels(svc)) {
 			// Policy IP type and Service IP type must match
@@ -368,13 +401,13 @@ func (l2a *L2Announcer) upsertSvc(svc *slim_corev1.Service) error {
 
 	// Add the services to list of selected services if at least 1 policy matches it.
 	if len(matchingPolicies) >= 1 {
-		l2a.addSelectedService(svc, matchingPolicies)
+		l2a.addSelectedService(svc, externalAddresses, lbAddresses, matchingPolicies)
 	}
 
 	return nil
 }
 
-func (l2a *L2Announcer) delSvc(key resource.Key) error {
+func (l2a *L2Announcer) delSvc(key types.NamespacedName) error {
 	ss, found := l2a.selectedServices[key]
 	if !found {
 		return nil
@@ -392,35 +425,29 @@ func (l2a *L2Announcer) delSvc(key resource.Key) error {
 	return nil
 }
 
-func (l2a *L2Announcer) processSvcEvent(event resource.Event[*slim_corev1.Service]) error {
+func (l2a *L2Announcer) processSvcEvent(event statedb.Change[*loadbalancer.Service]) error {
 	var err error
-	switch event.Kind {
-	case resource.Upsert:
+	if !event.Deleted {
 		err = l2a.upsertSvc(event.Object)
 		if err != nil {
 			err = fmt.Errorf("upsert service: %w", err)
 		}
-
-	case resource.Delete:
-		err = l2a.delSvc(event.Key)
+	} else {
+		err = l2a.delSvc(types.NamespacedName{Namespace: event.Object.Name.Namespace(), Name: event.Object.Name.Name()})
 		if err != nil {
 			err = fmt.Errorf("delete service: %w", err)
 		}
-
-	case resource.Sync:
 	}
 
-	// if `err` is not nil, this will cause the resource to retry the event.
-	event.Done(err)
 	return err
 }
 
-func policyKey(policy *cilium_api_v2alpha1.CiliumL2AnnouncementPolicy) resource.Key {
-	return resource.Key{Name: policy.Name}
+func policyKey(policy *cilium_api_v2alpha1.CiliumL2AnnouncementPolicy) types.NamespacedName {
+	return types.NamespacedName{Name: policy.Name}
 }
 
-func serviceKey(svc *slim_corev1.Service) resource.Key {
-	return resource.Key{Namespace: svc.Namespace, Name: svc.Name}
+func serviceKey(svc *loadbalancer.Service) types.NamespacedName {
+	return types.NamespacedName{Namespace: svc.Name.Namespace(), Name: svc.Name.Name()}
 }
 
 func (l2a *L2Announcer) upsertPolicy(ctx context.Context, policy *cilium_api_v2alpha1.CiliumL2AnnouncementPolicy) error {
@@ -438,12 +465,18 @@ func (l2a *L2Announcer) upsertPolicy(ctx context.Context, policy *cilium_api_v2a
 		nodeselector, err := slim_meta_v1.LabelSelectorAsSelector(policy.Spec.NodeSelector)
 		if err != nil {
 			if err2 := l2a.updatePolicyStatus(ctx, policy, "io.cilium/bad-node-selector", err); err2 != nil {
-				l2a.params.Logger.WithError(err2).Warn("updating policy status failed")
+				l2a.params.Logger.Warn(
+					"updating policy status failed",
+					logfields.Error, err2,
+				)
 			}
 			return fmt.Errorf("make node selector: %w", err)
 		}
 		if err := l2a.updatePolicyStatus(ctx, policy, "io.cilium/bad-node-selector", nil); err != nil {
-			l2a.params.Logger.WithError(err).Warn("updating policy status failed")
+			l2a.params.Logger.Warn(
+				"updating policy status failed",
+				logfields.Error, err,
+			)
 		}
 
 		// The new policy does not match the node selector
@@ -457,7 +490,10 @@ func (l2a *L2Announcer) upsertPolicy(ctx context.Context, policy *cilium_api_v2a
 	} else {
 		// Clear any error status if it was set before
 		if err := l2a.updatePolicyStatus(ctx, policy, "io.cilium/bad-node-selector", nil); err != nil {
-			l2a.params.Logger.WithError(err).Warn("updating policy status failed")
+			l2a.params.Logger.Warn(
+				"updating policy status failed",
+				logfields.Error, err,
+			)
 		}
 	}
 
@@ -471,7 +507,10 @@ func (l2a *L2Announcer) upsertPolicy(ctx context.Context, policy *cilium_api_v2a
 			regex, err := regexp.Compile(strRegex)
 			if err != nil {
 				if err2 := l2a.updatePolicyStatus(ctx, policy, "io.cilium/bad-interface-regex", err); err2 != nil {
-					l2a.params.Logger.WithError(err2).Warn("updating policy status failed")
+					l2a.params.Logger.Warn(
+						"updating policy status failed",
+						logfields.Error, err2,
+					)
 				}
 				return fmt.Errorf("policy compile interface regex: %w", err)
 			}
@@ -490,7 +529,10 @@ func (l2a *L2Announcer) upsertPolicy(ctx context.Context, policy *cilium_api_v2a
 
 	// Clear any error status if it was set before.
 	if err := l2a.updatePolicyStatus(ctx, policy, "io.cilium/bad-interface-regex", nil); err != nil {
-		l2a.params.Logger.WithError(err).Warn("updating policy status failed")
+		l2a.params.Logger.Warn(
+			"updating policy status failed",
+			logfields.Error, err,
+		)
 	}
 
 	// If no selector is specified, all services match.
@@ -500,7 +542,10 @@ func (l2a *L2Announcer) upsertPolicy(ctx context.Context, policy *cilium_api_v2a
 		serviceSelector, err = slim_meta_v1.LabelSelectorAsSelector(policy.Spec.ServiceSelector)
 		if err != nil {
 			if err2 := l2a.updatePolicyStatus(ctx, policy, "io.cilium/bad-service-selector", err); err2 != nil {
-				l2a.params.Logger.WithError(err2).Warn("updating policy status failed")
+				l2a.params.Logger.Warn(
+					"updating policy status failed",
+					logfields.Error, err,
+				)
 			}
 			return fmt.Errorf("make service selector: %w", err)
 		}
@@ -508,7 +553,10 @@ func (l2a *L2Announcer) upsertPolicy(ctx context.Context, policy *cilium_api_v2a
 
 	// Clear any error status if it exists
 	if err := l2a.updatePolicyStatus(ctx, policy, "io.cilium/bad-service-selector", nil); err != nil {
-		l2a.params.Logger.WithError(err).Warn("updating policy status failed")
+		l2a.params.Logger.Warn(
+			"updating policy status failed",
+			logfields.Error, err,
+		)
 	}
 
 	l2a.selectedPolicies[key] = &selectedPolicy{
@@ -519,20 +567,26 @@ func (l2a *L2Announcer) upsertPolicy(ctx context.Context, policy *cilium_api_v2a
 
 	// Check all services, if they match the policy, mark the selected service as matching this policy.
 	// Or add to the selected services if it was not there already.
-	for _, svc := range l2a.svcStore.List() {
+	txn := l2a.params.StateDB.ReadTxn()
+	for svc := range l2a.params.Services.All(txn) {
 		if !serviceSelector.Matches(svcAndMetaLabels(svc)) {
 			continue
 		}
 
-		// Ignore services if there is no external or LB IP assigned.
-		noExternal := svc.Spec.ExternalIPs == nil
-		noLB := true
-		for _, v := range svc.Status.LoadBalancer.Ingress {
-			if v.IP != "" {
-				noLB = false
-				break
+		fes := l2a.params.Frontends.List(txn, loadbalancer.FrontendByServiceName(svc.Name))
+		var lbAddresses, externalAddresses []netip.Addr
+		for fe := range fes {
+			if fe.Type == loadbalancer.SVCTypeExternalIPs {
+				externalAddresses = append(externalAddresses, fe.Address.Addr())
+			}
+			if fe.Type == loadbalancer.SVCTypeLoadBalancer {
+				lbAddresses = append(lbAddresses, fe.Address.Addr())
 			}
 		}
+		noExternal := len(externalAddresses) == 0
+		noLB := len(lbAddresses) == 0
+
+		// Ignore services if there is no external or LB IP assigned.
 		if noExternal && noLB {
 			continue
 		}
@@ -556,7 +610,7 @@ func (l2a *L2Announcer) upsertPolicy(ctx context.Context, policy *cilium_api_v2a
 			continue
 		}
 
-		l2a.addSelectedService(svc, []resource.Key{key})
+		l2a.addSelectedService(svc, externalAddresses, lbAddresses, []types.NamespacedName{key})
 	}
 
 	err := l2a.gcOrphanedServices()
@@ -637,7 +691,7 @@ func (l2a *L2Announcer) updatePolicyStatus(
 	return err
 }
 
-func (l2a *L2Announcer) delPolicy(key resource.Key) error {
+func (l2a *L2Announcer) delPolicy(key types.NamespacedName) error {
 	for _, ss := range l2a.selectedServices {
 		idx := slices.Index(ss.byPolicies, key)
 		if idx != -1 {
@@ -665,57 +719,62 @@ func (l2a *L2Announcer) leaseTimings() (leaseDuration, renewDeadline, retryPerio
 	log := l2a.params.Logger
 
 	if leaseDuration < 1*time.Second {
-		log.WithFields(logrus.Fields{
-			"leaseDuration": leaseDuration,
-		}).Warnf(
-			"--%s must be greater than 1s, defaulting to 1s",
-			option.L2AnnouncerLeaseDuration,
+		log.Warn(
+			fmt.Sprintf(
+				"--%s must be greater than 1s, defaulting to 1s",
+				option.L2AnnouncerLeaseDuration,
+			),
+			logfields.LeaseDuration, leaseDuration,
 		)
 		leaseDuration = time.Second
 	}
 
 	if renewDeadline < 1 {
-		log.WithFields(logrus.Fields{
-			"renewDeadline": renewDeadline,
-		}).Warnf(
-			"--%s must be greater than 1ns, defaulting to 1s",
-			option.L2AnnouncerRenewDeadline,
+		log.Warn(
+			fmt.Sprintf(
+				"--%s must be greater than 1ns, defaulting to 1s",
+				option.L2AnnouncerRenewDeadline,
+			),
+			logfields.RenewDeadline, renewDeadline,
 		)
 		renewDeadline = time.Second
 	}
 
 	if retryPeriod < 1 {
-		log.WithFields(logrus.Fields{
-			"retryPeriod": retryPeriod,
-		}).Warnf(
-			"--%s must be greater than 1ns, defaulting to 200ms",
-			option.L2AnnouncerRetryPeriod,
+		log.Warn(
+			fmt.Sprintf(
+				"--%s must be greater than 1ns, defaulting to 200ms",
+				option.L2AnnouncerRetryPeriod,
+			),
+			logfields.RetryPeriod, retryPeriod,
 		)
 		retryPeriod = 200 * time.Millisecond
 	}
 
 	if leaseDuration <= renewDeadline {
-		log.WithFields(logrus.Fields{
-			"leaseDuration": leaseDuration,
-			"renewDeadline": renewDeadline,
-		}).Warnf(
-			"--%s must be greater than --%s, defaulting to a 2/1 ratio",
-			option.L2AnnouncerLeaseDuration,
-			option.L2AnnouncerRenewDeadline,
+		log.Warn(
+			fmt.Sprintf(
+				"--%s must be greater than --%s, defaulting to a 2/1 ratio",
+				option.L2AnnouncerLeaseDuration,
+				option.L2AnnouncerRenewDeadline,
+			),
+			logfields.LeaseDuration, leaseDuration,
+			logfields.RenewDeadline, renewDeadline,
 		)
 		renewDeadline = leaseDuration / 2
 	}
 
 	if renewDeadline <= time.Duration(leaderelection.JitterFactor*float64(retryPeriod)) {
-		log.WithFields(logrus.Fields{
-			"renewDeadline": renewDeadline,
-			"retryPeriod":   retryPeriod,
-		}).Warnf(
-			"--%s must be greater than --%s * %.2f, defaulting to --%s / 2",
-			option.L2AnnouncerRenewDeadline,
-			option.L2AnnouncerRetryPeriod,
-			leaderelection.JitterFactor,
-			option.L2AnnouncerRetryPeriod,
+		log.Warn(
+			fmt.Sprintf(
+				"--%s must be greater than --%s * %.2f, defaulting to --%s / 2",
+				option.L2AnnouncerRenewDeadline,
+				option.L2AnnouncerRetryPeriod,
+				leaderelection.JitterFactor,
+				option.L2AnnouncerRetryPeriod,
+			),
+			logfields.RenewDeadline, renewDeadline,
+			logfields.RetryPeriod, retryPeriod,
 		)
 		retryPeriod = renewDeadline / 2
 	}
@@ -723,24 +782,26 @@ func (l2a *L2Announcer) leaseTimings() (leaseDuration, renewDeadline, retryPerio
 	return leaseDuration, renewDeadline, retryPeriod
 }
 
-func (l2a *L2Announcer) addSelectedService(svc *slim_corev1.Service, byPolicies []resource.Key) {
+func (l2a *L2Announcer) addSelectedService(svc *loadbalancer.Service, extAddrs, lbAddrs []netip.Addr, byPolicies []types.NamespacedName) {
 	leaseDuration, renewDeadline, retryPeriod := l2a.leaseTimings()
 	ss := &selectedService{
-		svc:           svc,
-		byPolicies:    byPolicies,
-		lock:          l2a.newLeaseLock(svc),
-		done:          make(chan struct{}),
-		leaderChannel: l2a.leaderChannel,
-		leaseDuration: leaseDuration,
-		renewDeadline: renewDeadline,
-		retryPeriod:   retryPeriod,
+		svc:               svc,
+		externalAddresses: extAddrs,
+		lbAddresses:       lbAddrs,
+		byPolicies:        byPolicies,
+		lock:              l2a.newLeaseLock(svc),
+		done:              make(chan struct{}),
+		leaderChannel:     l2a.leaderChannel,
+		leaseDuration:     leaseDuration,
+		renewDeadline:     renewDeadline,
+		retryPeriod:       retryPeriod,
 	}
 
 	l2a.selectedServices[serviceKey(svc)] = ss
 
 	// kick off leader election job
 	l2a.scopedGroup.Add(job.OneShot(
-		fmt.Sprintf("leader-election-%s-%s", svc.Namespace, svc.Name),
+		shortener.ShortenHiveJobName(fmt.Sprintf("leader-election-%s-%s", svc.Name.Namespace(), svc.Name.Name())),
 		ss.serviceLeaderElection),
 	)
 }
@@ -758,11 +819,11 @@ func (l2a *L2Announcer) leaseNamespace() string {
 
 const leasePrefix = "cilium-l2announce"
 
-func (l2a *L2Announcer) newLeaseLock(svc *slim_corev1.Service) *resourcelock.LeaseLock {
+func (l2a *L2Announcer) newLeaseLock(svc *loadbalancer.Service) *resourcelock.LeaseLock {
 	return &resourcelock.LeaseLock{
 		LeaseMeta: metav1.ObjectMeta{
 			Namespace: l2a.leaseNamespace(),
-			Name:      fmt.Sprintf("%s-%s-%s", leasePrefix, svc.Namespace, svc.Name),
+			Name:      fmt.Sprintf("%s-%s-%s", leasePrefix, svc.Name.Namespace(), svc.Name.Name()),
 		},
 		Client: l2a.params.Clientset.CoordinationV1(),
 		LockConfig: resourcelock.ResourceLockConfig{
@@ -834,13 +895,19 @@ func (l2a *L2Announcer) upsertLocalNode(ctx context.Context, localNode *v2.Ciliu
 			nodeselector, err = slim_meta_v1.LabelSelectorAsSelector(selectedPolicy.policy.Spec.NodeSelector)
 			if err != nil {
 				if err2 := l2a.updatePolicyStatus(ctx, selectedPolicy.policy, "io.cilium/bad-node-selector", err); err2 != nil {
-					l2a.params.Logger.WithError(err2).Warn("updating policy status failed")
+					l2a.params.Logger.Warn(
+						"updating policy status failed",
+						logfields.Error, err2,
+					)
 				}
 				return fmt.Errorf("make node selector: %w", err)
 			}
 		}
 		if err := l2a.updatePolicyStatus(ctx, selectedPolicy.policy, "io.cilium/bad-node-selector", nil); err != nil {
-			l2a.params.Logger.WithError(err).Warn("updating policy status failed")
+			l2a.params.Logger.Warn(
+				"updating policy status failed",
+				logfields.Error, err,
+			)
 		}
 
 		if nodeselector.Matches(labels.Set(l2a.localNode.Labels)) {
@@ -998,23 +1065,11 @@ func (l2a *L2Announcer) desiredEntries(ss *selectedService) map[string]*tables.L
 
 		var IPs []netip.Addr
 		if selectedPolicy.policy.Spec.LoadBalancerIPs {
-			for _, ingress := range ss.svc.Status.LoadBalancer.Ingress {
-				if ingress.IP == "" {
-					continue
-				}
-
-				if addr, err := netip.ParseAddr(ingress.IP); err == nil {
-					IPs = append(IPs, addr)
-				}
-			}
+			IPs = append(IPs, ss.lbAddresses...)
 		}
 
 		if selectedPolicy.policy.Spec.ExternalIPs {
-			for _, externalIP := range ss.svc.Spec.ExternalIPs {
-				if addr, err := netip.ParseAddr(externalIP); err == nil {
-					IPs = append(IPs, addr)
-				}
-			}
+			IPs = append(IPs, ss.externalAddresses...)
 		}
 
 		for _, ip := range IPs {
@@ -1027,7 +1082,7 @@ func (l2a *L2Announcer) desiredEntries(ss *selectedService) map[string]*tables.L
 							IP:               ip,
 							NetworkInterface: iface,
 						},
-						Origins: []resource.Key{serviceKey(ss.svc)},
+						Origins: []types.NamespacedName{serviceKey(ss.svc)},
 					}
 				}
 				entries[key] = entry
@@ -1043,22 +1098,25 @@ const (
 	serviceNameLabel      = "io.kubernetes.service.name"
 )
 
-func svcAndMetaLabels(svc *slim_corev1.Service) labels.Set {
-	labels := maps.Clone(svc.GetLabels())
+func svcAndMetaLabels(svc *loadbalancer.Service) labels.Set {
+	labels := maps.Clone(svc.Labels.K8sStringMap())
 	if labels == nil {
 		labels = make(map[string]string)
 	}
 
-	labels[serviceNamespaceLabel] = svc.Namespace
-	labels[serviceNameLabel] = svc.Name
+	labels[serviceNamespaceLabel] = svc.Name.Namespace()
+	labels[serviceNameLabel] = svc.Name.Name()
 	return labels
 }
 
 type selectedService struct {
 	// The last known version of the service
-	svc *slim_corev1.Service
+	svc *loadbalancer.Service
+
+	externalAddresses, lbAddresses []netip.Addr
+
 	// The policies which select this service.
-	byPolicies []resource.Key
+	byPolicies []types.NamespacedName
 
 	// lease parameters
 	leaseDuration time.Duration

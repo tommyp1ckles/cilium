@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 /* Copyright Authors of Cilium */
 
-#include "common.h"
 #include <bpf/ctx/skb.h>
-#include <linux/in.h>
+#include "common.h"
 #include "pktgen.h"
 
 /* Enable code paths under test */
@@ -19,23 +18,10 @@
 /* Test SRH encap. Reduced encap code path is a subset of SRH encap */
 #define ENABLE_SRV6_SRH_ENCAP
 
-#include "bpf_host.c"
+#include "lib/bpf_host.h"
 #include "lib/ipcache.h"
 #include "lib/endpoint.h"
 #include "lib/lb.h"
-
-#define FROM_NETDEV 0
-
-struct {
-	__uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-	__uint(key_size, sizeof(__u32));
-	__uint(max_entries, 1);
-	__array(values, int());
-} entry_call_map __section(".maps") = {
-	.values = {
-		[FROM_NETDEV] = &cil_from_netdev,
-	},
-};
 
 #define POD_IPV4 v4_pod_one
 #define POD_IPV6 v6_pod_one
@@ -117,19 +103,17 @@ int srv6_decap_to_pod_ipv4_pktgen(struct __ctx_buff *ctx)
 SETUP("tc", "tc_srv6_decap_to_pod_ipv4")
 int srv6_decap_to_pod_ipv4_setup(struct __ctx_buff *ctx __maybe_unused)
 {
-	union v6addr sid;
+	union v6addr sid __align_stack_8;
 	__u32 vrf_id = 1;
 
 	memcpy(sid.addr, (const void *)SID, sizeof(sid.addr));
 
-	map_update_elem(&SRV6_SID_MAP, &sid, &vrf_id, 0);
+	map_update_elem(&cilium_srv6_sid, &sid, &vrf_id, 0);
 
-	endpoint_v4_add_entry(POD_IPV4, 12345, 100, 0, 0,
+	endpoint_v4_add_entry(POD_IPV4, 12345, 100, 0, 0, 0,
 			      (__u8 *)POD_MAC, (__u8 *)ROUTER_MAC);
 
-	tail_call_static(ctx, entry_call_map, FROM_NETDEV);
-
-	return TEST_FAIL;
+	return netdev_receive_packet(ctx);
 }
 
 CHECK("tc", "tc_srv6_decap_to_pod_ipv4")
@@ -145,6 +129,8 @@ int srv6_decap_to_pod_ipv4_check(const struct __ctx_buff *ctx __maybe_unused)
 	memcpy(sid.addr, (const void *)SID, sizeof(sid.addr));
 
 	test_init();
+
+	endpoint_v4_del_entry(POD_IPV4);
 
 	data = (void *)(long)ctx->data;
 	data_end = (void *)(long)ctx->data_end;
@@ -260,14 +246,12 @@ int srv6_decap_to_pod_ipv6_setup(struct __ctx_buff *ctx __maybe_unused)
 
 	memcpy(sid.addr, (const void *)SID, sizeof(sid.addr));
 
-	map_update_elem(&SRV6_SID_MAP, &sid, &vrf_id, 0);
+	map_update_elem(&cilium_srv6_sid, &sid, &vrf_id, 0);
 
 	endpoint_v6_add_entry((const union v6addr *)POD_IPV6, 12345, 100, 0, 0,
 			      (__u8 *)POD_MAC, (__u8 *)ROUTER_MAC);
 
-	tail_call_static(ctx, entry_call_map, FROM_NETDEV);
-
-	return TEST_FAIL;
+	return netdev_receive_packet(ctx);
 }
 
 CHECK("tc", "tc_srv6_decap_to_pod_ipv6")
@@ -283,6 +267,8 @@ int srv6_decap_to_pod_ipv6_check(const struct __ctx_buff *ctx __maybe_unused)
 	memcpy(sid.addr, (const void *)SID, sizeof(sid.addr));
 
 	test_init();
+
+	endpoint_v6_del_entry((const union v6addr *)POD_IPV6);
 
 	data = (void *)(long)ctx->data;
 	data_end = (void *)(long)ctx->data_end;
@@ -394,23 +380,21 @@ int srv6_decap_to_service_ipv4_pktgen(struct __ctx_buff *ctx)
 SETUP("tc", "tc_srv6_decap_to_service_ipv4")
 int srv6_decap_to_service_ipv4_setup(struct __ctx_buff *ctx __maybe_unused)
 {
-	union v6addr sid;
+	union v6addr sid __align_stack_8;
 	__u32 vrf_id = 1;
 
 	memcpy(sid.addr, (const void *)SID, sizeof(sid.addr));
 
-	map_update_elem(&SRV6_SID_MAP, &sid, &vrf_id, 0);
+	map_update_elem(&cilium_srv6_sid, &sid, &vrf_id, 0);
 
-	lb_v4_add_service(SERVICE_IPV4, SERVICE_PORT, 1, 1);
+	lb_v4_add_service(SERVICE_IPV4, SERVICE_PORT, IPPROTO_TCP, 1, 1);
 	lb_v4_add_backend(SERVICE_IPV4, SERVICE_PORT, 1, 124,
 			  POD_IPV4, SERVICE_PORT, IPPROTO_TCP, 0);
 
-	endpoint_v4_add_entry(POD_IPV4, 12345, 100, 0, 0,
+	endpoint_v4_add_entry(POD_IPV4, 12345, 100, 0, 0, 0,
 			      (__u8 *)POD_MAC, (__u8 *)ROUTER_MAC);
 
-	tail_call_static(ctx, entry_call_map, FROM_NETDEV);
-
-	return TEST_FAIL;
+	return netdev_receive_packet(ctx);
 }
 
 CHECK("tc", "tc_srv6_decap_to_service_ipv4")
@@ -426,6 +410,8 @@ int srv6_decap_to_service_ipv4_check(const struct __ctx_buff *ctx __maybe_unused
 	memcpy(sid.addr, (const void *)SID, sizeof(sid.addr));
 
 	test_init();
+
+	endpoint_v4_del_entry(POD_IPV4);
 
 	data = (void *)(long)ctx->data;
 	data_end = (void *)(long)ctx->data_end;
@@ -542,18 +528,16 @@ int srv6_decap_to_service_ipv6_setup(struct __ctx_buff *ctx __maybe_unused)
 
 	memcpy(sid.addr, (const void *)SID, sizeof(sid.addr));
 
-	map_update_elem(&SRV6_SID_MAP, &sid, &vrf_id, 0);
+	map_update_elem(&cilium_srv6_sid, &sid, &vrf_id, 0);
 
-	lb_v6_add_service((const union v6addr *)SERVICE_IPV6, SERVICE_PORT, 1, 1);
+	lb_v6_add_service((const union v6addr *)SERVICE_IPV6, SERVICE_PORT, IPPROTO_TCP, 1, 1);
 	lb_v6_add_backend((const union v6addr *)SERVICE_IPV6, SERVICE_PORT, 1, 124,
 			  (const union v6addr *)POD_IPV6, SERVICE_PORT, IPPROTO_TCP, 0);
 
 	endpoint_v6_add_entry((const union v6addr *)POD_IPV6, 12345, 100, 0, 0,
 			      (__u8 *)POD_MAC, (__u8 *)ROUTER_MAC);
 
-	tail_call_static(ctx, entry_call_map, FROM_NETDEV);
-
-	return TEST_FAIL;
+	return netdev_receive_packet(ctx);
 }
 
 CHECK("tc", "tc_srv6_decap_to_service_ipv6")
@@ -569,6 +553,8 @@ int srv6_decap_to_service_ipv6_check(const struct __ctx_buff *ctx __maybe_unused
 	memcpy(sid.addr, (const void *)SID, sizeof(sid.addr));
 
 	test_init();
+
+	endpoint_v6_del_entry((const union v6addr *)POD_IPV6);
 
 	data = (void *)(long)ctx->data;
 	data_end = (void *)(long)ctx->data_end;

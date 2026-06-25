@@ -4,7 +4,6 @@
 package filters
 
 import (
-	"context"
 	"testing"
 
 	flowpb "github.com/cilium/cilium/api/v1/flow"
@@ -64,9 +63,29 @@ func TestFlowProtocolFilter(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "vrrp",
+			args: args{
+				f: []*flowpb.FlowFilter{{Protocol: []string{"vrrp"}}},
+				ev: &v1.Event{Event: &flowpb.Flow{
+					L4: &flowpb.Layer4{Protocol: &flowpb.Layer4_VRRP{VRRP: &flowpb.VRRP{}}},
+				}},
+			},
+			want: true,
+		},
+		{
+			name: "igmp",
+			args: args{
+				f: []*flowpb.FlowFilter{{Protocol: []string{"igmp"}}},
+				ev: &v1.Event{Event: &flowpb.Flow{
+					L4: &flowpb.Layer4{Protocol: &flowpb.Layer4_IGMP{IGMP: &flowpb.IGMP{}}},
+				}},
+			},
+			want: true,
+		},
+		{
 			name: "multiple protocols",
 			args: args{
-				f: []*flowpb.FlowFilter{{Protocol: []string{"tcp", "kafka"}}},
+				f: []*flowpb.FlowFilter{{Protocol: []string{"tcp", "icmp"}}},
 				ev: &v1.Event{Event: &flowpb.Flow{
 					L4: &flowpb.Layer4{Protocol: &flowpb.Layer4_TCP{TCP: &flowpb.TCP{}}},
 				}},
@@ -84,7 +103,7 @@ func TestFlowProtocolFilter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fl, err := BuildFilterList(context.Background(), tt.args.f, []OnBuildFilter{&ProtocolFilter{}})
+			fl, err := BuildFilterList(t.Context(), tt.args.f, []OnBuildFilter{&ProtocolFilter{}})
 			if (err != nil) != tt.wantErr {
 				t.Errorf("\"%s\" error = %v, wantErr %v", tt.name, err, tt.wantErr)
 				return

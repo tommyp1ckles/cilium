@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/cilium/cilium/api/v1/client/daemon"
 	"github.com/cilium/cilium/api/v1/models"
 	pkg "github.com/cilium/cilium/pkg/client"
 	"github.com/cilium/cilium/pkg/command"
@@ -22,7 +23,7 @@ var nodeListCmd = &cobra.Command{
 	Aliases: []string{"ls"},
 	Short:   "List nodes",
 	Run: func(cmd *cobra.Command, args []string) {
-		resp, err := client.Daemon.GetClusterNodes(nil)
+		resp, err := client.Daemon.GetClusterNodes(daemon.NewGetClusterNodesParams())
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s\n", pkg.Hint(err))
 			os.Exit(1)
@@ -58,13 +59,13 @@ func formatStatusResponse(w io.Writer, nodes []*models.NodeElement) {
 	for _, node := range nodes {
 		ipv4, ipv4Range, ipv6, ipv6Range := "", "", "", ""
 		if node.PrimaryAddress != nil {
-			if node.PrimaryAddress.IPV4 != nil {
-				ipv4 = node.PrimaryAddress.IPV4.IP
-				ipv4Range = node.PrimaryAddress.IPV4.AllocRange
+			if node.PrimaryAddress.IPv4 != nil {
+				ipv4 = node.PrimaryAddress.IPv4.IP
+				ipv4Range = node.PrimaryAddress.IPv4.AllocRange
 			}
-			if node.PrimaryAddress.IPV6 != nil {
-				ipv6 = node.PrimaryAddress.IPV6.IP
-				ipv6Range = node.PrimaryAddress.IPV6.AllocRange
+			if node.PrimaryAddress.IPv6 != nil {
+				ipv6 = node.PrimaryAddress.IPv6.IP
+				ipv6Range = node.PrimaryAddress.IPv6.AllocRange
 			}
 		}
 

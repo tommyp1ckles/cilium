@@ -12,12 +12,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
-)
-
-const (
-	// controllerName is the gateway controller name used in cilium.
-	controllerName = "io.cilium/gateway-controller"
 )
 
 type GenericRule interface {
@@ -30,17 +24,16 @@ type Input interface {
 	GetClient() client.Client
 	GetContext() context.Context
 	GetGVK() schema.GroupVersionKind
-	GetGrants() []gatewayv1beta1.ReferenceGrant
+	GetGrants() []gatewayv1.ReferenceGrant
 	GetGateway(parent gatewayv1.ParentReference) (*gatewayv1.Gateway, error)
 	GetParentGammaService(parent gatewayv1.ParentReference) (*corev1.Service, error)
 	GetHostnames() []gatewayv1.Hostname
+	GetValidProtocols() []gatewayv1.ProtocolType
 
 	SetParentCondition(ref gatewayv1.ParentReference, condition metav1.Condition)
-	SetAllParentCondition(condition metav1.Condition)
 	Log() *slog.Logger
 }
 
 type (
-	CheckRuleFunc   func(input Input) (bool, error)
-	CheckParentFunc func(input Input, ref gatewayv1.ParentReference) (bool, error)
+	CheckWithParentFunc func(input Input, ref gatewayv1.ParentReference) (bool, error)
 )

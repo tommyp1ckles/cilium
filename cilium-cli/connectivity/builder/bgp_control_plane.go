@@ -7,29 +7,27 @@ import (
 	"github.com/cilium/cilium/cilium-cli/connectivity/check"
 	"github.com/cilium/cilium/cilium-cli/connectivity/tests"
 	"github.com/cilium/cilium/cilium-cli/utils/features"
-	"github.com/cilium/cilium/pkg/versioncheck"
 )
 
 type bgpControlPlane struct{}
 
 func (t bgpControlPlane) build(ct *check.ConnectivityTest, _ map[string]string) {
 	newTest("bgp-control-plane-v1", ct).
-		WithCondition(func() bool {
-			return versioncheck.MustCompile(">=1.16.0")(ct.CiliumVersion) && ct.Params().IncludeUnsafeTests
-		}).
+		// NOTE: BGPv1 was removed in v1.19, this test can be removed once v1.18 is out of support
+		WithCiliumVersion(">=1.16.0 <1.19.0").
+		WithUnsafeTests().
 		WithFeatureRequirements(
 			features.RequireEnabled(features.BGPControlPlane),
 			features.RequireEnabled(features.NodeWithoutCilium),
 		).
-		WithScenarios(tests.BGPAdvertisements(1))
+		WithScenarios(tests.BGPAdvertisements(1, bgpPeeringPolicyYAML))
 
 	newTest("bgp-control-plane-v2", ct).
-		WithCondition(func() bool {
-			return versioncheck.MustCompile(">=1.16.0")(ct.CiliumVersion) && ct.Params().IncludeUnsafeTests
-		}).
+		WithCiliumVersion(">=1.16.0").
+		WithUnsafeTests().
 		WithFeatureRequirements(
 			features.RequireEnabled(features.BGPControlPlane),
 			features.RequireEnabled(features.NodeWithoutCilium),
 		).
-		WithScenarios(tests.BGPAdvertisements(2))
+		WithScenarios(tests.BGPAdvertisements(2, ""))
 }

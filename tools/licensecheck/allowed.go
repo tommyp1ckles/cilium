@@ -23,10 +23,12 @@ var allowedLicenses = []string{
 var pkgExceptions = []string{
 	"github.com/hashicorp/errwrap",
 	"github.com/hashicorp/go-cleanhttp",
-	"github.com/hashicorp/go-immutable-radix",
 	"github.com/hashicorp/go-multierror",
 	"github.com/hashicorp/go-rootcerts",
 	"github.com/hashicorp/golang-lru",
 	"github.com/hashicorp/hcl",
 	"github.com/hashicorp/serf/coordinate",
+	// Exception approved by CNCF Governing Board for libpathrs and go-pathrs
+	// under MPL-2.0. See: https://github.com/cncf/foundation/issues/1154#issuecomment-3850552670
+	"github.com/cyphar/filepath-securejoin",
 }

@@ -12,10 +12,10 @@ import (
 )
 
 // Creates a subnet CIDR reservation. For more information, see [Subnet CIDR reservations] in the Amazon VPC
-// User Guide and [Assign prefixes to network interfaces]in the Amazon EC2 User Guide.
+// User Guide and [Manage prefixes for your network interfaces]in the Amazon EC2 User Guide.
 //
 // [Subnet CIDR reservations]: https://docs.aws.amazon.com/vpc/latest/userguide/subnet-cidr-reservation.html
-// [Assign prefixes to network interfaces]: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-prefix-eni.html
+// [Manage prefixes for your network interfaces]: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/work-with-prefixes.html
 func (c *Client) CreateSubnetCidrReservation(ctx context.Context, params *CreateSubnetCidrReservationInput, optFns ...func(*Options)) (*CreateSubnetCidrReservationOutput, error) {
 	if params == nil {
 		params = &CreateSubnetCidrReservationInput{}
@@ -114,13 +114,16 @@ func (c *Client) addOperationCreateSubnetCidrReservationMiddlewares(stack *middl
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
+	if err = addRetry(stack, options, c); err != nil {
 		return err
 	}
 	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
 	if err = addRecordResponseTiming(stack); err != nil {
+		return err
+	}
+	if err = addSpanRetryLoop(stack, options); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -135,10 +138,10 @@ func (c *Client) addOperationCreateSubnetCidrReservationMiddlewares(stack *middl
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
-	if err = addTimeOffsetBuild(stack, c); err != nil {
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
-	if err = addUserAgentRetryMode(stack, options); err != nil {
+	if err = addCredentialSource(stack, options); err != nil {
 		return err
 	}
 	if err = addOpCreateSubnetCidrReservationValidationMiddleware(stack); err != nil {
@@ -160,6 +163,15 @@ func (c *Client) addOperationCreateSubnetCidrReservationMiddlewares(stack *middl
 		return err
 	}
 	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptBeforeRetryLoop(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptAttempt(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil

@@ -15,11 +15,14 @@ func (t nodeToNodeEncryption) build(ct *check.ConnectivityTest, _ map[string]str
 	// Encryption checks are always executed as a sanity check, asserting whether
 	// unencrypted packets shall, or shall not, be observed based on the feature set.
 	newTest("node-to-node-encryption", ct).
-		WithCondition(func() bool { return !ct.Params().SingleNode }).
+		WithMultiNodeOnly().
 		WithScenarios(
 			tests.NodeToNodeEncryption(
 				features.RequireEnabled(features.EncryptionPod),
 				features.RequireEnabled(features.EncryptionNode),
 			),
-		)
+		).WithFeatureRequirements(
+		features.RequireModeIsNot(features.EncryptionPod, "ipsec"),
+		features.RequireDisabled(features.Ztunnel),
+	)
 }

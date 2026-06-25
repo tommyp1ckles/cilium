@@ -19,14 +19,14 @@ package v1alpha2
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"sigs.k8s.io/gateway-api/apis/v1beta1"
+	v1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 // +genclient
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:categories=gateway-api,shortName=refgrant
-// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
-// +kubebuilder:deprecatedversion:warning="The v1alpha2 version of ReferenceGrant has been deprecated and will be removed in a future release of the API. Please upgrade to v1beta1."
+// +kubebuilder:skipversion
+// +kubebuilder:deprecatedversion:warning="The v1alpha2 version of ReferenceGrant has been deprecated and will be removed in a future release of the API. Please upgrade to v1."
 
 // ReferenceGrant identifies kinds of resources in other namespaces that are
 // trusted to reference the specified kinds of resources in the same namespace
@@ -48,7 +48,7 @@ import (
 // support ReferenceGrant MUST NOT permit cross-namespace references which have
 // no grant, and MUST respond to the removal of a grant by revoking the access
 // that the grant allowed.
-type ReferenceGrant v1beta1.ReferenceGrant
+type ReferenceGrant v1.ReferenceGrant
 
 // +kubebuilder:object:root=true
 // ReferenceGrantList contains a list of ReferenceGrant.
@@ -58,16 +58,8 @@ type ReferenceGrantList struct {
 	Items           []ReferenceGrant `json:"items"`
 }
 
-// ReferenceGrantSpec identifies a cross namespace relationship that is trusted
-// for Gateway API.
-// +k8s:deepcopy-gen=false
-type ReferenceGrantSpec = v1beta1.ReferenceGrantSpec
+type ReferenceGrantSpec = v1.ReferenceGrantSpec
 
-// ReferenceGrantFrom describes trusted namespaces and kinds.
-// +k8s:deepcopy-gen=false
-type ReferenceGrantFrom = v1beta1.ReferenceGrantFrom
+type ReferenceGrantFrom = v1.ReferenceGrantFrom
 
-// ReferenceGrantTo describes what Kinds are allowed as targets of the
-// references.
-// +k8s:deepcopy-gen=false
-type ReferenceGrantTo = v1beta1.ReferenceGrantTo
+type ReferenceGrantTo = v1.ReferenceGrantTo

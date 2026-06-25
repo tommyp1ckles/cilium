@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 
@@ -31,7 +32,7 @@ const (
 	metadataName = "metadata.name="
 )
 
-func NewConfigMapReflector(cs k8sClient.Clientset, t statedb.RWTable[DynamicConfig], c config, l *slog.Logger) []k8s.ReflectorConfig[DynamicConfig] {
+func NewConfigMapReflector(cs k8sClient.Clientset, t statedb.RWTable[DynamicConfig], c Config, l *slog.Logger) []k8s.ReflectorConfig[DynamicConfig] {
 	if !cs.IsEnabled() || !c.EnableDynamicConfig {
 		return []k8s.ReflectorConfig[DynamicConfig]{}
 	}
@@ -61,7 +62,7 @@ func NewConfigMapReflector(cs k8sClient.Clientset, t statedb.RWTable[DynamicConf
 	return reflectors
 }
 
-func parseConfigs(c config) ([]resolver.ConfigSource, resolver.ConfigOverride, error) {
+func parseConfigs(c Config) ([]resolver.ConfigSource, resolver.ConfigOverride, error) {
 	var sources []resolver.ConfigSource
 	if err := json.Unmarshal([]byte(c.ConfigSources), &sources); err != nil {
 		return nil, resolver.ConfigOverride{}, fmt.Errorf("error during unmarshall config-sources: %w", err)
@@ -98,17 +99,32 @@ func getPriorityForKey(key string, overrides resolver.ConfigOverride, index int,
 
 func configMapReflector(name string, namespace string, cs k8sClient.Clientset, t statedb.RWTable[DynamicConfig], index int, sourceLen int, overrides resolver.ConfigOverride) k8s.ReflectorConfig[DynamicConfig] {
 	return k8s.ReflectorConfig[DynamicConfig]{
-		Name:  "cm-" + name + "-" + namespace,
-		Table: t,
-		TransformMany: func(o any) []DynamicConfig {
-			cm := o.(*v1.ConfigMap).DeepCopy()
-			var entries = make([]DynamicConfig, 0, len(cm.Data))
-			for k, v := range cm.Data {
-				priority := getPriorityForKey(k, overrides, index, sourceLen)
-				dc := DynamicConfig{Key: Key{Name: k, Source: cm.Name}, Value: v, Priority: priority}
-				entries = append(entries, dc)
+		Name:        "cm-" + name + "-" + namespace,
+		Table:       t,
+		MetricScope: "ConfigMap",
+		TransformMany: func(txn statedb.ReadTxn, deleted bool, o any) (toInsert, toDelete iter.Seq[DynamicConfig]) {
+			cm := o.(*v1.ConfigMap)
+			var entries map[Key]DynamicConfig
+			if !deleted {
+				entries = make(map[Key]DynamicConfig, len(cm.Data))
+				for k, v := range cm.Data {
+					priority := getPriorityForKey(k, overrides, index, sourceLen)
+					dc := DynamicConfig{Key: Key{Name: k, Source: cm.Name}, Value: v, Priority: priority}
+					entries[dc.Key] = dc
+				}
+				toInsert = maps.Values(entries)
 			}
-			return entries
+			toDelete = func(yield func(DynamicConfig) bool) {
+				for dc := range t.All(txn) {
+					if dc.Key.Source != cm.Name {
+						continue
+					}
+					if _, exists := entries[dc.Key]; !exists {
+						yield(dc)
+					}
+				}
+			}
+			return
 		},
 		ListerWatcher: utils.ListerWatcherWithModifiers(
 			utils.ListerWatcherFromTyped[*v1.ConfigMapList](cs.CoreV1().ConfigMaps(namespace)),
@@ -128,17 +144,33 @@ func configMapReflector(name string, namespace string, cs k8sClient.Clientset, t
 }
 func ciliumNodeConfigReflector(name string, namespace string, cs k8sClient.Clientset, t statedb.RWTable[DynamicConfig], index int, sourceLen int, overrides resolver.ConfigOverride) k8s.ReflectorConfig[DynamicConfig] {
 	return k8s.ReflectorConfig[DynamicConfig]{
-		Name:  "cnc-" + name + "-" + namespace,
-		Table: t,
-		TransformMany: func(o any) []DynamicConfig {
-			cnc := o.(*ciliumv2.CiliumNodeConfig).DeepCopy()
-			var entries = make([]DynamicConfig, 0, len(cnc.Spec.Defaults))
-			for k, v := range cnc.Spec.Defaults {
-				priority := getPriorityForKey(k, overrides, index, sourceLen)
-				dc := DynamicConfig{Key: Key{Name: k, Source: cnc.Name}, Value: v, Priority: priority}
-				entries = append(entries, dc)
+		Name:        "cnc-" + name + "-" + namespace,
+		Table:       t,
+		MetricScope: "CiliumNodeConfig",
+		TransformMany: func(txn statedb.ReadTxn, deleted bool, o any) (toInsert, toDelete iter.Seq[DynamicConfig]) {
+			cnc := o.(*ciliumv2.CiliumNodeConfig)
+			var entries map[Key]DynamicConfig
+			if !deleted {
+				entries = make(map[Key]DynamicConfig, len(cnc.Spec.Defaults))
+				for k, v := range cnc.Spec.Defaults {
+					priority := getPriorityForKey(k, overrides, index, sourceLen)
+					dc := DynamicConfig{Key: Key{Name: k, Source: cnc.Name}, Value: v, Priority: priority}
+					entries[dc.Key] = dc
+				}
+				toInsert = maps.Values(entries)
 			}
-			return entries
+			toDelete = func(yield func(DynamicConfig) bool) {
+				for dc := range t.All(txn) {
+					if dc.Key.Source != cnc.Name {
+						continue
+					}
+					if _, exists := entries[dc.Key]; !exists {
+						yield(dc)
+					}
+				}
+			}
+
+			return
 		},
 		ListerWatcher: utils.ListerWatcherWithModifiers(
 			utils.ListerWatcherFromTyped[*ciliumv2.CiliumNodeConfigList](cs.CiliumV2().CiliumNodeConfigs(namespace)),
@@ -159,18 +191,32 @@ func ciliumNodeConfigReflector(name string, namespace string, cs k8sClient.Clien
 
 func ciliumNodeReflector(name string, cs k8sClient.Clientset, t statedb.RWTable[DynamicConfig], l *slog.Logger, index int, sourceLen int, overrides resolver.ConfigOverride) k8s.ReflectorConfig[DynamicConfig] {
 	return k8s.ReflectorConfig[DynamicConfig]{
-		Name:  "node-" + name,
-		Table: t,
-		TransformMany: func(o any) []DynamicConfig {
-			var entries []DynamicConfig
-			node := o.(*corev1.Node).DeepCopy()
-
-			for k, v := range parseNodeConfig(node, l) {
-				priority := getPriorityForKey(k, overrides, index, sourceLen)
-				dc := DynamicConfig{Key: Key{Name: k, Source: node.Name}, Value: v, Priority: priority}
-				entries = append(entries, dc)
+		Name:        "node-" + name,
+		Table:       t,
+		MetricScope: "Node",
+		TransformMany: func(txn statedb.ReadTxn, deleted bool, o any) (toInsert, toDelete iter.Seq[DynamicConfig]) {
+			var entries map[Key]DynamicConfig
+			node := o.(*corev1.Node)
+			if !deleted {
+				entries = map[Key]DynamicConfig{}
+				for k, v := range parseNodeConfig(node, l) {
+					priority := getPriorityForKey(k, overrides, index, sourceLen)
+					dc := DynamicConfig{Key: Key{Name: k, Source: node.Name}, Value: v, Priority: priority}
+					entries[dc.Key] = dc
+				}
+				toInsert = maps.Values(entries)
 			}
-			return entries
+			toDelete = func(yield func(DynamicConfig) bool) {
+				for dc := range t.All(txn) {
+					if dc.Key.Source != node.Name {
+						continue
+					}
+					if _, exists := entries[dc.Key]; !exists {
+						yield(dc)
+					}
+				}
+			}
+			return
 		},
 		ListerWatcher: utils.ListerWatcherWithModifiers(
 			utils.ListerWatcherFromTyped[*corev1.NodeList](cs.Slim().CoreV1().Nodes()),
@@ -206,7 +252,10 @@ func parseNodeConfig(node *corev1.Node, logger *slog.Logger) map[string]string {
 			}
 			key := s[1]
 			if errs := apivalidation.IsConfigMapKey(key); len(errs) > 0 {
-				logger.Warn("Detected invalid key. Skipping", logfields.ConfigAnnotation, k, logfields.Error, errs)
+				logger.Warn("Detected invalid key. Skipping",
+					logfields.ConfigAnnotation, k,
+					logfields.Error, errs,
+				)
 				continue
 			}
 			out[key] = v

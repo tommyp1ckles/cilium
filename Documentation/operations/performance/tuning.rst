@@ -35,30 +35,33 @@ detail on this page and in this `KubeCon talk <https://sched.co/1R2s5>`__:
 - eBPF host-routing
 - BIG TCP for IPv4/IPv6
 - Bandwidth Manager (optional, for BBR congestion control)
+- Per-CPU distributed LRU and increased map size ratio
+- eBPF clock probe to use jiffies for CT map
 
 **Requirements:**
 
 * Kernel >= 6.8
 * Supported NICs for BIG TCP: mlx4, mlx5, ice
 
-To enable the first three settings:
+To enable the main settings:
 
 .. tabs::
 
     .. group-tab:: Helm
 
-       .. parsed-literal::
-
-           helm install cilium |CHART_RELEASE| \\
-             --namespace kube-system \\
-             --set routingMode=native \\
-             --set bpf.datapathMode=netkit \\
-             --set bpf.masquerade=true \\
-             --set ipv6.enabled=true \\
-             --set enableIPv6BIGTCP=true \\
-             --set ipv4.enabled=true \\
-             --set enableIPv4BIGTCP=true \\
-             --set kubeProxyReplacement=true
+       .. cilium-helm-install::
+          :namespace: kube-system
+          :set: routingMode=native
+                bpf.datapathMode=netkit
+                bpf.masquerade=true
+                bpf.distributedLRU.enabled=true
+                bpf.mapDynamicSizeRatio=0.08
+                ipv6.enabled=true
+                enableIPv6BIGTCP=true
+                ipv4.enabled=true
+                enableIPv4BIGTCP=true
+                kubeProxyReplacement=true
+                bpfClockProbe=true
 
 For enabling BBR congestion control in addition, consider adding the following
 settings to the above Helm install:
@@ -85,36 +88,61 @@ has been specifically designed for Cilium's needs and replaces the old-style vet
 device type. See also the `KubeCon talk on netkit <https://sched.co/1R2s5>`__ for
 more details.
 
-Cilium utilizes netkit in L3 device mode with blackholing traffic from the Pods
-when there is no BPF program attached. The Pod specific BPF programs are attached
-inside the netkit peer device, and can only be managed from the host namespace
-through Cilium. netkit in combination with eBPF-based host-routing achieves a
-fast network namespace switch for off-node traffic ingressing into the Pod or
-leaving the Pod. When netkit is enabled, Cilium also utilizes tcx for all
-attachments to non-netkit devices. This is done for higher efficiency as well
-as utilizing BPF links for all Cilium attachments. netkit is available for kernel
-6.8 and onwards and it also supports BIG TCP. Once the base kernels become more
-ubiquitous, the veth device mode of Cilium will be deprecated.
+netkit devices can operate at either Layer3 or Layer2 mode depending on your
+requirements. Layer3 mode is recommended because it removes the need for Cilium
+to process ARP packets. See :ref:`datapath_config` for further details.
 
-To validate whether your installation is running with netkit, run ``cilium status``
-in any of the Cilium Pods and look for the line reporting the status for
-"Device Mode" which should state "netkit". Also, ensure to have eBPF host
-routing enabled - the reporting status under "Host Routing" must state "BPF".
+The Pod specific BPF programs are attached inside the netkit peer device, and can
+only be managed from the host namespace through Cilium. Cilium will configure peer
+devices to blackhole traffic in the unlikely event there is no BPF program attached.
+
+netkit in combination with eBPF-based host-routing achieves a fast network namespace
+switch for off-node traffic ingressing into the Pod or leaving the Pod. When netkit
+is enabled, Cilium also utilizes tcx for all attachments to non-netkit devices. This
+is done for higher efficiency as well as utilizing BPF links for all Cilium attachments.
+
+netkit is available for kernel 6.8 and onwards and it also supports BIG TCP. Once the
+base kernels become more ubiquitous, the veth device mode of Cilium will be deprecated.
+
+.. warning::
+    This is a beta feature. Please provide feedback and file a GitHub issue if
+    you experience any problems. Known issues with this feature are tracked
+    `here <https://github.com/cilium/cilium/issues?q=is%3Aissue%20label%3Afeature%2Fnetkit%20>`_.
+
+.. _datapath_config:
+
+netkit configuration
+--------------------
+
+netkit can be enabled by modifying ``bpf.datapathMode`` to one of the following
+values.
+
+======================= =======================================================================================
+Datapath Mode Value     Description
+======================= =======================================================================================
+``veth`` (default)      Use veth devices operating at Layer2.
+``netkit``              Use netkit in Layer3 mode. Cilium will error on startup if unsupported.
+``netkit-l2``           Use netkit in Layer2 mode. Cilium will error on startup if unsupported.
+``auto``                Auto-detect at runtime: use netkit (Layer3) if kernel support is present, fallback to veth.
+======================= =======================================================================================
 
 .. note::
     In-place upgrade by just enabling netkit on an existing cluster is not
     possible since the CNI plugin cannot simply replace veth with netkit after
-    Pod creation. Also, running both flavors in parallel is currently not
-    supported.
+    Pod creation. Also, running both flavors in parallel is currently not supported.
+
+    This restriction also applies to auto-detection: if you have existing
+    Pods using veth, then switch to ``bpf.datapathMode=auto`` and netkit support
+    is detected when restarting, Cilium will error.
 
     The best way to consume this for an existing cluster is to utilize per-node
     configuration for enabling netkit on newly spawned nodes which join the
-    cluster. See the :ref:`per-node-configuration` page for more details.
+    cluster. Alternatively, cordon and drain existing nodes before modifying
+    the configuration. See the :ref:`per-node-configuration` page for more details.
 
 **Requirements:**
 
 * Kernel >= 6.8
-* Direct-routing configuration or tunneling
 * eBPF host-routing
 
 To enable netkit device mode with eBPF host-routing:
@@ -123,14 +151,20 @@ To enable netkit device mode with eBPF host-routing:
 
     .. group-tab:: Helm
 
-       .. parsed-literal::
+       .. cilium-helm-install::
+          :namespace: kube-system
+          :set: routingMode=native
+                bpf.datapathMode=netkit
+                bpf.masquerade=true
+                kubeProxyReplacement=true
 
-           helm install cilium |CHART_RELEASE| \\
-             --namespace kube-system \\
-             --set routingMode=native \\
-             --set bpf.datapathMode=netkit \\
-             --set bpf.masquerade=true \\
-             --set kubeProxyReplacement=true
+To validate whether your installation is running with netkit, run ``cilium status``
+in any of the Cilium Pods and look for the line reporting the status for "Device Mode".
+This represents the current operational datapath mode. When ``bpf.datapathMode=auto``
+is set, the configured mode is visible as well.
+
+netkit also requires eBPF host routing. The reporting status under "Host Routing" must
+state "BPF".
 
 .. _eBPF_Host_Routing:
 
@@ -152,12 +186,39 @@ whether your installation is running with eBPF host-routing, run ``cilium status
 in any of the Cilium pods and look for the line reporting the status for
 "Host Routing" which should state "BPF".
 
+.. note::
+   BPF Host Routing is incompatible with Istio (see :gh-issue:`36022` for details).
+
+.. note::
+   When using BPF Host Routing with IPsec, `a kernel bugfix <https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=c4327229948879814229b46aa26a750718888503>`_
+   is required. If you observe connectivity problems, ensure that the kernel
+   package on your nodes has been upgraded recently before reporting an issue.
+
 **Requirements:**
 
-* Kernel >= 5.10
-* Direct-routing configuration or tunneling
 * eBPF-based kube-proxy replacement
 * eBPF-based masquerading
+
+To enable eBPF Host-Routing:
+
+.. tabs::
+
+    .. group-tab:: Helm
+
+       .. cilium-helm-install::
+          :namespace: kube-system
+          :set: bpf.masquerade=true
+                kubeProxyReplacement=true
+
+**Known limitations:**
+
+eBPF host routing optimizes the host-internal packet routing, and packets no
+longer hit the netfilter tables in the host namespace. Therefore, it is incompatible
+with features relying on netfilter hooks (for example, `GKE Workload Identities`_).
+Configure ``bpf.hostLegacyRouting=true`` or leverage :ref:`local-redirect-policy`
+to work around this limitation.
+
+.. _`GKE Workload Identities`: https://cloud.google.com/kubernetes-engine/docs/how-to/workload-identity
 
 .. _ipv6_big_tcp:
 
@@ -210,15 +271,13 @@ To enable IPv6 BIG TCP:
 
     .. group-tab:: Helm
 
-       .. parsed-literal::
-
-           helm install cilium |CHART_RELEASE| \\
-             --namespace kube-system \\
-             --set routingMode=native \\
-             --set bpf.masquerade=true \\
-             --set ipv6.enabled=true \\
-             --set enableIPv6BIGTCP=true \\
-             --set kubeProxyReplacement=true
+       .. cilium-helm-install::
+          :namespace: kube-system
+          :set: routingMode=native
+                bpf.masquerade=true
+                ipv6.enabled=true
+                enableIPv6BIGTCP=true
+                kubeProxyReplacement=true
 
 Note that after toggling the IPv6 BIG TCP option the Kubernetes Pods must be
 restarted for the changes to take effect.
@@ -277,15 +336,13 @@ To enable IPv4 BIG TCP:
 
     .. group-tab:: Helm
 
-       .. parsed-literal::
-
-           helm install cilium |CHART_RELEASE| \\
-             --namespace kube-system \\
-             --set routingMode=native \\
-             --set bpf.masquerade=true \\
-             --set ipv4.enabled=true \\
-             --set enableIPv4BIGTCP=true \\
-             --set kubeProxyReplacement=true
+       .. cilium-helm-install::
+          :namespace: kube-system
+          :set: routingMode=native
+                bpf.masquerade=true
+                ipv4.enabled=true
+                enableIPv4BIGTCP=true
+                kubeProxyReplacement=true
 
 Note that after toggling the IPv4 BIG TCP option the Kubernetes Pods
 must be restarted for the changes to take effect.
@@ -305,7 +362,6 @@ bypassing the iptables connection tracker.
 
 **Requirements:**
 
-* Kernel >= 4.19.57, >= 5.1.16, >= 5.2
 * Direct-routing configuration
 * eBPF-based kube-proxy replacement
 * eBPF-based masquerading or no masquerading
@@ -324,12 +380,24 @@ To enable the iptables connection-tracking bypass:
 
     .. group-tab:: Helm
 
-       .. parsed-literal::
+       .. cilium-helm-install::
+          :namespace: kube-system
+          :set: installNoConntrackIptablesRules=true
+                kubeProxyReplacement=true
 
-           helm install cilium |CHART_RELEASE| \\
-             --namespace kube-system \\
-             --set installNoConntrackIptablesRules=true \\
-             --set kubeProxyReplacement=true
+If a Pod has the ``hostNetwork`` flag enabled, the ports for which connection tracking should be skipped
+must be explicitly listed using the ``network.cilium.io/no-track-host-ports`` annotation:
+
+.. code-block:: yaml
+
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      annotations:
+        network.cilium.io/no-track-host-ports: "999/tcp,8123/tcp"
+
+.. note::
+    Only UDP and TCP transport protocols are supported with the network.cilium.io/no-track-host-ports annotation at the time of writing.
 
 Hubble
 ======
@@ -380,11 +448,9 @@ increase the memory usage by up to five Megabytes.
 
     .. group-tab:: Helm
 
-       .. parsed-literal::
-
-           helm install cilium |CHART_RELEASE| \\
-             --namespace kube-system \\
-             --set hubble.eventQueueSize=32768
+       .. cilium-helm-install::
+          :namespace: kube-system
+          :set: hubble.eventQueueSize=32768
 
     .. group-tab:: Per-Node
 
@@ -413,9 +479,21 @@ should consider increasing the aggregation interval or rate limiting events.
 Increase Aggregation Interval
 -----------------------------
 
-By default Cilium generates a tracing event on every new connection, any time a packet
-contains TCP flags that have not been previously seen for the packet direction, and on
+By default Cilium generates tracing events according to the configured
+``monitor-aggregation`` level. For packet events, Cilium generates a tracing
+event for send packets only on every new connection, any time a packet contains
+TCP flags that have not been previously seen for the packet direction, and on
 average once per ``monitor-aggregation-interval``, which defaults to 5 seconds.
+When socket load-balancing is enabled, the same aggregation levels apply to
+socket translation events (for example, pre/post reverse translation):
+
+- ``none``: emit all socket trace events
+- ``lowest``/``low``: suppress reverse-direction (recv) socket traces
+- ``medium``/``maximum``: emit socket trace events only for connect system calls
+
+When aggregation is enabled (>= ``lowest``), socket trace emission is aligned
+to ``monitor-aggregation-interval`` using a strict cadence of approximately one
+trace per interval for active flows.
 
 Depending on your network traffic patterns, the re-emitting of trace events per
 aggregation interval can make up a large part of the total events. Increasing the
@@ -433,11 +511,9 @@ The following will set the aggregation interval to 10 seconds.
 
     .. group-tab:: Helm
 
-       .. parsed-literal::
-
-           helm install cilium |CHART_RELEASE| \\
-             --namespace kube-system \\
-             --set bpf.events.monitorInterval="10s"
+       .. cilium-helm-install::
+          :namespace: kube-system
+          :set: bpf.events.monitorInterval="10s"
 
 Rate Limit Events
 -----------------
@@ -475,12 +551,10 @@ To enable eBPF Event Rate Limiting with a rate limit of 10,000 and a burst limit
 
     .. group-tab:: Helm
 
-       .. parsed-literal::
-
-           helm install cilium |CHART_RELEASE| \\
-             --namespace kube-system \\
-             --set bpf.events.default.rateLimit=10000 \\
-             --set bpf.events.default.burstLimit=50000
+       .. cilium-helm-install::
+          :namespace: kube-system
+          :set: bpf.events.default.rateLimit=10000
+                bpf.events.default.burstLimit=50000
 
 You can also choose to stop exposing event types in which you
 are not interested. For instance if you are mainly interested in
@@ -497,11 +571,9 @@ the overall CPU consumption of the agent.
 
     .. group-tab:: Helm
 
-       .. parsed-literal::
-
-           helm install cilium |CHART_RELEASE| \\
-             --namespace kube-system \\
-             --set bpf.events.trace.enabled=false
+       .. cilium-helm-install::
+          :namespace: kube-system
+          :set: bpf.events.trace.enabled=false
 
 .. warning::
 
@@ -523,11 +595,9 @@ you can disable Hubble:
 
     .. group-tab:: Helm
 
-       .. parsed-literal::
-
-           helm install cilium |CHART_RELEASE| \\
-             --namespace kube-system \\
-             --set hubble.enabled=false
+       .. cilium-helm-install::
+          :namespace: kube-system
+          :set: hubble.enabled=false
 
 MTU
 ===
@@ -539,6 +609,22 @@ jumbo frames, Cilium will automatically make use of it.
 
 To benefit from this, make sure that your system is configured to use jumbo
 frames if your network allows for it.
+
+Disable Packet Layer PMTUD
+--------------------------
+
+Cilium enables Linux's TCP Packetization Layer Path MTU Discovery by default for Pod endpoints.
+This is a kernel feature that implements `RFC4821 <https://datatracker.ietf.org/doc/html/rfc4821>`__ which provides a way of
+dynamically discovering the correct path MTU size for connections that is resilient against lost packets
+and firewalls blocking regular ICMP based PMTUD messages.
+In particular, this provides a robust MTU discovery mechanism against network black holes arising 
+from incorrect MTU sizes and firewalls dropping PMTUD error messages.
+
+Although this provides a more robust way of discovery path MTU, it comes at the possible cost of connections
+initially using sub-optimal MSS resulting in lower network performance.
+In the case where the correct MTU is known, disabling this feature may provide some improved network throughput on TCP connections.
+
+This feature can be disabled via the helm value: ``pmtuDiscovery.packetizationLayerPMTUDMode=disabled``.
 
 Bandwidth Manager
 =================
@@ -555,8 +641,6 @@ settings for the networking stack.
 
 **Requirements:**
 
-* Kernel >= 5.1
-* Direct-routing configuration or tunneling
 * eBPF-based kube-proxy replacement
 
 To enable the Bandwidth Manager:
@@ -565,12 +649,10 @@ To enable the Bandwidth Manager:
 
     .. group-tab:: Helm
 
-       .. parsed-literal::
-
-           helm install cilium |CHART_RELEASE| \\
-             --namespace kube-system \\
-             --set bandwidthManager.enabled=true \\
-             --set kubeProxyReplacement=true
+       .. cilium-helm-install::
+          :namespace: kube-system
+          :set: bandwidthManager.enabled=true
+                kubeProxyReplacement=true
 
 To validate whether your installation is running with Bandwidth Manager,
 run ``cilium status`` in any of the Cilium pods and look for the line
@@ -624,13 +706,11 @@ To enable the Bandwidth Manager with BBR for Pods:
 
     .. group-tab:: Helm
 
-       .. parsed-literal::
-
-           helm install cilium |CHART_RELEASE| \\
-             --namespace kube-system \\
-             --set bandwidthManager.enabled=true \\
-             --set bandwidthManager.bbr=true \\
-             --set kubeProxyReplacement=true
+       .. cilium-helm-install::
+          :namespace: kube-system
+          :set: bandwidthManager.enabled=true
+                bandwidthManager.bbr=true
+                kubeProxyReplacement=true
 
 To validate whether your installation is running with BBR for Pods,
 run ``cilium status`` in any of the Cilium pods and look for the line
@@ -655,7 +735,6 @@ is dramatically increased. The kube-proxy replacement at the XDP layer is
 
 * Kernel >= 4.19.57, >= 5.1.16, >= 5.2
 * Native XDP supported driver, check :ref:`our driver list <XDP acceleration>`
-* Direct-routing configuration
 * eBPF-based kube-proxy replacement
 
 To enable the XDP Acceleration, check out :ref:`our getting started guide <XDP acceleration>` which also contains instructions for setting it
@@ -664,6 +743,41 @@ up on public cloud providers.
 To validate whether your installation is running with XDP Acceleration,
 run ``cilium status`` in any of the Cilium pods and look for the line
 reporting the status for "XDP Acceleration" which should say "Native".
+
+eBPF Map Backend Memory
+=======================
+
+Changing Cilium's core BPF map memory configuration from a node-global
+LRU memory pool to a distributed per-CPU memory pool helps to avoid
+spinlock contention in the kernel under stress (many CT/NAT element
+allocation and free operations).
+
+The trade-off is higher memory usage given the per-CPU pools cannot be
+shared anymore, so if a given CPU pool depletes it needs to recycle
+elements via LRU mechanism. It is therefore recommended to not only
+enable ``bpf.distributedLRU.enabled`` but to also increase the map
+sizing which can be done via ``bpf.mapDynamicSizeRatio``:
+
+.. tabs::
+
+    .. group-tab:: Helm
+
+       .. cilium-helm-install::
+          :namespace: kube-system
+          :set: kubeProxyReplacement=true
+                bpf.distributedLRU.enabled=true
+                bpf.mapDynamicSizeRatio=0.08
+
+Note that ``bpf.distributedLRU.enabled`` is off by default in Cilium for
+legacy reasons given enabling this setting on-the-fly is disruptive for
+in-flight traffic since the BPF maps have to be recreated.
+
+It is recommended to use the per-node configuration to gradually phase in
+this setting for new nodes joining the cluster. Alternatively, upon initial
+cluster creation it is recommended to consider enablement.
+
+Also, ``bpf.distributedLRU.enabled`` is currently only supported in combination
+with ``bpf.mapDynamicSizeRatio`` as opposed to statically sized map configuration.
 
 eBPF Map Sizing
 ===============
@@ -676,11 +790,41 @@ memory.
 However, the upper capacity limits used by the Cilium agent can be overridden
 for advanced users. Please refer to the :ref:`bpf_map_limitations` guide.
 
+eBPF Clock Probe
+================
+
+Cilium can probe the underlying kernel to determine whether BPF supports
+retrieving jiffies instead of ktime. Given Cilium's CT map does not require
+high resolution, jiffies is more efficient and the preferred clock source.
+To enable probing and possibly using jiffies, ``bpfClockProbe=true`` can
+be set:
+
+.. tabs::
+
+    .. group-tab:: Helm
+
+       .. cilium-helm-install::
+          :namespace: kube-system
+          :set: kubeProxyReplacement=true
+                bpfClockProbe=true
+
+Note that ``bpfClockProbe`` is off by default in Cilium for legacy reasons
+given enabling this setting on-the-fly means that previous stored CT map
+entries with ktime as clock source for timestamps would now be interpreted
+as jiffies.
+
+It is therefore recommended to use the per-node configuration to gradually
+phase in this setting for new nodes joining the cluster. Alternatively, upon
+initial cluster creation it is recommended to consider enablement.
+
+To validate whether jiffies is now used run ``cilium status --verbose`` in
+any of the Cilium Pods and look for the line ``Clock Source for BPF``.
+
 Linux Kernel
 ============
 
-In general, we highly recommend using the most recent LTS stable kernel (such
-as >= 5.10) provided by the `kernel community <https://www.kernel.org/category/releases.html>`_
+In general, we highly recommend using the most recent LTS stable kernel
+provided by the `kernel community <https://www.kernel.org/category/releases.html>`_
 or by a downstream distribution of your choice. The newer the kernel, the more
 likely it is that various datapath optimizations can be used.
 
@@ -698,6 +842,34 @@ Run a kernel version with ``CONFIG_PREEMPT_NONE=y`` set. Some Linux
 distributions offer kernel images with this option set or you can re-compile
 the Linux kernel. ``CONFIG_PREEMPT_NONE=y`` is the recommended setting for
 server workloads.
+
+Kubernetes
+==========
+
+Set scheduling mode
+-------------------
+
+By default, the cilium daemonset is configured with an `inter-pod anti-affinity`_
+rule. Inter-pod anti-affinity is not recommended for `clusters larger than several hundred nodes`_
+as it reduces scheduling throughput of `kube-scheduler`_.
+
+If your cilium daemonset uses a host port (e.g. if prometheus metrics are enabled),
+``kube-scheduler`` guarantees that only a single pod with that port/protocol is
+scheduled to a node -- effectively offering the same guarantee provided by the
+inter-pod anti-affinity rule. 
+
+To leverage this, consider using ``--set scheduling.mode=kube-scheduler`` when
+installing or upgrading cilium.
+
+.. note::
+    Use caution when changing changing host port numbers. Changing the host port
+    number removes the ``kube-scheduler`` guarantee. When a host port number
+    must change, ensure at least one host port number is shared across the upgrade,
+    or consider using ``--set scheduling.mode=anti-affinity``.
+
+.. _inter-pod anti-affinity: https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#inter-pod-affinity-and-anti-affinity
+.. _clusters larger than several hundred nodes:  https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#:~:text=We%20do%20not%20recommend%20using%20them%20in%20clusters%20larger%20than%20several%20hundred%20nodes.
+.. _kube-scheduler: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-scheduler/
 
 Further Considerations
 ======================

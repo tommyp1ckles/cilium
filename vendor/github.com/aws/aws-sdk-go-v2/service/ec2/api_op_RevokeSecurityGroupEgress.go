@@ -95,6 +95,9 @@ type RevokeSecurityGroupEgressOutput struct {
 	// Returns true if the request succeeds; otherwise, returns an error.
 	Return *bool
 
+	// Details about the revoked security group rules.
+	RevokedSecurityGroupRules []types.RevokedSecurityGroupRule
+
 	// The outbound rules that were unknown to the service. In some cases,
 	// unknownIpPermissionSet might be in a different format from the request
 	// parameter.
@@ -140,13 +143,16 @@ func (c *Client) addOperationRevokeSecurityGroupEgressMiddlewares(stack *middlew
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
+	if err = addRetry(stack, options, c); err != nil {
 		return err
 	}
 	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
 	if err = addRecordResponseTiming(stack); err != nil {
+		return err
+	}
+	if err = addSpanRetryLoop(stack, options); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -161,10 +167,10 @@ func (c *Client) addOperationRevokeSecurityGroupEgressMiddlewares(stack *middlew
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
-	if err = addTimeOffsetBuild(stack, c); err != nil {
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
-	if err = addUserAgentRetryMode(stack, options); err != nil {
+	if err = addCredentialSource(stack, options); err != nil {
 		return err
 	}
 	if err = addOpRevokeSecurityGroupEgressValidationMiddleware(stack); err != nil {
@@ -186,6 +192,15 @@ func (c *Client) addOperationRevokeSecurityGroupEgressMiddlewares(stack *middlew
 		return err
 	}
 	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptBeforeRetryLoop(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptAttempt(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil

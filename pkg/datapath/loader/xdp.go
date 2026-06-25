@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,11 +19,54 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/cilium/cilium/pkg/bpf"
+	"github.com/cilium/cilium/pkg/datapath/config"
+	"github.com/cilium/cilium/pkg/datapath/linux/safenetlink"
 	"github.com/cilium/cilium/pkg/datapath/xdp"
-	"github.com/cilium/cilium/pkg/identity"
-	"github.com/cilium/cilium/pkg/mac"
+	"github.com/cilium/cilium/pkg/maps/registry"
+
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
 )
+
+func init() {
+	xdpConfigs.register(config.XDP)
+	xdpRenames.register(defaultXDPMapRenames)
+}
+
+const (
+	symbolFromHostNetdevXDP = "cil_xdp_entry"
+)
+
+// xdpConfigs holds functions that yield a BPF configuration object for
+// attaching instances of bpf_xdp.c to externally-facing network devices.
+var xdpConfigs funcRegistry[func(*config.Config, netlink.Link) any]
+
+// xdpRenames holds functions that yield BPF map renames for
+// attaching instances of bpf_xdp.c to externally-facing network devices.
+var xdpRenames funcRegistry[func(*config.Config, netlink.Link) map[string]string]
+
+// xdpConfiguration returns a slice of BPF configuration objects yielded
+// by all registered config providers of [xdpConfigs].
+func xdpConfiguration(lnc *config.Config, link netlink.Link) (configs []any) {
+	for f := range xdpConfigs.all() {
+		configs = append(configs, f(lnc, link))
+	}
+	return configs
+}
+
+// xdpMapRenames returns the merged map of XDP map renames yielded by all registered rename providers.
+func xdpMapRenames(lnc *config.Config, link netlink.Link) (renames []map[string]string) {
+	for f := range xdpRenames.all() {
+		renames = append(renames, f(lnc, link))
+	}
+	return renames
+}
+
+func defaultXDPMapRenames(lnc *config.Config, iface netlink.Link) (renames map[string]string) {
+	return map[string]string{
+		"cilium_calls": fmt.Sprintf("cilium_calls_xdp_%d", iface.Attrs().Index),
+	}
+}
 
 func xdpConfigModeToFlag(xdpMode xdp.Mode) link.XDPAttachFlags {
 	switch xdpMode {
@@ -59,10 +104,12 @@ func xdpAttachedModeToFlag(mode uint32) link.XDPAttachFlags {
 //
 // bpffsBase is typically set to /sys/fs/bpf/cilium, but can be a temp directory
 // during tests.
-func maybeUnloadObsoleteXDPPrograms(xdpDevs []string, xdpMode xdp.Mode, bpffsBase string) {
-	links, err := netlink.LinkList()
+func maybeUnloadObsoleteXDPPrograms(logger *slog.Logger, keep []string, xdpMode xdp.Mode, bpffsBase string) {
+	links, err := safenetlink.LinkList()
 	if err != nil {
-		log.WithError(err).Warn("Failed to list links for XDP unload")
+		logger.Warn("Failed to list links for XDP unload",
+			logfields.Error, err,
+		)
 	}
 
 	for _, link := range links {
@@ -77,8 +124,8 @@ func maybeUnloadObsoleteXDPPrograms(xdpDevs []string, xdpMode xdp.Mode, bpffsBas
 		}
 
 		used := false
-		for _, xdpDev := range xdpDevs {
-			if link.Attrs().Name == xdpDev &&
+		for _, dev := range keep {
+			if link.Attrs().Name == dev &&
 				xdpAttachedModeToFlag(linkxdp.AttachMode) == xdpConfigModeToFlag(xdpMode) {
 				// XDP mode matches; don't unload, otherwise we might introduce
 				// intermittent connectivity problems
@@ -88,50 +135,18 @@ func maybeUnloadObsoleteXDPPrograms(xdpDevs []string, xdpMode xdp.Mode, bpffsBas
 		}
 		if !used {
 			if err := DetachXDP(link.Attrs().Name, bpffsBase, symbolFromHostNetdevXDP); err != nil {
-				log.WithError(err).Warn("Failed to detach obsolete XDP program")
+				logger.Warn("Failed to detach obsolete XDP program",
+					logfields.Error, err,
+				)
 			}
 		}
 	}
 }
 
-// xdpCompileArgs derives compile arguments for bpf_xdp.c.
-func xdpCompileArgs(xdpDev string, extraCArgs []string) ([]string, error) {
-	link, err := netlink.LinkByName(xdpDev)
-	if err != nil {
-		return nil, err
-	}
-
-	args := []string{
-		fmt.Sprintf("-DSECLABEL=%d", identity.ReservedIdentityWorld),
-		fmt.Sprintf("-DTHIS_INTERFACE_MAC={.addr=%s}", mac.CArrayString(link.Attrs().HardwareAddr)),
-		fmt.Sprintf("-DCALLS_MAP=cilium_calls_xdp_%d", link.Attrs().Index),
-	}
-	args = append(args, extraCArgs...)
-	if option.Config.EnableNodePort {
-		args = append(args, []string{
-			fmt.Sprintf("-DTHIS_MTU=%d", link.Attrs().MTU),
-			fmt.Sprintf("-DNATIVE_DEV_IFINDEX=%d", link.Attrs().Index),
-			"-DDISABLE_LOOPBACK_LB",
-		}...)
-	}
-	if option.Config.IsDualStack() {
-		args = append(args, fmt.Sprintf("-DSECLABEL_IPV4=%d", identity.ReservedIdentityWorldIPv4))
-		args = append(args, fmt.Sprintf("-DSECLABEL_IPV6=%d", identity.ReservedIdentityWorldIPv6))
-	} else {
-		args = append(args, fmt.Sprintf("-DSECLABEL_IPV4=%d", identity.ReservedIdentityWorld))
-		args = append(args, fmt.Sprintf("-DSECLABEL_IPV6=%d", identity.ReservedIdentityWorld))
-	}
-
-	return args, nil
-}
-
 // compileAndLoadXDPProg compiles bpf_xdp.c for the given XDP device and loads it.
-func compileAndLoadXDPProg(ctx context.Context, xdpDev string, xdpMode xdp.Mode, extraCArgs []string) error {
-	args, err := xdpCompileArgs(xdpDev, extraCArgs)
-	if err != nil {
-		return fmt.Errorf("failed to derive XDP compile extra args: %w", err)
-	}
-
+func compileAndLoadXDPProg(ctx context.Context, logger *slog.Logger,
+	reg *registry.MapRegistry, lnc *config.Config,
+	xdpDev string, xdpMode xdp.Mode) error {
 	dirs := &directoryInfo{
 		Library: option.Config.BpfDir,
 		Runtime: option.Config.StateDir,
@@ -142,10 +157,9 @@ func compileAndLoadXDPProg(ctx context.Context, xdpDev string, xdpMode xdp.Mode,
 		Source:     xdpProg,
 		Output:     xdpObj,
 		OutputType: outputObject,
-		Options:    args,
 	}
 
-	objPath, err := compile(ctx, prog, dirs)
+	objPath, err := compile(ctx, logger, prog, dirs)
 	if err != nil {
 		return err
 	}
@@ -153,30 +167,120 @@ func compileAndLoadXDPProg(ctx context.Context, xdpDev string, xdpMode xdp.Mode,
 		return err
 	}
 
-	iface, err := netlink.LinkByName(xdpDev)
+	iface, err := safenetlink.LinkByName(xdpDev)
 	if err != nil {
 		return fmt.Errorf("retrieving device %s: %w", xdpDev, err)
 	}
 
-	spec, err := bpf.LoadCollectionSpec(objPath)
+	spec, err := ebpf.LoadCollectionSpec(objPath)
 	if err != nil {
 		return fmt.Errorf("loading eBPF ELF %s: %w", objPath, err)
 	}
 
-	var obj xdpObjects
-	commit, err := bpf.LoadAndAssign(&obj, spec, &bpf.CollectionOptions{
-		CollectionOptions: ebpf.CollectionOptions{
-			Maps: ebpf.MapOptions{PinPath: bpf.TCGlobalsPath()},
-		},
-	})
-	if err != nil {
+	if err := loadAssignAttach(logger, reg, xdpMode, iface, spec, lnc); err != nil {
 		return err
 	}
-	defer obj.Close()
 
-	if err := attachXDPProgram(iface, obj.Entrypoint, symbolFromHostNetdevXDP,
-		bpffsDeviceLinksDir(bpf.CiliumPath(), iface), xdpConfigModeToFlag(xdpMode)); err != nil {
-		return fmt.Errorf("interface %s: %w", xdpDev, err)
+	return nil
+}
+
+// xdpPermutations returns a sequence of CollectionSpecs with all combinations
+// of ProgramSpec.AttachType set to AttachXDP or AttachNone, as well the
+// BPF_F_XDP_HAS_FRAGS flag in on and off states.
+func xdpPermutations(spec *ebpf.CollectionSpec) iter.Seq2[int, *ebpf.CollectionSpec] {
+	type xdpPerms struct {
+		flipAttach bool
+		flipFrags  bool
+	}
+
+	perms := []xdpPerms{
+		{flipAttach: false, flipFrags: false},
+		{flipAttach: true, flipFrags: false},
+		{flipAttach: false, flipFrags: true},
+		{flipAttach: true, flipFrags: false},
+	}
+
+	return func(yield func(int, *ebpf.CollectionSpec) bool) {
+		for i, p := range perms {
+			for _, prog := range spec.Programs {
+				if prog.Type != ebpf.XDP {
+					continue
+				}
+
+				if p.flipAttach {
+					switch prog.AttachType {
+					case ebpf.AttachXDP:
+						prog.AttachType = ebpf.AttachNone
+					case ebpf.AttachNone:
+						prog.AttachType = ebpf.AttachXDP
+					}
+				}
+
+				if p.flipFrags {
+					prog.Flags ^= unix.BPF_F_XDP_HAS_FRAGS
+				}
+			}
+
+			if !yield(i, spec) {
+				return
+			}
+		}
+	}
+}
+
+func loadAssignAttach(logger *slog.Logger, reg *registry.MapRegistry,
+	xdpMode xdp.Mode, iface netlink.Link, spec *ebpf.CollectionSpec,
+	lnc *config.Config) error {
+	var (
+		obj    xdpObjects
+		commit func() error
+		err    error
+	)
+	for i, spec := range xdpPermutations(spec) {
+		commit, err = bpf.LoadAndAssign(logger, &obj, spec, &bpf.CollectionOptions{
+			MapRegistry: reg,
+			Constants:   xdpConfiguration(lnc, iface),
+			MapRenames:  xdpMapRenames(lnc, iface),
+			CollectionOptions: ebpf.CollectionOptions{
+				Maps: ebpf.MapOptions{PinPath: bpf.TCGlobalsPath()},
+			},
+			ConfigDumpPath: filepath.Join(bpfStateDeviceDir(iface.Attrs().Name), xdpConfig),
+		})
+		if err != nil {
+			return err
+		}
+		defer obj.Close()
+
+		err = attachXDPProgram(logger, iface, obj.Entrypoint, symbolFromHostNetdevXDP,
+			bpffsDeviceLinksDir(bpf.CiliumPath(), iface), xdpConfigModeToFlag(xdpMode))
+		if errors.Is(err, unix.EINVAL) {
+			// EINVAL during attachment can have multiple causes. There are two common
+			// cases we can handle:
+			//
+			// * The configured MTU on the device is so large that the driver
+			// requires loading XDP programs with BPF_F_XDP_HAS_FRAGS. In that case,
+			// retry with the flag set.
+			//
+			// * The interface has an existing BPF link with a different attach
+			// type. Try the other attach type.
+			//
+			// Neither of these properties can be probed, so try all permutations
+			// until they've been exhausted.
+			prog := spec.Programs[symbolFromHostNetdevXDP]
+			logger.Info("attaching XDP program failed",
+				logfields.Error, err,
+				logfields.Attempt, i,
+				logfields.AttachType, prog.AttachType,
+				logfields.WithFrags, prog.Flags&unix.BPF_F_XDP_HAS_FRAGS != 0,
+			)
+			continue
+		}
+
+		// Error is nil or unrecoverable, exit the loop.
+		break
+	}
+	if err != nil {
+		return fmt.Errorf("attaching XDP program: %w", err)
 	}
 
 	if err := commit(); err != nil {
@@ -190,7 +294,7 @@ func compileAndLoadXDPProg(ctx context.Context, xdpDev string, xdpMode xdp.Mode,
 //
 // bpffsDir should exist and point to the links/ subdirectory in the per-device
 // bpffs directory.
-func attachXDPProgram(iface netlink.Link, prog *ebpf.Program, progName, bpffsDir string, flags link.XDPAttachFlags) error {
+func attachXDPProgram(logger *slog.Logger, iface netlink.Link, prog *ebpf.Program, progName, bpffsDir string, flags link.XDPAttachFlags) error {
 	if prog == nil {
 		return fmt.Errorf("program %s is nil", progName)
 	}
@@ -201,7 +305,10 @@ func attachXDPProgram(iface netlink.Link, prog *ebpf.Program, progName, bpffsDir
 	switch {
 	// Update successful, nothing left to do.
 	case err == nil:
-		log.Infof("Updated link %s for program %s", pin, progName)
+		logger.Info("Updated link for program",
+			logfields.Link, pin,
+			logfields.ProgName, progName,
+		)
 
 		return nil
 
@@ -213,11 +320,17 @@ func attachXDPProgram(iface netlink.Link, prog *ebpf.Program, progName, bpffsDir
 			return fmt.Errorf("unpinning defunct link %s: %w", pin, err)
 		}
 
-		log.Infof("Unpinned defunct link %s for program %s", pin, progName)
+		logger.Info("Unpinned defunct link for program",
+			logfields.Link, pin,
+			logfields.ProgName, progName,
+		)
 
 	// No existing link found, continue trying to create one.
 	case errors.Is(err, os.ErrNotExist):
-		log.Infof("No existing link found at %s for program %s", pin, progName)
+		logger.Info("No existing link found for program",
+			logfields.Link, pin,
+			logfields.ProgName, progName,
+		)
 
 	default:
 		return fmt.Errorf("updating link %s for program %s: %w", pin, progName, err)
@@ -239,7 +352,9 @@ func attachXDPProgram(iface netlink.Link, prog *ebpf.Program, progName, bpffsDir
 			// The program was successfully attached using bpf_link. Closing a link
 			// does not detach the program if the link is pinned.
 			if err := l.Close(); err != nil {
-				log.Warnf("Failed to close bpf_link for program %s", progName)
+				logger.Warn("Failed to close bpf_link for program",
+					logfields.ProgName, progName,
+				)
 			}
 		}()
 
@@ -248,7 +363,9 @@ func attachXDPProgram(iface netlink.Link, prog *ebpf.Program, progName, bpffsDir
 		}
 
 		// Successfully created and pinned bpf_link.
-		log.Infof("Program %s attached using bpf_link", progName)
+		logger.Info("Program attached using bpf_link",
+			logfields.ProgName, progName,
+		)
 
 		return nil
 	}
@@ -263,7 +380,9 @@ func attachXDPProgram(iface netlink.Link, prog *ebpf.Program, progName, bpffsDir
 		return fmt.Errorf("attaching program %s using bpf_link: %w", progName, err)
 	}
 
-	log.Debugf("Performing netlink attach for program %s", progName)
+	logger.Debug("Performing netlink attach for program",
+		logfields.ProgName, progName,
+	)
 
 	// Omitting XDP_FLAGS_UPDATE_IF_NOEXIST equals running 'ip' with -force,
 	// and will clobber any existing XDP attachment to the interface, including
@@ -274,7 +393,9 @@ func attachXDPProgram(iface netlink.Link, prog *ebpf.Program, progName, bpffsDir
 
 	// Nothing left to do, the netlink device now holds a reference to the prog
 	// the program stays active.
-	log.Infof("Program %s was attached using netlink", progName)
+	logger.Info("Program was attached using netlink",
+		logfields.ProgName, progName,
+	)
 
 	return nil
 }
@@ -285,7 +406,7 @@ func attachXDPProgram(iface netlink.Link, prog *ebpf.Program, progName, bpffsDir
 // bpffsBase is typically /sys/fs/bpf/cilium, but can be overridden to a tempdir
 // during tests.
 func DetachXDP(ifaceName string, bpffsBase, progName string) error {
-	iface, err := netlink.LinkByName(ifaceName)
+	iface, err := safenetlink.LinkByName(ifaceName)
 	if err != nil {
 		return fmt.Errorf("getting link '%s' by name: %w", ifaceName, err)
 	}

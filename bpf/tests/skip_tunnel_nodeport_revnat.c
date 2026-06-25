@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 /* Copyright Authors of Cilium */
-#include "common.h"
+
 #include <bpf/ctx/skb.h>
+#include "common.h"
 #include "pktgen.h"
 
 /*
@@ -13,13 +14,6 @@
 #define ENABLE_IPV6 1
 #define TUNNEL_MODE 1
 #define ENABLE_NODEPORT 1
-
-/*
- * Now include testing defaults
- */
-#define ROUTER_IP
-#undef ROUTER_IP
-#include "node_config.h"
 
 /*
  * Simulate sending traffic from pod_one on node_one to pod_two
@@ -72,7 +66,7 @@ long mock_fib_lookup(const __maybe_unused void *ctx, const struct bpf_fib_lookup
 /*
  * Include entrypoint into host stack
  */
-#include "bpf_host.c"
+#include "lib/bpf_host.h"
 
 /*
  * Include test helpers
@@ -80,7 +74,6 @@ long mock_fib_lookup(const __maybe_unused void *ctx, const struct bpf_fib_lookup
 #include "lib/lb.h"
 #include "lib/endpoint.h"
 #include "lib/ipcache.h"
-#include "lib/policy.h"
 #include "lib/clear.h"
 
 /*
@@ -91,17 +84,8 @@ long mock_fib_lookup(const __maybe_unused void *ctx, const struct bpf_fib_lookup
 #include "lib/nat.h"
 #include "lib/nodeport.h"
 
-#define FROM_NETDEV 0
-struct {
-	__uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-	__uint(key_size, sizeof(__u32));
-	__uint(max_entries, 1);
-	__array(values, int());
-} entry_call_map __section(".maps") = {
-	.values = {
-		[FROM_NETDEV] = &cil_from_netdev,
-	},
-};
+/* Set port ranges to have deterministic source port selection */
+#include "nodeport_defaults.h"
 
 static __always_inline int
 pktgen(struct __ctx_buff *ctx, bool v4)
@@ -148,13 +132,11 @@ setup(struct __ctx_buff *ctx, bool v4, bool flag_skip_tunnel)
 	 * Otherwise, leftover state from previous tests will have an impact,
 	 * as the tests and checks assume we have a fresh state every time.
 	 */
-	clear_map(&METRICS_MAP);
-	clear_map(&CT_MAP_TCP4);
-	clear_map(&CT_MAP_TCP6);
+	clear_map(&cilium_metrics);
+	clear_map(&cilium_ct4_global);
+	clear_map(&cilium_ct6_global);
 	clear_map(get_cluster_snat_map_v4(0));
 	clear_map(get_cluster_snat_map_v6(0));
-
-	policy_add_egress_allow_all_entry();
 
 	if (v4) {
 		/*
@@ -253,8 +235,7 @@ setup(struct __ctx_buff *ctx, bool v4, bool flag_skip_tunnel)
 						0, 1230, SRC_TUNNEL_IP, 0, flag_skip_tunnel);
 	}
 
-	tail_call_static(ctx, entry_call_map, FROM_NETDEV);
-	return TEST_ERROR;
+	return netdev_receive_packet(ctx);
 }
 
 static __always_inline int
@@ -300,7 +281,7 @@ check_ctx(const struct __ctx_buff *ctx, bool v4, __u32 expected_result)
 		key.reason = REASON_FORWARDED;
 		key.dir = METRIC_EGRESS;
 
-		entry = map_lookup_elem(&METRICS_MAP, &key);
+		entry = map_lookup_elem(&cilium_metrics, &key);
 		if (!entry)
 			test_fatal("metrics entry not found")
 

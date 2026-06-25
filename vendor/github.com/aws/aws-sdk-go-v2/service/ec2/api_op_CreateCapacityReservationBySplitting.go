@@ -11,12 +11,11 @@ import (
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
 
-//	Create a new Capacity Reservation by splitting the available capacity of the
+//	Create a new Capacity Reservation by splitting the capacity of the source
 //
-// source Capacity Reservation. The new Capacity Reservation will have the same
-// attributes as the source Capacity Reservation except for tags. The source
-// Capacity Reservation must be active and owned by your Amazon Web Services
-// account.
+// Capacity Reservation. The new Capacity Reservation will have the same attributes
+// as the source Capacity Reservation except for tags. The source Capacity
+// Reservation must be active and owned by your Amazon Web Services account.
 func (c *Client) CreateCapacityReservationBySplitting(ctx context.Context, params *CreateCapacityReservationBySplittingInput, optFns ...func(*Options)) (*CreateCapacityReservationBySplittingOutput, error) {
 	if params == nil {
 		params = &CreateCapacityReservationBySplittingInput{}
@@ -39,8 +38,7 @@ type CreateCapacityReservationBySplittingInput struct {
 	// This member is required.
 	InstanceCount *int32
 
-	//  The ID of the Capacity Reservation from which you want to split the available
-	// capacity.
+	//  The ID of the Capacity Reservation from which you want to split the capacity.
 	//
 	// This member is required.
 	SourceCapacityReservationId *string
@@ -115,13 +113,16 @@ func (c *Client) addOperationCreateCapacityReservationBySplittingMiddlewares(sta
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
+	if err = addRetry(stack, options, c); err != nil {
 		return err
 	}
 	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
 	if err = addRecordResponseTiming(stack); err != nil {
+		return err
+	}
+	if err = addSpanRetryLoop(stack, options); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -136,10 +137,10 @@ func (c *Client) addOperationCreateCapacityReservationBySplittingMiddlewares(sta
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
-	if err = addTimeOffsetBuild(stack, c); err != nil {
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
-	if err = addUserAgentRetryMode(stack, options); err != nil {
+	if err = addCredentialSource(stack, options); err != nil {
 		return err
 	}
 	if err = addIdempotencyToken_opCreateCapacityReservationBySplittingMiddleware(stack, options); err != nil {
@@ -164,6 +165,15 @@ func (c *Client) addOperationCreateCapacityReservationBySplittingMiddlewares(sta
 		return err
 	}
 	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptBeforeRetryLoop(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptAttempt(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil

@@ -1,13 +1,9 @@
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 /* Copyright Authors of Cilium */
 
-#include "common.h"
-
 #include <bpf/ctx/skb.h>
+#include "common.h"
 #include "pktgen.h"
-
-/* Set ETH_HLEN to 14 to indicate that the packet has a 14 byte ethernet header */
-#define ETH_HLEN 14
 
 /* Enable code paths under test */
 #define ENABLE_IPV6
@@ -15,9 +11,6 @@
 #define ENABLE_DSR		1
 #define DSR_ENCAP_GENEVE	3
 #define ENABLE_HOST_ROUTING
-
-#define DISABLE_LOOPBACK_LB
-#define ENABLE_SKIP_FIB		1
 
 #define CLIENT_IP	{ .addr = { 0x1, 0x0, 0x0, 0x0, 0x0, 0x0 } }
 #define CLIENT_PORT	__bpf_htons(111)
@@ -28,13 +21,16 @@
 #define BACKEND_IP	{ .addr = { 0x3, 0x0, 0x0, 0x0, 0x0, 0x0 } }
 #define BACKEND_PORT	__bpf_htons(8080)
 
+#define DEFAULT_IFACE		24
+#define BACKEND_IFACE		25
+
 #define BACKEND_EP_ID		127
 
 static volatile const __u8 *client_mac = mac_one;
 static volatile const __u8 *node_mac = mac_three;
 static volatile const __u8 *backend_mac = mac_four;
 
-__section("mock-handle-policy")
+__section_entry
 int mock_handle_policy(struct __ctx_buff *ctx __maybe_unused)
 {
 	return TC_ACT_REDIRECT;
@@ -59,27 +55,40 @@ mock_tail_call_dynamic(struct __ctx_buff *ctx __maybe_unused,
 	tail_call(ctx, &mock_policy_call_map, slot);
 }
 
-#define SECCTX_FROM_IPCACHE 1
+#define fib_lookup mock_fib_lookup
+static __always_inline __maybe_unused long
+mock_fib_lookup(void *ctx __maybe_unused, struct bpf_fib_lookup *params __maybe_unused,
+		int plen __maybe_unused, __u32 flags __maybe_unused);
 
-#include "bpf_host.c"
+#define ctx_redirect mock_ctx_redirect
+static __always_inline __maybe_unused int
+mock_ctx_redirect(const struct __sk_buff *ctx __maybe_unused,
+		  int ifindex __maybe_unused, __u32 flags __maybe_unused);
+
+#include "lib/bpf_host.h"
 
 #include "lib/endpoint.h"
 #include "lib/ipcache.h"
 
-#define FROM_NETDEV	0
-#define TO_NETDEV	1
+ASSIGN_CONFIG(__u32, interface_ifindex, DEFAULT_IFACE)
 
-struct {
-	__uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-	__uint(key_size, sizeof(__u32));
-	__uint(max_entries, 2);
-	__array(values, int());
-} entry_call_map __section(".maps") = {
-	.values = {
-		[FROM_NETDEV] = &cil_from_netdev,
-		[TO_NETDEV] = &cil_to_netdev,
-	},
-};
+long mock_fib_lookup(__maybe_unused void *ctx, struct bpf_fib_lookup *params,
+		     __maybe_unused int plen, __maybe_unused __u32 flags)
+{
+	params->ifindex = DEFAULT_IFACE;
+
+	return BPF_FIB_LKUP_RET_SUCCESS;
+}
+
+static __always_inline __maybe_unused int
+mock_ctx_redirect(const struct __sk_buff *ctx __maybe_unused,
+		  int ifindex __maybe_unused, __u32 flags __maybe_unused)
+{
+	if (ifindex == BACKEND_IFACE)
+		return CTX_ACT_REDIRECT;
+
+	return CTX_ACT_DROP;
+}
 
 /* Test that a remote node
  * - doesn't touch a DSR request,
@@ -96,21 +105,13 @@ int nodeport_dsr_backend_pktgen(struct __ctx_buff *ctx)
 	struct pktgen builder;
 	struct ipv6hdr *l3;
 	struct tcphdr *l4;
-	struct ethhdr *l2;
 	void *data;
 
 	/* Init packet builder */
 	pktgen__init(&builder, ctx);
 
-	/* Push ethernet header */
-	l2 = pktgen__push_ethhdr(&builder);
-	if (!l2)
-		return TEST_ERROR;
-
-	ethhdr__set_macs(l2, (__u8 *)client_mac, (__u8 *)node_mac);
-
-	/* Push IPv6 header and DSR extension */
-	l3 = pktgen__push_default_ipv6hdr(&builder);
+	l3 = pktgen__push_ipv6_packet(&builder, (__u8 *)client_mac, (__u8 *)node_mac,
+				      (__u8 *)&client_ip, (__u8 *)&backend_ip);
 	if (!l3)
 		return TEST_ERROR;
 
@@ -152,15 +153,12 @@ int nodeport_dsr_backend_setup(struct __ctx_buff *ctx)
 	union v6addr backend_ip = BACKEND_IP;
 
 	/* add local backend */
-	endpoint_v6_add_entry(&backend_ip, 0, BACKEND_EP_ID, 0, 0,
+	endpoint_v6_add_entry(&backend_ip, BACKEND_IFACE, BACKEND_EP_ID, 0, 0,
 			      (__u8 *)backend_mac, (__u8 *)node_mac);
 
 	ipcache_v6_add_entry(&backend_ip, 0, 112233, 0, 0);
 
-	/* Jump into the entrypoint */
-	tail_call_static(ctx, entry_call_map, FROM_NETDEV);
-	/* Fail if we didn't jump */
-	return TEST_ERROR;
+	return netdev_receive_packet(ctx);
 }
 
 CHECK("tc", "tc_nodeport_dsr_backend")
@@ -240,10 +238,19 @@ int nodeport_dsr_backend_check(struct __ctx_buff *ctx)
 
 	struct ipv6_ct_tuple tuple __align_stack_8;
 	struct ct_entry *ct_entry;
-	int l4_off, ret;
+	fraginfo_t fraginfo;
+	int l3_off, l4_off, ret;
 
-	ret = lb6_extract_tuple(ctx, l3, sizeof(*status_code) + ETH_HLEN,
-				&l4_off, &tuple);
+	l3_off = sizeof(*status_code) + ETH_HLEN;
+
+	tuple.nexthdr = l3->nexthdr;
+	ret = ipv6_hdrlen_offset(ctx, l3_off, &tuple.nexthdr, &fraginfo);
+	if (ret < 0)
+		return ret;
+
+	l4_off = l3_off + ret;
+
+	ret = lb6_extract_tuple(ctx, l3, fraginfo, l4_off, &tuple);
 	assert(!IS_ERR(ret));
 
 	tuple.flags = TUPLE_F_IN;
@@ -254,19 +261,10 @@ int nodeport_dsr_backend_check(struct __ctx_buff *ctx)
 		test_fatal("no CT entry for DSR found");
 	if (!ct_entry->dsr_internal)
 		test_fatal("CT entry doesn't have the .dsr_internal flag set");
-
-	struct ipv6_nat_entry *nat_entry;
-
-	tuple.sport = BACKEND_PORT;
-	tuple.dport = CLIENT_PORT;
-
-	nat_entry = snat_v6_lookup(&tuple);
-	if (!nat_entry)
-		test_fatal("no SNAT entry for DSR found");
-	if (!ipv6_addr_equals((union v6addr *)&nat_entry->to_saddr, &frontend_ip))
-		test_fatal("SNAT entry has wrong address");
-	if (nat_entry->to_sport != FRONTEND_PORT)
-		test_fatal("SNAT entry has wrong port");
+	if (!ipv6_addr_equals(&ct_entry->nat_addr, &frontend_ip))
+		test_fatal("CT entry has wrong RevDNAT address");
+	if (ct_entry->nat_port != FRONTEND_PORT)
+		test_fatal("CT entry has wrong RevDNAT port");
 
 	test_finish();
 }
@@ -352,6 +350,9 @@ int check_reply(const struct __ctx_buff *ctx)
 	if (l4->dest != CLIENT_PORT)
 		test_fatal("dst port has changed");
 
+	if (l4->check != bpf_htons(0x8d5c))
+		test_fatal("L4 checksum is invalid: %x != %x", l4->check, bpf_ntohs(0x8d5c));
+
 	test_finish();
 }
 
@@ -367,10 +368,7 @@ int nodeport_dsr_backend_reply_pktgen(struct __ctx_buff *ctx)
 SETUP("tc", "tc_nodeport_dsr_backend_reply")
 int nodeport_dsr_backend_reply_reply_setup(struct __ctx_buff *ctx)
 {
-	/* Jump into the entrypoint */
-	tail_call_static(ctx, entry_call_map, TO_NETDEV);
-	/* Fail if we didn't jump */
-	return TEST_ERROR;
+	return netdev_send_packet(ctx);
 }
 
 CHECK("tc", "tc_nodeport_dsr_backend_reply")

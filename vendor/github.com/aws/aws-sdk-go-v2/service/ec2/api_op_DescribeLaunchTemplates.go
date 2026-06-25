@@ -50,6 +50,11 @@ type DescribeLaunchTemplatesInput struct {
 	//   all resources assigned a tag with a specific key, regardless of the tag value.
 	Filters []types.Filter
 
+	// Indicates whether to include managed resources in the output. If this parameter
+	// is set to true , the output includes resources that are managed by Amazon Web
+	// Services services, even if managed resource visibility is set to hidden.
+	IncludeManagedResources *bool
+
 	// One or more launch template IDs.
 	LaunchTemplateIds []string
 
@@ -116,13 +121,16 @@ func (c *Client) addOperationDescribeLaunchTemplatesMiddlewares(stack *middlewar
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
+	if err = addRetry(stack, options, c); err != nil {
 		return err
 	}
 	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
 	if err = addRecordResponseTiming(stack); err != nil {
+		return err
+	}
+	if err = addSpanRetryLoop(stack, options); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -137,10 +145,10 @@ func (c *Client) addOperationDescribeLaunchTemplatesMiddlewares(stack *middlewar
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
-	if err = addTimeOffsetBuild(stack, c); err != nil {
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
-	if err = addUserAgentRetryMode(stack, options); err != nil {
+	if err = addCredentialSource(stack, options); err != nil {
 		return err
 	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opDescribeLaunchTemplates(options.Region), middleware.Before); err != nil {
@@ -159,6 +167,15 @@ func (c *Client) addOperationDescribeLaunchTemplatesMiddlewares(stack *middlewar
 		return err
 	}
 	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptBeforeRetryLoop(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptAttempt(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil

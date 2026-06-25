@@ -5,11 +5,12 @@ package api
 
 import (
 	"context"
-	"io"
+	"errors"
+	"log/slog"
 	"testing"
 
+	"github.com/cilium/hive/hivetest"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -39,7 +40,7 @@ type testHandler struct {
 	ListMetricCalled int
 }
 
-func (t *testHandler) Init(registry *prometheus.Registry, options Options) error {
+func (t *testHandler) Init(registry *prometheus.Registry, options *MetricConfig) error {
 	t.InitCalled++
 	return nil
 }
@@ -57,6 +58,15 @@ func (t *testHandler) ListMetricVec() []*prometheus.MetricVec {
 	return []*prometheus.MetricVec{t.counter.MetricVec}
 }
 
+func (t *testHandler) Deinit(registry *prometheus.Registry) error {
+	t.InitCalled--
+	return nil
+}
+
+func (h *testHandler) HandleConfigurationUpdate(cfg *MetricConfig) error {
+	return nil
+}
+
 func (t *testHandler) ProcessFlow(ctx context.Context, p *pb.Flow) error {
 	labels, _ := t.ContextOptions.GetLabelValues(p)
 	t.counter.WithLabelValues(labels...).Inc()
@@ -65,7 +75,6 @@ func (t *testHandler) ProcessFlow(ctx context.Context, p *pb.Flow) error {
 }
 
 func TestRegister(t *testing.T) {
-
 	flow1 := &pb.Flow{
 		EventType: &pb.CiliumEventType{Type: monitorAPI.MessageTypeAccessLog},
 		L7: &pb.Layer7{
@@ -85,182 +94,237 @@ func TestRegister(t *testing.T) {
 		Destination: &pb.Endpoint{Namespace: "bar", PodName: "bar-123", Workloads: []*pb.Workload{{Name: "api"}}},
 		Verdict:     pb.Verdict_FORWARDED,
 	}
-	log := logrus.New()
-	log.SetOutput(io.Discard)
+	log := hivetest.Logger(t)
 
-	t.Run("Should not register handler", func(t *testing.T) {
-
-		r := NewRegistry(log)
+	t.Run("Should not register non-enabled handler", func(t *testing.T) {
+		r := NewRegistry()
 
 		handler := &testHandler{}
 
 		r.Register("test", &testPlugin{handler: handler})
 
-		handlers, err := r.ConfigureHandlers(nil, Map{})
-		assert.EqualValues(t, err, nil)
-		assert.EqualValues(t, len(handlers.handlers), 0)
+		handlers, err := r.ConfigureHandlers(log, nil, &Config{})
+		require.NoError(t, err)
+		assert.Empty(t, *handlers)
+	})
+
+	t.Run("Should not register unknown handler", func(t *testing.T) {
+		r := NewRegistry()
+
+		handler := &testHandler{}
+
+		r.Register("test", &testPlugin{handler: handler})
+
+		config := &Config{Metrics: []*MetricConfig{{Name: "unknown"}}}
+		handlers, err := r.ConfigureHandlers(log, nil, config)
+		require.NoError(t, err)
+		assert.Empty(t, *handlers)
 	})
 
 	t.Run("Should register handler", func(t *testing.T) {
-
 		promRegistry := prometheus.NewRegistry()
-		opts, _ := ParseContextOptions(Options{"sourceContext": "pod", "destinationContext": "pod"})
+		options := []*ContextOptionConfig{
+			{
+				Name:   "sourceContext",
+				Values: []string{"pod"},
+			},
+			{
+				Name:   "destinationContext",
+				Values: []string{"pod"},
+			},
+		}
+		opts, _ := ParseContextOptions(options)
 		initHandlers(t, opts, promRegistry, log)
 	})
 
 	t.Run("Should remove metrics series with ContextPod", func(t *testing.T) {
-
 		promRegistry := prometheus.NewRegistry()
-		opts, _ := ParseContextOptions(Options{"sourceContext": "pod", "destinationContext": "pod"})
+		options := []*ContextOptionConfig{
+			{
+				Name:   "sourceContext",
+				Values: []string{"pod"},
+			},
+			{
+				Name:   "destinationContext",
+				Values: []string{"pod"},
+			},
+		}
+		opts, _ := ParseContextOptions(options)
 		handlers := initHandlers(t, opts, promRegistry, log)
 
-		handlers.ProcessFlow(context.TODO(), flow1)
-		handlers.ProcessFlow(context.TODO(), flow2)
-		assert.EqualValues(t, handlers.handlers[0].(*testHandler).ProcessCalled, 2)
+		ExecuteAllProcessFlow(t.Context(), flow1, *handlers)
+		ExecuteAllProcessFlow(t.Context(), flow2, *handlers)
+		assert.Equal(t, 2, (*handlers)[0].Handler.(*testHandler).ProcessCalled)
 
 		verifyMetricSeriesExists(t, promRegistry, 2)
 
-		handlers.ProcessCiliumEndpointDeletion(&types.CiliumEndpoint{
+		ProcessCiliumEndpointDeletion(&types.CiliumEndpoint{
 			ObjectMeta: slim_metav1.ObjectMeta{
 				Name:      "foo-123",
 				Namespace: "foo",
 			},
-		})
-		assert.EqualValues(t, handlers.handlers[0].(*testHandler).ListMetricCalled, 1)
+		}, *handlers)
+		assert.Equal(t, 1, (*handlers)[0].Handler.(*testHandler).ListMetricCalled)
 
 		verifyMetricSeriesExists(t, promRegistry, 1)
 
-		handlers.ProcessCiliumEndpointDeletion(&types.CiliumEndpoint{
+		ProcessCiliumEndpointDeletion(&types.CiliumEndpoint{
 			ObjectMeta: slim_metav1.ObjectMeta{
 				Name:      "bar-123",
 				Namespace: "bar",
 			},
-		})
-		assert.EqualValues(t, handlers.handlers[0].(*testHandler).ListMetricCalled, 2)
+		}, *handlers)
+		assert.Equal(t, 2, (*handlers)[0].Handler.(*testHandler).ListMetricCalled)
 
 		verifyMetricSeriesNotExists(t, promRegistry)
 	})
 
 	t.Run("Should not remove metrics series with ContextWorkloadName", func(t *testing.T) {
-
 		promRegistry := prometheus.NewRegistry()
-		opts, _ := ParseContextOptions(Options{"sourceContext": "workload-name", "destinationContext": "workload-name"})
+		options := []*ContextOptionConfig{
+			{
+				Name:   "sourceContext",
+				Values: []string{"workload-name"},
+			},
+			{
+				Name:   "destinationContext",
+				Values: []string{"workload-name"},
+			},
+		}
+		opts, _ := ParseContextOptions(options)
 		handlers := initHandlers(t, opts, promRegistry, log)
 
-		handlers.ProcessFlow(context.TODO(), flow1)
-		handlers.ProcessFlow(context.TODO(), flow2)
-		assert.EqualValues(t, handlers.handlers[0].(*testHandler).ProcessCalled, 2)
+		ExecuteAllProcessFlow(t.Context(), flow1, *handlers)
+		ExecuteAllProcessFlow(t.Context(), flow2, *handlers)
+		assert.Equal(t, 2, (*handlers)[0].Handler.(*testHandler).ProcessCalled)
 
 		verifyMetricSeriesExists(t, promRegistry, 1)
 
-		handlers.ProcessCiliumEndpointDeletion(&types.CiliumEndpoint{
+		ProcessCiliumEndpointDeletion(&types.CiliumEndpoint{
 			ObjectMeta: slim_metav1.ObjectMeta{
 				Name:      "foo-123",
 				Namespace: "foo",
 			},
-		})
-		assert.EqualValues(t, handlers.handlers[0].(*testHandler).ListMetricCalled, 1)
+		}, *handlers)
+		assert.Equal(t, 1, (*handlers)[0].Handler.(*testHandler).ListMetricCalled)
 
 		verifyMetricSeriesExists(t, promRegistry, 1)
 
-		handlers.ProcessCiliumEndpointDeletion(&types.CiliumEndpoint{
+		ProcessCiliumEndpointDeletion(&types.CiliumEndpoint{
 			ObjectMeta: slim_metav1.ObjectMeta{
 				Name:      "bar-123",
 				Namespace: "bar",
 			},
-		})
-		assert.EqualValues(t, handlers.handlers[0].(*testHandler).ListMetricCalled, 2)
+		}, *handlers)
+		assert.Equal(t, 2, (*handlers)[0].Handler.(*testHandler).ListMetricCalled)
 
 		verifyMetricSeriesExists(t, promRegistry, 1)
 	})
 
 	t.Run("Should remove metrics series with LabelsContext", func(t *testing.T) {
-
 		promRegistry := prometheus.NewRegistry()
-		opts, _ := ParseContextOptions(Options{"labelsContext": "source_pod,source_namespace,destination_pod,destination_namespace"})
+		options := []*ContextOptionConfig{
+			{
+				Name:   "labelsContext",
+				Values: []string{"source_pod", "source_namespace", "destination_pod", "destination_namespace"},
+			},
+		}
+		opts, _ := ParseContextOptions(options)
 		handlers := initHandlers(t, opts, promRegistry, log)
 
-		handlers.ProcessFlow(context.TODO(), flow1)
-		handlers.ProcessFlow(context.TODO(), flow2)
-		assert.EqualValues(t, handlers.handlers[0].(*testHandler).ProcessCalled, 2)
+		ExecuteAllProcessFlow(t.Context(), flow1, *handlers)
+		ExecuteAllProcessFlow(t.Context(), flow2, *handlers)
+		assert.Equal(t, 2, (*handlers)[0].Handler.(*testHandler).ProcessCalled)
 
 		verifyMetricSeriesExists(t, promRegistry, 2)
 
-		handlers.ProcessCiliumEndpointDeletion(&types.CiliumEndpoint{
+		ProcessCiliumEndpointDeletion(&types.CiliumEndpoint{
 			ObjectMeta: slim_metav1.ObjectMeta{
 				Name:      "foo-123",
 				Namespace: "foo",
 			},
-		})
-		assert.EqualValues(t, handlers.handlers[0].(*testHandler).ListMetricCalled, 1)
+		}, *handlers)
+		assert.Equal(t, 1, (*handlers)[0].Handler.(*testHandler).ListMetricCalled)
 
 		verifyMetricSeriesExists(t, promRegistry, 1)
 
-		handlers.ProcessCiliumEndpointDeletion(&types.CiliumEndpoint{
+		ProcessCiliumEndpointDeletion(&types.CiliumEndpoint{
 			ObjectMeta: slim_metav1.ObjectMeta{
 				Name:      "bar-123",
 				Namespace: "bar",
 			},
-		})
-		assert.EqualValues(t, handlers.handlers[0].(*testHandler).ListMetricCalled, 2)
+		}, *handlers)
+		assert.Equal(t, 2, (*handlers)[0].Handler.(*testHandler).ListMetricCalled)
 
 		verifyMetricSeriesNotExists(t, promRegistry)
 	})
 
 	t.Run("Should not remove metrics series with LabelsContext without namespace", func(t *testing.T) {
-
 		promRegistry := prometheus.NewRegistry()
-		opts, _ := ParseContextOptions(Options{"labelsContext": "source_pod,destination_pod"})
+		options := []*ContextOptionConfig{
+			{
+				Name:   "labelsContext",
+				Values: []string{"source_pod", "destination_pod"},
+			},
+		}
+		opts, _ := ParseContextOptions(options)
 		handlers := initHandlers(t, opts, promRegistry, log)
 
-		handlers.ProcessFlow(context.TODO(), flow1)
-		handlers.ProcessFlow(context.TODO(), flow2)
-		assert.EqualValues(t, handlers.handlers[0].(*testHandler).ProcessCalled, 2)
+		ExecuteAllProcessFlow(t.Context(), flow1, *handlers)
+		ExecuteAllProcessFlow(t.Context(), flow2, *handlers)
+		assert.Equal(t, 2, (*handlers)[0].Handler.(*testHandler).ProcessCalled)
 
 		verifyMetricSeriesExists(t, promRegistry, 2)
 
-		handlers.ProcessCiliumEndpointDeletion(&types.CiliumEndpoint{
+		ProcessCiliumEndpointDeletion(&types.CiliumEndpoint{
 			ObjectMeta: slim_metav1.ObjectMeta{
 				Name:      "foo-123",
 				Namespace: "foo",
 			},
-		})
-		assert.EqualValues(t, handlers.handlers[0].(*testHandler).ListMetricCalled, 1)
+		}, *handlers)
+		assert.Equal(t, 1, (*handlers)[0].Handler.(*testHandler).ListMetricCalled)
 
 		verifyMetricSeriesExists(t, promRegistry, 2)
 
-		handlers.ProcessCiliumEndpointDeletion(&types.CiliumEndpoint{
+		ProcessCiliumEndpointDeletion(&types.CiliumEndpoint{
 			ObjectMeta: slim_metav1.ObjectMeta{
 				Name:      "bar-123",
 				Namespace: "bar",
 			},
-		})
-		assert.EqualValues(t, handlers.handlers[0].(*testHandler).ListMetricCalled, 2)
+		}, *handlers)
+		assert.Equal(t, 2, (*handlers)[0].Handler.(*testHandler).ListMetricCalled)
 
 		verifyMetricSeriesExists(t, promRegistry, 2)
 	})
 
 }
 
-func initHandlers(t *testing.T, opts *ContextOptions, promRegistry *prometheus.Registry, log *logrus.Logger) *Handlers {
+func initHandlers(t *testing.T, opts *ContextOptions, promRegistry *prometheus.Registry, log *slog.Logger) *[]NamedHandler {
 	counter := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "test",
 		Name:      "events",
 	}, opts.GetLabelNames())
 	promRegistry.MustRegister(counter)
 
-	r := NewRegistry(log)
+	r := NewRegistry()
 
 	handler := &testHandler{}
 	handler.ContextOptions = opts
 	handler.counter = counter
 
 	r.Register("test", &testPlugin{handler: handler})
-
-	handlers, err := r.ConfigureHandlers(nil, Map{"test": Options{}})
-	assert.EqualValues(t, err, nil)
-	assert.EqualValues(t, len(handlers.handlers), 1)
-	assert.EqualValues(t, handlers.handlers[0].(*testHandler).InitCalled, 1)
+	cfg := &Config{
+		Metrics: []*MetricConfig{
+			{
+				Name:                 "test",
+				ContextOptionConfigs: []*ContextOptionConfig{},
+			},
+		},
+	}
+	handlers, err := r.ConfigureHandlers(log, nil, cfg)
+	require.NoError(t, err)
+	require.Len(t, *handlers, 1)
+	assert.Equal(t, 1, (*handlers)[0].Handler.(*testHandler).InitCalled)
 	return handlers
 }
 
@@ -275,5 +339,13 @@ func verifyMetricSeriesExists(t *testing.T, promRegistry *prometheus.Registry, e
 func verifyMetricSeriesNotExists(t *testing.T, promRegistry *prometheus.Registry) {
 	metricFamilies, err := promRegistry.Gather()
 	require.NoError(t, err)
-	require.Len(t, metricFamilies, 0)
+	require.Empty(t, metricFamilies)
+}
+
+func ExecuteAllProcessFlow(ctx context.Context, flow *pb.Flow, handlers []NamedHandler) error {
+	var errs error
+	for _, nh := range handlers {
+		errs = errors.Join(errs, nh.Handler.ProcessFlow(ctx, flow))
+	}
+	return errs
 }

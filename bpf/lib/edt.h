@@ -8,19 +8,40 @@
 #include "common.h"
 #include "time.h"
 
-/* From XDP layer, we neither go through an egress hook nor qdisc
- * from here, hence nothing to be set.
- */
-#if defined(ENABLE_BANDWIDTH_MANAGER) && __ctx_is == __ctx_skb
+#define DIRECTION_EGRESS 0
+#define DIRECTION_INGRESS 1
+
+struct edt_id {
+	__u32		id;
+	__u8		direction;
+	__u8		pad[3];
+};
+
+struct edt_info {
+	__u64		bps;
+	__u64		t_last;
+	union {
+		__u64	t_horizon_drop;
+		__u64	tokens;
+	};
+	__u32		prio;
+	__u32		pad_32;
+	__u64		pad[3];
+};
+
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, struct edt_id);
 	__type(value, struct edt_info);
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
-	__uint(max_entries, THROTTLE_MAP_SIZE);
+	__uint(max_entries, 65535);
 	__uint(map_flags, BPF_F_NO_PREALLOC);
-} THROTTLE_MAP __section_maps_btf;
+} cilium_throttle __section_maps_btf;
 
+/* From XDP layer, we neither go through an egress hook nor qdisc
+ * from here, hence nothing to be set.
+ */
+#if defined(ENABLE_BANDWIDTH_MANAGER) && __ctx_is == __ctx_skb
 static __always_inline void edt_set_aggregate(struct __ctx_buff *ctx,
 					      __u32 aggregate)
 {
@@ -44,7 +65,7 @@ static __always_inline int
 edt_sched_departure(struct __ctx_buff *ctx, __be16 proto)
 {
 	__u64 delay, now, t, t_next;
-	struct edt_id aggregate;
+	struct edt_id aggregate = {};
 	struct edt_info *info;
 
 	if (!eth_is_supported_ethertype(proto))
@@ -57,9 +78,13 @@ edt_sched_departure(struct __ctx_buff *ctx, __be16 proto)
 	if (!aggregate.id)
 		return CTX_ACT_OK;
 
-	info = map_lookup_elem(&THROTTLE_MAP, &aggregate);
+	aggregate.direction = DIRECTION_EGRESS;
+
+	info = map_lookup_elem(&cilium_throttle, &aggregate);
 	if (!info)
 		return CTX_ACT_OK;
+	if (!info->bps)
+		goto out;
 
 	now = ktime_get_ns();
 	t = ctx->tstamp;
@@ -77,9 +102,15 @@ edt_sched_departure(struct __ctx_buff *ctx, __be16 proto)
 	 * potentially allow for per aggregate control.
 	 */
 	if (t_next - now >= info->t_horizon_drop)
-		return CTX_ACT_DROP;
+		return DROP_EDT_HORIZON;
 	WRITE_ONCE(info->t_last, t_next);
 	ctx->tstamp = t_next;
+out:
+	/* TODO: Hack to avoid defaulting prio 0 when user doesn't specify anything.
+	 * Priority set by user will always be 1 greater than what scheduler expects.
+	 */
+	if (info->prio)
+		ctx->priority = info->prio - 1;
 	return CTX_ACT_OK;
 }
 #else

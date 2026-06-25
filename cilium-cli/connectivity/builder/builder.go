@@ -5,9 +5,11 @@ package builder
 
 import (
 	_ "embed"
+	"fmt"
 
 	"github.com/cilium/cilium/cilium-cli/connectivity/builder/manifests/template"
 	"github.com/cilium/cilium/cilium-cli/connectivity/check"
+	"github.com/cilium/cilium/cilium-cli/connectivity/tests"
 	"github.com/cilium/cilium/cilium-cli/utils/features"
 )
 
@@ -30,11 +32,23 @@ var (
 	//go:embed manifests/client-egress-only-dns.yaml
 	clientEgressOnlyDNSPolicyYAML string
 
+	//go:embed manifests/client-egress-only-port-53.yaml
+	clientEgressOnlyPort53PolicyYAML string
+
 	//go:embed manifests/client-egress-to-fqdns.yaml
 	clientEgressToFQDNsPolicyYAML string
 
+	//go:embed manifests/client-egress-to-fqdns-and-http-get.yaml
+	clientEgressToFQDNsAndHTTPGetPolicyYAML string
+
+	//go:embed manifests/client-egress-to-fqdns-and-ccec-listener.yaml
+	clientEgressToFQDNsAndCCECListenerYAML string
+
 	//go:embed manifests/echo-ingress-from-other-client.yaml
 	echoIngressFromOtherClientPolicyYAML string
+
+	//go:embed manifests/echo-ingress-from-client-tiered-wildcard-pass-l7.yaml
+	echoIngressFromClientTieredWildcardPassL7PolicyYAML string
 
 	//go:embed manifests/client-egress-to-cidr-cp-host-knp.yaml
 	clientEgressToCIDRCPHostPolicyYAML string
@@ -54,6 +68,18 @@ var (
 	//go:embed manifests/client-egress-to-cidr-external-deny.yaml
 	clientEgressToCIDRExternalDenyPolicyYAML string
 
+	//go:embed manifests/client-egress-to-cidrgroup-external-deny.yaml
+	clientEgressToCIDRGroupExternalDenyPolicyYAML string
+
+	//go:embed manifests/client-egress-to-cidrgroup-external-deny-v2alpha1.yaml
+	clientEgressToCIDRGroupExternalDenyPolicyV2Alpha1YAML string
+
+	//go:embed manifests/client-egress-to-cidrgroup-external-deny-label.yaml
+	clientEgressToCIDRGroupExternalDenyLabelPolicyYAML string
+
+	//go:embed manifests/client-egress-to-cidrgroup-external-deny-label-v2alpha1.yaml
+	clientEgressToCIDRGroupExternalDenyLabelPolicyV2Alpha1YAML string
+
 	//go:embed manifests/client-egress-l7-http.yaml
 	clientEgressL7HTTPPolicyYAML string
 
@@ -62,6 +88,27 @@ var (
 
 	//go:embed manifests/client-egress-l7-http-named-port.yaml
 	clientEgressL7HTTPNamedPortPolicyYAML string
+
+	//go:embed manifests/client-egress-tls-sni.yaml
+	clientEgressTLSSNIPolicyYAML string
+
+	//go:embed manifests/client-egress-tls-sni-wildcard.yaml
+	clientEgressTLSSNIWildcardPolicyYAML string
+
+	//go:embed manifests/client-egress-tls-sni-double-wildcard.yaml
+	clientEgressTLSSNIDoubleWildcardPolicyYAML string
+
+	//go:embed manifests/client-egress-tls-sni-random-wildcard.yaml
+	clientEgressTLSSNIRandomWildcardPolicyYAML string
+
+	//go:embed manifests/client-egress-tls-sni-other.yaml
+	clientEgressTLSSNIOtherPolicyYAML string
+
+	//go:embed manifests/client-egress-l7-tls-sni.yaml
+	clientEgressL7TLSSNIPolicyYAML string
+
+	//go:embed manifests/client-egress-l7-tls-other-sni.yaml
+	clientEgressL7TLSOtherSNIPolicyYAML string
 
 	//go:embed manifests/client-egress-l7-tls.yaml
 	clientEgressL7TLSPolicyYAML string
@@ -77,6 +124,15 @@ var (
 
 	//go:embed manifests/echo-ingress-from-cidr.yaml
 	echoIngressFromCIDRYAML string
+
+	//go:embed manifests/bgp-peering-policy.yaml
+	bgpPeeringPolicyYAML string
+
+	//go:embed manifests/allow-ingress-specific-ns-ccnp.yaml
+	ingressfromSpecificNSYAML string
+
+	//go:embed manifests/allow-egress-specific-ns-ccnp.yaml
+	egresstoSpecificNSYAML string
 )
 
 var (
@@ -94,15 +150,29 @@ type testBuilder interface {
 func GetTestSuites(params check.Parameters) ([]func(connTests []*check.ConnectivityTest, extraTests func(cts ...*check.ConnectivityTest) error) error, error) {
 	switch {
 	case params.Perf:
+		if params.PerfParameters.NetQos {
+			return []func(connTests []*check.ConnectivityTest, extraTests func(cts ...*check.ConnectivityTest) error) error{
+				func(connTests []*check.ConnectivityTest, _ func(cts ...*check.ConnectivityTest) error) error {
+					return networkQosTests(connTests[0])
+				},
+			}, nil
+		}
+		if params.PerfParameters.Bandwidth {
+			return []func(connTests []*check.ConnectivityTest, extraTests func(cts ...*check.ConnectivityTest) error) error{
+				func(connTests []*check.ConnectivityTest, _ func(cts ...*check.ConnectivityTest) error) error {
+					return netBandwidthLimitTests(connTests[0])
+				},
+			}, nil
+		}
 		return []func(connTests []*check.ConnectivityTest, extraTests func(cts ...*check.ConnectivityTest) error) error{
 			func(connTests []*check.ConnectivityTest, _ func(cts ...*check.ConnectivityTest) error) error {
 				return networkPerformanceTests(connTests[0])
 			},
 		}, nil
-	case params.IncludeConnDisruptTest && params.ConnDisruptTestSetup:
+	case params.ConnDisruptTestSetup:
 		// Exit early, as --conn-disrupt-test-setup is only needed to deploy pods which
 		// will be used by another invocation of "cli connectivity test"
-		// with include --include-conn-disrupt-test"
+		// with conn-disrupt test flags (e.g. --include-conn-disrupt-test, --include-conn-disrupt-test-egw).
 		return []func(connTests []*check.ConnectivityTest, extraTests func(cts ...*check.ConnectivityTest) error) error{
 			func(connTests []*check.ConnectivityTest, _ func(cts ...*check.ConnectivityTest) error) error {
 				return connDisruptTests(connTests[0])
@@ -111,7 +181,7 @@ func GetTestSuites(params check.Parameters) ([]func(connTests []*check.Connectiv
 	case params.TestConcurrency > 1:
 		return []func(connTests []*check.ConnectivityTest, extraTests func(cts ...*check.ConnectivityTest) error) error{
 			func(connTests []*check.ConnectivityTest, extraTests func(cts ...*check.ConnectivityTest) error) error {
-				if connTests[0].Params().IncludeConnDisruptTest {
+				if connTests[0].ShouldRunConnDisrupt() {
 					if err := connDisruptTests(connTests[0]); err != nil {
 						return err
 					}
@@ -131,7 +201,7 @@ func GetTestSuites(params check.Parameters) ([]func(connTests []*check.Connectiv
 	default: // fallback to the sequential run
 		return []func(connTests []*check.ConnectivityTest, extraTests func(cts ...*check.ConnectivityTest) error) error{
 			func(connTests []*check.ConnectivityTest, extraTests func(cts ...*check.ConnectivityTest) error) error {
-				if connTests[0].Params().IncludeConnDisruptTest {
+				if connTests[0].ShouldRunConnDisrupt() {
 					if err := connDisruptTests(connTests[0]); err != nil {
 						return err
 					}
@@ -157,6 +227,18 @@ func networkPerformanceTests(ct *check.ConnectivityTest) error {
 	return injectTests(tests, ct)
 }
 
+// networkQosTests injects the network performance connectivity tests.
+func networkQosTests(ct *check.ConnectivityTest) error {
+	tests := []testBuilder{networkQos{}}
+	return injectTests(tests, ct)
+}
+
+// netBandwidthLimitTests injects the network performance connectivity tests.
+func netBandwidthLimitTests(ct *check.ConnectivityTest) error {
+	tests := []testBuilder{networkBandwidthLimit{}}
+	return injectTests(tests, ct)
+}
+
 // connDisruptTests injects the conn-disrupt connectivity tests.
 func connDisruptTests(ct *check.ConnectivityTest) error {
 	tests := []testBuilder{
@@ -170,7 +252,6 @@ func connDisruptTests(ct *check.ConnectivityTest) error {
 // Each test should be run in a separate namespace.
 func concurrentTests(connTests []*check.ConnectivityTest) error {
 	tests := []testBuilder{
-		noUnexpectedPacketDrops{},
 		noPolicies{},
 		noPoliciesFromOutside{},
 		noPoliciesExtra{},
@@ -210,13 +291,17 @@ func concurrentTests(connTests []*check.ConnectivityTest) error {
 		clientWithServiceAccountEgressToEchoDeny{},
 		clientEgressToEchoServiceAccountDeny{},
 		clientEgressToCidrDeny{},
+		clientEgressToCidrgroupDeny{},
+		clientEgressToCidrgroupDenyByLabel{},
 		clientEgressToCidrDenyDefault{},
 		clusterMeshEndpointSliceSync{},
 		health{},
 		northSouthLoadbalancing{},
 		podToPodEncryption{},
+		podToPodEncryptionV2{},
 		nodeToNodeEncryption{},
 		egressGateway{},
+		egressGatewayMultigateway{},
 		egressGatewayExcludedCidrs{},
 		egressGatewayWithL7Policy{},
 		podToNodeCidrpolicy{},
@@ -226,30 +311,30 @@ func concurrentTests(connTests []*check.ConnectivityTest) error {
 		clientEgressL7Method{},
 		clientEgressL7{},
 		clientEgressL7NamedPort{},
-		clientEgressL7TlsDenyWithoutHeaders{},
-		clientEgressL7TlsHeaders{},
+		clientEgressTlsSni{},
 		clientEgressL7SetHeader{},
 		echoIngressAuthAlwaysFail{},
 		echoIngressMutualAuthSpiffe{},
 		podToIngressService{},
-		podToIngressServiceDenyAll{},
-		podToIngressServiceDenyIngressIdentity{},
-		podToIngressServiceDenyBackendService{},
-		podToIngressServiceAllowIngressIdentity{},
 		outsideToIngressService{},
-		outsideToIngressServiceDenyWorldIdentity{},
-		outsideToIngressServiceDenyCidr{},
-		outsideToIngressServiceDenyAllIngress{},
+		serviceLoopback{},
+		l7LB{},
 		dnsOnly{},
 		toFqdns{},
+		toFqdnsWithProxy{},
 		podToControlplaneHost{},
 		podToK8sOnControlplane{},
 		podToControlplaneHostCidr{},
 		podToK8sOnControlplaneCidr{},
+		policyLocalCluster{},
 		localRedirectPolicy{},
 		localRedirectPolicyWithNodeDNS{},
 		noFragmentation{},
 		bgpControlPlane{},
+		multicast{},
+		strictModeEncryption{},
+		ipsecKeyDerivation{},
+		ztunnelPodToPodEncryption{},
 	}
 	return injectTests(tests, connTests...)
 }
@@ -259,44 +344,87 @@ func sequentialTests(ct *check.ConnectivityTest) error {
 	tests := []testBuilder{
 		hostFirewallIngress{},
 		hostFirewallEgress{},
+		clientEgressL7TlsDenyWithoutHeaders{},
+		clientEgressL7TlsHeaders{},
+		egresstoSpecificNamespace{},
+		ingressfromSpecificNamespace{},
 	}
 	return injectTests(tests, ct)
 }
 
 // finalTests injects the all connectivity tests that must be run as the last tests sequentially.
 func finalTests(ct *check.ConnectivityTest) error {
-	return injectTests([]testBuilder{checkLogErrors{}}, ct)
+	return injectTests([]testBuilder{
+		noUnexpectedPacketDrops{},
+		checkLogErrors{},
+	}, ct)
 }
 
-func renderTemplates(param check.Parameters) (map[string]string, error) {
+func renderTemplates(clusterNameLocal, clusterNameRemote string, param check.Parameters) (map[string]string, error) {
 	templates := map[string]string{
-		"clientEgressToCIDRExternalPolicyYAML":             clientEgressToCIDRExternalPolicyYAML,
-		"clientEgressToCIDRExternalPolicyKNPYAML":          clientEgressToCIDRExternalPolicyKNPYAML,
-		"clientEgressToCIDRNodeKNPYAML":                    clientEgressToCIDRNodeKNPYAML,
-		"clientEgressToCIDRExternalDenyPolicyYAML":         clientEgressToCIDRExternalDenyPolicyYAML,
-		"clientEgressL7HTTPPolicyYAML":                     clientEgressL7HTTPPolicyYAML,
-		"clientEgressL7HTTPPolicyPortRangeYAML":            clientEgressL7HTTPPolicyPortRangeYAML,
-		"clientEgressL7HTTPNamedPortPolicyYAML":            clientEgressL7HTTPNamedPortPolicyYAML,
-		"clientEgressToFQDNsPolicyYAML":                    clientEgressToFQDNsPolicyYAML,
-		"clientEgressL7TLSPolicyYAML":                      clientEgressL7TLSPolicyYAML,
-		"clientEgressL7TLSPolicyPortRangeYAML":             clientEgressL7TLSPolicyPortRangeYAML,
-		"clientEgressL7HTTPMatchheaderSecretYAML":          clientEgressL7HTTPMatchheaderSecretYAML,
-		"clientEgressL7HTTPMatchheaderSecretPortRangeYAML": clientEgressL7HTTPMatchheaderSecretPortRangeYAML,
-		"clientEgressL7HTTPExternalYAML":                   clientEgressL7HTTPExternalYAML,
-		"clientEgressNodeLocalDNSYAML":                     clientEgressNodeLocalDNSYAML,
-		"echoIngressFromCIDRYAML":                          echoIngressFromCIDRYAML,
-		"denyCIDRPolicyYAML":                               denyCIDRPolicyYAML,
+		"clientEgressToCIDRExternalPolicyYAML":                       clientEgressToCIDRExternalPolicyYAML,
+		"clientEgressToCIDRExternalPolicyKNPYAML":                    clientEgressToCIDRExternalPolicyKNPYAML,
+		"clientEgressToCIDRNodeKNPYAML":                              clientEgressToCIDRNodeKNPYAML,
+		"clientEgressToCIDRExternalDenyPolicyYAML":                   clientEgressToCIDRExternalDenyPolicyYAML,
+		"clientEgressToCIDRGroupExternalDenyPolicyYAML":              clientEgressToCIDRGroupExternalDenyPolicyYAML,
+		"clientEgressToCIDRGroupExternalDenyPolicyV2Alpha1YAML":      clientEgressToCIDRGroupExternalDenyPolicyV2Alpha1YAML,
+		"clientEgressToCIDRGroupExternalDenyLabelPolicyYAML":         clientEgressToCIDRGroupExternalDenyLabelPolicyYAML,
+		"clientEgressToCIDRGroupExternalDenyLabelPolicyV2Alpha1YAML": clientEgressToCIDRGroupExternalDenyLabelPolicyV2Alpha1YAML,
+		"clientEgressL7HTTPPolicyYAML":                               clientEgressL7HTTPPolicyYAML,
+		"clientEgressL7HTTPPolicyPortRangeYAML":                      clientEgressL7HTTPPolicyPortRangeYAML,
+		"clientEgressL7HTTPNamedPortPolicyYAML":                      clientEgressL7HTTPNamedPortPolicyYAML,
+		"clientEgressToFQDNsPolicyYAML":                              clientEgressToFQDNsPolicyYAML,
+		"clientEgressToFQDNsAndHTTPGetPolicyYAML":                    clientEgressToFQDNsAndHTTPGetPolicyYAML,
+		"clientEgressToFQDNsAndCCECListenerYAML":                     clientEgressToFQDNsAndCCECListenerYAML,
+		"clientEgressTLSSNIPolicyYAML":                               clientEgressTLSSNIPolicyYAML,
+		"clientEgressTLSSNIWildcardPolicyYAML":                       clientEgressTLSSNIWildcardPolicyYAML,
+		"clientEgressTLSSNIRandomWildcardPolicyYAML":                 clientEgressTLSSNIRandomWildcardPolicyYAML,
+		"clientEgressTLSSNIDoubleWildcardPolicyYAML":                 clientEgressTLSSNIDoubleWildcardPolicyYAML,
+		"clientEgressTLSSNIOtherPolicyYAML":                          clientEgressTLSSNIOtherPolicyYAML,
+		"clientEgressL7TLSSNIPolicyYAML":                             clientEgressL7TLSSNIPolicyYAML,
+		"clientEgressL7TLSOtherSNIPolicyYAML":                        clientEgressL7TLSOtherSNIPolicyYAML,
+		"clientEgressL7TLSPolicyYAML":                                clientEgressL7TLSPolicyYAML,
+		"clientEgressL7TLSPolicyPortRangeYAML":                       clientEgressL7TLSPolicyPortRangeYAML,
+		"clientEgressL7HTTPMatchheaderSecretYAML":                    clientEgressL7HTTPMatchheaderSecretYAML,
+		"clientEgressL7HTTPMatchheaderSecretPortRangeYAML":           clientEgressL7HTTPMatchheaderSecretPortRangeYAML,
+		"clientEgressL7HTTPExternalYAML":                             clientEgressL7HTTPExternalYAML,
+		"clientEgressNodeLocalDNSYAML":                               clientEgressNodeLocalDNSYAML,
+		"clientEgressOnlyDNSPolicyYAML":                              clientEgressOnlyDNSPolicyYAML,
+		"clientEgressOnlyPort53PolicyYAML":                           clientEgressOnlyPort53PolicyYAML,
+		"echoIngressFromCIDRYAML":                                    echoIngressFromCIDRYAML,
+		"denyCIDRPolicyYAML":                                         denyCIDRPolicyYAML,
+		"ingressfromSpecificNSYAML":                                  ingressfromSpecificNSYAML,
+		"egresstoSpecificNSYAML":                                     egresstoSpecificNSYAML,
+		"echoIngressFromClientTieredWildcardPassL7YAML":              echoIngressFromClientTieredWildcardPassL7PolicyYAML,
 	}
 	if param.K8sLocalHostTest {
 		templates["clientEgressToCIDRCPHostPolicyYAML"] = clientEgressToCIDRCPHostPolicyYAML
 		templates["clientEgressToCIDRK8sPolicyKNPYAML"] = clientEgressToCIDRK8sPolicyYAML
 	}
 
+	fakeExternalTarget1 := tests.FakeExternalTarget1
+	fakeExternalTarget2 := tests.FakeExternalTarget2
+	if !param.ExternalTargetFakeDNS {
+		fakeExternalTarget1 = param.ExternalTarget
+		fakeExternalTarget2 = param.ExternalOtherTarget
+	}
 	renderedTemplates := map[string]string{}
 	for key, temp := range templates {
-		val, err := template.Render(temp, param)
+		val, err := template.Render(temp, struct {
+			check.Parameters
+			ClusterNameLocal        string
+			ClusterNameRemote       string
+			FakeExternalTarget      string
+			FakeExternalOtherTarget string
+		}{
+			Parameters:              param,
+			ClusterNameLocal:        clusterNameLocal,
+			ClusterNameRemote:       clusterNameRemote,
+			FakeExternalTarget:      fakeExternalTarget1,
+			FakeExternalOtherTarget: fakeExternalTarget2,
+		})
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to render template %s: %w", key, err)
 		}
 		renderedTemplates[key] = val
 	}
@@ -310,7 +438,10 @@ func injectTests(tests []testBuilder, connTests ...*check.ConnectivityTest) erro
 	id := 0
 	for i := range tests {
 		if _, ok := templates[connTests[id].Params().TestNamespace]; !ok {
-			nsTemplates, err := renderTemplates(connTests[id].Params())
+			nsTemplates, err := renderTemplates(
+				connTests[id].ClusterNameLocal, connTests[id].ClusterNameRemote,
+				connTests[id].Params(),
+			)
 			if err != nil {
 				return err
 			}
@@ -334,7 +465,7 @@ func withKPRReqForMultiCluster(ct *check.ConnectivityTest, reqs ...features.Requ
 	// Skip the nodeport-related tests in the multicluster scenario if KPR is not
 	// enabled, since global nodeport services are not supported in that case.
 	if ct.Params().MultiCluster != "" {
-		reqs = append(reqs, features.RequireEnabled(features.KPRNodePort))
+		reqs = append(reqs, features.RequireEnabled(features.KPR))
 	}
 	return reqs
 }

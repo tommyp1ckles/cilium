@@ -24,6 +24,23 @@ func (in *Device) DeepEqual(other *Device) bool {
 	if in.Name != other.Name {
 		return false
 	}
+	if ((in.AltNames != nil) && (other.AltNames != nil)) || ((in.AltNames == nil) != (other.AltNames == nil)) {
+		in, other := &in.AltNames, &other.AltNames
+		if other == nil {
+			return false
+		}
+
+		if len(*in) != len(*other) {
+			return false
+		} else {
+			for i, inElement := range *in {
+				if inElement != (*other)[i] {
+					return false
+				}
+			}
+		}
+	}
+
 	if ((in.HardwareAddr != nil) && (other.HardwareAddr != nil)) || ((in.HardwareAddr == nil) != (other.HardwareAddr == nil)) {
 		in, other := &in.HardwareAddr, &other.HardwareAddr
 		if other == nil {
@@ -68,6 +85,9 @@ func (in *Device) DeepEqual(other *Device) bool {
 		return false
 	}
 	if in.MasterIndex != other.MasterIndex {
+		return false
+	}
+	if in.OperStatus != other.OperStatus {
 		return false
 	}
 	if in.Selected != other.Selected {

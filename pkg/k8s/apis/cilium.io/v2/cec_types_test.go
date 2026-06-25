@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"sigs.k8s.io/yaml"
 
-	_ "github.com/cilium/proxy/go/envoy/config/listener/v3"
-	_ "github.com/cilium/proxy/go/envoy/extensions/filters/network/http_connection_manager/v3"
+	_ "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
+	_ "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 )
 
 var (
@@ -47,9 +47,6 @@ var (
 )
 
 func TestParseEnvoySpec(t *testing.T) {
-	// option.Config.Debug = true
-	// logging.DefaultLogger.SetLevel(logrus.DebugLevel)
-
 	jsonBytes, err := yaml.YAMLToJSON([]byte(envoySpec))
 	require.NoError(t, err)
 	cec := &CiliumEnvoyConfig{}

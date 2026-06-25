@@ -31,11 +31,14 @@ type ciliumMetricsXfrmError struct {
 
 func NoIPsecXfrmErrors(expectedErrors []string) check.Scenario {
 	return &noIPsecXfrmErrors{
-		features.ComputeFailureExceptions(defaults.ExpectedXFRMErrors, expectedErrors),
+		expectedErrors: features.ComputeFailureExceptions(defaults.ExpectedXFRMErrors, expectedErrors),
+		ScenarioBase:   check.NewScenarioBase(),
 	}
 }
 
 type noIPsecXfrmErrors struct {
+	check.ScenarioBase
+
 	expectedErrors []string
 }
 
@@ -69,7 +72,6 @@ func (n *noIPsecXfrmErrors) collectXfrmErrors(ctx context.Context, t *check.Test
 	cmd := []string{"cilium", "metrics", "list", "-ojson", "-pcilium_ipsec_xfrm_error"}
 
 	for _, pod := range ct.CiliumPods() {
-		pod := pod
 		encryptStatus, err := pod.K8sClient.ExecInPod(ctx, pod.Pod.Namespace, pod.Pod.Name, defaults.AgentContainerName, cmd)
 		if err != nil {
 			t.Fatalf("Unable to get cilium ipsec xfrm error metrics: %s", err)

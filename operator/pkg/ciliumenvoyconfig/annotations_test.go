@@ -6,8 +6,8 @@ package ciliumenvoyconfig
 import (
 	"testing"
 
-	envoy_config_cluster "github.com/cilium/proxy/go/envoy/config/cluster/v3"
-	http_connection_manager_v3 "github.com/cilium/proxy/go/envoy/extensions/filters/network/http_connection_manager/v3"
+	envoy_config_cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
+	http_connection_manager_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	"github.com/stretchr/testify/require"
 
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
@@ -44,7 +44,7 @@ func Test_lbModeClusterMutator(t *testing.T) {
 			},
 		})(input)
 		require.NotNil(t, res)
-		require.NotNil(t, res.LbPolicy, envoy_config_cluster.Cluster_ROUND_ROBIN)
+		require.NotNil(t, res.LbPolicy)
 	})
 
 	t.Run("mutate lb policy to least request", func(t *testing.T) {
@@ -56,6 +56,6 @@ func Test_lbModeClusterMutator(t *testing.T) {
 			},
 		})(input)
 		require.NotNil(t, res)
-		require.NotNil(t, res.LbPolicy, envoy_config_cluster.Cluster_LEAST_REQUEST)
+		require.NotNil(t, res.LbPolicy)
 	})
 }

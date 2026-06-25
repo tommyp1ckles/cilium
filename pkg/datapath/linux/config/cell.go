@@ -9,20 +9,26 @@ import (
 	"github.com/cilium/hive/cell"
 
 	dpdef "github.com/cilium/cilium/pkg/datapath/linux/config/defines"
+	ipsec "github.com/cilium/cilium/pkg/datapath/linux/ipsec/types"
 	"github.com/cilium/cilium/pkg/datapath/linux/sysctl"
-	datapath "github.com/cilium/cilium/pkg/datapath/types"
+	"github.com/cilium/cilium/pkg/kpr"
+	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/maps/nodemap"
+	"github.com/cilium/cilium/pkg/node"
 )
 
 type WriterParams struct {
 	cell.In
 
 	Log                *slog.Logger
+	LBConfig           loadbalancer.Config
 	NodeMap            nodemap.MapV2
-	NodeAddressing     datapath.NodeAddressing
+	NodeAddressing     node.Addressing
 	NodeExtraDefines   []dpdef.Map `group:"header-node-defines"`
 	NodeExtraDefineFns []dpdef.Fn  `group:"header-node-define-fns"`
 	Sysctl             sysctl.Sysctl
+	KPRConfig          kpr.KPRConfig
+	IPSecConfig        ipsec.Config
 }
 
 var Cell = cell.Module(

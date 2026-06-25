@@ -8,20 +8,20 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"strings"
-	"sync"
 	"sync/atomic"
 
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/job"
 	"github.com/cilium/statedb"
 	"github.com/cilium/statedb/reconciler"
-	"github.com/sirupsen/logrus"
 	"k8s.io/apimachinery/pkg/util/sets"
 
 	"github.com/cilium/cilium/pkg/datapath/tables"
 	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 )
 
 const (
@@ -50,17 +50,17 @@ type Initializer interface {
 }
 
 type initializer struct {
-	once sync.Once
-	wg   *lock.StoppableWaitGroup
+	done lock.DoneFunc
 }
 
 func (i *initializer) InitDone() {
-	// further calls to InitDone will be a no-op
-	i.once.Do(i.wg.Done)
+	// lock.DoneFunc's are wrapped in sync.Once, so it is safe to call this
+	// multiple times.
+	i.done()
 }
 
 type manager struct {
-	logger  logrus.FieldLogger
+	logger  *slog.Logger
 	enabled bool
 
 	db    *statedb.DB
@@ -79,8 +79,7 @@ func (m *manager) NewInitializer() Initializer {
 	if m.started.Load() {
 		panic("an initializer to the ipset manager cannot be taken after the manager started")
 	}
-	m.startedWG.Add()
-	return &initializer{wg: m.startedWG}
+	return &initializer{done: m.startedWG.Add()}
 }
 
 // AddToIPSet adds the addresses to the ipset with given name and family.
@@ -138,7 +137,7 @@ func (m *manager) RemoveFromIPSet(name string, addrs ...netip.Addr) {
 }
 
 func newIPSetManager(
-	logger logrus.FieldLogger,
+	logger *slog.Logger,
 	lc cell.Lifecycle,
 	jg job.Group,
 	health cell.Health,
@@ -190,8 +189,8 @@ func (m *manager) init(ctx context.Context, _ cell.Health) error {
 			if err := m.ipset.remove(ctx, ciliumNodeIPSet); err != nil {
 				m.logger.Info("Unable to remove stale ipset. This is usually due to a stale iptables rule referring to it. "+
 					"The set will not be removed. This is harmless and it will be removed at the next Cilium restart, when the stale iptables rule has been removed.",
-					"ipset", ciliumNodeIPSet,
-					"error", err)
+					logfields.IPSet, ciliumNodeIPSet,
+					logfields.Error, err)
 			}
 		}
 		return nil
@@ -216,9 +215,9 @@ func (m *manager) init(ctx context.Context, _ cell.Health) error {
 }
 
 type ipset struct {
-	executable
+	log *slog.Logger
 
-	log logrus.FieldLogger
+	executable
 }
 
 func (i *ipset) create(ctx context.Context, name string, family string) error {
@@ -284,7 +283,9 @@ func (i *ipset) delBatch(ctx context.Context, batch map[string][]netip.Addr) err
 }
 
 func (i *ipset) run(ctx context.Context, args ...string) ([]byte, error) {
-	i.log.Debugf("Running command %s", i.fullCommand(args...))
+	i.log.Debug("Running command",
+		logfields.Cmd, i.fullCommand(args...),
+	)
 	return i.exec(ctx, "ipset", "", args...)
 }
 

@@ -4,7 +4,6 @@
 package policy
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -21,7 +20,7 @@ import (
 func TestPolicyHandler(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	h := &policyHandler{}
-	assert.NoError(t, h.Init(registry, api.Options{}))
+	assert.NoError(t, h.Init(registry, &api.MetricConfig{}))
 	assert.NoError(t, testutil.CollectAndCompare(h.verdicts, strings.NewReader("")))
 	flow := flowpb.Flow{
 		EventType:        &flowpb.CiliumEventType{Type: monitorAPI.MessageTypePolicyVerdict},
@@ -30,16 +29,16 @@ func TestPolicyHandler(t *testing.T) {
 		Verdict:          flowpb.Verdict_DROPPED,
 	}
 
-	h.ProcessFlow(context.Background(), &flow)
+	h.ProcessFlow(t.Context(), &flow)
 	flow.TrafficDirection = flowpb.TrafficDirection_INGRESS
 	flow.PolicyMatchType = monitorAPI.PolicyMatchL3L4
 	flow.Verdict = flowpb.Verdict_REDIRECTED
-	h.ProcessFlow(context.Background(), &flow)
+	h.ProcessFlow(t.Context(), &flow)
 
 	// Policy verdicts from host shouldn't be counted.
 	flow.PolicyMatchType = monitorAPI.PolicyMatchAll
 	flow.Source = &flowpb.Endpoint{Identity: uint32(identity.ReservedIdentityHost)}
-	h.ProcessFlow(context.Background(), &flow)
+	h.ProcessFlow(t.Context(), &flow)
 
 	// l7/http
 	flow.EventType = &flowpb.CiliumEventType{Type: monitorAPI.MessageTypeAccessLog}
@@ -51,7 +50,7 @@ func TestPolicyHandler(t *testing.T) {
 			Url:      "http://myhost/some/path",
 			Protocol: "http/1.1",
 		}}}
-	h.ProcessFlow(context.Background(), &flow)
+	h.ProcessFlow(t.Context(), &flow)
 
 	expected := strings.NewReader(`# HELP hubble_policy_verdicts_total Total number of Cilium network policy verdicts
 # TYPE hubble_policy_verdicts_total counter

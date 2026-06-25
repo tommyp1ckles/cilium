@@ -4,7 +4,6 @@
 package drop
 
 import (
-	"context"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -18,7 +17,21 @@ import (
 
 func TestDropHandler(t *testing.T) {
 	registry := prometheus.NewRegistry()
-	opts := api.Options{"sourceContext": "namespace", "destinationContext": "namespace"}
+	opts := &api.MetricConfig{
+		ContextOptionConfigs: []*api.ContextOptionConfig{
+			{
+				Name:   "sourceContext",
+				Values: []string{"namespace"},
+			},
+			{
+				Name:   "destinationContext",
+				Values: []string{"namespace"},
+			},
+		},
+		ExcludeFilters: []*pb.FlowFilter{
+			{SourcePod: []string{"deny-pod/"}},
+		},
+	}
 
 	dropHandler := &dropHandler{}
 
@@ -42,7 +55,7 @@ func TestDropHandler(t *testing.T) {
 			Destination: &pb.Endpoint{Namespace: "bar"},
 			Verdict:     pb.Verdict_FORWARDED,
 		}
-		dropHandler.ProcessFlow(context.TODO(), flow)
+		dropHandler.ProcessFlow(t.Context(), flow)
 
 		metricFamilies, err := registry.Gather()
 		require.NoError(t, err)
@@ -51,7 +64,7 @@ func TestDropHandler(t *testing.T) {
 	})
 
 	t.Run("ProcessFlow_ShouldReportDroppedFlow", func(t *testing.T) {
-		flow := &pb.Flow{
+		flow1 := &pb.Flow{
 			EventType: &pb.CiliumEventType{Type: monitorAPI.MessageTypePolicyVerdict},
 			L4: &pb.Layer4{
 				Protocol: &pb.Layer4_TCP{
@@ -64,7 +77,21 @@ func TestDropHandler(t *testing.T) {
 			DropReason:     uint32(pb.DropReason_POLICY_DENIED),
 			DropReasonDesc: pb.DropReason_POLICY_DENIED,
 		}
-		dropHandler.ProcessFlow(context.TODO(), flow)
+		flow2 := &pb.Flow{
+			EventType: &pb.CiliumEventType{Type: monitorAPI.MessageTypePolicyVerdict},
+			L4: &pb.Layer4{
+				Protocol: &pb.Layer4_TCP{
+					TCP: &pb.TCP{},
+				},
+			},
+			Source:         &pb.Endpoint{Namespace: "deny-pod", PodName: "a"},
+			Destination:    &pb.Endpoint{Namespace: "bar"},
+			Verdict:        pb.Verdict_DROPPED,
+			DropReason:     uint32(pb.DropReason_POLICY_DENIED),
+			DropReasonDesc: pb.DropReason_POLICY_DENIED,
+		}
+		dropHandler.ProcessFlow(t.Context(), flow1)
+		dropHandler.ProcessFlow(t.Context(), flow2)
 
 		metricFamilies, err := registry.Gather()
 		require.NoError(t, err)
@@ -88,7 +115,7 @@ func TestDropHandler(t *testing.T) {
 		assert.Equal(t, 1., *metric.Counter.Value)
 
 		//send another flow with same labels
-		dropHandler.ProcessFlow(context.TODO(), flow)
+		dropHandler.ProcessFlow(t.Context(), flow1)
 		metricFamilies, _ = registry.Gather()
 		metric = metricFamilies[0].Metric[0]
 		assert.Equal(t, 2., *metric.Counter.Value)

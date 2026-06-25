@@ -16,38 +16,56 @@ import (
 )
 
 var (
-	DeviceIDIndex = statedb.Index[*Device, int]{
+	deviceIndexIndex = statedb.Index[*Device, int]{
 		Name: "id",
 		FromObject: func(d *Device) index.KeySet {
 			return index.NewKeySet(index.Int(d.Index))
 		},
-		FromKey: index.Int,
-		Unique:  true,
+		FromKey:    index.Int,
+		FromString: index.IntString,
+		Unique:     true,
 	}
 
-	DeviceNameIndex = statedb.Index[*Device, string]{
+	deviceNameIndex = statedb.Index[*Device, string]{
 		Name: "name",
 		FromObject: func(d *Device) index.KeySet {
-			return index.NewKeySet(index.String(d.Name))
+			keys := make([]index.Key, 0, 1+len(d.AltNames))
+			keys = append(keys, index.String(d.Name))
+			for _, altName := range d.AltNames {
+				keys = append(keys, index.String(altName))
+			}
+			return index.NewKeySet(keys...)
 		},
-		FromKey: index.String,
+		FromKey:    index.String,
+		FromString: index.FromString,
 	}
 
-	DeviceSelectedIndex = statedb.Index[*Device, bool]{
+	deviceSelectedIndex = statedb.Index[*Device, bool]{
 		Name: "selected",
 		FromObject: func(d *Device) index.KeySet {
 			return index.NewKeySet(index.Bool(d.Selected))
 		},
-		FromKey: index.Bool,
+		FromKey:    index.Bool,
+		FromString: index.BoolString,
 	}
+
+	// DeviceByIndex queries the devices table by device index.
+	DeviceByIndex = deviceIndexIndex.Query
+
+	// DeviceByName queries the devices table by device name.
+	DeviceByName = deviceNameIndex.Query
+
+	// DevicesBySelected queries the selected devices from devices table.
+	DevicesBySelected = deviceSelectedIndex.Query
 )
 
-func NewDeviceTable() (statedb.RWTable[*Device], error) {
+func NewDeviceTable(db *statedb.DB) (statedb.RWTable[*Device], error) {
 	return statedb.NewTable(
+		db,
 		"devices",
-		DeviceIDIndex,
-		DeviceNameIndex,
-		DeviceSelectedIndex,
+		deviceIndexIndex,
+		deviceNameIndex,
+		deviceSelectedIndex,
 	)
 }
 
@@ -88,12 +106,14 @@ type Device struct {
 	Index        int             // positive integer that starts at one, zero is never used
 	MTU          int             // maximum transmission unit
 	Name         string          // e.g., "en0", "lo0", "eth0.100"
+	AltNames     []string        // alternative names
 	HardwareAddr HardwareAddr    // IEEE MAC-48, EUI-48 and EUI-64 form
 	Flags        net.Flags       // e.g. net.FlagUp, net.eFlagLoopback, net.FlagMulticast
 	Addrs        []DeviceAddress // Addresses assigned to the device
 	RawFlags     uint32          // Raw interface flags
 	Type         string          // Device type, e.g. "veth" etc.
 	MasterIndex  int             // Index of the master device (e.g. bridge or bonding device)
+	OperStatus   string          // Operational status, e.g. "up", "lower-layer-down"
 
 	Selected          bool   // True if this is an external facing device
 	NotSelectedReason string // Reason why this device was not selected
@@ -101,13 +121,14 @@ type Device struct {
 
 func (d *Device) DeepCopy() *Device {
 	copy := *d
+	copy.AltNames = slices.Clone(d.AltNames)
 	copy.Addrs = slices.Clone(d.Addrs)
 	return &copy
 }
 
-func (d *Device) HasIP(ip net.IP) bool {
+func (d *Device) HasIP(ip netip.Addr) bool {
 	for _, addr := range d.Addrs {
-		if addr.AsIP().Equal(ip) {
+		if addr.Addr == ip {
 			return true
 		}
 	}
@@ -124,6 +145,7 @@ func (*Device) TableHeader() []string {
 		"HWAddr",
 		"Flags",
 		"Addresses",
+		"OperStatus",
 	}
 }
 
@@ -132,8 +154,12 @@ func (d *Device) TableRow() []string {
 	for _, addr := range d.Addrs {
 		addrs = append(addrs, addr.Addr.String())
 	}
+	name := d.Name
+	if len(d.AltNames) > 0 {
+		name += " (" + strings.Join(d.AltNames, ", ") + ")"
+	}
 	return []string{
-		d.Name,
+		name,
 		fmt.Sprintf("%d", d.Index),
 		fmt.Sprintf("%v", d.Selected),
 		d.Type,
@@ -141,6 +167,7 @@ func (d *Device) TableRow() []string {
 		d.HardwareAddr.String(),
 		d.Flags.String(),
 		strings.Join(addrs, ", "),
+		d.OperStatus,
 	}
 }
 
@@ -149,10 +176,6 @@ type DeviceAddress struct {
 	Addr      netip.Addr
 	Secondary bool
 	Scope     RouteScope // Address scope, e.g. RT_SCOPE_LINK, RT_SCOPE_HOST etc.
-}
-
-func (d *DeviceAddress) AsIP() net.IP {
-	return d.Addr.AsSlice()
 }
 
 func (d *DeviceAddress) String() string {
@@ -171,7 +194,7 @@ func (d *DeviceAddress) DeepEqual(other *DeviceAddress) bool {
 // The invalidated channel is closed when devices have changed and
 // should be requeried with a new transaction.
 func SelectedDevices(tbl statedb.Table[*Device], txn statedb.ReadTxn) ([]*Device, <-chan struct{}) {
-	iter, invalidated := tbl.ListWatch(txn, DeviceSelectedIndex.Query(true))
+	iter, invalidated := tbl.ListWatch(txn, deviceSelectedIndex.Query(true))
 	return statedb.Collect(iter), invalidated
 }
 
@@ -194,20 +217,24 @@ func (lst DeviceFilter) NonEmpty() bool {
 	return len(lst) > 0
 }
 
-// Match checks whether the given device name passes the filter
-func (lst DeviceFilter) Match(dev string) bool {
-	if len(lst) == 0 {
-		return true
-	}
+// Match checks whether the given device name matches the filter
+// The first returned bool indicates there is a matched entry.
+// The second returned bool indicates it's a reverse match, aka. the device should be excluded.
+func (lst DeviceFilter) Match(dev string) (bool, bool) {
 	for _, entry := range lst {
+		reverse := false
+		if strings.HasPrefix(entry, "!") {
+			reverse = true
+			entry = entry[1:]
+		}
 		if strings.HasSuffix(entry, "+") {
 			prefix := strings.TrimRight(entry, "+")
 			if strings.HasPrefix(dev, prefix) {
-				return true
+				return true, reverse
 			}
 		} else if dev == entry {
-			return true
+			return true, reverse
 		}
 	}
-	return false
+	return false, false
 }

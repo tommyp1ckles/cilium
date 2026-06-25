@@ -43,7 +43,6 @@ static long BPF_FUNC(for_each_map_elem, void *map, void *callback_fn,
 static __u64 BPF_FUNC(ktime_get_ns);
 static __u64 BPF_FUNC(ktime_get_boot_ns);
 static __u64 BPF_FUNC(jiffies64);
-#define jiffies	jiffies64()
 
 /* We have cookies! ;-) */
 static __sock_cookie BPF_FUNC(get_socket_cookie, void *ctx);
@@ -98,6 +97,9 @@ static struct bpf_sock *BPF_FUNC(sk_lookup_udp, void *ctx,
 static int BPF_FUNC_REMAP(get_socket_opt, void *ctx, int level, int optname,
 			  void *optval, int optlen) =
 	(void *)BPF_FUNC_getsockopt;
+static int BPF_FUNC_REMAP(set_socket_opt, void *ctx, int level, int optname,
+			  void *optval, int optlen) =
+	(void *)BPF_FUNC_setsockopt;
 
 static __u64 BPF_FUNC(get_current_cgroup_id);
 
@@ -111,3 +113,9 @@ static inline int try_set_retval(int retval __maybe_unused)
 	return 0;
 #endif
 }
+
+static long BPF_FUNC(loop, __u32 nr_loops, void *callback_fn, void *callback_ctx, __u64 flags);
+
+static void *BPF_FUNC(ringbuf_reserve, void *ringbuf, __u64 size, __u64 flags);
+static void BPF_FUNC(ringbuf_submit, void *data, __u64 flags);
+static void BPF_FUNC(ringbuf_discard, void *data, __u64 flags);

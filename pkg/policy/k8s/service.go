@@ -6,46 +6,172 @@ package k8s
 import (
 	"context"
 	"errors"
+	"maps"
+	"net/netip"
+	"slices"
 	"sync"
 
+	"github.com/cilium/statedb"
 	"github.com/cilium/stream"
-	"github.com/sirupsen/logrus"
-	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/util/sets"
 
-	"github.com/cilium/cilium/pkg/k8s"
+	k8sConst "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 	"github.com/cilium/cilium/pkg/k8s/resource"
+	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	"github.com/cilium/cilium/pkg/k8s/types"
-	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/labels"
+	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/policy/api"
+	policytypes "github.com/cilium/cilium/pkg/policy/types"
+	"github.com/cilium/cilium/pkg/rate"
 	"github.com/cilium/cilium/pkg/time"
 )
 
-// isSelectableService returns true if the service svc can be selected by a ToServices rule.
-// Normally, only services without a label selector (i.e. empty services)
-// are allowed as targets of a toServices rule.
-// This is to minimize the chances of a pod IP being selected by this rule, which might
-// cause conflicting entries in the ipcache.
+// Cilium network policy can refer to Kubernetes services via 'ToServices'.
+// The service and backend information is available in the agent via the
+// Table[*loadbalancer.Service] and Table[*loadbalancer.Backend] StateDB
+// tables. On changes to these tables we'll need to recompute rules of
+// CNPs that refer to them conversily we need to query the tables for matches
+// when CNP is added or changed.
 //
-// This requirement, however, is dropped for HighScale IPCache mode, because pod IPs are
-// normally excluded from the ipcache regardless. Therefore, in HighScale IPCache mode,
-// all services can be selected by ToServices.
-func (p *policyWatcher) isSelectableService(svc *k8s.Service) bool {
-	if svc == nil {
-		return false
-	}
-	return p.config.EnableHighScaleIPcache || svc.IsExternal()
+// To keep things fairly simple this is implemented constructing a stream
+// of service changes (including associated backend changes) that is used
+// to trigger the recomputation of a rule.
+
+// serviceEvent captures the relevant description of a change to a service.
+// This is used to find matching CNPs and trigger recomputation if needed.
+type serviceEvent struct {
+	deleted          bool
+	name             loadbalancer.ServiceName
+	labels           labels.Labels
+	selector         map[string]string
+	backendRevisions []statedb.Revision
+	previous         *serviceEvent
+}
+
+func (s serviceEvent) Equal(other serviceEvent) bool {
+	return s.deleted == other.deleted &&
+		s.name.Equal(other.name) &&
+		s.labels.Equals(other.labels) &&
+		slices.Equal(s.backendRevisions, other.backendRevisions) &&
+		maps.Equal(s.selector, other.selector)
+}
+
+func (s serviceEvent) getLabels() labels.Labels { return s.labels }
+func (s serviceEvent) getName() string          { return s.name.Name() }
+func (s serviceEvent) getNamespace() string     { return s.name.Namespace() }
+
+var _ serviceDetailer = serviceEvent{}
+
+// serviceEventStream constructs stream of [serviceEvent]. An event is only emitted if it differs from a previous event
+// emitted for the same service name.
+func serviceEventStream(db *statedb.DB, services statedb.Table[*loadbalancer.Service], backends statedb.Table[*loadbalancer.Backend]) stream.Observable[serviceEvent] {
+	return stream.FuncObservable[serviceEvent](func(ctx context.Context, emit func(serviceEvent), complete func(error)) {
+		go func() {
+			limiter := rate.NewLimiter(50*time.Millisecond, 1)
+			defer limiter.Stop()
+
+			previousEvents := map[loadbalancer.ServiceName]serviceEvent{}
+
+			wtxn := db.WriteTxn(services, backends)
+			defer wtxn.Abort()
+			serviceChanges, err := services.Changes(wtxn)
+			if err != nil {
+				complete(err)
+				return
+			}
+			backendChanges, err := backends.Changes(wtxn)
+			if err != nil {
+				complete(err)
+				return
+			}
+			wtxn.Commit()
+			defer complete(nil)
+
+			for {
+				txn := db.ReadTxn()
+
+				// Collect the names of all changed services. Both a change to a service or to the
+				// set of backends associated with a service is worthy of a notification.
+				changed := sets.Set[loadbalancer.ServiceName]{}
+
+				servicesIter, watchServices := serviceChanges.Next(txn)
+				for ev := range servicesIter {
+					changed.Insert(ev.Object.Name)
+				}
+
+				backendsIter, watchBackends := backendChanges.Next(txn)
+				for ev := range backendsIter {
+					changed.Insert(ev.Object.ServiceName)
+				}
+
+				// For each changed service look it up along with the associated backends and
+				// emit a notification for it.
+				for name := range changed {
+					// Look up the service and the previous notification we sent for it.
+					prevEvent, prevFound := previousEvents[name]
+					svc, _, found := services.Get(txn, loadbalancer.ServiceByName(name))
+
+					// If no previously sent notification is found then no need to emit anything
+					// for the deletion.
+					if !found && !prevFound {
+						continue
+					}
+
+					var newEvent serviceEvent
+					if found {
+						newEvent.name = svc.Name
+						newEvent.labels = svc.Labels
+						newEvent.selector = svc.Selector
+						bes, _ := loadbalancer.ListBackendsByServiceName(txn, backends, name)
+						preferred := loadbalancer.PreferredBackendsByAddress(bes)
+						for _, rev := range preferred {
+							newEvent.backendRevisions = append(newEvent.backendRevisions, rev)
+						}
+						if prevFound {
+							prevEvent.previous = nil
+							newEvent.previous = &prevEvent
+						}
+						previousEvents[name] = newEvent
+					} else {
+						newEvent = prevEvent
+						newEvent.deleted = true
+						delete(previousEvents, name)
+					}
+
+					if prevFound && newEvent.Equal(prevEvent) {
+						// Nothing relevant changed, skip.
+						continue
+					}
+
+					emit(newEvent)
+				}
+
+				select {
+				case <-watchServices:
+				case <-watchBackends:
+				case <-ctx.Done():
+					return
+				}
+				if limiter.Wait(ctx) != nil {
+					return
+				}
+			}
+		}()
+	})
 }
 
 // onServiceEvent processes a ServiceNotification and (if necessary)
 // recalculates all policies affected by this change.
-func (p *policyWatcher) onServiceEvent(event k8s.ServiceNotification) {
-	err := p.updateToServicesPolicies(event.ID, event.Service, event.OldService)
+func (p *policyWatcher) onServiceEvent(event serviceEvent) {
+	err := p.updateToServicesPolicies(event)
 	if err != nil {
-		p.log.WithError(err).WithFields(logrus.Fields{
-			logfields.Event:     event.Action,
-			logfields.ServiceID: event.ID,
-		}).Warning("Failed to recalculate CiliumNetworkPolicy rules after service event")
+		p.log.Warn(
+			"Failed to recalculate CiliumNetworkPolicy rules after service event",
+			logfields.Error, err,
+			logfields.Event, event,
+		)
 	}
 }
 
@@ -53,28 +179,19 @@ func (p *policyWatcher) onServiceEvent(event k8s.ServiceNotification) {
 // added, removed, its endpoints have changed, or its labels have changed).
 // This function then checks if any of the known CNP/CCNPs are affected by this
 // change, and recomputes them by calling resolveCiliumNetworkPolicyRefs.
-func (p *policyWatcher) updateToServicesPolicies(svcID k8s.ServiceID, newSVC, oldSVC *k8s.Service) error {
+func (p *policyWatcher) updateToServicesPolicies(ev serviceEvent) error {
 	var errs []error
-
-	// Bail out early if updated service is not selectable
-	if !(p.isSelectableService(newSVC) || p.isSelectableService(oldSVC)) {
-		return nil
-	}
-
-	// newService is true if this is the first time we observe this service
-	newService := oldSVC == nil
-	// changedService is true if the service label or selector has changed
-	changedService := !newSVC.DeepEqual(oldSVC)
 
 	// candidatePolicyKeys contains the set of policy names we need to process
 	// for this service update. By default, we consider all policies with
 	// a ToServices selector as candidates.
 	candidatePolicyKeys := p.toServicesPolicies
-	if !(newService || changedService) {
+
+	if ev.previous != nil && ev.labels.Equals(ev.previous.labels) {
 		// If the service definition itself has not changed, and it's not the
 		// first time we process this service, we only need to check the
 		// policies which are known to select the old version of the service
-		candidatePolicyKeys = p.cnpByServiceID[svcID]
+		candidatePolicyKeys = p.cnpByServiceID[ev.name]
 	}
 
 	// Iterate over all policies potentially affected by this service update,
@@ -82,32 +199,34 @@ func (p *policyWatcher) updateToServicesPolicies(svcID k8s.ServiceID, newSVC, ol
 	for key := range candidatePolicyKeys {
 		cnp, ok := p.cnpCache[key]
 		if !ok {
-			p.log.WithFields(logrus.Fields{
-				logfields.Key:       key,
-				logfields.ServiceID: svcID,
-			}).Error("BUG: Candidate policy for service update not found. Please report this bug to Cilium developers.")
+			p.log.Error(
+				"BUG: Candidate policy for service update not found. Please report this bug to Cilium developers.",
+				logfields.Key, key,
+				logfields.ServiceID, ev.name,
+			)
 			continue
 		}
 
 		// Skip policies which are not affected by this service update
-		if !(p.cnpMatchesService(cnp, svcID, newSVC) ||
-			(!newService && changedService && p.cnpMatchesService(cnp, svcID, oldSVC))) {
+		if !(p.cnpMatchesService(cnp, ev) ||
+			(ev.previous != nil && p.cnpMatchesService(cnp, *ev.previous))) {
 			continue
 		}
 
 		if p.config.Debug {
-			p.log.WithFields(logrus.Fields{
-				logfields.CiliumNetworkPolicyName: cnp.Name,
-				logfields.K8sAPIVersion:           cnp.APIVersion,
-				logfields.K8sNamespace:            cnp.Namespace,
-				logfields.ServiceID:               svcID,
-			}).Debug("Service updated or deleted, recalculating CiliumNetworkPolicy rules")
+			p.log.Debug(
+				"Service updated or deleted, recalculating CiliumNetworkPolicy rules",
+				logfields.CiliumNetworkPolicyName, cnp.Name,
+				logfields.K8sAPIVersion, cnp.APIVersion,
+				logfields.K8sNamespace, cnp.Namespace,
+				logfields.ServiceID, ev.name,
+			)
 		}
 		initialRecvTime := time.Now()
 
 		resourceID := resourceIDForCiliumNetworkPolicy(key, cnp)
 
-		errs = append(errs, p.resolveCiliumNetworkPolicyRefs(cnp, key, initialRecvTime, resourceID))
+		errs = append(errs, p.resolveCiliumNetworkPolicyRefs(cnp, key, initialRecvTime, resourceID, nil))
 	}
 	return errors.Join(errs...)
 }
@@ -115,19 +234,13 @@ func (p *policyWatcher) updateToServicesPolicies(svcID k8s.ServiceID, newSVC, ol
 // resolveToServices translates all ToServices rules found in the provided CNP
 // and to corresponding ToCIDRSet rules. Mutates the passed in cnp in place.
 func (p *policyWatcher) resolveToServices(key resource.Key, cnp *types.SlimCNP) {
-	// We consult the service cache to obtain the service endpoints
-	// which are selected by the ToServices selectors found in the CNP.
-	p.svcCache.ForEachService(func(svcID k8s.ServiceID, svc *k8s.Service, eps *k8s.Endpoints) bool {
-		if !p.isSelectableService(svc) {
-			return true // continue
-		}
+	txn := p.db.ReadTxn()
 
-		// svcEndpoints caches the selected endpoints in case they are
-		// referenced more than once by this CNP
-		svcEndpoints := newServiceEndpoints(svcID, svc, eps)
+	for svc := range p.services.All(txn) {
+		svcEndpoints := newServiceEndpoints(svc, txn, p.backends)
 
 		// This extracts the selected service endpoints from the rule
-		// and translates it to a ToCIDRSet
+		// and translates it to a ToCIDRSet/ToEndpoints
 		numMatches := svcEndpoints.processRule(cnp.Spec)
 		for _, spec := range cnp.Specs {
 			numMatches += svcEndpoints.processRule(spec)
@@ -136,28 +249,24 @@ func (p *policyWatcher) resolveToServices(key resource.Key, cnp *types.SlimCNP) 
 		// Mark the policy as selecting the service svcID. This allows us to
 		// reduce the number of policy candidates in updateToServicesPolicies
 		if numMatches > 0 {
-			p.markCNPForService(key, svcID)
+			p.markCNPForService(key, svc.Name)
 		} else {
-			p.clearCNPForService(key, svcID)
+			p.clearCNPForService(key, svc.Name)
 		}
-
-		return true
-	})
+	}
 }
+
+type backendPrefixes = []api.CIDR
 
 // cnpMatchesService returns true if the cnp contains a ToServices rule which
 // matches the provided service svcID/svc
-func (p *policyWatcher) cnpMatchesService(cnp *types.SlimCNP, svcID k8s.ServiceID, svc *k8s.Service) bool {
-	if !p.isSelectableService(svc) {
-		return false
-	}
-
-	if hasMatchingToServices(cnp.Spec, svcID, svc) {
+func (p *policyWatcher) cnpMatchesService(cnp *types.SlimCNP, ev serviceEvent) bool {
+	if hasMatchingToServices(cnp.Spec, ev) {
 		return true
 	}
 
 	for _, spec := range cnp.Specs {
-		if hasMatchingToServices(spec, svcID, svc) {
+		if hasMatchingToServices(spec, ev) {
 			return true
 		}
 	}
@@ -167,7 +276,7 @@ func (p *policyWatcher) cnpMatchesService(cnp *types.SlimCNP, svcID k8s.ServiceI
 
 // markCNPForService marks that a policy (referred to by 'key') contains a
 // ToServices selector selecting the service svcID
-func (p *policyWatcher) markCNPForService(key resource.Key, svcID k8s.ServiceID) {
+func (p *policyWatcher) markCNPForService(key resource.Key, svcID loadbalancer.ServiceName) {
 	svcMap, ok := p.cnpByServiceID[svcID]
 	if !ok {
 		svcMap = make(map[resource.Key]struct{}, 1)
@@ -179,7 +288,7 @@ func (p *policyWatcher) markCNPForService(key resource.Key, svcID k8s.ServiceID)
 
 // clearCNPForService indicates that a policy (referred to by 'key') no longer
 // selects the service svcID via a ToServices rule
-func (p *policyWatcher) clearCNPForService(key resource.Key, svcID k8s.ServiceID) {
+func (p *policyWatcher) clearCNPForService(key resource.Key, svcID loadbalancer.ServiceName) {
 	delete(p.cnpByServiceID[svcID], key)
 	if len(p.cnpByServiceID[svcID]) == 0 {
 		delete(p.cnpByServiceID, svcID)
@@ -188,18 +297,18 @@ func (p *policyWatcher) clearCNPForService(key resource.Key, svcID k8s.ServiceID
 
 // specHasMatchingToServices returns true if the rule contains a ToServices rule which
 // matches the provided service svcID/svc
-func hasMatchingToServices(spec *api.Rule, svcID k8s.ServiceID, svc *k8s.Service) bool {
+func hasMatchingToServices(spec *api.Rule, ev serviceEvent) bool {
 	if spec == nil {
 		return false
 	}
 	for _, egress := range spec.Egress {
 		for _, toService := range egress.ToServices {
 			if sel := toService.K8sServiceSelector; sel != nil {
-				if serviceSelectorMatches(sel, svcID, svc) {
+				if serviceSelectorMatches(sel, ev) {
 					return true
 				}
 			} else if ref := toService.K8sService; ref != nil {
-				if serviceRefMatches(ref, svcID) {
+				if serviceRefMatches(ref, ev.name) {
 					return true
 				}
 			}
@@ -214,12 +323,7 @@ func hasToServices(cnp *types.SlimCNP) bool {
 	if specHasToServices(cnp.Spec) {
 		return true
 	}
-	for _, spec := range cnp.Specs {
-		if specHasToServices(spec) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(cnp.Specs, specHasToServices)
 }
 
 // specHasToServices returns true if the rule contains a ToServices rule
@@ -236,59 +340,79 @@ func specHasToServices(spec *api.Rule) bool {
 	return false
 }
 
+type serviceDetailer interface {
+	getNamespace() string
+	getName() string
+	getLabels() labels.Labels
+}
+
 // serviceSelectorMatches returns true if the ToServices k8sServiceSelector
 // matches the labels of the provided service svc
-func serviceSelectorMatches(sel *api.K8sServiceSelectorNamespace, svcID k8s.ServiceID, svc *k8s.Service) bool {
-	if !(sel.Namespace == svcID.Namespace || sel.Namespace == "") {
+func serviceSelectorMatches(sel *api.K8sServiceSelectorNamespace, svc serviceDetailer) bool {
+	if !(sel.Namespace == svc.getNamespace() || sel.Namespace == "") {
 		return false
 	}
-
-	es := api.EndpointSelector(sel.Selector)
-	es.SyncRequirementsWithLabelSelector()
-	return es.Matches(labels.Set(svc.Labels))
+	ls := policytypes.NewLabelSelector(api.EndpointSelector(sel.Selector))
+	r := policytypes.Matches(ls, labelsMatcher(svc.getLabels()))
+	return r
 }
+
+type labelsMatcher labels.Labels
+
+// Get implements labels.LabelMatcher; label source is ignored
+func (l labelsMatcher) GetLabel(label *labels.Label) (value string) {
+	v := l[label.Key]
+	return v.Value
+}
+
+// Has implements labels.LabelMatcher.
+func (l labelsMatcher) HasLabel(label *labels.Label) (exists bool) {
+	_, ok := l[label.Key]
+	return ok
+}
+
+// Lookup implements labels.LabelMatcher
+func (l labelsMatcher) LookupLabel(label *labels.Label) (value string, exists bool) {
+	v, ok := l[label.Key]
+	return v.Value, ok
+}
+
+var _ labels.LabelMatcher = labelsMatcher{}
 
 // serviceRefMatches returns true if the ToServices k8sService reference
 // matches the name/namespace of the provided service svc
-func serviceRefMatches(ref *api.K8sServiceNamespace, svcID k8s.ServiceID) bool {
-	return (ref.Namespace == svcID.Namespace || ref.Namespace == "") &&
-		ref.ServiceName == svcID.Name
+func serviceRefMatches(ref *api.K8sServiceNamespace, svcID loadbalancer.ServiceName) bool {
+	return (ref.Namespace == svcID.Namespace() || ref.Namespace == "") &&
+		ref.ServiceName == svcID.Name()
 }
 
 // serviceEndpoints stores the endpoints associated with a service
 type serviceEndpoints struct {
-	svcID k8s.ServiceID
-	svc   *k8s.Service
-	eps   *k8s.Endpoints
-
-	valid  bool
-	cached []api.CIDR
+	svc             *loadbalancer.Service
+	backendPrefixes func() backendPrefixes
 }
+
+func (s serviceEndpoints) getLabels() labels.Labels { return s.svc.Labels }
+func (s serviceEndpoints) getName() string          { return s.svc.Name.Name() }
+func (s serviceEndpoints) getNamespace() string     { return s.svc.Name.Namespace() }
+
+var _ serviceDetailer = serviceEndpoints{}
 
 // newServiceEndpoints returns an initialized serviceEndpoints struct
-func newServiceEndpoints(svcID k8s.ServiceID, svc *k8s.Service, eps *k8s.Endpoints) *serviceEndpoints {
-	return &serviceEndpoints{
-		svcID: svcID,
-		svc:   svc,
-		eps:   eps,
+func newServiceEndpoints(svc *loadbalancer.Service, txn statedb.ReadTxn, backends statedb.Table[*loadbalancer.Backend]) serviceEndpoints {
+	return serviceEndpoints{
+		svc: svc,
+		backendPrefixes: sync.OnceValue(func() backendPrefixes {
+			prefixes := backendPrefixes{}
+			bes, _ := loadbalancer.ListBackendsByServiceName(txn, backends, svc.Name)
+			preferred := loadbalancer.PreferredBackendsByAddress(bes)
+			for be := range preferred {
+				addr := be.Address.Addr()
+				prefixes = append(prefixes, api.CIDR(netip.PrefixFrom(addr, addr.BitLen()).String()))
+			}
+			return prefixes
+		}),
 	}
-}
-
-// endpoints returns the service's endpoints as an []api.CIDR slice.
-// It caches the result such that repeat invocations do not allocate.
-func (s *serviceEndpoints) endpoints() []api.CIDR {
-	if s.valid {
-		return s.cached
-	}
-
-	prefixes := s.eps.Prefixes()
-	s.cached = make([]api.CIDR, 0, len(prefixes))
-	for _, prefix := range prefixes {
-		s.cached = append(s.cached, api.CIDR(prefix.String()))
-	}
-
-	s.valid = true
-	return s.cached
 }
 
 // appendEndpoints appends all the endpoint as generated CIDRRules into the toCIDRSet
@@ -301,8 +425,24 @@ func appendEndpoints(toCIDRSet *api.CIDRRuleSlice, endpoints []api.CIDR) {
 	}
 }
 
-// processRule parses the ToServices selectors in the provided rule and translates
-// it to ToCIDRSet entries
+func newEndpointSelectorForServiceSelector(namespace string, svcSelector map[string]string) api.EndpointSelector {
+	selector := maps.Clone(svcSelector)
+	selector[k8sConst.PodNamespaceLabel] = namespace
+
+	endpointSelector := api.NewESFromK8sLabelSelector(labels.LabelSourceK8sKeyPrefix, &slim_metav1.LabelSelector{MatchLabels: selector})
+	endpointSelector.Generated = true
+
+	return endpointSelector
+}
+
+// appendSelector appends the service selector as a generated EndpointSelector
+func appendSelector(toEndpoints *[]api.EndpointSelector, svcSelector map[string]string, namespace string) {
+	*toEndpoints = append(*toEndpoints, newEndpointSelectorForServiceSelector(namespace, svcSelector))
+}
+
+// processRule parses the ToServices selectors in the provided rule and translates it to:
+// - ToCIDRSet entries for services without selector
+// - ToEndpoints entries for services with selector
 func (s *serviceEndpoints) processRule(rule *api.Rule) (numMatches int) {
 	if rule == nil {
 		return
@@ -310,111 +450,25 @@ func (s *serviceEndpoints) processRule(rule *api.Rule) (numMatches int) {
 	for i, egress := range rule.Egress {
 		for _, toService := range egress.ToServices {
 			if sel := toService.K8sServiceSelector; sel != nil {
-				if serviceSelectorMatches(sel, s.svcID, s.svc) {
-					appendEndpoints(&rule.Egress[i].ToCIDRSet, s.endpoints())
+				if serviceSelectorMatches(sel, s) {
+					if len(s.svc.Selector) == 0 {
+						appendEndpoints(&rule.Egress[i].ToCIDRSet, s.backendPrefixes())
+					} else {
+						appendSelector(&rule.Egress[i].ToEndpoints, s.svc.Selector, s.svc.Name.Namespace())
+					}
 					numMatches++
 				}
 			} else if ref := toService.K8sService; ref != nil {
-				if serviceRefMatches(ref, s.svcID) {
-					appendEndpoints(&rule.Egress[i].ToCIDRSet, s.endpoints())
+				if serviceRefMatches(ref, s.svc.Name) {
+					if len(s.svc.Selector) == 0 {
+						appendEndpoints(&rule.Egress[i].ToCIDRSet, s.backendPrefixes())
+					} else {
+						appendSelector(&rule.Egress[i].ToEndpoints, s.svc.Selector, s.svc.Name.Namespace())
+					}
 					numMatches++
 				}
 			}
 		}
 	}
 	return numMatches
-}
-
-type serviceQueue struct {
-	mu    *lock.Mutex
-	cond  *sync.Cond
-	queue []k8s.ServiceNotification
-}
-
-func newServiceQueue() *serviceQueue {
-	mu := new(lock.Mutex)
-	return &serviceQueue{
-		mu:    mu,
-		cond:  sync.NewCond(mu),
-		queue: []k8s.ServiceNotification{},
-	}
-}
-
-func (q *serviceQueue) enqueue(item k8s.ServiceNotification) {
-	q.mu.Lock()
-	q.queue = append(q.queue, item)
-	q.cond.Signal()
-	q.mu.Unlock()
-}
-
-func (q *serviceQueue) signal() {
-	q.mu.Lock()
-	q.cond.Signal()
-	q.mu.Unlock()
-}
-
-func (q *serviceQueue) dequeue(ctx context.Context) (item k8s.ServiceNotification, ok bool) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	for len(q.queue) == 0 && ctx.Err() == nil {
-		q.cond.Wait()
-	}
-
-	// If ctx is cancelled, we return immediately
-	if ctx.Err() != nil {
-		return item, false
-	}
-
-	item = q.queue[0]
-	q.queue = q.queue[1:]
-
-	return item, true
-}
-
-// serviceNotificationsQueue converts the observable src into a channel.
-// When the provided context is cancelled the underlying subscription is
-// cancelled and the channel is closed.
-// In contrast to stream.ToChannel, this function has an unbounded buffer,
-// meaning the consumer must always consume the channel (or cancel ctx)
-func serviceNotificationsQueue(ctx context.Context, src stream.Observable[k8s.ServiceNotification]) <-chan k8s.ServiceNotification {
-	ctx, cancel := context.WithCancel(ctx)
-	ch := make(chan k8s.ServiceNotification)
-	q := newServiceQueue()
-
-	// This go routine is woken up whenever there a new item has been added to
-	// queue and forwards it to ch. It exits when context ctx is cancelled.
-	go func() {
-		// Close downstream channel on exit
-		defer close(ch)
-
-		// Exit the for-loop below if the context is cancelled.
-		// See https://pkg.go.dev/context#AfterFunc for a more detailed
-		// explanation of this pattern
-		cleanupCancellation := context.AfterFunc(ctx, q.signal)
-		defer cleanupCancellation()
-
-		for {
-			item, ok := q.dequeue(ctx)
-			if !ok {
-				return
-			}
-
-			select {
-			case ch <- item:
-				continue
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	src.Observe(ctx,
-		q.enqueue,
-		func(err error) {
-			cancel() // stops above go routine
-		},
-	)
-
-	return ch
 }

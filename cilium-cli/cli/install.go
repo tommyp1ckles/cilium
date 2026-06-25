@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -17,16 +18,15 @@ import (
 	"github.com/cilium/cilium/cilium-cli/defaults"
 	"github.com/cilium/cilium/cilium-cli/hubble"
 	"github.com/cilium/cilium/cilium-cli/install"
-	"github.com/cilium/cilium/pkg/inctimer"
+	"github.com/cilium/cilium/cilium-cli/internal/helm"
 )
 
 // addCommonInstallFlags adds install command flags that are shared between install and upgrade commands.
 func addCommonInstallFlags(cmd *cobra.Command, params *install.Parameters) {
-	cmd.Flags().StringVar(&params.Version, "version", defaults.Version, "Cilium version to install")
+	cmd.Flags().StringVar(&params.Version, "version", helm.GetDefaultVersionString(), "Cilium version to install")
 	cmd.Flags().StringVar(&params.DatapathMode, "datapath-mode", "", "Datapath mode to use { tunnel | native | aws-eni | gke | azure | aks-byocni } (default: autodetected).")
 	cmd.Flags().BoolVar(&params.ListVersions, "list-versions", false, "List all the available versions without actually installing")
 	cmd.Flags().BoolVar(&params.NodesWithoutCilium, "nodes-without-cilium", false, "Configure the affinities to avoid scheduling Cilium components on nodes labeled with cilium.io/no-schedule. It is assumed that the infrastructure has set up routing on these nodes to provide connectivity within the Cilium cluster.")
-	cmd.Flags().StringSliceVar(&params.DisableChecks, "disable-check", []string{}, "Disable a particular validation check")
 }
 
 // addCommonUninstallFlags adds uninstall command flags that are shared between classic and helm mode.
@@ -59,26 +59,29 @@ func newCmdInstallWithHelm() *cobra.Command {
 		Long: `Install Cilium in a Kubernetes cluster using Helm
 
 Examples:
-# Install Cilium in current Kubernetes context with default parameters
-cilium install
 
-# Install Cilium into Kubernetes context "kind-cluster1" and also set cluster
-# name and ID to prepare for multi-cluster capabilities.
-cilium install --context kind-cluster1 --set cluster.id=1 --set cluster.name=cluster1
+Install Cilium in current Kubernetes context with default parameters
+
+  $ cilium install
+
+Install Cilium into Kubernetes context "kind-cluster1" and also set cluster
+name and ID to prepare for multi-cluster capabilities.
+
+  $ cilium install --context kind-cluster1 --set cluster.id=1 --set cluster.name=cluster1
 `,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			params.Namespace = namespace
-			params.HelmReleaseName = helmReleaseName
+			params.Namespace = RootParams.Namespace
+			params.HelmReleaseName = RootParams.HelmReleaseName
 			// Don't log anything if it's a dry run so that the dry run output can easily be piped to other commands.
 			if params.IsDryRun() {
 				params.Writer = io.Discard
 			}
-			installer, err := install.NewK8sInstaller(k8sClient, params)
+			installer, err := install.NewK8sInstaller(RootK8sClient, params)
 			if err != nil {
 				return err
 			}
 			cmd.SilenceUsage = true
-			if err := installer.InstallWithHelm(context.Background(), k8sClient); err != nil {
+			if err := installer.InstallWithHelm(context.Background(), RootK8sClient); err != nil {
 				fatalf("Unable to install Cilium: %s", err)
 			}
 			return nil
@@ -90,6 +93,7 @@ cilium install --context kind-cluster1 --set cluster.id=1 --set cluster.name=clu
 	cmd.Flags().BoolVar(&params.DryRun, "dry-run", false, "Write resources to be installed to stdout without actually installing them")
 	cmd.Flags().BoolVar(&params.DryRunHelmValues, "dry-run-helm-values", false, "Write non-default Helm values to stdout without performing the actual installation")
 	cmd.Flags().StringVar(&params.HelmRepository, "repository", defaults.HelmRepository, "Helm chart repository to download Cilium charts from")
+	cmd.Flags().IntVar(&params.HelmMaxHistory, "history-max", defaults.HelmMaxHistory, "limit the maximum number of revisions saved per release. Use 0 for no limit")
 	return cmd
 }
 
@@ -101,17 +105,17 @@ func newCmdUninstallWithHelm() *cobra.Command {
 		Short: "Uninstall Cilium using Helm",
 		Long:  ``,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			params.Namespace = namespace
-			params.HelmReleaseName = helmReleaseName
+			params.Namespace = RootParams.Namespace
+			params.HelmReleaseName = RootParams.HelmReleaseName
 			ctx := context.Background()
 
-			uninstaller := install.NewK8sUninstaller(k8sClient, params)
+			uninstaller := install.NewK8sUninstaller(RootK8sClient, params)
 			uninstaller.DeleteTestNamespace(ctx)
 			var hubbleParams = hubble.Parameters{
 				Writer:          os.Stdout,
 				Wait:            true,
-				Namespace:       namespace,
-				HelmReleaseName: helmReleaseName,
+				Namespace:       RootParams.Namespace,
+				HelmReleaseName: RootParams.HelmReleaseName,
 			}
 
 			if params.Wait {
@@ -119,11 +123,11 @@ func newCmdUninstallWithHelm() *cobra.Command {
 				// This guarantees that relay Pods are terminated fully via Cilium (rather than
 				// being queued for deletion) before uninstalling Cilium.
 				fmt.Printf("⌛ Waiting to disable Hubble before uninstalling Cilium\n")
-				if err := hubble.DisableWithHelm(ctx, k8sClient, hubbleParams); err != nil {
+				if err := hubble.DisableWithHelm(ctx, RootK8sClient, hubbleParams); err != nil {
 					fmt.Printf("⚠ ️ Failed to disable Hubble prior to uninstalling Cilium: %s\n", err)
 				}
 				for {
-					ps, err := k8sClient.ListPods(ctx, hubbleParams.Namespace, metav1.ListOptions{
+					ps, err := RootK8sClient.ListPods(ctx, hubbleParams.Namespace, metav1.ListOptions{
 						LabelSelector: "k8s-app=hubble-relay",
 					})
 					if err != nil {
@@ -136,7 +140,7 @@ func newCmdUninstallWithHelm() *cobra.Command {
 						break
 					}
 					select {
-					case <-inctimer.After(defaults.WaitRetryInterval):
+					case <-time.After(defaults.WaitRetryInterval):
 					case <-ctx.Done():
 						fatalf("Timed out waiting for Hubble Pods to terminate")
 					}
@@ -144,7 +148,7 @@ func newCmdUninstallWithHelm() *cobra.Command {
 			}
 
 			fmt.Printf("⌛ Uninstalling Cilium\n")
-			if err := uninstaller.UninstallWithHelm(ctx, k8sClient.HelmActionConfig); err != nil {
+			if err := uninstaller.UninstallWithHelm(ctx, RootK8sClient.HelmActionConfig); err != nil {
 				fatalf("Unable to uninstall Cilium:  %s", err)
 			}
 			return nil
@@ -166,26 +170,30 @@ func newCmdUpgradeWithHelm() *cobra.Command {
 		Long: `Upgrade a Cilium installation in a Kubernetes cluster using Helm
 
 Examples:
-# Upgrade Cilium to the latest version, using existing parameters
-cilium upgrade
 
-# Upgrade Cilium to the latest version and also set cluster name and ID
-# to prepare for multi-cluster capabilities.
-cilium upgrade --set cluster.id=1 --set cluster.name=cluster1
+Upgrade Cilium to the latest version, using existing parameters
+
+  $ cilium upgrade
+
+Upgrade Cilium to the latest version and also set cluster name and ID
+to prepare for multi-cluster capabilities.
+
+  $ cilium upgrade --set cluster.id=1 --set cluster.name=cluster1
 `,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			params.Namespace = namespace
-			params.HelmReleaseName = helmReleaseName
+			params.Namespace = RootParams.Namespace
+			params.HelmReleaseName = RootParams.HelmReleaseName
+
 			// Don't log anything if it's a dry run so that the dry run output can easily be piped to other commands.
 			if params.IsDryRun() {
 				params.Writer = io.Discard
 			}
-			installer, err := install.NewK8sInstaller(k8sClient, params)
+			installer, err := install.NewK8sInstaller(RootK8sClient, params)
 			if err != nil {
 				return err
 			}
 			cmd.SilenceUsage = true
-			if err := installer.UpgradeWithHelm(context.Background(), k8sClient); err != nil {
+			if err := installer.UpgradeWithHelm(context.Background(), RootK8sClient); err != nil {
 				fatalf("Unable to upgrade Cilium: %s", err)
 			}
 			return nil
@@ -194,6 +202,8 @@ cilium upgrade --set cluster.id=1 --set cluster.name=cluster1
 
 	addCommonInstallFlags(cmd, &params)
 	addCommonHelmFlags(cmd, &params)
+	cmd.Flags().BoolVar(&params.HelmResetThenReuseValues, "reset-then-reuse-values", true,
+		"When upgrading, reset the values to the ones built into the chart, apply the last release's values and merge in any overrides from the command line via --set and -f. If '--reset-values' or '--reuse-values' is specified, this is ignored")
 	cmd.Flags().BoolVar(&params.HelmResetValues, "reset-values", false,
 		"When upgrading, reset the helm values to the ones built into the chart")
 	cmd.Flags().BoolVar(&params.HelmReuseValues, "reuse-values", false,
@@ -203,6 +213,8 @@ cilium upgrade --set cluster.id=1 --set cluster.name=cluster1
 	cmd.Flags().BoolVar(&params.DryRunHelmValues, "dry-run-helm-values", false,
 		"Write non-default Helm values to stdout; without performing the actual upgrade")
 	cmd.Flags().StringVar(&params.HelmRepository, "repository", defaults.HelmRepository, "Helm chart repository to download Cilium charts from")
+	cmd.Flags().IntVar(&params.HelmMaxHistory, "history-max", defaults.HelmMaxHistory, "limit the maximum number of revisions saved per release. Use 0 for no limit")
+	cmd.Flags().BoolVarP(&params.Restart, "restart", "r", false, "Force restart Cilium pods")
 	return cmd
 }
 

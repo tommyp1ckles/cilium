@@ -4,11 +4,15 @@
 package version
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
+	"regexp"
 	"runtime"
 	"strings"
+	"sync"
+
+	"github.com/blang/semver/v4"
+
+	"github.com/cilium/cilium/pkg/versioncheck"
 )
 
 // CiliumVersion provides a minimal structure to the version string
@@ -41,31 +45,70 @@ func init() {
 // FromString converts a version string into struct
 func FromString(versionString string) CiliumVersion {
 	// string to parse: "0.13.90 a722bdb 2018-01-09T22:32:37+01:00 go version go1.9 linux/amd64"
+	// With GOEXPERIMENTs: "1.18.6 9589669 2026-01-13T11:40:01+01:00 go version go1.24.11 X:jsonv2 linux/amd64"
 	fields := strings.Split(versionString, " ")
-	if len(fields) != 7 {
+	if len(fields) < 7 {
 		return CiliumVersion{}
 	}
 
 	cver := CiliumVersion{
-		Version:          fields[0],
-		Revision:         fields[1],
-		AuthorDate:       fields[2],
-		GoRuntimeVersion: fields[5],
-		Arch:             fields[6],
+		Version:    fields[0],
+		Revision:   fields[1],
+		AuthorDate: fields[2],
+		// Last field is always GOOS/GOARCH
+		Arch: fields[len(fields)-1],
+		// Everything between "version" keyword and ARCH is the Go version
+		// This handles cases like "go1.24.11 X:jsonv2" where runtime.Version() contains spaces
+		GoRuntimeVersion: strings.Join(fields[5:len(fields)-1], " "),
 	}
 	return cver
 }
 
 // GetCiliumVersion returns a initialized CiliumVersion structure
-func GetCiliumVersion() CiliumVersion {
+var GetCiliumVersion = sync.OnceValue(func() CiliumVersion {
 	return FromString(Version)
-}
+})
 
-// Base64 returns the version in a base64 format.
-func Base64() (string, error) {
-	jsonBytes, err := json.Marshal(Version)
-	if err != nil {
-		return "", err
+// ParseKernelVersion converts a version string to semver.Version.
+func ParseKernelVersion(ver string) (semver.Version, error) {
+	// Trim null bytes and whitespace that may come from C strings
+	ver = strings.TrimRight(ver, "\x00")
+	ver = strings.TrimSpace(ver)
+
+	verStrs := strings.Split(ver, ".")
+
+	// We are assuming the kernel version will be one of the following:
+	// 4.9.17-040917-generic or 4.9-040917-generic or 4-generic
+	// 6.15.8-200.fc42.x86_64 (newer format with additional dot-separated components)
+	// So as observed, the kernel value is N.N.N-m or N.N-m or N-m or N.N.N-m.additional.components
+	// This implies the len(verStrs) should be at least 1, but can be more than 3
+
+	if len(verStrs) < 1 {
+		return semver.Version{}, fmt.Errorf("unable to get kernel version from %q", ver)
 	}
-	return base64.StdEncoding.EncodeToString(jsonBytes), nil
+
+	// Take only the first 3 components for semantic version parsing
+	// If there are more than 3 components, we'll only use the first 3
+	if len(verStrs) > 3 {
+		verStrs = verStrs[:3]
+	}
+
+	// Given the observations, we use regular expression to extract
+	// the patch number from the last element of the verStrs array and
+	// append "0" to the verStrs array in case the until its length is
+	// 3 as in all cases we want to return from this function :
+	// Major.Minor.PatchNumber
+
+	patch := regexp.MustCompilePOSIX(`^[0-9]+`).FindString(verStrs[len(verStrs)-1])
+	if patch == "" {
+		verStrs[len(verStrs)-1] = "0"
+	} else {
+		verStrs[len(verStrs)-1] = patch
+	}
+
+	for len(verStrs) < 3 {
+		verStrs = append(verStrs, "0")
+	}
+
+	return versioncheck.Version(strings.Join(verStrs[:3], "."))
 }

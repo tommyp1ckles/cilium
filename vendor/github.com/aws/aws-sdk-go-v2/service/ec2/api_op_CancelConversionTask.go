@@ -15,10 +15,6 @@ import (
 // partially uploaded volume or instance. If the conversion is complete or is in
 // the process of transferring the final disk image, the command fails and returns
 // an exception.
-//
-// For more information, see [Importing a Virtual Machine Using the Amazon EC2 CLI].
-//
-// [Importing a Virtual Machine Using the Amazon EC2 CLI]: https://docs.aws.amazon.com/AWSEC2/latest/CommandLineReference/ec2-cli-vmimport-export.html
 func (c *Client) CancelConversionTask(ctx context.Context, params *CancelConversionTaskInput, optFns ...func(*Options)) (*CancelConversionTaskOutput, error) {
 	if params == nil {
 		params = &CancelConversionTaskInput{}
@@ -94,13 +90,16 @@ func (c *Client) addOperationCancelConversionTaskMiddlewares(stack *middleware.S
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
+	if err = addRetry(stack, options, c); err != nil {
 		return err
 	}
 	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
 	if err = addRecordResponseTiming(stack); err != nil {
+		return err
+	}
+	if err = addSpanRetryLoop(stack, options); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -115,10 +114,10 @@ func (c *Client) addOperationCancelConversionTaskMiddlewares(stack *middleware.S
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
-	if err = addTimeOffsetBuild(stack, c); err != nil {
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
-	if err = addUserAgentRetryMode(stack, options); err != nil {
+	if err = addCredentialSource(stack, options); err != nil {
 		return err
 	}
 	if err = addOpCancelConversionTaskValidationMiddleware(stack); err != nil {
@@ -140,6 +139,15 @@ func (c *Client) addOperationCancelConversionTaskMiddlewares(stack *middleware.S
 		return err
 	}
 	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptBeforeRetryLoop(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptAttempt(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil

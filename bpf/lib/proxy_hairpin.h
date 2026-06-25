@@ -10,10 +10,10 @@
 #include "eth.h"
 #include "dbg.h"
 #include "trace.h"
-#include "csum.h"
+#include "l3.h"
 #include "l4.h"
 
-#if defined(HOST_IFINDEX_MAC) && defined(HOST_IFINDEX)
+DECLARE_CONFIG(bool, proxy_redirect_via_cilium_net, "Whether to redirect to the proxy via cilium_net (hairpin) or via stack")
 
 /** Redirect to the proxy by hairpinning the packet out the incoming
  *  interface.
@@ -26,10 +26,8 @@ static __always_inline int
 ctx_redirect_to_proxy_hairpin(struct __ctx_buff *ctx, struct iphdr *ip4,
 			      __be16 proxy_port)
 {
-#if defined(ENABLE_IPV4) || defined(ENABLE_IPV6)
-	union macaddr host_mac = HOST_IFINDEX_MAC;
-	union macaddr router_mac = THIS_INTERFACE_MAC;
-#endif
+	union macaddr __maybe_unused host_mac = CONFIG(cilium_host_mac);
+	union macaddr __maybe_unused router_mac = CONFIG(interface_mac);
 	int ret = 0;
 
 	ctx_store_meta(ctx, CB_PROXY_MAGIC,
@@ -57,7 +55,7 @@ ctx_redirect_to_proxy_hairpin(struct __ctx_buff *ctx, struct iphdr *ip4,
 	 * ctx_redirect_to_proxy_first().
 	 */
 
-	return ctx_redirect(ctx, HOST_IFINDEX, 0);
+	return ctx_redirect(ctx, CONFIG(cilium_net_ifindex), 0);
 }
 
 #ifdef ENABLE_IPV4
@@ -76,5 +74,3 @@ ctx_redirect_to_proxy_hairpin_ipv6(struct __ctx_buff *ctx, __be16 proxy_port)
 	return ctx_redirect_to_proxy_hairpin(ctx, NULL, proxy_port);
 }
 #endif
-
-#endif /* HOST_IFINDEX_MAC && HOST_IFINDEX */

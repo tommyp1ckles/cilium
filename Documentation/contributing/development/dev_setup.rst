@@ -17,19 +17,33 @@ suitable method.
 Quick Start
 -----------
 
-If you're in a hurry, here are the essential steps to get started:
+The following commands install Cilium in a `Kind`_-based Kubernetes cluster.
+Run them in the root directory of the Cilium repository. The ``make`` targets
+are described in section `Kind-based Setup <#kind-based-setup-preferred>`_.
+
+.. _Kind: https://kind.sigs.k8s.io/
+
+.. note::
+
+   The command output informs you of any missing dependencies. In particular,
+   if you get the message ``'cilium' not found``, it means you are missing the
+   Cilium CLI.
 
 On Linux:
 
-1. ``make kind`` - Provisions a Kind cluster.
-2. ``make kind-install-cilium-fast`` - Installs Cilium on the Kind cluster.
-3. ``make kind-image-fast`` - Builds Cilium and deploys it.
+.. code-block:: shell-session
+
+   make kind
+   make kind-image-fast
+   make kind-install-cilium-fast
 
 On any OS:
 
-1. ``make kind`` - Provisions a Kind cluster.
-2. ``make kind-image`` - Builds Docker images.
-3. ``make kind-install-cilium`` - Installs Cilium on the Kind cluster.
+.. code-block:: shell-session
+
+   make kind
+   make kind-image
+   make kind-install-cilium
 
 Detailed Instructions
 ---------------------
@@ -62,9 +76,9 @@ in order to effectively contribute to Cilium:
 +===================================================================+==============================+=================================================================+
 |  git                                                              | latest                       | N/A (OS-specific)                                               |
 +-------------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
-|  clang                                                            | >= 17.0 (latest recommended) | N/A (OS-specific)                                               |
+|  clang                                                            | >= 18.1 (latest recommended) | N/A (OS-specific)                                               |
 +-------------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
-|  llvm                                                             | >= 17.0 (latest recommended) | N/A (OS-specific)                                               |
+|  llvm                                                             | >= 18.1 (latest recommended) | N/A (OS-specific)                                               |
 +-------------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
 | `go <https://golang.org/dl/>`_                                    | |GO_RELEASE|                 | N/A (OS-specific)                                               |
 +-------------------------------------------------------------------+------------------------------+-----------------------------------------------------------------+
@@ -94,14 +108,14 @@ group.
 Kind-based Setup (preferred)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-You can find the setup for a `kind <https://kind.sigs.k8s.io/>`_ environment in
+You can find the setup for a `Kind`_ environment in
 ``contrib/scripts/kind.sh``. This setup doesn't require any VMs and/or
 VirtualBox on Linux, but does require `Docker for Mac
 <https://docs.docker.com/desktop/install/mac-install/>`_ for Mac OS.
 
 Makefile targets automate the task of spinning up an environment:
 
-* ``make kind``: Creates a kind cluster based on the configuration passed in.
+* ``make kind``: Creates a Kind cluster based on the configuration passed in.
   For more information, see `configurations_for_clusters`.
 * ``make kind-down``: Tears down and deletes the cluster.
 
@@ -142,7 +156,7 @@ code, in an pre-existing running Cilium container.
   Cilium CLI with the volume mounts defined.
 
 * ``make kind-image-fast``: Builds all Cilium binaries and loads them into all
-  kind clusters available in the host.
+  Kind clusters available in the host.
 
 Configuration for Cilium
 ^^^^^^^^^^^^^^^^^^^^^^^^
@@ -167,8 +181,8 @@ the clusters it creates. The following parameters are the most commonly used:
 * ``CONTROLPLANES``: How many control-plane nodes are created.
 * ``WORKERS``: How many worker nodes are created.
 * ``CLUSTER_NAME``: The name of the Kubernetes cluster.
-* ``IMAGE``: The image for kind, for example: ``kindest/node:v1.11.10``.
-* ``KUBEPROXY_MODE``: Pass directly as ``kubeProxyMode`` to the kind
+* ``IMAGE``: The image for Kind, for example: ``kindest/node:v1.11.10``.
+* ``KUBEPROXY_MODE``: Pass directly as ``kubeProxyMode`` to the Kind
   configuration Custom Resource Definition (CRD).
 
 For more environment variables, see ``contrib/scripts/kind.sh``.
@@ -234,7 +248,8 @@ This allows you to use a preconfigured development environment in the cloud or l
 The container is based on the official Cilium builder image and provides all the dependencies
 required to build Cilium.
 
-You can also install common packages, such as kind, kubectl, and cilium-cli, with ``contrib/scripts/devcontainer-setup.sh``:
+You can also install common packages, such as ``kind``, ``kubectl``, and
+``cilium-cli``, with ``contrib/scripts/devcontainer-setup.sh``:
 
 .. code-block:: shell-session
 
@@ -389,8 +404,7 @@ Minor version
 ~~~~~~~~~~~~~
 
 #. Check if it is possible to remove the last supported Kubernetes version from
-   :ref:`k8scompatibility`, :ref:`k8s_requirements`, :ref:`test_matrix`,
-   :ref:`running_k8s_tests`, :ref:`gsg_istio` and add the new Kubernetes
+   :ref:`k8scompatibility`, :ref:`k8s_requirements` and add the new Kubernetes
    version to that list.
 
 #. If the minimal supported version changed, leave a note in the upgrade guide
@@ -426,21 +440,14 @@ Minor version
    - ``contrib/scripts/devcontainer-setup.sh``
    - ``.github/actions/ginkgo/main-focus.yaml``
 
-#. Add the new coredns files specific for the Kubernetes version,
-   for ``1.19`` is ``test/provision/manifest/1.19``. The coredns deployment
-   files can be found upstream as mentioned in the previous k8s version
-   coredns files. Perform a diff with the previous versions to check which
-   changes are required for our CI and which changes were added upstream.
-
-#. Update the constraint in the function ``getK8sSupportedConstraints``, that
-   exists in the ``test/helpers/utils.go``, with the new Kubernetes version that
-   Cilium supports. It is possible that a new ``IsCiliumV1*`` var in that file
-   is required as well.
-
 #. Bump the kindest/node version in
    ``.github/actions/ginkgo/main-k8s-versions.yaml``.
 
 #. Run ``./contrib/scripts/check-k8s-code-gen.sh``
+
+#. Check ``controller-runtime`` compatibility with the new Kubernetes version. If
+   there are any changes required, update the controller-runtime version in
+   ``go.mod``. See https://github.com/kubernetes-sigs/controller-runtime?tab=readme-ov-file#compatibility.
 
 #. Run ``go mod vendor && go mod tidy``
 
@@ -465,10 +472,8 @@ Minor version
    the target k8s versions in the GitHub action workflows.
 
 #. Once CI is green and PR has been merged, ping the CI team again so that they
-   update the `Cilium CI matrix`_, ``.github/maintainers-little-helper.yaml``,
-   and GitHub required PR checks accordingly.
-
-.. _Cilium CI matrix: https://docs.google.com/spreadsheets/d/1TThkqvVZxaqLR-Ela4ZrcJ0lrTJByCqrbdCjnI32_X0
+   update the ``.github/maintainers-little-helper.yaml`` and GitHub required PR
+   checks accordingly.
 
 Patch version
 ~~~~~~~~~~~~~
@@ -509,55 +514,6 @@ At last you might want to check the chart using the ``lint`` target:
 
    $ make -C install/kubernetes lint
 
-
-Optional: Docker and IPv6
--------------------------
-
-Note that these instructions are useful to you if you care about having IPv6
-addresses for your Docker containers.
-
-If you'd like IPv6 addresses, you will need to follow these steps:
-
-1) Edit ``/etc/docker/daemon.json`` and set the ``ipv6`` key to ``true``.
-
-   .. code-block:: json
-
-      {
-        "ipv6": true
-      }
-
-
-   If that doesn't work alone, try assigning a fixed range. Many people have
-   reported trouble with IPv6 and Docker. `Source here.
-   <https://github.com/moby/moby/issues/29443#issuecomment-495808871>`_
-
-   .. code-block:: json
-
-      {
-        "ipv6": true,
-        "fixed-cidr-v6": "2001:db8:1::/64"
-      }
-
-
-   And then:
-
-   .. code-block:: shell-session
-
-    ip -6 route add 2001:db8:1::/64 dev docker0
-    sysctl net.ipv6.conf.default.forwarding=1
-    sysctl net.ipv6.conf.all.forwarding=1
-
-
-2) Restart the docker daemon to pick up the new configuration.
-
-3) The new command for creating a network managed by Cilium:
-
-   .. code-block:: shell-session
-
-      $ docker network create --ipv6 --driver cilium --ipam-driver cilium cilium-net
-
-
-Now new containers will have an IPv6 address assigned to them.
 
 Debugging
 ---------
@@ -665,8 +621,8 @@ endpoints appearing in the "not-ready" state and never switching out of it:
     $ cilium-dbg endpoint list
     ENDPOINT   POLICY        IDENTITY   LABELS (source:key[=value])   IPv6                     IPv4            STATUS
                ENFORCEMENT
-    48896      Disabled      266        container:id.server           fd02::c0a8:210b:0:bf00   10.11.13.37     not-ready
-    60670      Disabled      267        container:id.client           fd02::c0a8:210b:0:ecfe   10.11.167.158   not-ready
+    48896      Disabled      266        k8s:id=server                 fd02::c0a8:210b:0:bf00   10.11.13.37     not-ready
+    60670      Disabled      267        k8s:id=client                 fd02::c0a8:210b:0:ecfe   10.11.167.158   not-ready
 
 Running ``cilium-dbg endpoint get`` for one of the endpoints will provide a
 description of known state about it, which includes eBPF verification logs.
@@ -683,21 +639,20 @@ for debugging what is going on inside them, for example:
 .. code-block:: shell-session
 
     # ls /sys/fs/bpf/tc/globals/
-    cilium_calls_15124  cilium_calls_48896        cilium_ct4_global       cilium_lb4_rr_seq       cilium_lb6_services  cilium_policy_25729  cilium_policy_60670       cilium_proxy6
-    cilium_calls_25729  cilium_calls_60670        cilium_ct6_global       cilium_lb4_services     cilium_lxc           cilium_policy_3978   cilium_policy_reserved_1  cilium_reserved_policy
-    cilium_calls_3978   cilium_calls_netdev_ns_1  cilium_events           cilium_lb6_reverse_nat  cilium_policy        cilium_policy_4314   cilium_policy_reserved_2  cilium_tunnel_map
-    cilium_calls_4314   cilium_calls_overlay_2    cilium_lb4_reverse_nat  cilium_lb6_rr_seq       cilium_policy_15124  cilium_policy_48896  cilium_proxy4
-    # bpf-map info /sys/fs/bpf/tc/globals/cilium_policy_15124
+    cilium_calls_15124  cilium_calls_48896        cilium_ct4_global       cilium_lb4_rr_seq       cilium_lb6_services  cilium_policy_v2_25729     cilium_policy_v2_60670       cilium_tunnel_map
+    cilium_calls_25729  cilium_calls_60670        cilium_ct6_global       cilium_lb4_services     cilium_lxc           cilium_policy_v2_3978      cilium_policy_v2_reserved_1
+    cilium_calls_3978   cilium_calls_netdev_ns_1  cilium_events           cilium_lb6_reverse_nat  cilium_policy        cilium_policy_v2_4314      cilium_policy_v2_reserved_2
+    cilium_calls_4314   cilium_calls_overlay_2    cilium_lb4_reverse_nat  cilium_lb6_rr_seq       cilium_policy_v2_15124  cilium_policy_v2_48896  cilium_reserved_policy
+    # bpf-map info /sys/fs/bpf/tc/globals/cilium_policy_v2_15124
     Type:           Hash
     Key size:       8
     Value size:     24
     Max entries:    1024
     Flags:          0x0
-    # bpf-map dump /sys/fs/bpf/tc/globals/cilium_policy_15124
+    # bpf-map dump /sys/fs/bpf/tc/globals/cilium_policy_v2_15124
     Key:
     00000000  6a 01 00 00 82 23 06 00                           |j....#..|
     Value:
     00000000  01 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00  |................|
     00000010  00 00 00 00 00 00 00 00                           |........|
-
 

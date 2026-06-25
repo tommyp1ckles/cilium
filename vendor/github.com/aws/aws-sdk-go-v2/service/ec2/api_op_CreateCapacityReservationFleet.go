@@ -33,11 +33,6 @@ func (c *Client) CreateCapacityReservationFleet(ctx context.Context, params *Cre
 
 type CreateCapacityReservationFleetInput struct {
 
-	// Information about the instance types for which to reserve the capacity.
-	//
-	// This member is required.
-	InstanceTypeSpecifications []types.ReservationFleetInstanceSpecification
-
 	// The total number of capacity units to be reserved by the Capacity Reservation
 	// Fleet. This value, together with the instance type weights that you assign to
 	// each instance type used by the Fleet determine the number of instances for which
@@ -89,6 +84,9 @@ type CreateCapacityReservationFleetInput struct {
 	// Instances do not need to explicitly target a Capacity Reservation Fleet to use
 	// its reserved capacity.
 	InstanceMatchCriteria types.FleetInstanceMatchCriteria
+
+	// Information about the instance types for which to reserve the capacity.
+	InstanceTypeSpecifications []types.ReservationFleetInstanceSpecification
 
 	// The tags to assign to the Capacity Reservation Fleet. The tags are
 	// automatically assigned to the Capacity Reservations in the Fleet.
@@ -185,13 +183,16 @@ func (c *Client) addOperationCreateCapacityReservationFleetMiddlewares(stack *mi
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
+	if err = addRetry(stack, options, c); err != nil {
 		return err
 	}
 	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
 	if err = addRecordResponseTiming(stack); err != nil {
+		return err
+	}
+	if err = addSpanRetryLoop(stack, options); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -206,10 +207,10 @@ func (c *Client) addOperationCreateCapacityReservationFleetMiddlewares(stack *mi
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
-	if err = addTimeOffsetBuild(stack, c); err != nil {
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
-	if err = addUserAgentRetryMode(stack, options); err != nil {
+	if err = addCredentialSource(stack, options); err != nil {
 		return err
 	}
 	if err = addIdempotencyToken_opCreateCapacityReservationFleetMiddleware(stack, options); err != nil {
@@ -234,6 +235,15 @@ func (c *Client) addOperationCreateCapacityReservationFleetMiddlewares(stack *mi
 		return err
 	}
 	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptBeforeRetryLoop(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptAttempt(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil

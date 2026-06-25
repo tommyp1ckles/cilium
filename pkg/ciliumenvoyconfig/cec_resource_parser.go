@@ -6,34 +6,41 @@ package ciliumenvoyconfig
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
+	"strconv"
 
 	"github.com/cilium/hive/cell"
 	cilium "github.com/cilium/proxy/go/cilium/api"
-	envoy_config_cluster "github.com/cilium/proxy/go/envoy/config/cluster/v3"
-	envoy_config_core "github.com/cilium/proxy/go/envoy/config/core/v3"
-	envoy_config_endpoint "github.com/cilium/proxy/go/envoy/config/endpoint/v3"
-	envoy_config_listener "github.com/cilium/proxy/go/envoy/config/listener/v3"
-	envoy_config_route "github.com/cilium/proxy/go/envoy/config/route/v3"
-	envoy_config_healthcheck "github.com/cilium/proxy/go/envoy/extensions/filters/http/health_check/v3"
-	envoy_config_http "github.com/cilium/proxy/go/envoy/extensions/filters/network/http_connection_manager/v3"
-	envoy_config_tcp "github.com/cilium/proxy/go/envoy/extensions/filters/network/tcp_proxy/v3"
-	envoy_config_tls "github.com/cilium/proxy/go/envoy/extensions/transport_sockets/tls/v3"
-	envoy_config_upstream "github.com/cilium/proxy/go/envoy/extensions/upstreams/http/v3"
-	envoy_config_types "github.com/cilium/proxy/go/envoy/type/v3"
-	"github.com/sirupsen/logrus"
+	"github.com/cilium/statedb"
+	envoy_config_cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
+	envoy_config_core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	envoy_config_endpoint "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
+	envoy_config_listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
+	envoy_config_route "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
+	extauthzv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_authz/v3"
+	envoy_config_healthcheck "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/health_check/v3"
+	envoy_config_http "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
+	envoy_config_tcp "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/tcp_proxy/v3"
+	envoy_config_tls "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
+	envoy_config_upstream "github.com/envoyproxy/go-control-plane/envoy/extensions/upstreams/http/v3"
+	envoy_config_types "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/cilium/cilium/pkg/annotation"
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/envoy"
+	envoyCfg "github.com/cilium/cilium/pkg/envoy/config"
+	"github.com/cilium/cilium/pkg/k8s"
 	cilium_v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/maps/ipcache"
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy/api"
-	"github.com/cilium/cilium/pkg/proxy"
 )
 
 const (
@@ -50,46 +57,72 @@ const (
 	ciliumL7FilterTypeURL        = "type.googleapis.com/cilium.L7Policy"
 )
 
-type cecResourceParser struct {
-	logger        logrus.FieldLogger
+type CECResourceParser struct {
+	logger        *slog.Logger
 	portAllocator PortAllocator
 
 	ingressIPv4 net.IP
 	ingressIPv6 net.IP
+
+	defaultMaxConcurrentRetries uint32
+	defaultMaxConnections       uint32
+	defaultMaxRequests          uint32
+	defaultMaxPendingRequests   uint32
+	httpLingerConfig            int
+	accessLogPath               string
+
+	// enableBPFTProxy indicates whether BPF TProxy is enabled. When set,
+	// SO_REUSEPORT is disabled on (non-internal) listeners as it is not
+	// compatible with BPF TPROXY.
+	enableBPFTProxy bool
 }
 
 type parserParams struct {
 	cell.In
 
-	Logger    logrus.FieldLogger
+	Logger    *slog.Logger
 	Lifecycle cell.Lifecycle
 
-	Proxy          *proxy.Proxy
-	LocalNodeStore *node.LocalNodeStore
+	PortAllocator PortAllocator
+	DB            *statedb.DB
+	Nodes         statedb.Table[*node.LocalNode]
+
+	DaemonConfig *option.DaemonConfig
+	CecConfig    CECConfig
+	EnvoyConfig  envoyCfg.ProxyConfig
 }
 
-func newCECResourceParser(params parserParams) *cecResourceParser {
-	parser := &cecResourceParser{
-		logger:        params.Logger,
-		portAllocator: params.Proxy,
+func newCECResourceParser(params parserParams) *CECResourceParser {
+	parser := &CECResourceParser{
+		logger:                      params.Logger,
+		portAllocator:               params.PortAllocator,
+		defaultMaxConcurrentRetries: params.EnvoyConfig.ProxyMaxConcurrentRetries,
+		defaultMaxConnections:       params.EnvoyConfig.ProxyClusterMaxConnections,
+		defaultMaxRequests:          params.EnvoyConfig.ProxyClusterMaxRequests,
+		defaultMaxPendingRequests:   params.EnvoyConfig.ProxyClusterMaxPendingRequests,
+		httpLingerConfig:            params.EnvoyConfig.EnvoyHTTPUpstreamLingerTimeout,
+		enableBPFTProxy:             params.DaemonConfig.EnableBPFTProxy,
+	}
+	if params.EnvoyConfig.EnvoyAccessLogEnabled {
+		parser.accessLogPath = envoy.GetAccessLogSocketPath()
 	}
 
 	// Retrieve Ingress IPs from local Node.
 	// It's assumed that these don't change.
 	params.Lifecycle.Append(cell.Hook{
 		OnStart: func(ctx cell.HookContext) error {
-			localNode, err := params.LocalNodeStore.Get(ctx)
-			if err != nil {
-				return fmt.Errorf("failed to get LocalNodeStore: %w", err)
+			localNode, _, found := params.Nodes.Get(params.DB.ReadTxn(), node.LocalNodeQuery)
+			if !found {
+				return fmt.Errorf("BUG: failed to get local node")
 			}
 
 			parser.ingressIPv4 = localNode.IPv4IngressIP
 			parser.ingressIPv6 = localNode.IPv6IngressIP
 
-			params.Logger.
-				WithField(logfields.V4IngressIP, localNode.IPv4IngressIP).
-				WithField(logfields.V6IngressIP, localNode.IPv6IngressIP).
-				Debug("Retrieved Ingress IPs from Node")
+			params.Logger.Debug("Retrieved Ingress IPs from Node",
+				logfields.V4IngressIP, localNode.IPv4IngressIP,
+				logfields.V6IngressIP, localNode.IPv6IngressIP,
+			)
 
 			return nil
 		},
@@ -100,11 +133,12 @@ func newCECResourceParser(params parserParams) *cecResourceParser {
 
 type PortAllocator interface {
 	AllocateCRDProxyPort(name string) (uint16, error)
-	AckProxyPort(ctx context.Context, name string) error
+	ReallocateCRDProxyPort(name string) (uint16, error)
+	AckProxyPortWithReference(ctx context.Context, name string) error
 	ReleaseProxyPort(name string) error
 }
 
-// parseResources parses all supported Envoy resource types from CiliumEnvoyConfig CRD to the internal type `envoy.Resources`.
+// ParseResources parses all supported Envoy resource types from CiliumEnvoyConfig CRD to the internal type `envoy.Resources`.
 //
 // - Qualify names by prepending the namespace and name of the origin CEC to the Envoy resource names.
 // - Validate resources
@@ -114,13 +148,14 @@ type PortAllocator interface {
 // Parameters:
 //   - `cecNamespace` and `cecName` will be prepended to the Envoy resource names.
 //   - `xdsResources` are the resources from the CiliumEnvoyConfig or CiliumClusterwideEnvoyConfig.
-//   - `isL7LB` defines whether these resources are used for L7 loadbalancing. If `true`, the Envoy Cilium Network- and L7 filters are always
-//     added to all non-internal Listeners. In addition, the info gets passed to the Envoy Cilium BPF Metadata listener filter on all Listeners.
+//   - `isL7LB` defines whether these resources are used for L7 loadbalancing. If `true`, the info gets passed to
+//     the Envoy Cilium BPF Metadata listener filter on all Listeners.
+//   - `injecCiliumEnvoyFilters` defines whether the Envoy Cilium Network- and L7 filters should always be added to all non-internal Listeners.
 //   - `useOriginalSourceAddr` is passed to the Envoy Cilium BPF Metadata listener filter on all Listeners.
 //   - `newResources` is passed as `true` when parsing resources that are being added or are the new version of the resources being updated,
 //     and as `false` if the resources are being removed or are the old version of the resources being updated. Only 'new' resources are validated.
-func (r *cecResourceParser) parseResources(cecNamespace string, cecName string, xdsResources []cilium_v2.XDSResource, isL7LB bool, useOriginalSourceAddr bool, newResources bool) (envoy.Resources, error) {
-	// only validate new  resources - old ones are already applied
+func (r *CECResourceParser) ParseResources(cecNamespace string, cecName string, xdsResources []cilium_v2.XDSResource, isL7LB bool, injectCiliumEnvoyFilters bool, useOriginalSourceAddr bool, newResources bool) (envoy.Resources, error) {
+	// only validate new resources - old ones are already applied
 	validate := newResources
 
 	// upstream filters are injected if any non-internal listener is L7 LB
@@ -129,7 +164,7 @@ func (r *cecResourceParser) parseResources(cecNamespace string, cecName string, 
 
 	resources := envoy.Resources{}
 	for _, res := range xdsResources {
-		// Skip empty TypeURLs, which are left behind when Unmarshaling resource JSON fails
+		// Skip empty TypeURLs, which are left behind when Unmarshalling resource JSON fails
 		if res.TypeUrl == "" {
 			continue
 		}
@@ -149,17 +184,25 @@ func (r *cecResourceParser) parseResources(cecNamespace string, cecName string, 
 				return envoy.Resources{}, fmt.Errorf("unspecified Listener name")
 			}
 
-			if option.Config.EnableBPFTProxy {
+			if r.enableBPFTProxy && listener.GetInternalListener() == nil {
 				// Envoy since 1.20.0 uses SO_REUSEPORT on listeners by default.
 				// BPF TPROXY is currently not compatible with SO_REUSEPORT, so
 				// disable it.  Note that this may degrade Envoy performance.
+				// Skip internal listeners as they don't bind to sockets and
+				// don't support the EnableReusePort field (validation would fail).
 				listener.EnableReusePort = &wrapperspb.BoolValue{Value: false}
 			}
 
-			// Only inject Cilium filters if all of the following conditions are fulfilled
-			// * Cilium allocates listener address or it's a listener for a L7 loadbalancer
+			// Only inject Cilium downstream filters if all of the following conditions are fulfilled
+			// * Cilium allocates listener address or it's configured to do so
 			// * It's not an internal listener
-			injectCiliumFilters := (listener.GetAddress() == nil || isL7LB) && listener.GetInternalListener() == nil
+			injectCiliumDownstreamFilters := (listener.GetAddress() == nil || injectCiliumEnvoyFilters) && listener.GetInternalListener() == nil
+
+			// Also inject upstream filters when injecting the downstream
+			// HTTP enforcement filter for at least one listener.
+			if injectCiliumDownstreamFilters && injectCiliumEnvoyFilters {
+				injectCiliumUpstreamFilters = true
+			}
 
 			// Fill in SDS & RDS config source if unset
 			for _, fc := range listener.FilterChains {
@@ -200,15 +243,9 @@ func (r *cecResourceParser) parseResources(cecNamespace string, cecName string, 
 								updated = true
 							}
 						}
-						if injectCiliumFilters {
-							l7FilterUpdated := injectCiliumL7Filter(hcmConfig)
+						if injectCiliumDownstreamFilters {
+							l7FilterUpdated := injectCiliumL7Filter(r.accessLogPath, hcmConfig)
 							updated = updated || l7FilterUpdated
-
-							// Also inject upstream filters for L7 LB when injecting the downstream
-							// HTTP enforcement filter
-							if isL7LB {
-								injectCiliumUpstreamFilters = true
-							}
 						}
 
 						httpFiltersUpdated := qualifyHttpFilters(cecNamespace, cecName, hcmConfig)
@@ -237,7 +274,7 @@ func (r *cecResourceParser) parseResources(cecNamespace string, cecName string, 
 					default:
 						continue
 					}
-					if injectCiliumFilters && !foundCiliumNetworkFilter {
+					if injectCiliumDownstreamFilters && !foundCiliumNetworkFilter {
 						// Inject Cilium network filter just before the HTTP Connection Manager or TCPProxy filter
 						fc.Filters = append(fc.Filters[:i+1], fc.Filters[i:]...)
 						fc.Filters[i] = &envoy_config_listener.Filter{
@@ -268,7 +305,9 @@ func (r *cecResourceParser) parseResources(cecNamespace string, cecName string, 
 			}
 			resources.Listeners = append(resources.Listeners, listener)
 
-			r.logger.Debugf("ParseResources: Parsed listener %q: %v", name, listener)
+			r.logger.Debug("ParseResources: Parsed listener",
+				logfields.Name, name,
+				logfields.Listener, listener)
 
 		case envoy.RouteTypeURL:
 			route, ok := message.(*envoy_config_route.RouteConfiguration)
@@ -299,7 +338,9 @@ func (r *cecResourceParser) parseResources(cecNamespace string, cecName string, 
 			}
 			resources.Routes = append(resources.Routes, route)
 
-			r.logger.Debugf("ParseResources: Parsed route %q: %v", name, route)
+			r.logger.Debug("ParseResources: Parsed route",
+				logfields.Name, name,
+				logfields.Route, route)
 
 		case envoy.ClusterTypeURL:
 			cluster, ok := message.(*envoy_config_cluster.Cluster)
@@ -312,6 +353,8 @@ func (r *cecResourceParser) parseResources(cecNamespace string, cecName string, 
 			}
 
 			fillInTransportSocketXDS(cecNamespace, cecName, cluster.TransportSocket)
+
+			fillInCircuitBreakers(cluster, r.defaultMaxConcurrentRetries, r.defaultMaxConnections, r.defaultMaxRequests, r.defaultMaxPendingRequests)
 
 			// Fill in EDS config source if unset
 			if enum := cluster.GetType(); enum == envoy_config_cluster.Cluster_EDS {
@@ -344,7 +387,9 @@ func (r *cecResourceParser) parseResources(cecNamespace string, cecName string, 
 			}
 			resources.Clusters = append(resources.Clusters, cluster)
 
-			r.logger.Debugf("ParseResources: Parsed cluster %q: %v", name, cluster)
+			r.logger.Debug("ParseResources: Parsed cluster",
+				logfields.Name, name,
+				logfields.ResourceClusters, cluster)
 
 		case envoy.EndpointTypeURL:
 			endpoints, ok := message.(*envoy_config_endpoint.ClusterLoadAssignment)
@@ -373,7 +418,9 @@ func (r *cecResourceParser) parseResources(cecNamespace string, cecName string, 
 			}
 			resources.Endpoints = append(resources.Endpoints, endpoints)
 
-			r.logger.Debugf("ParseResources: Parsed endpoints for cluster %q: %v", name, endpoints)
+			r.logger.Debug("ParseResources: Parsed endpoints for cluster",
+				logfields.Name, name,
+				logfields.Endpoints, endpoints)
 
 		case envoy.SecretTypeURL:
 			secret, ok := message.(*envoy_config_tls.Secret)
@@ -402,7 +449,9 @@ func (r *cecResourceParser) parseResources(cecNamespace string, cecName string, 
 			}
 			resources.Secrets = append(resources.Secrets, secret)
 
-			r.logger.Debugf("ParseResources: Parsed secret: %s", name)
+			r.logger.Debug("ParseResources: Parsed secret",
+				logfields.Name, name,
+				logfields.Secret, secret)
 
 		default:
 			return envoy.Resources{}, fmt.Errorf("unsupported type: %s", typeURL)
@@ -426,7 +475,7 @@ func (r *cecResourceParser) parseResources(cecNamespace string, cecName string, 
 					resources.PortAllocationCallbacks = make(map[string]func(context.Context) error)
 				}
 				if newResources {
-					resources.PortAllocationCallbacks[listenerName] = func(ctx context.Context) error { return r.portAllocator.AckProxyPort(ctx, listenerName) }
+					resources.PortAllocationCallbacks[listenerName] = func(ctx context.Context) error { return r.portAllocator.AckProxyPortWithReference(ctx, listenerName) }
 				} else {
 					resources.PortAllocationCallbacks[listenerName] = func(_ context.Context) error { return r.portAllocator.ReleaseProxyPort(listenerName) }
 				}
@@ -446,8 +495,23 @@ func (r *cecResourceParser) parseResources(cecNamespace string, cecName string, 
 			if !found {
 				// Get the listener port from the listener's (main) address
 				port := uint16(listener.GetAddress().GetSocketAddress().GetPortValue())
+				// Only use zero linger for HTTP listener
+				isHTTPListener := func() bool {
+					for _, fc := range listener.FilterChains {
+						for _, filter := range fc.Filters {
+							tc := filter.GetTypedConfig()
+							if tc == nil {
+								continue
+							}
+							if tc.GetTypeUrl() == envoy.HttpConnectionManagerTypeURL {
+								return true
+							}
+						}
+					}
+					return false
+				}()
 
-				listener.ListenerFilters = append(listener.ListenerFilters, r.getBPFMetadataListenerFilter(useOriginalSourceAddr, isL7LB, port))
+				listener.ListenerFilters = append(listener.ListenerFilters, r.getBPFMetadataListenerFilter(useOriginalSourceAddr, isL7LB, port, isHTTPListener))
 			}
 		}
 
@@ -501,7 +565,7 @@ func (r *cecResourceParser) parseResources(cecNamespace string, cecName string, 
 					supportsALPN = true
 				}
 			}
-			injected, err := injectCiliumUpstreamL7Filter(opts, supportsALPN)
+			injected, err := injectCiliumUpstreamL7Filter(r.accessLogPath, opts, supportsALPN)
 			if err != nil {
 				return envoy.Resources{}, fmt.Errorf("failed to inject upstream filters for cluster %q: %w", cluster.Name, err)
 			}
@@ -520,13 +584,19 @@ func (r *cecResourceParser) parseResources(cecNamespace string, cecName string, 
 }
 
 // 'l7lb' triggers the upstream mark to embed source pod EndpointID instead of source security ID
-func (r *cecResourceParser) getBPFMetadataListenerFilter(useOriginalSourceAddr bool, l7lb bool, proxyPort uint16) *envoy_config_listener.ListenerFilter {
+func (r *CECResourceParser) getBPFMetadataListenerFilter(useOriginalSourceAddr bool, l7lb bool, proxyPort uint16, isHTTPListener bool) *envoy_config_listener.ListenerFilter {
 	conf := &cilium.BpfMetadata{
 		IsIngress:                false,
 		UseOriginalSourceAddress: useOriginalSourceAddr,
 		BpfRoot:                  bpf.BPFFSRoot(),
 		IsL7Lb:                   l7lb,
 		ProxyId:                  uint32(proxyPort),
+		IpcacheName:              ipcache.Name,
+	}
+
+	if isHTTPListener && r.httpLingerConfig >= 0 {
+		lingerTime := uint32(r.httpLingerConfig)
+		conf.OriginalSourceSoLingerTime = &lingerTime
 	}
 
 	// Set Ingress source addresses if configuring for L7 LB.  One of these will be used when
@@ -553,8 +623,10 @@ func (r *cecResourceParser) getBPFMetadataListenerFilter(useOriginalSourceAddr b
 			// Enforce ingress policy for Ingress
 			conf.EnforcePolicyOnL7Lb = true
 		}
-		r.logger.Debugf("%s: ipv4_source_address: %s", ciliumBPFMetadataListenerFilterName, conf.GetIpv4SourceAddress())
-		r.logger.Debugf("%s: ipv6_source_address: %s", ciliumBPFMetadataListenerFilterName, conf.GetIpv6SourceAddress())
+		r.logger.Debug("Listener filter address details",
+			logfields.Name, ciliumBPFMetadataListenerFilterName,
+			logfields.IPv4, conf.GetIpv4SourceAddress(),
+			logfields.IPv6, conf.GetIpv6SourceAddress())
 	}
 
 	return &envoy_config_listener.ListenerFilter{
@@ -705,7 +777,7 @@ func qualifyRouteConfigurationResourceNames(namespace, name string, routeConfig 
 }
 
 // injectCiliumL7Filter injects the Cilium HTTP filter just before the HTTP Router filter
-func injectCiliumL7Filter(hcmConfig *envoy_config_http.HttpConnectionManager) bool {
+func injectCiliumL7Filter(accessLogPath string, hcmConfig *envoy_config_http.HttpConnectionManager) bool {
 	foundCiliumL7Filter := false
 
 	for j, httpFilter := range hcmConfig.HttpFilters {
@@ -715,7 +787,7 @@ func injectCiliumL7Filter(hcmConfig *envoy_config_http.HttpConnectionManager) bo
 		case envoyRouterFilterName:
 			if !foundCiliumL7Filter {
 				hcmConfig.HttpFilters = append(hcmConfig.HttpFilters[:j+1], hcmConfig.HttpFilters[j:]...)
-				hcmConfig.HttpFilters[j] = envoy.GetCiliumHttpFilter()
+				hcmConfig.HttpFilters[j] = envoy.GetCiliumHttpFilter(accessLogPath)
 				return true
 			}
 		}
@@ -753,6 +825,28 @@ func qualifyHttpFilters(cecNamespace string, cecName string, hcmConfig *envoy_co
 					httpFilterConfig.ClusterMinHealthyPercentages = clusters
 					h.TypedConfig = toAny(httpFilterConfig)
 				}
+			case *extauthzv3.ExtAuthz:
+				var nameUpdated bool
+				switch svc := httpFilterConfig.Services.(type) {
+				case *extauthzv3.ExtAuthz_GrpcService:
+					if eg := svc.GrpcService.GetEnvoyGrpc(); eg != nil {
+						eg.ClusterName, nameUpdated = api.ResourceQualifiedName(cecNamespace, cecName, eg.ClusterName)
+						if nameUpdated {
+							updated = true
+							h.TypedConfig = toAny(httpFilterConfig)
+						}
+					}
+				case *extauthzv3.ExtAuthz_HttpService:
+					if uri := svc.HttpService.GetServerUri(); uri != nil {
+						if cluster, ok := uri.HttpUpstreamType.(*envoy_config_core.HttpUri_Cluster); ok {
+							cluster.Cluster, nameUpdated = api.ResourceQualifiedName(cecNamespace, cecName, cluster.Cluster)
+							if nameUpdated {
+								updated = true
+								h.TypedConfig = toAny(httpFilterConfig)
+							}
+						}
+					}
+				}
 			}
 		}
 	}
@@ -761,7 +855,7 @@ func qualifyHttpFilters(cecNamespace string, cecName string, hcmConfig *envoy_co
 }
 
 // injectCiliumUpstreamL7Filter injects the Cilium HTTP filter just before the Upstream Codec filter
-func injectCiliumUpstreamL7Filter(opts *envoy_config_upstream.HttpProtocolOptions, supportsALPN bool) (bool, error) {
+func injectCiliumUpstreamL7Filter(accessLogPath string, opts *envoy_config_upstream.HttpProtocolOptions, supportsALPN bool) (bool, error) {
 	filters := opts.GetHttpFilters()
 	if filters == nil {
 		filters = make([]*envoy_config_http.HttpFilter, 0, 2)
@@ -793,9 +887,9 @@ func injectCiliumUpstreamL7Filter(opts *envoy_config_upstream.HttpProtocolOption
 		j := codecFilterIndex
 		if j >= 0 {
 			filters = append(filters[:j+1], filters[j:]...)
-			filters[j] = envoy.GetCiliumHttpFilter()
+			filters[j] = envoy.GetCiliumHttpFilter(accessLogPath)
 		} else {
-			filters = append(filters, envoy.GetCiliumHttpFilter())
+			filters = append(filters, envoy.GetCiliumHttpFilter(accessLogPath))
 		}
 		changed = true
 	}
@@ -905,10 +999,81 @@ func fillInTransportSocketXDS(cecNamespace string, cecName string, ts *envoy_con
 	}
 }
 
+func fillInCircuitBreakers(cluster *envoy_config_cluster.Cluster, defaultConcurrentRetries, defaultMaxConnections, defaultRequests, defaultPendingRequests uint32) {
+	if cluster.CircuitBreakers == nil {
+		cluster.CircuitBreakers = &envoy_config_cluster.CircuitBreakers{
+			Thresholds: []*envoy_config_cluster.CircuitBreakers_Thresholds{{
+				MaxRetries:         &wrapperspb.UInt32Value{Value: defaultConcurrentRetries},
+				MaxConnections:     &wrapperspb.UInt32Value{Value: defaultMaxConnections},
+				MaxRequests:        &wrapperspb.UInt32Value{Value: defaultRequests},
+				MaxPendingRequests: &wrapperspb.UInt32Value{Value: defaultPendingRequests},
+			}},
+		}
+	}
+}
+
 func toAny(message proto.Message) *anypb.Any {
 	a, err := anypb.New(message)
 	if err != nil {
 		return nil
 	}
 	return a
+}
+
+// UseOriginalSourceAddress returns true if the given object metadata indicates that the owner needs the Envoy listener to assume the identity of Cilium Ingress.
+// This can be an explicit annotation (or deprecated label) or the presence of an OwnerReference of Kind "Ingress" or "Gateway".
+func UseOriginalSourceAddress(meta *metav1.ObjectMeta) bool {
+	for _, owner := range meta.OwnerReferences {
+		if owner.Kind == "Ingress" || owner.Kind == "Gateway" {
+			return false
+		}
+	}
+
+	if meta.GetAnnotations() != nil {
+		if v, ok := meta.GetAnnotations()[annotation.CECUseOriginalSourceAddress]; ok {
+			if boolValue, err := strconv.ParseBool(v); err == nil {
+				return boolValue
+			}
+		}
+	}
+
+	// fallback to deprecated label
+	if meta.GetLabels() != nil {
+		if v, ok := meta.GetLabels()[k8s.UseOriginalSourceAddressLabel]; ok {
+			if boolValue, err := strconv.ParseBool(v); err == nil {
+				return boolValue
+			}
+		}
+	}
+
+	return true
+}
+
+// InjectCiliumEnvoyFilters returns true if the given object indicates that Cilium Envoy Network- and L7 filters
+// should be added to all non-internal Listeners.
+// This can be an explicit annotation or the implicit presence of a L7LB service via the Services property.
+func InjectCiliumEnvoyFilters(meta *metav1.ObjectMeta, spec *cilium_v2.CiliumEnvoyConfigSpec) bool {
+	if meta.GetAnnotations() != nil {
+		if v, ok := meta.GetAnnotations()[annotation.CECInjectCiliumFilters]; ok {
+			if boolValue, err := strconv.ParseBool(v); err == nil {
+				return boolValue
+			}
+		}
+	}
+
+	return len(spec.Services) > 0
+}
+
+// isL7LB returns true if the given object indicates that CiliumEnvoyConfig handles L7 loadbalancing.
+// This can be an explicit annotation or the implicit presence of a L7LB service via the Services property.
+func isL7LB(meta *metav1.ObjectMeta, spec *cilium_v2.CiliumEnvoyConfigSpec) bool {
+	if meta.GetAnnotations() != nil {
+		if v, ok := meta.GetAnnotations()[annotation.CECIsL7LB]; ok {
+			if boolValue, err := strconv.ParseBool(v); err == nil {
+				return boolValue
+			}
+		}
+	}
+
+	return len(spec.Services) > 0
 }

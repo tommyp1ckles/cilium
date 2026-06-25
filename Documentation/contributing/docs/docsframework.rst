@@ -21,9 +21,10 @@ discrepancies, please update this page.
 Sphinx
 ======
 
-Cilium relies on `Sphinx`_ to generate its documentation.
+Cilium relies on the `Sphinx Documentation Framework`_ to generate its
+documentation.
 
-.. _Sphinx: https://www.sphinx-doc.org
+.. _Sphinx Documentation Framework: https://www.sphinx-doc.org
 
 Sphinx usage
 ------------
@@ -73,8 +74,9 @@ that they are all up-to-date:
 
 .. code-block:: makefile
 
-   check: builder-image api-flaggen update-cmdref update-crdlist update-helm-values update-codeowners update-redirects
+   check: builder-image api-flaggen update-cmdref update-feature-metrics update-crdlist update-helm-values update-codeowners update-redirects
      ./check-cmdref.sh
+     ./check-feature-metrics.sh
      ./check-helmvalues.sh
      $(DOCKER_RUN) ./check-examples.sh # Runs "cilium policy validate" and "yamllint"
      ./check-codeowners.sh
@@ -95,6 +97,12 @@ run. They are:
   - Runs ``./update-cmdref.sh``
   - Includes running various binaries with ``--cmdref``
   - Generates ``Documentation/cmdref/\*``
+
+- ``update-feature-metrics``
+
+  - Runs ``./update-feature-metrics.sh``
+  - Includes running various binaries with ``metrics dump features`` command
+  - Generates ``Documentation/observability/feature-metrics-agent.txt`` and ``Documentation/observability/feature-metrics-operator.txt``
 
 - ``update-crdlist``
 
@@ -135,6 +143,12 @@ Other auto-generated contents include:
   - Markdown generated from the main ``Makefile`` at the root of the repository
   - Relies on the contents of ``api``, linked as ``Documentation/_api``
   - Included from ``Documentation/grpcapi.rst``
+
+- SDP gRPC API reference
+
+  - Markdown generated from the main ``Makefile`` at the root of the repository
+  - Relies on the contents of ``api``, linked as ``Documentation/_api``
+  - Included from ``Documentation/sdpapi.rst``
 
 Build system
 ============

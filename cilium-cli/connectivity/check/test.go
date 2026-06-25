@@ -5,11 +5,14 @@ package check
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"time"
 
 	"github.com/blang/semver/v4"
@@ -21,16 +24,17 @@ import (
 	"github.com/cloudflare/cfssl/signer"
 	"github.com/cloudflare/cfssl/signer/local"
 	corev1 "k8s.io/api/core/v1"
-	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/util/yaml"
 
 	"github.com/cilium/cilium/cilium-cli/defaults"
+	"github.com/cilium/cilium/cilium-cli/k8s"
 	"github.com/cilium/cilium/cilium-cli/sysdump"
 	"github.com/cilium/cilium/cilium-cli/utils/features"
 	k8sConst "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 	ciliumv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	"github.com/cilium/cilium/pkg/lock"
-	"github.com/cilium/cilium/pkg/policy/api"
 	"github.com/cilium/cilium/pkg/versioncheck"
 )
 
@@ -60,15 +64,13 @@ func NewTest(name string, verbose bool, debug bool) *Test {
 		panic("empty test name")
 	}
 	test := &Test{
-		name:        name,
-		scenarios:   make(map[Scenario][]*Action),
-		cnps:        make(map[string]*ciliumv2.CiliumNetworkPolicy),
-		ccnps:       make(map[string]*ciliumv2.CiliumClusterwideNetworkPolicy),
-		knps:        make(map[string]*networkingv1.NetworkPolicy),
-		cegps:       make(map[string]*ciliumv2.CiliumEgressGatewayPolicy),
-		clrps:       make(map[string]*ciliumv2.CiliumLocalRedirectPolicy),
-		logBuf:      &bytes.Buffer{}, // maintain internal buffer by default
-		conditionFn: nil,
+		name:       name,
+		scenarios:  make(map[Scenario][]*Action),
+		resources:  []k8s.Object{},
+		clrps:      make(map[string]*ciliumv2.CiliumLocalRedirectPolicy),
+		logBuf:     &bytes.Buffer{}, // maintain internal buffer by default
+		conditions: nil,
+		verbose:    verbose,
 	}
 	// Setting the internal buffer to nil causes the logger to
 	// write directly to stdout in verbose or debug mode.
@@ -110,26 +112,20 @@ type Test struct {
 	// Needs to be stored as a list, these are implemented in another package.
 	scenariosSkipped []Scenario
 
-	// Policies active during this test.
-	cnps map[string]*ciliumv2.CiliumNetworkPolicy
-
-	// Cilium Clusterwide Network Policies active during this test.
-	ccnps map[string]*ciliumv2.CiliumClusterwideNetworkPolicy
-
-	// Kubernetes Network Policies active during this test.
-	knps map[string]*networkingv1.NetworkPolicy
-
-	// Cilium Egress Gateway Policies active during this test.
-	cegps map[string]*ciliumv2.CiliumEgressGatewayPolicy
-
 	// Cilium Local Redirect Policies active during this test.
 	clrps map[string]*ciliumv2.CiliumLocalRedirectPolicy
+
+	// k8s resources that should be created before the test run, and removed afterwards.
+	// If any of these correspond to a network policy, this will wait for the policy revision
+	// to be incremented.
+	resources []k8s.Object
 
 	// Secrets that have to be present during the test.
 	secrets map[string]*corev1.Secret
 
 	// CA certificates of the certificates that have to be present during the test.
-	certificateCAs map[string][]byte
+	certificateCAs  map[string][]byte
+	certificateKeys map[string][]byte
 
 	// A custom sysdump policy for the given test.
 	sysdumpPolicy SysdumpPolicy
@@ -147,21 +143,21 @@ type Test struct {
 
 	// Buffer to store output until it's flushed by a failure.
 	// Unused when run in verbose or debug mode.
-	logMu  lock.RWMutex
-	logBuf io.ReadWriter
+	logMu   lock.RWMutex
+	logBuf  io.ReadWriter
+	verbose bool
 
-	// conditionFn is a function that returns true if the test needs to run,
-	// and false otherwise. By default, it's set to a function that returns
-	// true.
-	conditionFn []func() bool
+	// conditions is a list of test conditions to evaluate whether the test
+	// should be run or skipped.
+	conditions []testCondition
 
 	// List of functions to be called when Run() returns.
 	finalizers []func(ctx context.Context) error
 }
 
 func (t *Test) String() string {
-	return fmt.Sprintf("<Test %s, %d scenarios, %d CNPs, %d CCNPs, expectFunc %v>",
-		t.name, len(t.scenarios), len(t.cnps), len(t.ccnps), t.expectFunc)
+	return fmt.Sprintf("<Test %s, %d scenarios, %d resources, expectFunc %v>",
+		t.name, len(t.scenarios), len(t.resources), t.expectFunc)
 }
 
 // Name returns the name of the test.
@@ -171,6 +167,18 @@ func (t *Test) Name() string {
 
 func (t *Test) Failed() bool {
 	return t.failed
+}
+
+func (t *Test) FailureMessages() []string {
+	failureMessages := []string{}
+	for _, s := range t.scenarios {
+		for _, m := range s {
+			if m.failureMessage != "" {
+				failureMessages = append(failureMessages, m.failureMessage)
+			}
+		}
+	}
+	return failureMessages
 }
 
 // ScenarioName returns the Test name and Scenario name concatenated in
@@ -196,6 +204,25 @@ func (t *Test) scenarioRequirements(s Scenario) (bool, string) {
 	return t.Context().Features.MatchRequirements(reqs...)
 }
 
+// scenarioVersion returns true if the running Cilium version is within the
+// range specified by a VersionedScenario. Scenarios that do not implement
+// VersionedScenario are always considered in range.
+func (t *Test) scenarioVersion(s Scenario) (bool, string) {
+	vs, ok := s.(VersionedScenario)
+	if !ok {
+		return true, ""
+	}
+	constraint := vs.RequiredCiliumVersion()
+	if constraint == "" {
+		return true, ""
+	}
+	vr := versioncheck.MustCompile(constraint)
+	if !vr(t.Context().CiliumVersion) {
+		return false, fmt.Sprintf("requires Cilium version %s but running %s", constraint, t.Context().CiliumVersion)
+	}
+	return true, ""
+}
+
 // Context returns the enclosing context of the Test.
 func (t *Test) Context() *ConnectivityTest {
 	return t.ctx
@@ -206,24 +233,14 @@ func (t *Test) setup(ctx context.Context) error {
 
 	// Apply Secrets to the cluster.
 	if err := t.applySecrets(ctx); err != nil {
-		t.CiliumLogs(ctx)
+		t.ContainerLogs(ctx)
 		return fmt.Errorf("applying Secrets: %w", err)
 	}
 
 	// Apply CNPs & KNPs to the cluster.
-	if err := t.applyPolicies(ctx); err != nil {
-		t.CiliumLogs(ctx)
+	if err := t.applyResources(ctx); err != nil {
+		t.ContainerLogs(ctx)
 		return fmt.Errorf("applying network policies: %w", err)
-	}
-
-	if t.installIPRoutesFromOutsideToPodCIDRs {
-		if err := t.Context().modifyStaticRoutesForNodesWithoutCilium(ctx, "add"); err != nil {
-			return fmt.Errorf("installing static routes: %w", err)
-		}
-
-		t.finalizers = append(t.finalizers, func(context.Context) error {
-			return t.Context().modifyStaticRoutesForNodesWithoutCilium(ctx, "del")
-		})
 	}
 
 	return nil
@@ -252,13 +269,15 @@ func (t *Test) versionInRange(version semver.Version) (bool, string) {
 	return true, "running version within range"
 }
 
-func (t *Test) checkConditions() bool {
-	for _, fn := range t.conditionFn {
-		if !fn() {
-			return false
+// checkConditions returns whether the test should be run based on the test
+// conditions and an optional skip reason string in case the test should be skipped.
+func (t *Test) checkConditions() (bool, string) {
+	for _, cond := range t.conditions {
+		if !cond.fn() {
+			return false, cmp.Or(cond.reason, "skipped by condition")
 		}
 	}
-	return true
+	return true, ""
 }
 
 // willRun returns false if all of the Test's Scenarios are skipped by the user,
@@ -271,8 +290,8 @@ func (t *Test) checkConditions() bool {
 // excluding tests, they're most likely interested in other reasons why their
 // test is not being executed.
 func (t *Test) willRun() (bool, string) {
-	if !t.checkConditions() {
-		return false, "skipped by condition"
+	if run, reason := t.checkConditions(); !run {
+		return false, reason
 	}
 
 	// Check if the running Cilium version is within range of the value specified
@@ -306,7 +325,10 @@ func (t *Test) willRun() (bool, string) {
 func (t *Test) finalize() {
 	t.Debug("Finalizing Test", t.Name())
 
-	for _, f := range t.finalizers {
+	// Iterate finalizers in backward order.
+	// As an example, first we create secrets that are referenced in policies.
+	// When performing cleanup, we want to first delete policies and then secrets.
+	for _, f := range slices.Backward(t.finalizers) {
 		// Use a detached context to make sure this call is not affected by
 		// context cancellation. Usually, finalization (e.g., netpol removal)
 		// needs to happen even when the user interrupted the program.
@@ -378,6 +400,11 @@ func (t *Test) Run(ctx context.Context, index int) error {
 			continue
 		}
 
+		if ver, reason := t.scenarioVersion(s); !ver {
+			t.skip(s, reason)
+			continue
+		}
+
 		t.Logf("[-] Scenario [%s]", t.scenarioName(s))
 
 		s.Run(ctx, t)
@@ -393,55 +420,106 @@ func (t *Test) Run(ctx context.Context, index int) error {
 	return nil
 }
 
-func configureNamespaceInPolicySpec(spec *api.Rule, namespace string) {
-	if spec == nil {
-		return
-	}
-
-	for _, k := range []string{
-		k8sConst.PodNamespaceLabel,
-		KubernetesSourcedLabelPrefix + k8sConst.PodNamespaceLabel,
-		AnySourceLabelPrefix + k8sConst.PodNamespaceLabel,
-	} {
-		for _, e := range spec.Egress {
-			for _, es := range e.ToEndpoints {
-				if n, ok := es.MatchLabels[k]; ok && n == defaults.ConnectivityCheckNamespace {
-					es.MatchLabels[k] = namespace
-				}
-			}
-		}
-		for _, e := range spec.Ingress {
-			for _, es := range e.FromEndpoints {
-				if n, ok := es.MatchLabels[k]; ok && n == defaults.ConnectivityCheckNamespace {
-					es.MatchLabels[k] = namespace
-				}
-			}
-		}
-
-		for _, e := range spec.EgressDeny {
-			for _, es := range e.ToEndpoints {
-				if n, ok := es.MatchLabels[k]; ok && n == defaults.ConnectivityCheckNamespace {
-					es.MatchLabels[k] = namespace
-				}
-			}
-		}
-
-		for _, e := range spec.IngressDeny {
-			for _, es := range e.FromEndpoints {
-				if n, ok := es.MatchLabels[k]; ok && n == defaults.ConnectivityCheckNamespace {
-					es.MatchLabels[k] = namespace
-				}
-			}
-		}
-	}
+// testCondition is a test condition to evaluate whether a test should be run.
+type testCondition struct {
+	// fn is a function that returns true if the test needs to run, and
+	// false if the test should be skipped.
+	fn func() bool
+	// reason is an optional message that is printed if the test is skipped
+	// based on the test condition.
+	reason string
 }
 
 // WithCondition takes a function containing condition check logic that
 // returns true if the test needs to be run, and false otherwise. If
 // WithCondition gets called multiple times, all the conditions need to be
-// satisfied for the test to run.
-func (t *Test) WithCondition(fn func() bool) *Test {
-	t.conditionFn = append(t.conditionFn, fn)
+// satisfied for the test to run. It takes an optional reason message that is
+// printed if the test is skipped based on the condition.
+func (t *Test) WithCondition(fn func() bool, reason ...string) *Test {
+	r := ""
+	if len(reason) > 0 {
+		r = reason[0]
+	}
+	t.conditions = append(t.conditions, testCondition{fn, r})
+	return t
+}
+
+// WithUnsafeTests causes the test to only be executed in case unsafe tests
+// modifying the state of cluster nodes are included via the
+// include-unsafe-tests command line option.
+func (t *Test) WithUnsafeTests() *Test {
+	return t.WithCondition(
+		func() bool { return t.ctx.Params().IncludeUnsafeTests },
+		"unsafe test which can modify state of cluster nodes",
+	)
+}
+
+// WithMultiNodeOnly causes the test to only be executed in multi-node
+// environments.
+func (t *Test) WithMultiNodeOnly() *Test {
+	return t.WithCondition(
+		func() bool { return !t.ctx.Params().SingleNode },
+		"test requires a multi-node cluster",
+	)
+}
+
+// WithPerf causes the test to only be executed when perf connectivity tests
+// are enabled.
+func (t *Test) WithPerf() *Test {
+	return t.WithCondition(
+		func() bool { return t.ctx.Params().Perf },
+		"network performance tests excluded",
+	)
+}
+
+// WithK8sLocalHostTest causes the test to only be executed when k8s localhost
+// tests are enabled via the k8s-localhost-test command line option.
+func (t *Test) WithK8sLocalHostTest() *Test {
+	return t.WithCondition(
+		func() bool { return t.ctx.Params().K8sLocalHostTest },
+		"k8s localhost tests excluded",
+	)
+}
+
+// WithCiliumVersion limits test execution to Cilium versions that fall within
+// the given range. The input string is passed to [semver.ParseRange], see
+// package semver. Simple examples: ">1.0.0 <2.0.0" or ">=1.14.0".
+func (t *Test) WithCiliumVersion(vr string) *Test {
+	// Compile the input but don't store the result. A semver.Range is a func()
+	// that doesn't implement String(), so the original version constraint cannot
+	// be recovered to display to the user. The original constraint is echoed in
+	// Test/Scenario skip messages together with the running Cilium version.
+	_ = versioncheck.MustCompile(vr)
+	t.versionRange = vr
+	return t
+}
+
+// WithResources registers the list of one or more YAML-defined
+// Kubernetes resources (e.g. NetworkPolicy, etc.)
+//
+// # For certain well-known types, known references to the namespace are mutated
+//
+// If the resource has a namepace of "cilium-test", that is mutated
+// to the (serialized) namespace of the individual scenario.
+func (t *Test) WithResources(spec string) *Test {
+	buf := bytes.Buffer{}
+	buf.WriteString(spec)
+	decoder := yaml.NewYAMLOrJSONDecoder(&buf, 4096)
+
+	for {
+		u := unstructured.Unstructured{}
+		if err := decoder.Decode(&u); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			t.Fatalf("Parsing resource YAML: %s", err)
+		}
+
+		if u.GetNamespace() == defaults.ConnectivityCheckNamespace {
+			u.SetNamespace(t.ctx.params.TestNamespace)
+		}
+		t.resources = append(t.resources, t.tweakPolicy(&u))
+	}
 	return t
 }
 
@@ -450,24 +528,7 @@ func (t *Test) WithCondition(fn func() bool) *Test {
 // starts running. When calling this method, note that the CNP enabled feature
 // // requirement is applied directly here.
 func (t *Test) WithCiliumPolicy(policy string) *Test {
-	pl, err := parseCiliumPolicyYAML(policy)
-	if err != nil {
-		t.Fatalf("Parsing policy YAML: %s", err)
-	}
-
-	// Change the default test namespace as required.
-	for i := range pl {
-		pl[i].Namespace = t.ctx.params.TestNamespace
-		configureNamespaceInPolicySpec(pl[i].Spec, t.ctx.params.TestNamespace)
-	}
-
-	if err := t.addCNPs(pl...); err != nil {
-		t.Fatalf("Adding CNPs to policy context: %s", err)
-	}
-
-	t.WithFeatureRequirements(features.RequireEnabled(features.CNP))
-
-	return t
+	return t.WithResources(policy)
 }
 
 // WithCiliumClusterwidePolicy takes a string containing a YAML policy document
@@ -475,23 +536,7 @@ func (t *Test) WithCiliumPolicy(policy string) *Test {
 // when the test starts running. When calling this method, note that the CCNP
 // enabled feature requirement is applied directly here.
 func (t *Test) WithCiliumClusterwidePolicy(policy string) *Test {
-	pl, err := parseCiliumClusterwidePolicyYAML(policy)
-	if err != nil {
-		t.Fatalf("Parsing policy YAML: %s", err)
-	}
-
-	// Change the default test namespace as required.
-	for i := range pl {
-		configureNamespaceInPolicySpec(pl[i].Spec, t.ctx.params.TestNamespace)
-	}
-
-	if err := t.addCCNPs(pl...); err != nil {
-		t.Fatalf("Adding CCNPs to policy context: %s", err)
-	}
-
-	t.WithFeatureRequirements(features.RequireEnabled(features.CCNP))
-
-	return t
+	return t.WithResources(policy)
 }
 
 // WithK8SPolicy takes a string containing a YAML policy document and adds
@@ -499,61 +544,7 @@ func (t *Test) WithCiliumClusterwidePolicy(policy string) *Test {
 // starts running. When calling this method, note that the KNP enabled feature
 // requirement is applied directly here.
 func (t *Test) WithK8SPolicy(policy string) *Test {
-	pl, err := parseK8SPolicyYAML(policy)
-	if err != nil {
-		t.Fatalf("Parsing K8S policy YAML: %s", err)
-	}
-
-	// Change the default test namespace as required.
-	for i := range pl {
-		pl[i].Namespace = t.ctx.params.TestNamespace
-
-		if pl[i].Spec.Size() != 0 {
-			for _, k := range []string{
-				k8sConst.PodNamespaceLabel,
-				KubernetesSourcedLabelPrefix + k8sConst.PodNamespaceLabel,
-				AnySourceLabelPrefix + k8sConst.PodNamespaceLabel,
-			} {
-				for _, e := range pl[i].Spec.Egress {
-					for _, es := range e.To {
-						if es.PodSelector != nil {
-							if n, ok := es.PodSelector.MatchLabels[k]; ok && n == defaults.ConnectivityCheckNamespace {
-								es.PodSelector.MatchLabels[k] = t.ctx.params.TestNamespace
-							}
-						}
-						if es.NamespaceSelector != nil {
-							if n, ok := es.NamespaceSelector.MatchLabels[k]; ok && n == defaults.ConnectivityCheckNamespace {
-								es.NamespaceSelector.MatchLabels[k] = t.ctx.params.TestNamespace
-							}
-						}
-					}
-				}
-				for _, e := range pl[i].Spec.Ingress {
-					for _, es := range e.From {
-						if es.PodSelector != nil {
-							if n, ok := es.PodSelector.MatchLabels[k]; ok && n == defaults.ConnectivityCheckNamespace {
-								es.PodSelector.MatchLabels[k] = t.ctx.params.TestNamespace
-							}
-						}
-						if es.NamespaceSelector != nil {
-							if n, ok := es.NamespaceSelector.MatchLabels[k]; ok && n == defaults.ConnectivityCheckNamespace {
-								es.NamespaceSelector.MatchLabels[k] = t.ctx.params.TestNamespace
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	if err := t.addKNPs(pl...); err != nil {
-		t.Fatalf("Adding K8S Network Policies to policy context: %s", err)
-	}
-
-	// It is implicit that KNP should be enabled.
-	t.WithFeatureRequirements(features.RequireEnabled(features.KNP))
-
-	return t
+	return t.WithResources(policy)
 }
 
 // CiliumLocalRedirectPolicyParams is used to configure a CiliumLocalRedirectPolicy template.
@@ -572,21 +563,18 @@ type CiliumLocalRedirectPolicyParams struct {
 }
 
 func (t *Test) WithCiliumLocalRedirectPolicy(params CiliumLocalRedirectPolicyParams) *Test {
-	pl, err := parseCiliumLocalRedirectPolicyYAML(params.Policy)
-	if err != nil {
+	pl := ciliumv2.CiliumLocalRedirectPolicy{}
+	if err := parseInto([]byte(params.Policy), &pl); err != nil {
 		t.Fatalf("Parsing local redirect policy YAML: %s", err)
 	}
 
-	for i := range pl {
-		pl[i].Namespace = t.ctx.params.TestNamespace
-		pl[i].Name = params.Name
-		pl[i].Spec.RedirectFrontend.AddressMatcher.IP = params.FrontendIP
-		pl[i].Spec.SkipRedirectFromBackend = params.SkipRedirectFromBackend
-	}
+	pl.Namespace = t.ctx.params.TestNamespace
+	pl.Name = params.Name
+	pl.Spec.RedirectFrontend.AddressMatcher.IP = params.FrontendIP
+	pl.Spec.SkipRedirectFromBackend = params.SkipRedirectFromBackend
 
-	if err := t.addCLRPs(pl...); err != nil {
-		t.Fatalf("Adding CLRPs to cilium local redirect policy context: %s", err)
-	}
+	t.resources = append(t.resources, &pl)
+	t.clrps[params.Name] = &pl
 
 	t.WithFeatureRequirements(features.RequireEnabled(features.LocalRedirectPolicy))
 
@@ -614,6 +602,9 @@ type CiliumEgressGatewayPolicyParams struct {
 
 	// ExcludedCIDRsConf controls how the ExcludedCIDRsConf property should be configured
 	ExcludedCIDRsConf ExcludedCIDRsKind
+
+	// Includes changes for multigateway testing
+	Multigateway bool
 }
 
 // WithCiliumEgressGatewayPolicy takes a string containing a YAML policy
@@ -622,61 +613,85 @@ type CiliumEgressGatewayPolicyParams struct {
 // note that the egress gateway enabled feature requirement is applied directly
 // here.
 func (t *Test) WithCiliumEgressGatewayPolicy(params CiliumEgressGatewayPolicyParams) *Test {
-	pl, err := parseCiliumEgressGatewayPolicyYAML(egressGatewayPolicyYAML)
-	if err != nil {
-		t.Fatalf("Parsing policy YAML: %s", err)
+	pl := ciliumv2.CiliumEgressGatewayPolicy{}
+	if err := parseInto([]byte(egressGatewayPolicyYAML), &pl); err != nil {
+		t.Fatalf("Parsing EgressGatewayPolicy: %s", err)
 	}
 
-	for i := range pl {
-		// Change the default test namespace as required.
-		for _, k := range []string{
-			k8sConst.PodNamespaceLabel,
-			KubernetesSourcedLabelPrefix + k8sConst.PodNamespaceLabel,
-			AnySourceLabelPrefix + k8sConst.PodNamespaceLabel,
-		} {
-			for _, e := range pl[i].Spec.Selectors {
-				ps := e.PodSelector
-				if n, ok := ps.MatchLabels[k]; ok && n == defaults.ConnectivityCheckNamespace {
-					ps.MatchLabels[k] = t.ctx.params.TestNamespace
-				}
-			}
-		}
-
-		// Set the policy name
-		pl[i].Name = params.Name
-
-		// Set the pod selector
-		pl[i].Spec.Selectors[0].PodSelector.MatchLabels["kind"] = params.PodSelectorKind
-
-		// Set the egress gateway node
-		egressGatewayNode := t.EgressGatewayNode()
-		if egressGatewayNode == "" {
-			t.Fatalf("Cannot find egress gateway node")
-		}
-
-		pl[i].Spec.EgressGateway.NodeSelector.MatchLabels["kubernetes.io/hostname"] = egressGatewayNode
-
-		// Set the excluded CIDRs
-		pl[i].Spec.ExcludedCIDRs = []ciliumv2.IPv4CIDR{}
-
-		switch params.ExcludedCIDRsConf {
-		case ExternalNodeExcludedCIDRs:
-			for _, nodeWithoutCiliumIP := range t.Context().params.NodesWithoutCiliumIPs {
-				if parsedIP := net.ParseIP(nodeWithoutCiliumIP.IP); parsedIP.To4() == nil {
-					continue
-				}
-
-				cidr := ciliumv2.IPv4CIDR(fmt.Sprintf("%s/32", nodeWithoutCiliumIP.IP))
-				pl[i].Spec.ExcludedCIDRs = append(pl[i].Spec.ExcludedCIDRs, cidr)
+	// Change the default test namespace as required.
+	for _, k := range []string{
+		k8sConst.PodNamespaceLabel,
+		KubernetesSourcedLabelPrefix + k8sConst.PodNamespaceLabel,
+		AnySourceLabelPrefix + k8sConst.PodNamespaceLabel,
+	} {
+		for _, e := range pl.Spec.Selectors {
+			ps := e.PodSelector
+			if n, ok := ps.MatchLabels[k]; ok && n == defaults.ConnectivityCheckNamespace {
+				ps.MatchLabels[k] = t.ctx.params.TestNamespace
 			}
 		}
 	}
 
-	if err := t.addCEGPs(pl...); err != nil {
-		t.Fatalf("Adding CEGPs to cilium egress gateway policy context: %s", err)
+	// Set the policy name
+	pl.Name = params.Name
+
+	// Set the pod selector
+	pl.Spec.Selectors[0].PodSelector.MatchLabels["kind"] = params.PodSelectorKind
+
+	// Set the egress gateway node
+	egressGatewayNode := t.EgressGatewayNode()
+	if egressGatewayNode == "" {
+		t.Fatalf("Cannot find egress gateway node")
 	}
+
+	pl.Spec.EgressGateway.NodeSelector.MatchLabels["kubernetes.io/hostname"] = egressGatewayNode
+
+	// If the field EgressGateways is set, the contents of the field EgressGateway are disregarded.
+	if params.Multigateway && versioncheck.MustCompile(">=1.18.0")(t.ctx.CiliumVersion) {
+		egressGatewayNodes := t.EgressGatewayNodes()
+		for _, node := range egressGatewayNodes {
+			gw := pl.Spec.EgressGateway.DeepCopy()
+			gw.NodeSelector.MatchLabels["kubernetes.io/hostname"] = node
+			pl.Spec.EgressGateways = append(pl.Spec.EgressGateways, *gw)
+		}
+	}
+
+	var ipv6Enabled bool
+	if status, ok := t.ctx.Feature(features.IPv6); ok && status.Enabled && versioncheck.MustCompile(">=1.18.0")(t.ctx.CiliumVersion) {
+		ipv6Enabled = true
+	}
+
+	// If IPv6 egress policies are enabled, add the necessary destination CIDR
+	if ipv6Enabled {
+		pl.Spec.DestinationCIDRs = append(pl.Spec.DestinationCIDRs, "::/0")
+	}
+
+	// Set the excluded CIDRs
+	pl.Spec.ExcludedCIDRs = []ciliumv2.CIDR{}
+
+	switch params.ExcludedCIDRsConf {
+	case ExternalNodeExcludedCIDRs:
+		for _, nodeWithoutCiliumIP := range t.Context().params.NodesWithoutCiliumIPs {
+			if parsedIP := net.ParseIP(nodeWithoutCiliumIP.IP); parsedIP.To4() == nil {
+				// If it is an IPv6 address, add the necessary excluded CIDR
+				if ipv6Enabled {
+					cidr := ciliumv2.CIDR(fmt.Sprintf("%s/128", nodeWithoutCiliumIP.IP))
+					pl.Spec.ExcludedCIDRs = append(pl.Spec.ExcludedCIDRs, cidr)
+				}
+				continue
+			}
+
+			cidr := ciliumv2.CIDR(fmt.Sprintf("%s/32", nodeWithoutCiliumIP.IP))
+			pl.Spec.ExcludedCIDRs = append(pl.Spec.ExcludedCIDRs, cidr)
+		}
+	}
+
+	t.resources = append(t.resources, &pl)
 
 	t.WithFeatureRequirements(features.RequireEnabled(features.EgressGateway))
+	if params.Multigateway {
+		t.WithCiliumVersion(">=1.18.0")
+	}
 
 	return t
 }
@@ -725,19 +740,6 @@ func (t *Test) WithFeatureRequirements(reqs ...features.Requirement) *Test {
 // Cilium before running the test (and removed after the test completion).
 func (t *Test) WithIPRoutesFromOutsideToPodCIDRs() *Test {
 	t.installIPRoutesFromOutsideToPodCIDRs = true
-	return t
-}
-
-// WithCiliumVersion limits test execution to Cilium versions that fall within
-// the given range. The input string is passed to [semver.ParseRange], see
-// package semver. Simple examples: ">1.0.0 <2.0.0" or ">=1.14.0".
-func (t *Test) WithCiliumVersion(vr string) *Test {
-	// Compile the input but don't store the result. A semver.Range is a func()
-	// that doesn't implement String(), so the original version constraint cannot
-	// be recovered to display to the user. The original constraint is echoed in
-	// Test/Scenario skip messages together with the running Cilium version.
-	_ = versioncheck.MustCompile(vr)
-	t.versionRange = vr
 	return t
 }
 
@@ -823,6 +825,11 @@ func (t *Test) WithCertificate(name, hostname string) *Test {
 	}
 	t.certificateCAs[name] = caCert
 
+	if t.certificateKeys == nil {
+		t.certificateKeys = make(map[string][]byte)
+	}
+	t.certificateKeys[name] = caKey
+
 	return t.WithSecret(&corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
@@ -900,6 +907,17 @@ func (t *Test) NewGenericAction(s Scenario, name string) *Action {
 	return t.NewAction(s, name, nil, nil, features.IPFamilyAny)
 }
 
+// Scenarios returns a slice of all Scenarios belonging to the Test.
+func (t *Test) Scenarios() []Scenario {
+	var out []Scenario
+
+	for s := range t.scenarios {
+		out = append(out, s)
+	}
+
+	return out
+}
+
 // failedActions returns a list of failed Actions in the Test.
 func (t *Test) failedActions() []*Action {
 	var out []*Action
@@ -933,6 +951,19 @@ func (t *Test) EgressGatewayNode() string {
 	return ""
 }
 
+// Like EgressGatewayNode() but for the multigateway test case.
+// In this case we use the pods with labels other=client and other=client-other-node.
+func (t *Test) EgressGatewayNodes() []string {
+	var out []string
+	for _, clientPod := range t.ctx.clientPods {
+		if clientPod.Pod.Labels["other"] == "client" ||
+			clientPod.Pod.Labels["other"] == "client-other-node" {
+			out = append(out, clientPod.Pod.Spec.NodeName)
+		}
+	}
+	return out
+}
+
 func (t *Test) collectSysdump() {
 	for _, client := range t.ctx.Clients() {
 		collector, err := sysdump.NewCollector(client, t.ctx.params.SysdumpOptions, t.ctx.sysdumpHooks, time.Now())
@@ -947,31 +978,7 @@ func (t *Test) collectSysdump() {
 }
 
 func (t *Test) ForEachIPFamily(do func(features.IPFamily)) {
-	ipFams := []features.IPFamily{features.IPFamilyV4, features.IPFamilyV6}
-
-	// The per-endpoint routes feature is broken with IPv6 on < v1.14 when there
-	// are any netpols installed (https://github.com/cilium/cilium/issues/23852
-	// and https://github.com/cilium/cilium/issues/23910).
-	if f, ok := t.Context().Feature(features.EndpointRoutes); ok &&
-		f.Enabled && (len(t.cnps) > 0 || len(t.knps) > 0) &&
-		versioncheck.MustCompile("<1.14.0")(t.Context().CiliumVersion) {
-
-		ipFams = []features.IPFamily{features.IPFamilyV4}
-	}
-
-	for _, ipFam := range ipFams {
-		switch ipFam {
-		case features.IPFamilyV4:
-			if f, ok := t.ctx.Features[features.IPv4]; ok && f.Enabled {
-				do(ipFam)
-			}
-
-		case features.IPFamilyV6:
-			if f, ok := t.ctx.Features[features.IPv6]; ok && f.Enabled {
-				do(ipFam)
-			}
-		}
-	}
+	t.ctx.ForEachIPFamily(do)
 }
 
 // CertificateCAs returns the CAs used to sign the certificates within the test.
@@ -979,18 +986,15 @@ func (t *Test) CertificateCAs() map[string][]byte {
 	return t.certificateCAs
 }
 
-func (t *Test) CiliumNetworkPolicies() map[string]*ciliumv2.CiliumNetworkPolicy {
-	return t.cnps
-}
-
-func (t *Test) CiliumClusterwideNetworkPolicies() map[string]*ciliumv2.CiliumClusterwideNetworkPolicy {
-	return t.ccnps
-}
-
-func (t *Test) KubernetesNetworkPolicies() map[string]*networkingv1.NetworkPolicy {
-	return t.knps
+// CertificateKeys returns the CA keys used to sign the certificates within the test.
+func (t *Test) CertificateKeys() map[string][]byte {
+	return t.certificateKeys
 }
 
 func (t *Test) CiliumLocalRedirectPolicies() map[string]*ciliumv2.CiliumLocalRedirectPolicy {
 	return t.clrps
+}
+
+func (t *Test) HasNetworkPolicies() bool {
+	return slices.ContainsFunc(t.resources, isPolicy)
 }

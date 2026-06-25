@@ -4,7 +4,6 @@
 package filters
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -24,7 +23,7 @@ func TestNetworkInterfaceFilter(t *testing.T) {
 		want bool
 	}{
 		{
-			name: "nil",
+			name: "nil event",
 			args: args{
 				f: []*flowpb.FlowFilter{{
 					Interface: []*flowpb.NetworkInterface{
@@ -34,6 +33,35 @@ func TestNetworkInterfaceFilter(t *testing.T) {
 					},
 				}},
 				ev: nil,
+			},
+			want: false,
+		},
+		{
+			name: "empty filter (any interface) match",
+			args: args{
+				f: []*flowpb.FlowFilter{{
+					Interface: []*flowpb.NetworkInterface{
+						{},
+					},
+				}},
+				ev: &v1.Event{Event: &flowpb.Flow{
+					Interface: &flowpb.NetworkInterface{
+						Index: 1,
+						Name:  "eth1",
+					},
+				}},
+			},
+			want: true,
+		},
+		{
+			name: "empty filter (any interface) miss",
+			args: args{
+				f: []*flowpb.FlowFilter{{
+					Interface: []*flowpb.NetworkInterface{
+						{},
+					},
+				}},
+				ev: &v1.Event{Event: &flowpb.Flow{}},
 			},
 			want: false,
 		},
@@ -154,7 +182,7 @@ func TestNetworkInterfaceFilter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fl, err := BuildFilterList(context.Background(), tt.args.f, []OnBuildFilter{&NetworkInterfaceFilter{}})
+			fl, err := BuildFilterList(t.Context(), tt.args.f, []OnBuildFilter{&NetworkInterfaceFilter{}})
 			assert.NoError(t, err)
 			assert.Equal(t, tt.want, fl.MatchOne(tt.args.ev))
 		})

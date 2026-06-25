@@ -45,6 +45,15 @@ type GetSnapshotBlockPublicAccessStateInput struct {
 
 type GetSnapshotBlockPublicAccessStateOutput struct {
 
+	// The entity that manages the state for block public access for snapshots.
+	// Possible values include:
+	//
+	//   - account - The state is managed by the account.
+	//
+	//   - declarative-policy - The state is managed by a declarative policy and can't
+	//   be modified by the account.
+	ManagedBy types.ManagedBy
+
 	// The current state of block public access for snapshots. Possible values include:
 	//
 	//   - block-all-sharing - All public sharing of snapshots is blocked. Users in the
@@ -99,13 +108,16 @@ func (c *Client) addOperationGetSnapshotBlockPublicAccessStateMiddlewares(stack 
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
+	if err = addRetry(stack, options, c); err != nil {
 		return err
 	}
 	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
 	if err = addRecordResponseTiming(stack); err != nil {
+		return err
+	}
+	if err = addSpanRetryLoop(stack, options); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -120,10 +132,10 @@ func (c *Client) addOperationGetSnapshotBlockPublicAccessStateMiddlewares(stack 
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
-	if err = addTimeOffsetBuild(stack, c); err != nil {
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
-	if err = addUserAgentRetryMode(stack, options); err != nil {
+	if err = addCredentialSource(stack, options); err != nil {
 		return err
 	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opGetSnapshotBlockPublicAccessState(options.Region), middleware.Before); err != nil {
@@ -142,6 +154,15 @@ func (c *Client) addOperationGetSnapshotBlockPublicAccessStateMiddlewares(stack 
 		return err
 	}
 	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptBeforeRetryLoop(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptAttempt(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil

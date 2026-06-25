@@ -4,10 +4,11 @@
 package options
 
 import (
-	"fmt"
+	"net/netip"
 	"strings"
 
-	"github.com/sirupsen/logrus"
+	pb "github.com/cilium/cilium/api/v1/flow"
+	"github.com/cilium/cilium/pkg/monitor"
 )
 
 // Option is used to configure parsers
@@ -15,8 +16,18 @@ type Option func(*Options)
 
 // Options contains all parser options
 type Options struct {
-	CacheSize            int
-	HubbleRedactSettings HubbleRedactSettings
+	CacheSize                      int
+	HubbleRedactSettings           HubbleRedactSettings
+	EnableNetworkPolicyCorrelation bool
+	SkipUnknownCGroupIDs           bool
+
+	DropNotifyDecoder          DropNotifyDecoderFunc
+	DebugMsgDecoder            DebugMsgDecoderFunc
+	DebugCaptureDecoder        DebugCaptureDecoderFunc
+	TraceNotifyDecoder         TraceNotifyDecoderFunc
+	PolicyVerdictNotifyDecoder PolicyVerdictNotifyDecoderFunc
+	TraceSockNotifyDecoder     TraceSockNotifyDecoderFunc
+	L34PacketDecoder           L34PacketDecoder
 }
 
 // HubbleRedactSettings contains all hubble redact related options
@@ -24,7 +35,6 @@ type HubbleRedactSettings struct {
 	Enabled            bool
 	RedactHTTPQuery    bool
 	RedactHTTPUserInfo bool
-	RedactKafkaAPIKey  bool
 	RedactHttpHeaders  HttpHeadersList
 }
 
@@ -41,22 +51,92 @@ func CacheSize(size int) Option {
 	}
 }
 
-// Redact configures which data Hubble will redact.
-func Redact(logger logrus.FieldLogger, httpQuery, httpUserInfo, kafkaApiKey bool, allowHeaders, denyHeaders []string) Option {
+// WithRedact configures which data Hubble will redact.
+func WithRedact(httpQuery, httpUserInfo bool, allowHeaders, denyHeaders []string) Option {
 	return func(opt *Options) {
 		opt.HubbleRedactSettings.Enabled = true
 		opt.HubbleRedactSettings.RedactHTTPQuery = httpQuery
 		opt.HubbleRedactSettings.RedactHTTPUserInfo = httpUserInfo
-		opt.HubbleRedactSettings.RedactKafkaAPIKey = kafkaApiKey
 		opt.HubbleRedactSettings.RedactHttpHeaders = HttpHeadersList{
 			Allow: headerSliceToMap(allowHeaders),
 			Deny:  headerSliceToMap(denyHeaders),
 		}
-		if logger != nil {
-			logger.WithField(
-				"options",
-				fmt.Sprintf("%+v", opt)).Info("configured Hubble with redact options")
-		}
+	}
+}
+
+// WithNetworkPolicyCorrelation configures the Network Policy correlation of Hubble Flows.
+func WithNetworkPolicyCorrelation(enabled bool) Option {
+	return func(opt *Options) {
+		opt.EnableNetworkPolicyCorrelation = enabled
+	}
+}
+
+// WithSkipUnknownCGroupIDs configures whether Hubble will skip events with unknown CGroup IDs.
+func WithSkipUnknownCGroupIDs(enabled bool) Option {
+	return func(opt *Options) {
+		opt.SkipUnknownCGroupIDs = enabled
+	}
+}
+
+type DropNotifyDecoderFunc func(data []byte, decoded *pb.Flow) (*monitor.DropNotify, error)
+
+func WithDropNotifyDecoder(decode DropNotifyDecoderFunc) Option {
+	return func(opt *Options) {
+		opt.DropNotifyDecoder = decode
+	}
+}
+
+type DebugMsgDecoderFunc func(data []byte) (*monitor.DebugMsg, error)
+
+func WithDebugMsgDecoder(decode DebugMsgDecoderFunc) Option {
+	return func(opt *Options) {
+		opt.DebugMsgDecoder = decode
+	}
+}
+
+type DebugCaptureDecoderFunc func(data []byte, decoded *pb.Flow) (*monitor.DebugCapture, error)
+
+func WithDebugCaptureDecoder(decode DebugCaptureDecoderFunc) Option {
+	return func(opt *Options) {
+		opt.DebugCaptureDecoder = decode
+	}
+}
+
+type TraceNotifyDecoderFunc func(data []byte, decoded *pb.Flow) (*monitor.TraceNotify, error)
+
+func WithTraceNotifyDecoder(decode TraceNotifyDecoderFunc) Option {
+	return func(opt *Options) {
+		opt.TraceNotifyDecoder = decode
+	}
+}
+
+type PolicyVerdictNotifyDecoderFunc func(data []byte, decoded *pb.Flow) (*monitor.PolicyVerdictNotify, error)
+
+func WithPolicyVerdictNotifyDecoder(decode PolicyVerdictNotifyDecoderFunc) Option {
+	return func(opt *Options) {
+		opt.PolicyVerdictNotifyDecoder = decode
+	}
+}
+
+type TraceSockNotifyDecoderFunc func(data []byte, decoded *pb.Flow) (*monitor.TraceSockNotify, error)
+
+func WithTraceSockNotifyDecoder(decode TraceSockNotifyDecoderFunc) Option {
+	return func(opt *Options) {
+		opt.TraceSockNotifyDecoder = decode
+	}
+}
+
+type L34PacketDecoder interface {
+	DecodePacket(payload []byte, decoded *pb.Flow, isL3Device, isIPv6, isVXLAN, isGeneve bool) (
+		sourceIP, destinationIP netip.Addr,
+		sourcePort, destinationPort uint16,
+		err error,
+	)
+}
+
+func WithL34PacketDecoder(decoder L34PacketDecoder) Option {
+	return func(opt *Options) {
+		opt.L34PacketDecoder = decoder
 	}
 }
 

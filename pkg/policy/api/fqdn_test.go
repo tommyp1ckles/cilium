@@ -4,7 +4,6 @@
 package api
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -13,8 +12,6 @@ import (
 // TestFQDNSelectorSanitize tests that the sanitizer correctly catches bad
 // cases, and allows good ones.
 func TestFQDNSelectorSanitize(t *testing.T) {
-	setUpSuite(t)
-
 	for _, accept := range []FQDNSelector{
 		{MatchName: "cilium.io."},
 		{MatchName: "get-cilium.io."},
@@ -27,7 +24,7 @@ func TestFQDNSelectorSanitize(t *testing.T) {
 		{MatchPattern: "cilium.io"},
 	} {
 		err := accept.sanitize()
-		require.NoError(t, err, fmt.Sprintf("FQDNSelector %+v was rejected but it should be valid", accept))
+		require.NoError(t, err, "FQDNSelector %+v was rejected but it should be valid", accept)
 	}
 
 	for _, reject := range []FQDNSelector{
@@ -36,15 +33,13 @@ func TestFQDNSelectorSanitize(t *testing.T) {
 		{MatchName: "cilium.io", MatchPattern: "*cilium.io"},
 	} {
 		err := reject.sanitize()
-		require.Error(t, err, fmt.Sprintf("FQDNSelector %+v was accepted but it should be invalid", reject))
+		require.Error(t, err, "FQDNSelector %+v was accepted but it should be invalid", reject)
 	}
 }
 
 // TestPortRuleDNSSanitize tests that the sanitizer correctly catches bad
 // cases, and allows good ones.
 func TestPortRuleDNSSanitize(t *testing.T) {
-	setUpSuite(t)
-
 	for _, accept := range []PortRuleDNS{
 		{MatchName: "cilium.io."},
 		{MatchName: "get-cilium.io."},
@@ -57,7 +52,7 @@ func TestPortRuleDNSSanitize(t *testing.T) {
 		{MatchPattern: "cilium.io"},
 	} {
 		err := accept.Sanitize()
-		require.NoError(t, err, fmt.Sprintf("PortRuleDNS %+v was rejected but it should be valid", accept))
+		require.NoError(t, err, "PortRuleDNS %+v was rejected but it should be valid", accept)
 	}
 
 	for _, reject := range []PortRuleDNS{
@@ -66,7 +61,7 @@ func TestPortRuleDNSSanitize(t *testing.T) {
 		{MatchName: "a{1,2}.cilium.io.", MatchPattern: "[a-z]*.cilium.io."},
 	} {
 		err := reject.Sanitize()
-		require.Error(t, err, fmt.Sprintf("PortRuleDNS %+v was accepted but it should be invalid", reject))
+		require.Error(t, err, "PortRuleDNS %+v was accepted but it should be invalid", reject)
 	}
 }
 
@@ -74,8 +69,8 @@ func TestPortRuleDNSSanitize(t *testing.T) {
 // cases, and allows good ones.
 func BenchmarkFQDNSelectorString(b *testing.B) {
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		for _, s := range []FQDNSelector{
 			{MatchName: "cilium.io"},
 			{MatchPattern: "[a-z]*.cilium.io"},

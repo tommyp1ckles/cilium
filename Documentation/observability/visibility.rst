@@ -19,16 +19,10 @@ will only provide visibility into L3/L4 packet events. If you want L7
 protocol visibility, you can use L7 Cilium Network Policies (see :ref:`l7_policy`).
 
 
-.. note::
-
-    Historically, it had been possible to enable L7 visibility using Pod
-    annotations (``policy.cilium.io/proxy-visibility``). This method is
-    no longer supported and we recommend users to switch to L7 policies instead.
-
 To enable visibility for L7 traffic, create a ``CiliumNetworkPolicy`` that specifies
 L7 rules. Traffic flows matching a L7 rule in a ``CiliumNetworkPolicy`` will become
-visible to Cilium and, thus, can be exposed to the end user. It's important to 
-remember that L7 network policies not only enables visibility but also restrict 
+visible to Cilium and, thus, can be exposed to the end user. It's important to
+remember that L7 network policies not only enables visibility but also restrict
 what traffic is allowed to flow in and out of a Pod.
 
 
@@ -51,7 +45,11 @@ permit all requests that match the L4 section of each rule:
           matchLabels:
             "k8s:io.kubernetes.pod.namespace": default
         egress:
-        - toPorts:
+        - toEndpoints:
+          - matchLabels:
+              "k8s:io.kubernetes.pod.namespace": kube-system
+              "k8s:k8s-app": kube-dns
+          toPorts:
           - ports:
             - port: "53"
               protocol: ANY
@@ -70,10 +68,11 @@ permit all requests that match the L4 section of each rule:
             rules:
               http: [{}]
 
-Based on the above policy, Cilium will pick up all TCP/UDP/53, TCP/80 and TCP/8080 
-egress traffic from Pods in the ``default`` namespace and redirect it to the 
-proxy (see :ref:`proxy_injection`) such that the output of ``cilium monitor`` or 
-``hubble observe`` shows the L7 flow details. 
+Based on the above policy, Cilium will pick up DNS traffic to ``kube-dns`` on
+port 53 and HTTP traffic on ports TCP/80 and TCP/8080 from Pods in the
+``default`` namespace and redirect it to the proxy (see :ref:`proxy_injection`)
+such that the output of ``cilium monitor`` or ``hubble observe`` shows the L7
+flow details.
 Below is the example of running ``hubble observe -f -t l7 -o compact`` command:
 
 ::
@@ -103,7 +102,6 @@ More specifically, it offers the following features for supported Layer 7 protoc
 
 * For HTTP: redacting URL query (GET) parameters (``--hubble-redact-http-urlquery``)
 * For HTTP: redacting URL user info (for example, password used in basic auth) (``--hubble-redact-http-userinfo``)
-* For Kafka: redacting API key (``--hubble-redact-kafka-apikey``)
 * For HTTP headers: redacting all headers except those defined in the ``--hubble-redact-http-headers-allow`` list or redacting only the headers defined in the ``--hubble-redact-http-headers-deny`` list
 
 For more information on configuring Cilium, see :ref:`Cilium Configuration <configuration>`.
@@ -112,3 +110,4 @@ Limitations
 -----------
 
 * DNS visibility is available on egress only.
+* L7 policies for SNATed IPv6 traffic (e.g., pod-to-world) require a kernel with the `fix <https://patchwork.kernel.org/project/netdevbpf/patch/20250318161516.3791383-1-maxim@isovalent.com/>`__ applied. The stable kernel versions with the fix are 6.14.1, 6.12.22, 6.6.86, 6.1.133, 5.15.180, 5.10.236. See :gh-issue:`37932` for the reference.

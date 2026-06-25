@@ -4,31 +4,18 @@
 package types
 
 import (
-	"context"
 	"net"
 	"net/netip"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/cilium/cilium/pkg/identity"
 )
 
-// PolicyHandler is responsible for handling identity updates into the core
+// IdentityUpdater is responsible for handling identity updates into the core
 // policy engine. See SelectorCache.UpdateIdentities() for more details.
-type PolicyHandler interface {
-	UpdateIdentities(added, deleted identity.IdentityMap, wg *sync.WaitGroup)
-}
-
-// DatapathHandler is responsible for ensuring that policy updates in the
-// core policy engine are pushed into the underlying BPF policy maps, to ensure
-// that the policies are actively being enforced in the datapath for any new
-// identities that have been updated using 'PolicyHandler'.
-//
-// Wait on the returned sync.WaitGroup to ensure that the operation is complete
-// before updating the datapath's IPCache maps.
-type DatapathHandler interface {
-	UpdatePolicyMaps(context.Context, *sync.WaitGroup) *sync.WaitGroup
+type IdentityUpdater interface {
+	UpdateIdentities(added, deleted identity.IdentityMap) <-chan struct{}
 }
 
 // ResourceID identifies a unique copy of a resource that provides a source for
@@ -40,13 +27,15 @@ type ResourceID string
 type ResourceKind string
 
 var (
-	ResourceKindCNP      = ResourceKind("cnp")
-	ResourceKindCCNP     = ResourceKind("ccnp")
-	ResourceKindDaemon   = ResourceKind("daemon")
-	ResourceKindEndpoint = ResourceKind("ep")
-	ResourceKindFile     = ResourceKind("file")
-	ResourceKindNetpol   = ResourceKind("netpol")
-	ResourceKindNode     = ResourceKind("node")
+	ResourceKindCCNP      = ResourceKind("ccnp")
+	ResourceKindCIDRGroup = ResourceKind("cidrgroup")
+	ResourceKindCNP       = ResourceKind("cnp")
+	ResourceKindDaemon    = ResourceKind("daemon")
+	ResourceKindEndpoint  = ResourceKind("ep")
+	ResourceKindFile      = ResourceKind("file")
+	ResourceKindNetpol    = ResourceKind("netpol")
+	ResourceKindKCNP      = ResourceKind("kcnp")
+	ResourceKindNode      = ResourceKind("node")
 )
 
 // NewResourceID returns a ResourceID populated with the standard fields for
@@ -60,6 +49,14 @@ func NewResourceID(kind ResourceKind, namespace, name string) ResourceID {
 	str.WriteRune('/')
 	str.WriteString(name)
 	return ResourceID(str.String())
+}
+
+func (r ResourceID) Namespace() string {
+	parts := strings.SplitN(string(r), "/", 3)
+	if len(parts) < 2 {
+		return ""
+	}
+	return parts[1]
 }
 
 // TunnelPeer is the IP address of the host associated with this prefix. This is
@@ -106,4 +103,57 @@ func (id RequestedIdentity) IsValid() bool {
 
 func (id RequestedIdentity) ID() identity.NumericIdentity {
 	return identity.NumericIdentity(id)
+}
+
+// EndpointFlags represents various flags that can be attached to endpoints in the IPCache
+// This type implements ipcache.IPMetadata
+type EndpointFlags struct {
+	// isInit gets flipped to true on the first intentional flag set
+	// it is a sentinel to distinguish an uninitialized EndpointFlags
+	// from one with all flags set to false
+	isInit bool
+
+	// flagSkipTunnel can be applied to a remote endpoint to signal that
+	// packets destined for said endpoint shall not be forwarded through
+	// an overlay tunnel, regardless of Cilium's configuration.
+	flagSkipTunnel bool
+
+	// flagRemoteCluster is set when the node is in a remote cluster.
+	// It's always unset when clustermesh is disabled or for pods.
+	flagRemoteCluster bool
+
+	// Note: if you add any more flags here, be sure to update (*prefixInfo).flatten()
+	// to merge them across different resources.
+}
+
+func (e *EndpointFlags) SetSkipTunnel(skip bool) {
+	e.isInit = true
+	e.flagSkipTunnel = skip
+}
+
+func (e *EndpointFlags) SetRemoteCluster(remote bool) {
+	e.isInit = true
+	e.flagRemoteCluster = remote
+}
+
+func (e EndpointFlags) IsValid() bool {
+	return e.isInit
+}
+
+// Uint8 encoding MUST mimic the one in pkg/maps/ipcache
+// since it will eventually get recast to it
+const (
+	FlagSkipTunnel    uint8 = 1 << iota
+	FlagRemoteCluster uint8 = 1 << 3
+)
+
+func (e EndpointFlags) Uint8() uint8 {
+	var flags uint8 = 0
+	if e.flagSkipTunnel {
+		flags |= FlagSkipTunnel
+	}
+	if e.flagRemoteCluster {
+		flags |= FlagRemoteCluster
+	}
+	return flags
 }

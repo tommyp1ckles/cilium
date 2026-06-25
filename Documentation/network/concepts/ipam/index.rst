@@ -18,7 +18,7 @@ Cilium. Various IPAM modes are supported to meet the needs of different users:
 ============================ ====================== ======================== =========== =========== =============== ================= ===============
 Feature                      Kubernetes Host Scope  Cluster Scope (default)  Multi-Pool  CRD-backed  AWS ENI         Azure IPAM        GKE
 ============================ ====================== ======================== =========== =========== =============== ================= ===============
-Tunnel routing               ✅                     ✅                       ❌          ❌          ❌              ❌                ❌
+Tunnel routing               ✅                     ✅                       ✅          ❌          ❌              ❌                ❌
 Direct routing               ✅                     ✅                       ✅          ✅          ✅              ✅                ✅
 CIDR Configuration           Kubernetes             Cilium                   Cilium      External    External (AWS)  External (Azure)  External (GCP)
 Multiple CIDRs per cluster   ❌                     ✅                       ✅          N/A         N/A             N/A               N/A
@@ -26,10 +26,15 @@ Multiple CIDRs per node      ❌                     ❌                       �
 Dynamic CIDR/IP allocation   ❌                     ❌                       ✅          ✅          ✅              ✅                ❌
 ============================ ====================== ======================== =========== =========== =============== ================= ===============
 
-Don't change the IPAM mode of an existing cluster. Changing the IPAM mode in
-a live environment may cause persistent disruption of connectivity for existing workloads.
-The safest path to change IPAM mode is to install a fresh Kubernetes cluster with the new IPAM configuration.
-If you are interested in extending Cilium to support migration between IPAM modes, see :gh-issue:`27164`.
+Don't change the IPAM mode of an existing cluster except when following a
+documented migration procedure. Changing the IPAM mode in a live environment may
+cause persistent disruption of connectivity for existing workloads. The safest
+path to change IPAM mode is to install a fresh Kubernetes cluster with the new
+IPAM configuration.
+
+The only currently available online migration path is from cluster-pool IPAM to
+multi-pool IPAM. To migrate, see
+:ref:`ipam_cluster_pool_to_multi_pool_migration`.
 
 .. toctree::
    :maxdepth: 1
@@ -38,6 +43,7 @@ If you are interested in extending Cilium to support migration between IPAM mode
    cluster-pool
    kubernetes
    multi-pool
+   cluster-pool-to-multi-pool
    azure
    azure-delegated-ipam
    eni

@@ -5,6 +5,7 @@ package slices
 
 import (
 	"cmp"
+	"iter"
 	"slices"
 )
 
@@ -23,8 +24,8 @@ func Unique[S ~[]T, T comparable](s S) S {
 
 	if len(s) < 192 {
 	Loop:
-		for i := 0; i < len(s); i++ {
-			for j := 0; j < last; j++ {
+		for i := range len(s) {
+			for j := range last {
 				if s[i] == s[j] {
 					continue Loop
 				}
@@ -34,7 +35,7 @@ func Unique[S ~[]T, T comparable](s S) S {
 		}
 	} else {
 		set := make(map[T]struct{}, len(s))
-		for i := 0; i < len(s); i++ {
+		for i := range len(s) {
 			if _, ok := set[s[i]]; ok {
 				continue
 			}
@@ -59,7 +60,7 @@ func UniqueFunc[S ~[]T, T any, K comparable](s S, key func(i int) K) S {
 	last := 0
 
 	set := make(map[K]struct{}, len(s))
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		if _, ok := set[key(i)]; ok {
 			continue
 		}
@@ -82,24 +83,6 @@ func SortedUnique[S ~[]T, T cmp.Ordered](s S) S {
 
 	slices.Sort(s)
 	return slices.Compact(s)
-}
-
-// SortedUniqueFunc is like SortedUnique but allows the user to specify custom functions
-// for ordering (less function) and comparing (eq function) the elements in the slice.
-// This is useful in all the cases where SortedUnique cannot be used:
-// - for types that do not satisfy constraints.Ordered (e.g: composite types)
-// - when the user wants to customize how elements are compared (e.g: user wants to enforce reverse ordering)
-func SortedUniqueFunc[S ~[]T, T any](
-	s S,
-	less func(a, b T) int,
-	eq func(a, b T) bool,
-) S {
-	if len(s) < 2 {
-		return s
-	}
-
-	slices.SortFunc(s, less)
-	return slices.CompactFunc(s, eq)
 }
 
 // Diff returns a slice of elements which is the difference of a and b.
@@ -148,4 +131,40 @@ func SubsetOf[S ~[]T, T comparable](a, b S) (bool, []T) {
 func XorNil[T any](s1, s2 []T) bool {
 	return s1 == nil && s2 != nil ||
 		s1 != nil && s2 == nil
+}
+
+// AllMatch returns true if pred is true for each element in s, false otherwise.
+// May not evaluate on all elements if not necessary for determining the result.
+// If the slice is empty then true is returned and predicate is not evaluated.
+func AllMatch[T any](s []T, pred func(v T) bool) bool {
+	for _, v := range s {
+		if !pred(v) {
+			return false
+		}
+	}
+	return true
+}
+
+// Map returns a slice obtained applying fn over the input elements.
+func Map[In, Out any](in []In, fn func(In) Out) []Out {
+	if in == nil {
+		return nil
+	}
+
+	out := make([]Out, len(in))
+	for i, obj := range in {
+		out[i] = fn(obj)
+	}
+	return out
+}
+
+// MapIter returns an iterator obtained applying fn over the input elements.
+func MapIter[In, Out any](s iter.Seq[In], fn func(In) Out) iter.Seq[Out] {
+	return func(yield func(Out) bool) {
+		for obj := range s {
+			if !yield(fn(obj)) {
+				return
+			}
+		}
+	}
 }

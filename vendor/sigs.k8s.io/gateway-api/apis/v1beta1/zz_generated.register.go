@@ -23,8 +23,8 @@ package v1beta1
 
 import (
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
+	runtime "k8s.io/apimachinery/pkg/runtime"
+	schema "k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 // GroupName specifies the group name used to register the objects.
@@ -34,6 +34,7 @@ const GroupName = "gateway.networking.k8s.io"
 var GroupVersion = v1.GroupVersion{Group: GroupName, Version: "v1beta1"}
 
 // SchemeGroupVersion is group version used to register these objects
+//
 // Deprecated: use GroupVersion instead.
 var SchemeGroupVersion = schema.GroupVersion{Group: GroupName, Version: "v1beta1"}
 

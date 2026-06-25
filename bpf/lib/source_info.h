@@ -38,24 +38,25 @@ __id_for_file(const char *const header_name)
 	_strcase_(3, "bpf_overlay.c");
 	_strcase_(4, "bpf_xdp.c");
 	_strcase_(5, "bpf_sock.c");
-	_strcase_(6, "bpf_network.c");
+	/* _strcase_(6, "available"); */
 	_strcase_(7, "bpf_wireguard.c");
 
 	/* header files from bpf/lib/ */
-	_strcase_(101, "arp.h");
-	_strcase_(102, "drop.h");
-	_strcase_(103, "srv6.h");
-	_strcase_(104, "icmp6.h");
-	_strcase_(105, "nodeport.h");
-	_strcase_(106, "lb.h");
-	_strcase_(107, "mcast.h");
-	_strcase_(108, "ipv4.h");
-	_strcase_(109, "conntrack.h");
-	_strcase_(110, "l3.h");
-	_strcase_(111, "trace.h");
-	_strcase_(112, "encap.h");
-	_strcase_(113, "encrypt.h");
-	_strcase_(114, "host_firewall.h");
+	_strcase_(101, "drop.h");
+	_strcase_(102, "srv6.h");
+	_strcase_(103, "icmp6.h");
+	_strcase_(104, "nodeport.h");
+	_strcase_(105, "lb.h");
+	_strcase_(106, "mcast.h");
+	_strcase_(107, "ipv4.h");
+	_strcase_(108, "conntrack.h");
+	_strcase_(109, "local_delivery.h");
+	_strcase_(110, "trace.h");
+	_strcase_(111, "encap.h");
+	_strcase_(112, "host_firewall.h");
+	_strcase_(113, "nodeport_egress.h");
+	_strcase_(114, "ipv6.h");
+	_strcase_(115, "classifiers.h");
 
 	/* @@ source files list end */
 

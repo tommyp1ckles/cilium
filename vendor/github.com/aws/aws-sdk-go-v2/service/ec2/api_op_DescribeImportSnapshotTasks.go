@@ -104,13 +104,16 @@ func (c *Client) addOperationDescribeImportSnapshotTasksMiddlewares(stack *middl
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
+	if err = addRetry(stack, options, c); err != nil {
 		return err
 	}
 	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
 	if err = addRecordResponseTiming(stack); err != nil {
+		return err
+	}
+	if err = addSpanRetryLoop(stack, options); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -125,10 +128,10 @@ func (c *Client) addOperationDescribeImportSnapshotTasksMiddlewares(stack *middl
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
-	if err = addTimeOffsetBuild(stack, c); err != nil {
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
-	if err = addUserAgentRetryMode(stack, options); err != nil {
+	if err = addCredentialSource(stack, options); err != nil {
 		return err
 	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opDescribeImportSnapshotTasks(options.Region), middleware.Before); err != nil {
@@ -147,6 +150,15 @@ func (c *Client) addOperationDescribeImportSnapshotTasksMiddlewares(stack *middl
 		return err
 	}
 	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptBeforeRetryLoop(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptAttempt(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil
@@ -316,7 +328,11 @@ func snapshotImportedStateRetryable(ctx context.Context, input *DescribeImportSn
 		var v2 []string
 		for _, v := range v1 {
 			v3 := v.SnapshotTaskDetail
-			v4 := v3.Status
+			var v4 *string
+			if v3 != nil {
+				v5 := v3.Status
+				v4 = v5
+			}
 			if v4 != nil {
 				v2 = append(v2, *v4)
 			}
@@ -340,7 +356,11 @@ func snapshotImportedStateRetryable(ctx context.Context, input *DescribeImportSn
 		var v2 []string
 		for _, v := range v1 {
 			v3 := v.SnapshotTaskDetail
-			v4 := v3.Status
+			var v4 *string
+			if v3 != nil {
+				v5 := v3.Status
+				v4 = v5
+			}
 			if v4 != nil {
 				v2 = append(v2, *v4)
 			}
@@ -359,6 +379,9 @@ func snapshotImportedStateRetryable(ctx context.Context, input *DescribeImportSn
 		}
 	}
 
+	if err != nil {
+		return false, err
+	}
 	return true, nil
 }
 

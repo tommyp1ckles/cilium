@@ -264,7 +264,7 @@ func BenchmarkRemoveIDs(b *testing.B) {
 
 	b.ResetTimer()
 	for i := minID; i <= maxID; i++ {
-		require.Equal(b, true, p.Remove(ID(i)))
+		require.True(b, p.Remove(ID(i)))
 	}
 }
 
@@ -275,7 +275,7 @@ func BenchmarkLeaseIDs(b *testing.B) {
 	b.ResetTimer()
 	for i := 1; i <= b.N; i++ {
 		id := p.LeaseAvailableID()
-		require.Equal(b, true, p.Release(ID(id)))
+		require.True(b, p.Release(ID(id)))
 	}
 }
 
@@ -286,11 +286,11 @@ func BenchmarkUseAndRelease(b *testing.B) {
 	b.ResetTimer()
 	for i := 1; i <= b.N; i++ {
 		id := p.LeaseAvailableID()
-		require.Equal(b, true, p.Use(ID(id)))
+		require.True(b, p.Use(ID(id)))
 	}
 
 	for i := 1; i <= b.N; i++ {
-		require.Equal(b, true, p.Insert(ID(i)))
+		require.True(b, p.Insert(ID(i)))
 	}
 }
 
@@ -308,9 +308,8 @@ func testAllocatedID(t *testing.T, nGoRoutines int) {
 	allocated := make(chan ID, bufferChannelSize)
 	var allocators sync.WaitGroup
 
-	for i := 0; i < nGoRoutines; i++ {
-		allocators.Add(1)
-		go func() {
+	for range nGoRoutines {
+		allocators.Go(func() {
 			for i := 1; i <= maxID; i++ {
 				id := p.AllocateID()
 				if id == NoID {
@@ -318,8 +317,7 @@ func testAllocatedID(t *testing.T, nGoRoutines int) {
 				}
 				allocated <- id
 			}
-			allocators.Done()
-		}()
+		})
 	}
 
 	go func() {

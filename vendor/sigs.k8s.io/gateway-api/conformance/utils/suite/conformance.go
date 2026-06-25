@@ -21,8 +21,6 @@ import (
 	"strings"
 	"testing"
 
-	"k8s.io/apimachinery/pkg/util/sets"
-
 	"sigs.k8s.io/gateway-api/conformance/utils/tlog"
 	"sigs.k8s.io/gateway-api/pkg/features"
 )
@@ -36,6 +34,7 @@ type ConformanceTest struct {
 	Slow        bool
 	Parallel    bool
 	Test        func(*testing.T, *ConformanceTestSuite)
+	Provisional bool
 }
 
 // Run runs an individual tests, applying and cleaning up the required manifests
@@ -80,11 +79,11 @@ func (test *ConformanceTest) Run(t *testing.T, suite *ConformanceTestSuite) {
 
 // ParseSupportedFeatures parses flag arguments and converts the string to
 // sets.Set[features.FeatureName]
-func ParseSupportedFeatures(f string) sets.Set[features.FeatureName] {
+func ParseSupportedFeatures(f string) FeaturesSet {
 	if f == "" {
 		return nil
 	}
-	res := sets.Set[features.FeatureName]{}
+	res := FeaturesSet{}
 	for _, value := range strings.Split(f, ",") {
 		res.Insert(features.FeatureName(value))
 	}

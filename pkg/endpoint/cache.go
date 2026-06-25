@@ -4,11 +4,12 @@
 package endpoint
 
 import (
+	"log/slog"
+	"maps"
 	"net/netip"
 	"strconv"
 
-	"github.com/sirupsen/logrus"
-
+	endpoint "github.com/cilium/cilium/pkg/endpoint/types"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/mac"
 	"github.com/cilium/cilium/pkg/option"
@@ -28,21 +29,24 @@ type epInfoCache struct {
 	id     uint64
 	ifName string
 
-	// For datapath.EndpointConfiguration
+	// For endpoint.Config
 	identity               identity.NumericIdentity
 	mac                    mac.MAC
 	ipv4                   netip.Addr
 	ipv6                   netip.Addr
-	conntrackLocal         bool
 	requireARPPassthrough  bool
 	requireEgressProg      bool
 	requireRouting         bool
 	requireEndpointRoute   bool
+	atHostNS               bool
 	policyVerdictLogFilter uint32
 	options                *option.IntOptions
 	lxcMAC                 mac.MAC
 	ifIndex                int
+	parentIfIndex          int
 	netNsCookie            uint64
+	rtInfo                 uint32
+	properties             map[string]any
 
 	// endpoint is used to get the endpoint's logger.
 	//
@@ -55,8 +59,24 @@ type epInfoCache struct {
 
 // Must be called when endpoint is still locked.
 func (e *Endpoint) createEpInfoCache(epdir string) *epInfoCache {
-	ep := &epInfoCache{
-		revision: e.nextPolicyRevision,
+	if e.isProperty(endpoint.PropertyAtHostNS) {
+		return &epInfoCache{
+			revision: e.desiredPolicyRevision,
+
+			id:         e.GetID(),
+			identity:   e.getIdentity(),
+			ifIndex:    e.GetIfIndex(),
+			mac:        e.GetNodeMAC(),
+			ipv4:       e.IPv4Address(),
+			ipv6:       e.IPv6Address(),
+			atHostNS:   true,
+			properties: maps.Clone(e.properties),
+
+			endpoint: e,
+		}
+	}
+	return &epInfoCache{
+		revision: e.desiredPolicyRevision,
 
 		epdir:                  epdir,
 		id:                     e.GetID(),
@@ -65,7 +85,6 @@ func (e *Endpoint) createEpInfoCache(epdir string) *epInfoCache {
 		mac:                    e.GetNodeMAC(),
 		ipv4:                   e.IPv4Address(),
 		ipv6:                   e.IPv6Address(),
-		conntrackLocal:         e.ConntrackLocalLocked(),
 		requireARPPassthrough:  e.RequireARPPassthrough(),
 		requireEgressProg:      e.RequireEgressProg(),
 		requireRouting:         e.RequireRouting(),
@@ -74,15 +93,26 @@ func (e *Endpoint) createEpInfoCache(epdir string) *epInfoCache {
 		options:                e.Options.DeepCopy(),
 		lxcMAC:                 e.mac,
 		ifIndex:                e.ifIndex,
+		parentIfIndex:          e.parentIfIndex,
 		netNsCookie:            e.NetNsCookie,
+		rtInfo:                 e.rtInfo,
+		properties:             maps.Clone(e.properties),
 
 		endpoint: e,
 	}
-	return ep
+}
+
+func (ep *epInfoCache) GetRTInfo() (uint32, endpoint.RTInfoEncoding) {
+	enc, _ := ep.properties[endpoint.PropertyRTInfo].(string)
+	return ep.rtInfo, endpoint.RTInfoEncoding(enc)
 }
 
 func (ep *epInfoCache) GetIfIndex() int {
 	return ep.ifIndex
+}
+
+func (ep *epInfoCache) GetParentIfIndex() int {
+	return ep.parentIfIndex
 }
 
 func (ep *epInfoCache) LXCMac() mac.MAC {
@@ -110,18 +140,13 @@ func (ep *epInfoCache) GetIdentity() identity.NumericIdentity {
 	return ep.identity
 }
 
-// GetIdentityLocked returns the security identity of the endpoint.
-func (ep *epInfoCache) GetIdentityLocked() identity.NumericIdentity {
-	return ep.identity
-}
-
 // GetEndpointNetNsCookie returns the network namespace cookie for the endpoint
 func (ep *epInfoCache) GetEndpointNetNsCookie() uint64 {
 	return ep.netNsCookie
 }
 
 // Logger returns the logger for the endpoint that is being cached.
-func (ep *epInfoCache) Logger(subsystem string) *logrus.Entry {
+func (ep *epInfoCache) Logger(subsystem string) *slog.Logger {
 	return ep.endpoint.Logger(subsystem)
 }
 
@@ -138,10 +163,6 @@ func (ep *epInfoCache) IPv6Address() netip.Addr {
 // StateDir returns the directory for the endpoint's (next) state.
 func (ep *epInfoCache) StateDir() string    { return ep.epdir }
 func (ep *epInfoCache) GetNodeMAC() mac.MAC { return ep.mac }
-
-func (ep *epInfoCache) ConntrackLocalLocked() bool {
-	return ep.conntrackLocal
-}
 
 func (ep *epInfoCache) GetOptions() *option.IntOptions {
 	return ep.options
@@ -176,4 +197,30 @@ func (ep *epInfoCache) GetPolicyVerdictLogFilter() uint32 {
 
 func (ep *epInfoCache) IsHost() bool {
 	return ep.endpoint.IsHost()
+}
+
+func (ep *epInfoCache) IsAtHostNS() bool {
+	return ep.atHostNS
+}
+
+func (ep *epInfoCache) SkipMasqueradeV4() bool {
+	return ep.isProperty(endpoint.PropertySkipMasqueradeV4)
+}
+
+func (ep *epInfoCache) SkipMasqueradeV6() bool {
+	return ep.isProperty(endpoint.PropertySkipMasqueradeV6)
+}
+
+// isProperty checks if the value of the properties map is set, it's a boolean
+// and its value is 'true'.
+func (ep *epInfoCache) isProperty(propertyKey string) bool {
+	if v, ok := ep.properties[propertyKey]; ok {
+		isSet, ok := v.(bool)
+		return ok && isSet
+	}
+	return false
+}
+
+func (ep *epInfoCache) GetPropertyValue(key string) any {
+	return ep.properties[key]
 }

@@ -4,14 +4,13 @@
 package manager
 
 import (
-	"context"
 	"math/rand/v2"
+	"slices"
 
 	"github.com/go-openapi/runtime/middleware"
 
 	"github.com/cilium/cilium/api/v1/models"
 	daemonrestapi "github.com/cilium/cilium/api/v1/server/restapi/daemon"
-	datapath "github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/lock"
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/time"
@@ -160,14 +159,11 @@ func (c *clusterNodesClient) NodeDelete(node nodeTypes.Node) error {
 	// If the node was added/updated and removed before the clusterNodesClient
 	// was aware of it then we can safely remove it from the list of added
 	// nodes and not set it in the list of removed nodes.
-	found := -1
-	for i, added := range c.NodesAdded {
-		if added.Name == node.Fullname() {
-			found = i
-		}
-	}
+	found := slices.IndexFunc(c.NodesAdded, func(added *models.NodeElement) bool {
+		return added.Name == node.Fullname()
+	})
 	if found != -1 {
-		c.NodesAdded = append(c.NodesAdded[:found], c.NodesAdded[found+1:]...)
+		c.NodesAdded = slices.Delete(c.NodesAdded, found, found+1)
 	} else {
 		c.NodesRemoved = append(c.NodesRemoved, node.GetModel())
 	}
@@ -181,38 +177,6 @@ func (c *clusterNodesClient) AllNodeValidateImplementation() {
 func (c *clusterNodesClient) NodeValidateImplementation(node nodeTypes.Node) error {
 	// no-op
 	return nil
-}
-
-func (c *clusterNodesClient) NodeConfigurationChanged(config datapath.LocalNodeConfiguration) error {
-	// no-op
-	return nil
-}
-
-func (c *clusterNodesClient) NodeNeighDiscoveryEnabled() bool {
-	// no-op
-	return false
-}
-
-func (c *clusterNodesClient) NodeNeighborRefresh(ctx context.Context, node nodeTypes.Node, refresh bool) error {
-	return nil
-}
-
-func (c *clusterNodesClient) NodeCleanNeighbors(migrateOnly bool) {
-	// no-op
-}
-
-func (c *clusterNodesClient) GetNodeIP(_ uint16) string {
-	// no-op
-	return ""
-}
-
-func (c *clusterNodesClient) DumpNodeIDs() []*models.NodeID {
-	// no-op
-	return nil
-}
-
-func (c *clusterNodesClient) RestoreNodeIDs() {
-	// no-op
 }
 
 func (h *getClusterNodesRestApiHandler) cleanupClients() {

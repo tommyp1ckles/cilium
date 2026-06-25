@@ -6,10 +6,10 @@ package api
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/containernetworking/cni/pkg/skel"
 	cniTypesVer "github.com/containernetworking/cni/pkg/types/100"
-	"github.com/sirupsen/logrus"
 
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/client"
@@ -31,7 +31,7 @@ const (
 
 // PluginContext is the context given to chaining plugins
 type PluginContext struct {
-	Logger     *logrus.Entry
+	Logger     *slog.Logger
 	Args       *skel.CmdArgs
 	CniArgs    *types.ArgsSpec
 	NetConf    *types.NetConf
@@ -51,6 +51,10 @@ type ChainingPlugin interface {
 	// Check is called on CNI CHECK. The plugin should verify (to the best of its
 	// ability) that everything is reasonably configured, else return error.
 	Check(ctx context.Context, pluginContext PluginContext, client *client.Client) error
+
+	// Status is called on CNI STATUS. The plugin should return an error
+	// with exit code 50 if the plugin is not ready to service ADD requests.
+	Status(ctx context.Context, pluginContext PluginContext, client *client.Client) error
 }
 
 // Register is called by chaining plugins to register themselves. After

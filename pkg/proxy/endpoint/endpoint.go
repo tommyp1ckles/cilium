@@ -4,7 +4,6 @@
 package endpoint
 
 import (
-	"github.com/cilium/cilium/pkg/fqdn/restore"
 	"github.com/cilium/cilium/pkg/proxy/accesslog"
 	"github.com/cilium/cilium/pkg/u8proto"
 )
@@ -12,11 +11,11 @@ import (
 // EndpointInfoSource returns information about an endpoint being proxied.
 // The read lock must be held when calling any method.
 type EndpointInfoSource interface {
+	GetPolicyNames() []string
 	GetID() uint64
 	GetIPv4Address() string
 	GetIPv6Address() string
-	ConntrackNameLocked() string
-	GetNamedPort(ingress bool, name string, proto u8proto.U8proto) uint16
+	GetIngressNamedPort(name string, proto u8proto.U8proto) uint16
 }
 
 // EndpointUpdater returns information about an endpoint being proxied and
@@ -33,7 +32,7 @@ type EndpointUpdater interface {
 	// for a new observed flow with the given characteristics.
 	UpdateProxyStatistics(proxyType, l4Protocol string, port, proxyPort uint16, ingress, request bool, verdict accesslog.FlowVerdict)
 
-	// OnDNSPolicyUpdateLocked is called when the Endpoint's DNS policy has been updated.
-	// 'rules' is a fresh copy of the DNS rules passed to the callee.
-	OnDNSPolicyUpdateLocked(rules restore.DNSRules)
+	// GetListenerProxyPort returns the proxy port for the given listener reference.
+	// Returns zero if the proxy port does not exist (yet).
+	GetListenerProxyPort(listener string) uint16
 }

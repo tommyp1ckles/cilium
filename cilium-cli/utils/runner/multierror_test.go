@@ -5,7 +5,6 @@ package runner
 
 import (
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -15,7 +14,7 @@ func TestMultiError_no_errors(t *testing.T) {
 	m := MultiError{}
 
 	check := make([]int, 10)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		id := i
 		m.Go(func() error {
 			check[id] = 1
@@ -24,7 +23,7 @@ func TestMultiError_no_errors(t *testing.T) {
 	}
 
 	require.NoError(t, m.Wait())
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		require.Equal(t, 1, check[i])
 	}
 }
@@ -50,7 +49,7 @@ func TestMultiError_with_errors(t *testing.T) {
 	actualErrStr := actualErr.Error()
 	require.Error(t, actualErr)
 	for i := range expectedErrs {
-		require.True(t, errors.Is(actualErr, expectedErrs[i]))
-		require.True(t, strings.Contains(actualErrStr, expectedErrs[i].Error()))
+		require.ErrorIs(t, actualErr, expectedErrs[i])
+		require.Contains(t, actualErrStr, expectedErrs[i].Error())
 	}
 }

@@ -12,16 +12,16 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"go.uber.org/goleak"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	flowpb "github.com/cilium/cilium/api/v1/flow"
 	v1 "github.com/cilium/cilium/pkg/hubble/api/v1"
+	"github.com/cilium/cilium/pkg/testutils"
 )
 
 func TestRingReader_Previous(t *testing.T) {
 	ring := NewRing(Capacity15)
-	for i := 0; i < 15; i++ {
+	for i := range 15 {
 		ring.Write(&v1.Event{Timestamp: &timestamppb.Timestamp{Seconds: int64(i)}})
 	}
 	tests := []struct {
@@ -76,7 +76,7 @@ func TestRingReader_Previous(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			reader := NewRingReader(ring, tt.start)
 			var got []*v1.Event
-			for i := 0; i < tt.count; i++ {
+			for range tt.count {
 				event, err := reader.Previous()
 				if !errors.Is(err, tt.wantErr) {
 					t.Errorf(`"%s" error = %v, wantErr %v`, name, err, tt.wantErr)
@@ -87,14 +87,14 @@ func TestRingReader_Previous(t *testing.T) {
 				got = append(got, event)
 			}
 			assert.Equal(t, tt.want, got)
-			assert.Nil(t, reader.Close())
+			assert.NoError(t, reader.Close())
 		})
 	}
 }
 
 func TestRingReader_PreviousLost(t *testing.T) {
 	ring := NewRing(Capacity15)
-	for i := 0; i < 15; i++ {
+	for i := range 15 {
 		ring.Write(&v1.Event{Timestamp: &timestamppb.Timestamp{Seconds: int64(i)}})
 	}
 	reader := NewRingReader(ring, ^uint64(0))
@@ -108,12 +108,12 @@ func TestRingReader_PreviousLost(t *testing.T) {
 	actual, err := reader.Previous()
 	assert.NoError(t, err)
 	assert.Equal(t, expected.GetLostEvent(), actual.GetLostEvent())
-	assert.Nil(t, reader.Close())
+	assert.NoError(t, reader.Close())
 }
 
 func TestRingReader_Next(t *testing.T) {
 	ring := NewRing(Capacity15)
-	for i := 0; i < 15; i++ {
+	for i := range 15 {
 		ring.Write(&v1.Event{Timestamp: &timestamppb.Timestamp{Seconds: int64(i)}})
 	}
 
@@ -163,7 +163,7 @@ func TestRingReader_Next(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			reader := NewRingReader(ring, tt.start)
 			var got []*v1.Event
-			for i := 0; i < tt.count; i++ {
+			for range tt.count {
 				event, err := reader.Next()
 				if !errors.Is(err, tt.wantErr) {
 					t.Errorf(`"%s" error = %v, wantErr %v`, name, err, tt.wantErr)
@@ -174,14 +174,14 @@ func TestRingReader_Next(t *testing.T) {
 				got = append(got, event)
 			}
 			assert.Equal(t, tt.want, got)
-			assert.Nil(t, reader.Close())
+			assert.NoError(t, reader.Close())
 		})
 	}
 }
 
 func TestRingReader_NextLost(t *testing.T) {
 	ring := NewRing(Capacity15)
-	for i := 0; i < 15; i++ {
+	for i := range 15 {
 		ring.Write(&v1.Event{Timestamp: &timestamppb.Timestamp{Seconds: int64(i)}})
 	}
 	expected := &v1.Event{
@@ -195,18 +195,17 @@ func TestRingReader_NextLost(t *testing.T) {
 	actual, err := reader.Next()
 	assert.NoError(t, err)
 	assert.Equal(t, expected.GetLostEvent(), actual.GetLostEvent())
-	assert.Nil(t, reader.Close())
+	assert.NoError(t, reader.Close())
 }
 
 func TestRingReader_NextFollow(t *testing.T) {
-	defer goleak.VerifyNone(
+	defer testutils.GoleakVerifyNone(
 		t,
-		// ignore goroutines started by the redirect we do from klog to logrus
-		goleak.IgnoreTopFunction("k8s.io/klog.(*loggingT).flushDaemon"),
-		goleak.IgnoreTopFunction("k8s.io/klog/v2.(*loggingT).flushDaemon"),
-		goleak.IgnoreTopFunction("io.(*pipe).read"))
+		testutils.GoleakIgnoreTopFunction("k8s.io/klog.(*loggingT).flushDaemon"),
+		testutils.GoleakIgnoreTopFunction("k8s.io/klog/v2.(*loggingT).flushDaemon"),
+		testutils.GoleakIgnoreTopFunction("io.(*pipe).read"))
 	ring := NewRing(Capacity15)
-	for i := 0; i < 15; i++ {
+	for i := range 15 {
 		ring.Write(&v1.Event{Timestamp: &timestamppb.Timestamp{Seconds: int64(i)}})
 	}
 
@@ -258,8 +257,8 @@ func TestRingReader_NextFollow(t *testing.T) {
 			reader := NewRingReader(ring, tt.start)
 			var timedOut bool
 			var got []*v1.Event
-			for i := 0; i < tt.count; i++ {
-				ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			for i := range tt.count {
+				ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 				got = append(got, reader.NextFollow(ctx))
 				select {
 				case <-ctx.Done():
@@ -268,7 +267,7 @@ func TestRingReader_NextFollow(t *testing.T) {
 					assert.NotNil(t, got[i])
 				}
 				cancel()
-				assert.Nil(t, reader.Close())
+				assert.NoError(t, reader.Close())
 			}
 			assert.Equal(t, tt.want, got)
 			assert.Equal(t, tt.wantTimeout, timedOut)
@@ -277,15 +276,14 @@ func TestRingReader_NextFollow(t *testing.T) {
 }
 
 func TestRingReader_NextFollow_WithEmptyRing(t *testing.T) {
-	defer goleak.VerifyNone(
+	defer testutils.GoleakVerifyNone(
 		t,
-		// ignore goroutines started by the redirect we do from klog to logrus
-		goleak.IgnoreTopFunction("k8s.io/klog.(*loggingT).flushDaemon"),
-		goleak.IgnoreTopFunction("k8s.io/klog/v2.(*loggingT).flushDaemon"),
-		goleak.IgnoreTopFunction("io.(*pipe).read"))
+		testutils.GoleakIgnoreTopFunction("k8s.io/klog.(*loggingT).flushDaemon"),
+		testutils.GoleakIgnoreTopFunction("k8s.io/klog/v2.(*loggingT).flushDaemon"),
+		testutils.GoleakIgnoreTopFunction("io.(*pipe).read"))
 	ring := NewRing(Capacity15)
 	reader := NewRingReader(ring, ring.LastWriteParallel())
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	c := make(chan *v1.Event)
 	done := make(chan struct{})
 	go func() {
@@ -303,5 +301,5 @@ func TestRingReader_NextFollow_WithEmptyRing(t *testing.T) {
 	}
 	cancel()
 	<-done
-	assert.Nil(t, reader.Close())
+	assert.NoError(t, reader.Close())
 }

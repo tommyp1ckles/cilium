@@ -34,51 +34,45 @@ file.
 .. tabs::
   .. group-tab:: kubectl
 
-    .. parsed-literal::
-
-      helm template |CHART_RELEASE| \\
-        --namespace=kube-system \\
-        --set preflight.enabled=true \\
-        --set agent=false \\
-        --set operator.enabled=false \\
-        > cilium-preflight.yaml
-      kubectl create -f cilium-preflight.yaml
+    .. cilium-helm-template::
+       :namespace: kube-system
+       :set: preflight.enabled=true
+             agent=false
+             operator.enabled=false
+       :post-helm-commands: > cilium-preflight.yaml
+       :post-commands: kubectl create -f cilium-preflight.yaml
 
   .. group-tab:: Helm
 
-    .. parsed-literal::
-
-      helm install cilium-preflight |CHART_RELEASE| \\
-        --namespace=kube-system \\
-        --set preflight.enabled=true \\
-        --set agent=false \\
-        --set operator.enabled=false
+    .. cilium-helm-install::
+       :name: cilium-preflight
+       :namespace: kube-system
+       :set: preflight.enabled=true
+             agent=false
+             operator.enabled=false
 
   .. group-tab:: kubectl (kubeproxy-free)
 
-    .. parsed-literal::
-
-      helm template |CHART_RELEASE| \\
-        --namespace=kube-system \\
-        --set preflight.enabled=true \\
-        --set agent=false \\
-        --set operator.enabled=false \\
-        --set k8sServiceHost=API_SERVER_IP \\
-        --set k8sServicePort=API_SERVER_PORT \\
-        > cilium-preflight.yaml
-      kubectl create -f cilium-preflight.yaml
+    .. cilium-helm-template::
+       :namespace: kube-system
+       :set: preflight.enabled=true
+             agent=false
+             operator.enabled=false
+             k8sServiceHost=API_SERVER_IP
+             k8sServicePort=API_SERVER_PORT
+       :post-helm-commands: > cilium-preflight.yaml
+       :post-commands: kubectl create -f cilium-preflight.yaml
 
   .. group-tab:: Helm (kubeproxy-free)
 
-    .. parsed-literal::
-
-      helm install cilium-preflight |CHART_RELEASE| \\
-        --namespace=kube-system \\
-        --set preflight.enabled=true \\
-        --set agent=false \\
-        --set operator.enabled=false \\
-        --set k8sServiceHost=API_SERVER_IP \\
-        --set k8sServicePort=API_SERVER_PORT
+    .. cilium-helm-install::
+       :name: cilium-preflight
+       :namespace: kube-system
+       :set: preflight.enabled=true
+             agent=false
+             operator.enabled=false
+             k8sServiceHost=API_SERVER_IP
+             k8sServicePort=API_SERVER_PORT
 
 After applying the ``cilium-preflight.yaml``, ensure that the number of READY
 pods is the same number of Cilium pods running.
@@ -169,23 +163,19 @@ version which was installed in this cluster.
 
     Generate the required YAML file and deploy it:
 
-    .. parsed-literal::
-
-      helm template |CHART_RELEASE| \\
-        --set upgradeCompatibility=1.X \\
-        --namespace kube-system \\
-        > cilium.yaml
-      kubectl apply -f cilium.yaml
+    .. cilium-helm-template::
+       :namespace: kube-system
+       :set: upgradeCompatibility=1.X
+       :post-helm-commands: > cilium.yaml
+       :post-commands: kubectl apply -f cilium.yaml
 
   .. group-tab:: Helm
 
     Deploy Cilium release via Helm:
 
-    .. parsed-literal::
-
-      helm upgrade cilium |CHART_RELEASE| \\
-        --namespace=kube-system \\
-        --set upgradeCompatibility=1.X
+    .. cilium-helm-upgrade::
+       :namespace: kube-system
+       :set: upgradeCompatibility=1.X
 
 .. note::
 
@@ -208,11 +198,9 @@ version which was installed in this cluster.
 
    You can then upgrade using this values file by running:
 
-   .. parsed-literal::
-
-      helm upgrade cilium |CHART_RELEASE| \\
-        --namespace=kube-system \\
-        -f my-values.yaml
+   .. cilium-helm-upgrade::
+      :namespace: kube-system
+      :extra-args: -f my-values.yaml
 
 When upgrading from one minor release to another minor release using
 ``helm upgrade``, do *not* use Helm's ``--reuse-values`` flag.
@@ -288,61 +276,245 @@ communicating via the proxy must reconnect to re-establish connections.
 
 .. _current_release_required_changes:
 
-.. _1.17_upgrade_notes:
+.. _1.20_upgrade_notes:
 
-1.17 Upgrade Notes
+1.20 Upgrade Notes
 ------------------
 
-* Operating Cilium in ``--datapath-mode=lb-only`` for plain Docker mode now requires to
-  add an additional ``--enable-k8s=false`` to the command line, otherwise it is assumed
-  that Kubernetes is present.
-* The Kubernetes clients used by Cilium Agent and Cilium Operator now have separately configurable
-  rate limits. The default rate limit for Cilium Operator K8s clients has been increased to
-  100 QPS/200 Burst. To configure the rate limit for Cilium Operator, use the
-  ``--operator-k8s-client-qps`` and ``--operator-k8s-client-burst`` flags or the corresponding
-  Helm values.
-* Support for Consul, deprecated since v1.12, has been removed.
-
-Removed Options
+Action Required
 ~~~~~~~~~~~~~~~
 
-* The previously deprecated ``clustermesh-ip-identities-sync-timeout`` flag has
-  been removed in favor of ``clustermesh-sync-timeout``.
+If you are using the following features in your environment, then you may need
+to take action because of changes to the behavior of these features. Read the
+notes carefully below to understand what to do during upgrade.
+
+* TODO
+
+Informational Notes
+~~~~~~~~~~~~~~~~~~~
+
+* CiliumNetworkPolicy and CiliumClusterwideNetworkPolicy resources that specify
+  neither ``spec`` nor ``specs`` are now rejected at admission time by the
+  Kubernetes API server via a CEL validation rule. Previously, such empty
+  policies were accepted and only flagged later by the Cilium agent with a
+  warning log. Existing empty policies already present in the cluster are not
+  affected, but any create or update that results in an empty policy will be
+  rejected.
+* The Azure IPAM status on ``CiliumNode`` now tracks the subnet at the
+  interface level, matching the AWS and AlibabaCloud IPAM representations.
+  All IP configurations on an Azure NIC must share a subnet, so the new
+  ``status.azure.interfaces[].subnet`` object (``id`` and ``cidr``) is the
+  authoritative source of subnet information. The previously redundant
+  ``status.azure.interfaces[].addresses[].subnet`` and flat
+  ``status.azure.interfaces[].cidr`` fields are deprecated and continue to
+  be populated as mirrors for one release so that operator and agent
+  rolling upgrades work in either order and so that external consumers
+  parsing the CRD have a window to switch their reads to
+  ``status.azure.interfaces[].subnet``. A future release will remove both
+  deprecated fields.
+* Cilium MCS-API implementation now uses the ``v1beta1`` version of the
+  MCS-API CRDs. Note that ``v1alpha1`` remains fully supported, and this
+  upgrade should be fully transparent. You are still encouraged to update
+  your ``ServiceExport`` resources to ``v1beta1`` to benefit from future
+  improvements and prepare for the eventual deprecation of ``v1alpha1``.
+* Listing BGP peers, routes and route-policies via the local REST API and ``cilium-dbg bgp`` commands is deprecated.
+  Use the BGP hive shell commands instead: ``cilium shell -- bgp/*``.
+* The default duration of automatically generated Cluster Mesh certificates is
+  reduced to one year, and matches the default duration of Hubble certificates.
+  Note that certificates generated through the ``helm`` method (default) are
+  only renewed when the Helm chart is re-rendered (typically during a Cilium
+  upgrade). Make sure to upgrade Cilium at least once per year to prevent the
+  certificates from expiring, or explicitly configure a longer validity through
+  the ``clustermesh.apiserver.tls.auto.certValidityDuration`` option. The same
+  limitation does not apply to the other generation methods (``cronJob`` and
+  ``certmanager``), which support automatic certificate renewal.
+* The certgen tool, which is used to automatically generate Hubble and Cluster
+  Mesh certificates in ``cronJob`` mode, now defaults to enforcing that the CA
+  chain remains valid for the entire duration of the leaf certificates to be
+  generated, and fails with a hard error if that is not the case. This allows
+  to flag early situations in which the CA certificates need to be manually
+  regenerated, before they actually expire. This validation can be disabled
+  setting ``certgen.enforceCAValidityThroughoutLeavesDuration=false``.
+
+Changes to Features
+~~~~~~~~~~~~~~~~~~~
+
+* When using the ``KubeProxyReplacement`` for Service Loadbalancing with ``SocketLB`` either
+  disabled or configured with ``socketLB.hostNamespaceOnly=true``, in-cluster connections to
+  NodePort services by regular pods are now immediately load-balanced when network traffic leaves
+  the client pod (and not at the targeted node). This matches the behavior when SocketLB is enabled.
+  The client pod's NetworkPolicy consequently needs to allow egress traffic towards the service's
+  backends, and the backends' NetworkPolicy needs to allow ingress traffic by the client pod.
+
+New Options
+###########
+
+The following options have been introduced in this version of Cilium:
+
+* The ``configDriftDetection`` Helm value group has been introduced to control
+  ConfigMap drift detection, which is enabled by default. Cilium exposes a
+  Prometheus metric that reports how many configuration keys the agent has not
+  yet applied, making it easy to detect when an agent restart is needed after
+  a ConfigMap change. See :ref:`configmap-drift-detection` for details.
+
+* ``bpf.datapathMode=auto`` config option has been introduced. If set, Cilium will probe
+  the underlying host for netkit support and, if found, netkit mode will be selected at
+  runtime. Otherwise, Cilium will default back to the standard veth mode. This has the
+  side effect of splitting the datapath-mode into "configured mode" and "operational mode"
+  in status outputs, where they differ. The default remains ``bpf.datapathMode=veth``
+  but may change in future releases.
+
+Changed Options
+###############
+
+The following options have been modified in this version of Cilium to behave
+differently than in prior releases:
+
+* ``bpf.tproxy=true`` is incompatible with netkit datapath mode. If netkit is also enabled,
+  Cilium will fail to start. If auto-detect datapath mode is used, Cilium will revert to
+  veth mode, even if netkit support is present.
+* The ``clustermesh.apiserver.tls.server.{extraDnsNames,extraIpAddresses}`` options are
+  replaced by ``clustermesh.apiserver.tls.auto.server.{extraDnsNames,extraIpAddresses}``.
+  The previous values, if set, are still used as a fallback for backwards compatibility.
+  The ``clustermesh-apiserver.cilium.io`` DNS name is also no longer included by default.
+* Cluster Mesh certificates are now configured to be automatically regenerated every
+  4 months, when the ``cronJob`` generation mode is selected.
 
 Deprecated Options
+##################
+
+The following options have been deprecated in this version of Cilium. A future
+version of Cilium will remove these options, so if you use these options then
+you may need to take action to migrate to an alternative.
+
+* The ``hubble.preferIpv6`` Helm value and ``--hubble-prefer-ipv6`` agent flag
+  have been deprecated and will be removed in Cilium 1.20. Use the top-level
+  ``preferIpv6`` Helm value and ``--prefer-ipv6`` agent flag instead, which
+  apply to both health probes and Hubble peer communication.
+
+* The ``--tofqdns-pre-cache`` agent flag and the corresponding Helm value
+  ``dnsProxy.preCache`` have been deprecated and will be removed in v1.21.
+
+Removed Options
+###############
+
+The following options were previously deprecated, and they are now removed
+from Cilium.
+
+* The previously deprecated Helm value ``clustermesh.enableMCSAPISupport`` was
+  removed in favor of the ``clustermesh.mcsapi.enabled`` Helm value.
+* The ``encryption.ipsec.interface`` Helm flag (the ``--encrypt-interface``
+  agent flag) was a no-op since Cilium 1.18 and has now been removed.
+
+* Support for Envoy Go Extensions (proxylib) and Kafka-aware network policies
+  has been removed. These features were deprecated in v1.18.
+
+* The ``v2alpha1`` API version of ``CiliumNodeConfig`` has been removed.
+  ``CiliumNodeConfig`` resources must now use ``apiVersion: cilium.io/v2``,
+  which has been available since Cilium 1.16. Update any existing
+  ``CiliumNodeConfig`` manifests or tooling that references
+  ``cilium.io/v2alpha1`` to use ``cilium.io/v2`` instead.
+
+* The Helm value ``hubble.redact.kafka.apiKey`` and the corresponding
+  ``hubble-redact-kafka-apikey`` agent flag have been removed as part of
+  dropping Kafka support.
+
+* The previously deprecated and ignored ``--ces-slice-mode`` operator flag has been removed.
+
+* The previously deprecated ``--node-port-algorithm`` agent flag has been removed
+  in favor of ``--bpf-lb-algorithm`` (``loadBalancer.algorithm`` Helm value).
+
+* The previously deprecated ``--node-port-mode`` agent flag has been removed
+  in favor of the ``--bpf-lb-mode`` (``loadBalancer.mode`` Helm value).
+
+* The previously deprecated and ignored ``--enable-ipsec-encrypted-overlay`` agent
+  flag (Helm ``encryption.ipsec.encryptedOverlay``) has been removed.
+
+* The previously deprecated ``--enable-encryption-strict-mode`` agent flag
+  (Helm ``encryption.strictMode.enabled``) has been removed in favor of
+  ``--enable-encryption-strict-mode-egress`` (Helm ``encryption.strictMode.egress.enabled``).
+
+* The previously deprecated ``--encryption-strict-mode-cidr`` agent flag
+  (Helm ``encryption.strictMode.cidrs``) has been removed in favor of
+  ``--encryption-strict-egress-cidr"`` (Helm ``encryption.strictMode.egress.cidrs``).
+
+* The previously deprecated ``--encryption-strict-mode-allow-remote-node-identities``
+  agent flag (Helm ``encryption.strictMode.allowRemoteNodeIdentities``) has been
+  removed in favor of ``--encryption-strict-egress-allow-remote-node-identities``
+  (Helm ``encryption.strictMode.egress.allowRemoteNodeIdentities``).
+
+* The previously deprecated ``--k8s-api-server`` agent flag has been removed in
+  favor of ``--k8s-api-server-urls`` (Helm ``k8s.apiServerURLs`` value).
+
+* The ``cilium-dbg preflight fqdn-poller`` subcommand and the
+  ``preflight.tofqdnsPreCache`` Helm value have been removed. These were
+  originally introduced for the v1.3 to v1.4 upgrade path and are no longer
+  needed.
+
+* The previously deprecated ``cilium-docker-plugin`` has been removed.
+
+* The previously deprecated support for providing Cluster Mesh TLS certificates
+  and keys as helm values has been removed. You are now expected to pre-create
+  these secrets outside of the Cilium Helm chart when setting
+  ``clustermesh.apiserver.tls.auto.enabled=false``.
+
+Changes to Metrics
 ~~~~~~~~~~~~~~~~~~
-
-Helm Options
-~~~~~~~~~~~~
-
-* The Helm options ``hubble.tls.server.cert``, ``hubble.tls.server.key``,
-  ``hubble.relay.tls.client.cert``, ``hubble.relay.tls.client.key``,
-  ``hubble.relay.tls.server.cert``, ``hubble.relay.tls.server.key``,
-  ``hubble.ui.tls.client.cert``, and ``hubble.ui.tls.client.key`` have been
-  deprecated in favor of the associated ``existingSecret`` options and will be
-  removed in a future release.
-
-Agent Options
-~~~~~~~~~~~~~
-
-* The ``CONNTRACK_LOCAL`` option has been deprecated and will be removed in a
-  future release.
 
 Added Metrics
-~~~~~~~~~~~~~
-* ``cilium_node_health_connectivity_status``
-* ``cilium_node_health_connectivity_latency_seconds``
+#############
 
-Removed Metrics
-~~~~~~~~~~~~~~~
+* ``cilium_policy_missing_proxy_redirects`` was added and reports the total number of
+  proxy redirects that were missing during endpoint policy calculation.
+* ``cilium_endpoint_component_status`` was added and reports the number of endpoints
+  tagged by the status (``OK``, ``Warning``, ``Failure``) of each component (``BPF``, ``Policy``).
+* ``cilium_kubernetes_resource_sync_duration`` was added and reports duration in seconds
+  of a specific Kubernetes resource sync.
+* ``cilium_hive_start_duration`` was added and reports the hive.Start method duration.
+* ``cilium_hive_stop_duration`` was added and reports the hive.Stop method duration.
+  Not reported when metrics are handled by a hive (common in cilium-agent and cilium-operator). Disabled by default.
+* ``cilium_hive_populate_duration`` was added and reports the hive.Populate method duration.
 
 Changed Metrics
-~~~~~~~~~~~~~~~
+###############
+
+* The Cilium Operator REST API endpoint ``/v1/metrics`` (``DumpMetrics``) now
+  returns per-quantile values for histogram and summary metrics instead of a
+  raw sample sum. Histogram metrics now emit three entries with quantile labels
+  ``0.5``, ``0.9``, and ``0.99``. Summary metrics emit one entry per declared
+  quantile. This aligns the operator metrics API output with the behavior of
+  ``cilium-dbg metrics list``.
+* The ``cilium_feature_np_other_l7_policies_total`` metric no longer counts
+  Kafka policies, as Kafka-aware network policy support has been removed.
+* The metric ``policy_change_total`` now reports additional ``source`` (directory, k8s, custom, generated)
+  and ``operation`` (update, delete) dimensions.
+* The metric ``endpoint_regeneration_total`` now reports additional ``reason`` and ``error`` dimensions.
+* The ``session_state``, ``advertised_routes``, ``received_routes``, ``reconcile_errors_total``, ``reconcile_run_duration_seconds`` metrics
+  now include ``instance_name`` label. Label ``vrouter`` is removed please use ``instance_name`` instead.
+* The ``session_state``, ``advertised_routes``, ``received_routes`` metrics now include ``local_asn`` label.
 
 Deprecated Metrics
-~~~~~~~~~~~~~~~~~~
-* ``cilium_node_connectivity_status`` is now deprecated. Please use ``cilium_node_health_connectivity_status`` instead.
-* ``cilium_node_connectivity_latency_seconds`` is now deprecated. Please use ``cilium_node_health_connectivity_latency_seconds`` instead.
+##################
+
+* TODO
+
+Removed Metrics
+###############
+
+* ``cilium_agent_bootstrap_seconds`` has been removed. Please use ``cilium_hive_jobs_oneshot_last_run_duration_seconds`` of respective job instead.
+* ``cilium_operator_ipam_ips`` has been removed. Use per-node ``cilium_operator_ipam_available_ips``, ``cilium_operator_ipam_used_ips``, and ``cilium_operator_ipam_needed_ips`` instead.
+* ``cilium_operator_ipam_available_interfaces`` has been removed. Use ``cilium_operator_ipam_interface_candidates`` and ``cilium_operator_ipam_empty_interface_slots`` instead.
+
+Removed CRD Fields
+~~~~~~~~~~~~~~~~~~~
+
+The following obsolete fields have been removed from the ``CiliumNode`` CRD:
+
+* ``spec.eni.instance-id``: Use ``spec.instance-id`` instead. Deprecated since v1.8.
+* ``spec.eni.min-allocate``: Use ``spec.ipam.min-allocate`` instead. Deprecated since v1.8.
+* ``spec.eni.pre-allocate``: Use ``spec.ipam.pre-allocate`` instead. Deprecated since v1.8.
+* ``spec.eni.max-above-watermark``: Use ``spec.ipam.max-above-watermark`` instead. Deprecated since v1.8.
+* ``status.azure.interfaces[].GatewayIP``: Use ``status.azure.interfaces[].gateway`` instead. Deprecated since v1.10.
 
 Advanced
 ========
@@ -367,122 +539,6 @@ available during the upgrade:
   outage while the Cilium pod is restarting. Events are queued up and read
   after the upgrade. If the number of events exceeds the event buffer size,
   events will be lost.
-
-
-.. _upgrade_configmap:
-
-Rebasing a ConfigMap
---------------------
-
-This section describes the procedure to rebase an existing :term:`ConfigMap` to the
-template of another version.
-
-Export the current ConfigMap
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-::
-
-        $ kubectl get configmap -n kube-system cilium-config -o yaml --export > cilium-cm-old.yaml
-        $ cat ./cilium-cm-old.yaml
-        apiVersion: v1
-        data:
-          clean-cilium-state: "false"
-          debug: "true"
-          disable-ipv4: "false"
-          etcd-config: |-
-            ---
-            endpoints:
-            - https://192.168.60.11:2379
-            #
-            # In case you want to use TLS in etcd, uncomment the 'trusted-ca-file' line
-            # and create a kubernetes secret by following the tutorial in
-            # https://cilium.link/etcd-config
-            trusted-ca-file: '/var/lib/etcd-secrets/etcd-client-ca.crt'
-            #
-            # In case you want client to server authentication, uncomment the following
-            # lines and add the certificate and key in cilium-etcd-secrets below
-            key-file: '/var/lib/etcd-secrets/etcd-client.key'
-            cert-file: '/var/lib/etcd-secrets/etcd-client.crt'
-        kind: ConfigMap
-        metadata:
-          creationTimestamp: null
-          name: cilium-config
-          selfLink: /api/v1/namespaces/kube-system/configmaps/cilium-config
-
-
-In the :term:`ConfigMap` above, we can verify that Cilium is using ``debug`` with
-``true``, it has a etcd endpoint running with `TLS <https://etcd.io/docs/latest/op-guide/security/>`_,
-and the etcd is set up to have `client to server authentication <https://etcd.io/docs/latest/op-guide/security/#example-2-client-to-server-authentication-with-https-client-certificates>`_.
-
-Generate the latest ConfigMap
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. code-block:: shell-session
-
-    helm template cilium \
-      --namespace=kube-system \
-      --set agent.enabled=false \
-      --set config.enabled=true \
-      --set operator.enabled=false \
-      > cilium-configmap.yaml
-
-Add new options
-~~~~~~~~~~~~~~~
-
-Add the new options manually to your old :term:`ConfigMap`, and make the necessary
-changes.
-
-In this example, the ``debug`` option is meant to be kept with ``true``, the
-``etcd-config`` is kept unchanged, and ``monitor-aggregation`` is a new
-option, but after reading the :ref:`version_notes` the value was kept unchanged
-from the default value.
-
-After making the necessary changes, the old :term:`ConfigMap` was migrated with the
-new options while keeping the configuration that we wanted:
-
-::
-
-        $ cat ./cilium-cm-old.yaml
-        apiVersion: v1
-        data:
-          debug: "true"
-          disable-ipv4: "false"
-          # If you want to clean cilium state; change this value to true
-          clean-cilium-state: "false"
-          monitor-aggregation: "medium"
-          etcd-config: |-
-            ---
-            endpoints:
-            - https://192.168.60.11:2379
-            #
-            # In case you want to use TLS in etcd, uncomment the 'trusted-ca-file' line
-            # and create a kubernetes secret by following the tutorial in
-            # https://cilium.link/etcd-config
-            trusted-ca-file: '/var/lib/etcd-secrets/etcd-client-ca.crt'
-            #
-            # In case you want client to server authentication, uncomment the following
-            # lines and add the certificate and key in cilium-etcd-secrets below
-            key-file: '/var/lib/etcd-secrets/etcd-client.key'
-            cert-file: '/var/lib/etcd-secrets/etcd-client.crt'
-        kind: ConfigMap
-        metadata:
-          creationTimestamp: null
-          name: cilium-config
-          selfLink: /api/v1/namespaces/kube-system/configmaps/cilium-config
-
-Apply new ConfigMap
-~~~~~~~~~~~~~~~~~~~
-
-After adding the options, manually save the file with your changes and install
-the :term:`ConfigMap` in the ``kube-system`` namespace of your cluster.
-
-.. code-block:: shell-session
-
-        $ kubectl apply -n kube-system -f ./cilium-cm-old.yaml
-
-As the :term:`ConfigMap` is successfully upgraded we can start upgrading Cilium
-``DaemonSet`` and ``RBAC`` which will pick up the latest configuration from the
-:term:`ConfigMap`.
 
 
 Migrating from kvstore-backed identities to Kubernetes CRD-backed identities
@@ -534,18 +590,16 @@ allocating identities in a way that conflicts with older ones in the kvstore.
 
 The cilium preflight manifest requires etcd support and can be built with:
 
-.. code-block:: shell-session
-
-    helm template cilium \
-      --namespace=kube-system \
-      --set preflight.enabled=true \
-      --set agent.enabled=false \
-      --set config.enabled=false \
-      --set operator.enabled=false \
-      --set etcd.enabled=true \
-      --set etcd.ssl=true \
-      > cilium-preflight.yaml
-    kubectl create -f cilium-preflight.yaml
+.. cilium-helm-template::
+   :namespace: kube-system
+   :set: preflight.enabled=true
+         agent=false
+         config.enabled=false
+         operator.enabled=false
+         etcd.enabled=true
+         etcd.ssl=true
+   :post-helm-commands: > cilium-preflight.yaml
+   :post-commands: kubectl create -f cilium-preflight.yaml
 
 
 Example migration
@@ -617,16 +671,12 @@ The "Double Write" Identity Allocation Mode allows Cilium to allocate identities
 same time. This mode also has two versions: one where the source of truth comes from the kvstore (``--identity-allocation-mode=doublewrite-readkvstore``),
 and one where the source of truth comes from CRDs (``--identity-allocation-mode=doublewrite-readcrd``).
 
-.. note::
-
-    "Double Write" mode is not compatible with Consul as the KVStore
-
 The high-level migration plan looks as follows:
 
 #. Starting state: Cilium is running in KVStore mode.
-#. Switch Cilium to “Double Write” mode with all reads happening from the KVStore. This is almost the same as the
+#. Switch Cilium to "Double Write" mode with all reads happening from the KVStore. This is almost the same as the
    pure KVStore mode with the only difference being that all identities are duplicated as CRDs but are not used.
-#. Switch Cilium to “Double Write” mode with all reads happening from CRDs. This is equivalent to Cilium running in
+#. Switch Cilium to "Double Write" mode with all reads happening from CRDs. This is equivalent to Cilium running in
    pure CRD mode but identities will still be updated in the KVStore to allow for the possibility of a fast rollback.
 #. Switch Cilium to CRD mode. The KVStore will no longer be used and will be ready for decommission.
 
@@ -655,6 +705,143 @@ Rollout Instructions
 #. Once you are ready to decommission the KVStore, re-deploy first the Agents and then the Operator with ``--identity-allocation-mode=crd``.
    This will make Cilium read and write identities only to CRDs.
 #. You can now decommission the KVStore.
+
+.. _change_policy_default_local_cluster:
+
+Preparing for a ``policy-default-local-cluster`` change
+#######################################################
+
+Cilium network policies used to implicitly select endpoints from all the clusters.
+Cilium 1.18 introduced a new option called ``policy-default-local-cluster`` which
+will be set by default in Cilium 1.19. This option restricts endpoints selection to
+the local cluster by default. If you are using ClusterMesh and network policies this
+will be a **breaking change** and you **need to take action** before upgrading to
+Cilium 1.19.
+
+This new option can be set in the ConfigMap or via the Helm value ``clustermesh.policyDefaultLocalCluster``.
+You can set ``policy-default-local-cluster`` to ``false`` in Cilium 1.19 to keep the existing behavior,
+however this option will be deprecated and eventually removed in a future release so you should plan your
+migration to set ``policy-default-local-cluster`` to ``true``.
+
+Migrating network policies in practice
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The command ``cilium clustermesh inspect-policy-default-local-cluster --all-namespaces`` can help you
+discover all the policies that will change as a result of changing ``policy-default-local-cluster``.
+You can also replace ``--all-namespaces`` with ``-n my-namespace`` if you want to only inspect
+policies from a particular namespace.
+
+Below is an example where there is one network policy that needs to be updated:
+
+.. code-block:: shell-session
+
+    $ cilium clustermesh inspect-policy-default-local-cluster --all-namespaces
+
+    ⚠️ CiliumNetworkPolicy 0/1
+            ⚠️ default/allow-from-bar
+
+    ✅ CiliumClusterWideNetworkPolicy 0/0
+
+    ✅ NetworkPolicy 0/0
+
+
+In this situation you have only one CiliumNetworkPolicy which is affected by a
+``policy-default-local-cluster`` change. Let's take a look at the policy:
+
+.. code-block:: yaml
+
+    apiVersion: "cilium.io/v2"
+    kind: CiliumNetworkPolicy
+    metadata:
+      name: allow-from-bar
+      namespace: default
+    spec:
+      description: "Allow ingress traffic from bar"
+      endpointSelector:
+        matchLabels:
+          name: foo
+      ingress:
+      - fromEndpoints:
+        - matchLabels:
+            name: bar
+
+This network policy does not explicitly select a cluster. This means that with ``policy-default-local-cluster``
+set to ``false`` it allows traffic coming from ``bar`` in any clusters connected in your ClusterMesh.
+With ``policy-default-local-cluster`` set to ``true``, this policy allows traffic from ``bar`` from only
+the local cluster instead.
+
+If ``foo`` and ``bar`` are always in the same cluster, no further action is necessary.
+
+In case you want to do this on this individual policy rather than at a global level or that
+``bar`` is located on a remote cluster you can update your policy like that:
+
+.. code-block:: yaml
+
+    apiVersion: "cilium.io/v2"
+    kind: CiliumNetworkPolicy
+    metadata:
+      name: allow-from-bar
+      namespace: default
+    spec:
+      description: "Allow ingress traffic from bar"
+      endpointSelector:
+        matchLabels:
+          name: foo
+      ingress:
+      - fromEndpoints:
+        - matchLabels:
+            name: bar
+            io.cilium.k8s.policy.cluster: fixme-cluster-name
+
+If ``bar`` is located in multiple cluster you can also use a ``matchExpressions``
+selecting multiple clusters like that:
+
+.. code-block:: yaml
+
+    apiVersion: "cilium.io/v2"
+    kind: CiliumNetworkPolicy
+    metadata:
+      name: allow-from-bar
+      namespace: default
+    spec:
+      description: "Allow ingress traffic from bar"
+      endpointSelector:
+        matchLabels:
+          name: foo
+      ingress:
+      - fromEndpoints:
+        - matchLabels:
+            name: bar
+          matchExpressions:
+            - key: io.cilium.k8s.policy.cluster
+              operator: In
+              values:
+                - fixme-cluster-name-1
+                - fixme-cluster-name-2
+
+Alternatively, you can also allow traffic from ``bar`` located in every cluster and restore
+the same behavior as setting ``policy-default-local-cluster`` to ``false`` but on this
+individual policy:
+
+.. code-block:: yaml
+
+    apiVersion: "cilium.io/v2"
+    kind: CiliumNetworkPolicy
+    metadata:
+      name: allow-from-bar
+      namespace: default
+    spec:
+      description: "Allow ingress traffic from bar"
+      endpointSelector:
+        matchLabels:
+          name: foo
+      ingress:
+      - fromEndpoints:
+        - matchLabels:
+            name: bar
+          matchExpressions:
+            - key: io.cilium.k8s.policy.cluster
+              operator: Exists
 
 .. _cnp_validation:
 

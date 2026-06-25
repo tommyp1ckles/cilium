@@ -7,9 +7,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 
@@ -20,27 +22,30 @@ import (
 	cniVersion "github.com/containernetworking/cni/pkg/version"
 	gops "github.com/google/gops/agent"
 	"github.com/google/uuid"
-	"github.com/sirupsen/logrus"
 	"github.com/spf13/afero"
 	"github.com/vishvananda/netlink"
 	"go4.org/netipx"
 	"golang.org/x/sys/unix"
 
+	"github.com/cilium/cilium/api/v1/client/daemon"
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/client"
 	"github.com/cilium/cilium/pkg/datapath/connector"
 	"github.com/cilium/cilium/pkg/datapath/link"
 	"github.com/cilium/cilium/pkg/datapath/linux/route"
+	"github.com/cilium/cilium/pkg/datapath/linux/safenetlink"
 	"github.com/cilium/cilium/pkg/datapath/linux/sysctl"
-	datapathOption "github.com/cilium/cilium/pkg/datapath/option"
+	"github.com/cilium/cilium/pkg/datapath/tables"
 	"github.com/cilium/cilium/pkg/defaults"
 	endpointid "github.com/cilium/cilium/pkg/endpoint/id"
+	endpointtypes "github.com/cilium/cilium/pkg/endpoint/types"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/hooks"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/mac"
 	"github.com/cilium/cilium/pkg/netns"
+	"github.com/cilium/cilium/pkg/version"
 	chainingapi "github.com/cilium/cilium/plugins/cilium-cni/chaining/api"
 	_ "github.com/cilium/cilium/plugins/cilium-cni/chaining/awscni"
 	_ "github.com/cilium/cilium/plugins/cilium-cni/chaining/azure"
@@ -57,17 +62,30 @@ const (
 )
 
 var (
-	log            = logging.DefaultLogger.WithField(logfields.LogSubsys, "cilium-cni")
 	getNetnsCookie = true
 )
 
 // Cmd provides methods for the CNI ADD, DEL and CHECK commands.
 type Cmd struct {
-	cfg EndpointConfigurator
+	logger  *slog.Logger
+	version string
+	cfg     EndpointConfigurator
+
+	onConfigReady          []OnConfigReady
+	onIPAMReady            []OnIPAMReady
+	onLinkConfigReady      []OnLinkConfigReady
+	onInterfaceConfigReady []OnInterfaceConfigReady
 }
 
 // Option allows the customization of the Cmd implementation
 type Option func(cmd *Cmd)
+
+// WithVersion overrides the version reported by the CNI plugin binary in its about string.
+func WithVersion(version string) Option {
+	return func(cmd *Cmd) {
+		cmd.version = version
+	}
+}
 
 // WithEPConfigurator is used to create a Cmd instance with a custom
 // endpoint configurator. The endpoint configurator can be used to customize
@@ -79,24 +97,29 @@ func WithEPConfigurator(cfg EndpointConfigurator) Option {
 	}
 }
 
-// NewCmd creates a new Cmd instance with Add, Del and Check methods
-func NewCmd(opts ...Option) *Cmd {
+// PluginMain is the main entry point for the Cilium CNI plugin.
+func PluginMain(opts ...Option) {
+	// slogloggercheck: the logger has been initialized with default settings
+	logger := logging.DefaultSlogLogger.With(logfields.LogSubsys, "cilium-cni")
 	cmd := &Cmd{
-		cfg: &DefaultConfigurator{},
+		logger:  logger,
+		version: "Cilium CNI plugin " + version.Version,
+		cfg:     &DefaultConfigurator{},
 	}
 	for _, opt := range opts {
 		opt(cmd)
 	}
-	return cmd
-}
 
-// CNIFuncs returns the CNI functions supported by Cilium that can be passed to skel.PluginMainFuncs
-func (cmd *Cmd) CNIFuncs() skel.CNIFuncs {
-	return skel.CNIFuncs{
-		Add:   cmd.Add,
-		Del:   cmd.Del,
-		Check: cmd.Check,
-	}
+	skel.PluginMainFuncs(
+		skel.CNIFuncs{
+			Add:    cmd.Add,
+			Del:    cmd.Del,
+			Check:  cmd.Check,
+			Status: cmd.Status,
+		},
+		cniVersion.PluginSupports("0.1.0", "0.2.0", "0.3.0", "0.3.1", "0.4.0", "1.0.0", "1.1.0"),
+		cmd.version,
+	)
 }
 
 type CmdState struct {
@@ -110,27 +133,27 @@ type CmdState struct {
 }
 
 func ipv6IsEnabled(ipam *models.IPAMResponse) bool {
-	if ipam == nil || ipam.Address.IPV6 == "" {
+	if ipam == nil || ipam.Address.IPv6 == "" {
 		return false
 	}
 
-	if ipam.HostAddressing == nil || ipam.HostAddressing.IPV6 == nil {
+	if ipam.HostAddressing == nil || ipam.HostAddressing.IPv6 == nil {
 		return false
 	}
 
-	return ipam.HostAddressing.IPV6.Enabled
+	return ipam.HostAddressing.IPv6.Enabled
 }
 
 func ipv4IsEnabled(ipam *models.IPAMResponse) bool {
-	if ipam == nil || ipam.Address.IPV4 == "" {
+	if ipam == nil || ipam.Address.IPv4 == "" {
 		return false
 	}
 
-	if ipam.HostAddressing == nil || ipam.HostAddressing.IPV4 == nil {
+	if ipam.HostAddressing == nil || ipam.HostAddressing.IPv4 == nil {
 		return false
 	}
 
-	return ipam.HostAddressing.IPV4.Enabled
+	return ipam.HostAddressing.IPv4.Enabled
 }
 
 func getConfigFromCiliumAgent(client *client.Client) (*models.DaemonConfigurationStatus, error) {
@@ -146,7 +169,7 @@ func getConfigFromCiliumAgent(client *client.Client) (*models.DaemonConfiguratio
 	return configResult.Status, nil
 }
 
-func allocateIPsWithCiliumAgent(client *client.Client, cniArgs *types.ArgsSpec, ipamPoolName string) (*models.IPAMResponse, func(context.Context), error) {
+func allocateIPsWithCiliumAgent(logger *slog.Logger, client *client.Client, cniArgs *types.ArgsSpec, ipamPoolName string) (*models.IPAMResponse, func(context.Context), error) {
 	podName := string(cniArgs.K8S_POD_NAMESPACE) + "/" + string(cniArgs.K8S_POD_NAME)
 
 	ipam, err := client.IPAMAllocate("", podName, ipamPoolName, true)
@@ -160,21 +183,23 @@ func allocateIPsWithCiliumAgent(client *client.Client, cniArgs *types.ArgsSpec, 
 
 	releaseFunc := func(context.Context) {
 		if ipam.Address != nil {
-			releaseIP(client, ipam.Address.IPV4, ipam.Address.IPV4PoolName)
-			releaseIP(client, ipam.Address.IPV6, ipam.Address.IPV6PoolName)
+			releaseIP(logger, client, ipam.Address.IPv4, ipam.Address.IPv4PoolName)
+			releaseIP(logger, client, ipam.Address.IPv6, ipam.Address.IPv6PoolName)
 		}
 	}
 
 	return ipam, releaseFunc, nil
 }
 
-func releaseIP(client *client.Client, ip, pool string) {
+func releaseIP(logger *slog.Logger, client *client.Client, ip, pool string) {
 	if ip != "" {
 		if err := client.IPAMReleaseIP(ip, pool); err != nil {
-			log.WithError(err).WithFields(logrus.Fields{
-				logfields.IPAddr: ip,
-				"pool":           pool,
-			}).Warn("Unable to release IP")
+			logger.Warn(
+				"Unable to release IP",
+				logfields.Error, err,
+				logfields.IPAddr, ip,
+				logfields.PoolName, pool,
+			)
 		}
 	}
 }
@@ -210,27 +235,66 @@ func allocateIPsWithDelegatedPlugin(
 	// Safe to assume at most one IP per family. The K8s API docs say:
 	// "Pods may be allocated at most 1 value for each of IPv4 and IPv6"
 	// https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/
+	// Interface returned by IPAM should be treated as the uplink for the Pod as CNI spec introduced by:
+	// https://github.com/containernetworking/cni/pull/1137
+	masterMac := ""
+	for _, iface := range ipamResult.Interfaces {
+		if iface.Sandbox != "" {
+			continue
+		}
+
+		if iface.Mac != "" {
+			if ifMac, err := net.ParseMAC(iface.Mac); err != nil {
+				return nil, releaseFunc, fmt.Errorf("failed to parse interface MAC %q: %w", iface.Mac, err)
+			} else {
+				masterMac = ifMac.String()
+			}
+		} else if iface.Name != "" {
+			if uplink, err := safenetlink.LinkByName(iface.Name); err != nil {
+				return nil, releaseFunc, fmt.Errorf("failed to get uplink %q: %w", iface.Name, err)
+			} else {
+				masterMac = uplink.Attrs().HardwareAddr.String()
+			}
+		}
+		break
+	}
+	// Interface number could not be determined from IPAM result for now.
+	// Set a static value zero before we have a proper solution.
 	for _, ipConfig := range ipamResult.IPs {
 		ipNet := ipConfig.Address
-		if ipv4 := ipNet.IP.To4(); ipv4 != nil {
-			ipam.Address.IPV4 = ipNet.String()
-			ipam.IPV4 = &models.IPAMAddressResponse{IP: ipv4.String()}
-		} else if conf.Addressing.IPV6 != nil {
-			// assign ipam ipv6 address only if agent ipv6 config is enabled
-			ipam.Address.IPV6 = ipNet.String()
-			ipam.IPV6 = &models.IPAMAddressResponse{IP: ipNet.IP.String()}
+		if ipNet.IP.To4() != nil {
+			if conf.Addressing.IPv4 != nil {
+				ipam.Address.IPv4 = ipNet.String()
+				ipam.IPv4 = &models.IPAMAddressResponse{
+					IP:              ipNet.IP.String(),
+					Gateway:         ipConfig.Gateway.String(),
+					MasterMac:       masterMac,
+					InterfaceNumber: "0",
+				}
+			}
+		} else {
+			if conf.Addressing.IPv6 != nil {
+				ipam.Address.IPv6 = ipNet.String()
+				ipam.IPv6 = &models.IPAMAddressResponse{
+					IP:              ipNet.IP.String(),
+					Gateway:         ipConfig.Gateway.String(),
+					MasterMac:       masterMac,
+					InterfaceNumber: "0",
+				}
+			}
 		}
 	}
 
 	return ipam, releaseFunc, nil
 }
 
-func addIPConfigToLink(ip netip.Addr, routes []route.Route, rules []route.Rule, link netlink.Link, ifName string) error {
-	log.WithFields(logrus.Fields{
-		logfields.IPAddr:    ip,
-		"netLink":           logfields.Repr(link),
-		logfields.Interface: ifName,
-	}).Debug("Configuring link")
+func addIPConfigToLink(logger *slog.Logger, ip netip.Addr, routes []route.Route, rules []route.Rule, link netlink.Link, ifName string) error {
+	logger.Debug(
+		"Configuring link",
+		logfields.Interface, ifName,
+		logfields.IPAddr, ip,
+		logfields.NetLink, link,
+	)
 
 	addr := &netlink.Addr{IPNet: netipx.AddrIPNet(ip)}
 	if ip.Is6() {
@@ -245,7 +309,10 @@ func addIPConfigToLink(ip netip.Addr, routes []route.Route, rules []route.Rule, 
 	sort.Sort(route.ByMask(routes))
 
 	for _, r := range routes {
-		log.WithField("route", logfields.Repr(r)).Debug("Adding route")
+		logger.Debug(
+			"Adding route",
+			logfields.Route, r,
+		)
 		rt := &netlink.Route{
 			LinkIndex: link.Attrs().Index,
 			Scope:     netlink.SCOPE_UNIVERSE,
@@ -269,7 +336,10 @@ func addIPConfigToLink(ip netip.Addr, routes []route.Route, rules []route.Rule, 
 	}
 
 	for _, r := range rules {
-		log.WithField("rule", logfields.Repr(r)).Debug("Adding rule")
+		logger.Debug(
+			"Adding rule",
+			logfields.Rule, r,
+		)
 		var err error
 		if ip.Is4() {
 			err = route.ReplaceRule(r)
@@ -284,8 +354,8 @@ func addIPConfigToLink(ip netip.Addr, routes []route.Route, rules []route.Rule, 
 	return nil
 }
 
-func configureIface(ipam *models.IPAMResponse, ifName string, state *CmdState) (string, error) {
-	l, err := netlink.LinkByName(ifName)
+func configureIface(logger *slog.Logger, ipam *models.IPAMResponse, ifName string, state *CmdState) (string, error) {
+	l, err := safenetlink.LinkByName(ifName)
 	if err != nil {
 		return "", fmt.Errorf("failed to lookup %q: %w", ifName, err)
 	}
@@ -295,13 +365,13 @@ func configureIface(ipam *models.IPAMResponse, ifName string, state *CmdState) (
 	}
 
 	if ipv4IsEnabled(ipam) {
-		if err := addIPConfigToLink(state.IP4, state.IP4routes, state.IP4rules, l, ifName); err != nil {
+		if err := addIPConfigToLink(logger, state.IP4, state.IP4routes, state.IP4rules, l, ifName); err != nil {
 			return "", fmt.Errorf("error configuring IPv4: %w", err)
 		}
 	}
 
 	if ipv6IsEnabled(ipam) {
-		if err := addIPConfigToLink(state.IP6, state.IP6routes, state.IP6rules, l, ifName); err != nil {
+		if err := addIPConfigToLink(logger, state.IP6, state.IP6routes, state.IP6rules, l, ifName); err != nil {
 			return "", fmt.Errorf("error configuring IPv6: %w", err)
 		}
 	}
@@ -316,6 +386,7 @@ func configureIface(ipam *models.IPAMResponse, ifName string, state *CmdState) (
 func newCNIRoute(r route.Route) *cniTypes.Route {
 	rt := &cniTypes.Route{
 		Dst: r.Prefix,
+		MTU: r.MTU,
 	}
 	if r.Nexthop != nil {
 		rt.GW = *r.Nexthop
@@ -383,13 +454,14 @@ func prepareIP(ipAddr string, state *CmdState, mtu int) (*cniTypesV1.IPConfig, [
 	}, rt, nil
 }
 
-func setupLogging(n *types.NetConf) error {
+func (cmd *Cmd) setupLogging(n *types.NetConf) error {
 	f := n.LogFormat
 	if f == "" {
 		f = string(logging.DefaultLogFormatTimestamp)
 	}
 	logOptions := logging.LogOptions{
 		logging.FormatOpt: f,
+		logging.WriterOpt: logging.StdErrOpt,
 	}
 	err := logging.SetupLogging([]string{}, logOptions, "cilium-cni", n.EnableDebug)
 	if err != nil {
@@ -397,12 +469,17 @@ func setupLogging(n *types.NetConf) error {
 	}
 
 	if len(n.LogFile) != 0 {
-		logging.AddHooks(hooks.NewFileRotationLogHook(n.LogFile,
+		logging.AddHandlers(hooks.NewFileRotationLogHook(
+			// slogloggercheck: the logger has been initialized with default settings
+			logging.GetSlogLevel(logging.DefaultSlogLogger),
+			n.LogFile,
 			hooks.EnableCompression(),
 			hooks.WithMaxBackups(defaultLogMaxBackups),
 		))
 	}
 
+	// slogloggercheck: The logger has been initialized with options from cilium CNI config.
+	cmd.logger = logging.DefaultSlogLogger.With(logfields.LogSubsys, "cilium-cni")
 	return nil
 }
 
@@ -432,36 +509,60 @@ func reserveLocalIPPorts(conf *models.DaemonConfigurationStatus, sysctl sysctl.S
 	return sysctl.Write(param, reserved)
 }
 
+func configureCongestionControl(conf *models.DaemonConfigurationStatus, sysctl sysctl.Sysctl) error {
+	if !conf.EnableBBRHostNamespaceOnly {
+		return nil
+	}
+
+	// Note: This setting applies to IPv4 and IPv6
+	return sysctl.ApplySettings([]tables.Sysctl{
+		{Name: []string{"net", "ipv4", "tcp_congestion_control"}, Val: "cubic"},
+	})
+}
+
 func (cmd *Cmd) Add(args *skel.CmdArgs) (err error) {
 	n, err := types.LoadNetConf(args.StdinData)
 	if err != nil {
 		return fmt.Errorf("unable to parse CNI configuration %q: %w", string(args.StdinData), err)
 	}
 
-	if err = setupLogging(n); err != nil {
+	if err = cmd.setupLogging(n); err != nil {
 		return fmt.Errorf("unable to setup logging: %w", err)
 	}
 
-	logger := loggerWithArguments(log.WithField(logfields.EventUUID, uuid.New()), args)
+	scopedLogger := buildLogAttrsWithEventID(cmd.logger, args)
+	defer func() {
+		if err != nil {
+			scopedLogger.Error("CNI ADD failed", logfields.Error, err)
+		} else {
+			scopedLogger.Debug("CNI ADD processing complete")
+		}
+	}()
 
 	if n.EnableDebug {
 		if err := gops.Listen(gops.Options{}); err != nil {
-			log.WithError(err).Warn("Unable to start gops")
+			scopedLogger.Warn("Unable to start gops", logfields.Error, err)
 		} else {
 			defer gops.Close()
 		}
 	}
-	logger.WithField("netconf", logfields.Repr(n)).Debugf("Processing CNI ADD request")
+	scopedLogger.Debug(
+		"Processing CNI ADD request",
+		logfields.NetConf, n,
+	)
 
 	if n.PrevResult != nil {
-		logger.WithField("previousResult", logfields.Repr(n.PrevResult)).Debugf("CNI Previous result")
+		scopedLogger.Debug(
+			"CNI Previous result",
+			logfields.Previous, n.PrevResult,
+		)
 	}
 
 	cniArgs := &types.ArgsSpec{}
 	if err = cniTypes.LoadArgs(args.Args, cniArgs); err != nil {
 		return fmt.Errorf("unable to extract CNI arguments: %w", err)
 	}
-	logger = loggerWithCNIArgs(logger, cniArgs)
+	scopedLogger = buildLogAttrsWithCNIArgs(scopedLogger, cniArgs)
 
 	c, err := client.NewDefaultClientWithTimeout(defaults.ClientConnectTimeout)
 	if err != nil {
@@ -473,15 +574,21 @@ func (cmd *Cmd) Add(args *skel.CmdArgs) (err error) {
 		return err
 	}
 
+	for _, hook := range cmd.onConfigReady {
+		if err := hook.OnConfigReady(args, cniArgs, conf); err != nil {
+			return err
+		}
+	}
+
 	// If CNI ADD gives us a PrevResult, we're a chained plugin and *must* detect a
 	// valid chained mode. If no chained mode we understand is specified, error out.
 	// Otherwise, continue with normal plugin execution.
 	if len(n.NetConf.RawPrevResult) != 0 {
-		if chainAction, err := getChainedAction(n, logger); chainAction != nil {
+		if chainAction, err := getChainedAction(n, scopedLogger); chainAction != nil {
 			var (
 				res *cniTypesV1.Result
 				ctx = chainingapi.PluginContext{
-					Logger:     logger,
+					Logger:     scopedLogger,
 					Args:       args,
 					CniArgs:    cniArgs,
 					NetConf:    n,
@@ -491,23 +598,24 @@ func (cmd *Cmd) Add(args *skel.CmdArgs) (err error) {
 
 			res, err = chainAction.Add(context.TODO(), ctx, c)
 			if err != nil {
-				logger.WithError(err).Warn("Chained ADD failed")
+				scopedLogger.Warn("Chained ADD failed", logfields.Error, err)
 				return err
 			}
-			logger.WithField("result", logfields.Repr(res)).Debugf("Returning result")
+			scopedLogger.Debug("Returning result", logfields.Result, res)
 			return cniTypes.PrintResult(res, n.CNIVersion)
 		} else if err != nil {
-			logger.WithError(err).Error("Invalid chaining mode")
+			scopedLogger.Error("Invalid chaining mode", logfields.Error, err)
 			return err
 		} else {
 			// no chained action supplied; this is an error
-			logger.Error("CNI PrevResult supplied, but not in chaining mode -- this is invalid, please set chaining-mode in CNI configuration")
-			return errors.New("CNI PrevResult supplied, but not in chaining mode -- this is invalid, please set chaining-mode in CNI configuration")
+			const errMsg = "CNI PrevResult supplied, but not in chaining mode -- this is invalid, please set chaining-mode in CNI configuration"
+			scopedLogger.Error(errMsg)
+			return errors.New(errMsg)
 		}
 	}
 
 	res := &cniTypesV1.Result{}
-	configs, err := cmd.cfg.GetConfigurations(ConfigurationParams{log, conf, args, cniArgs})
+	configs, err := cmd.cfg.GetConfigurations(ConfigurationParams{scopedLogger, conf, args, cniArgs})
 	if err != nil {
 		return fmt.Errorf("failed to determine endpoint configuration: %w", err)
 	}
@@ -533,7 +641,7 @@ func (cmd *Cmd) Add(args *skel.CmdArgs) (err error) {
 		if conf.IpamMode == ipamOption.IPAMDelegatedPlugin {
 			ipam, releaseIPsFunc, err = allocateIPsWithDelegatedPlugin(context.TODO(), conf, n, args.StdinData)
 		} else {
-			ipam, releaseIPsFunc, err = allocateIPsWithCiliumAgent(c, cniArgs, epConf.IPAMPool())
+			ipam, releaseIPsFunc, err = allocateIPsWithCiliumAgent(scopedLogger, c, cniArgs, epConf.IPAMPool())
 		}
 
 		// release addresses on failure
@@ -555,88 +663,107 @@ func (cmd *Cmd) Add(args *skel.CmdArgs) (err error) {
 			return errors.New("IPAM did provide neither IPv4 nor IPv6 address")
 		}
 
+		for _, hook := range cmd.onIPAMReady {
+			if err := hook.OnIPAMReady(ipam); err != nil {
+				return err
+			}
+		}
+
 		state, ep, err := epConf.PrepareEndpoint(ipam)
 		if err != nil {
 			return fmt.Errorf("unable to prepare endpoint configuration: %w", err)
 		}
 
-		switch conf.DatapathMode {
-		case datapathOption.DatapathModeVeth:
-			cniID := ep.ContainerID + ":" + ep.ContainerInterfaceName
-			veth, peer, tmpIfName, err := connector.SetupVeth(cniID, int(conf.DeviceMTU),
-				int(conf.GROMaxSize), int(conf.GSOMaxSize),
-				int(conf.GROIPV4MaxSize), int(conf.GSOIPV4MaxSize), ep, sysctl)
-			if err != nil {
-				return fmt.Errorf("unable to set up veth on host side: %w", err)
-			}
-			defer func() {
-				if err != nil {
-					if err2 := netlink.LinkDel(veth); err2 != nil {
-						logger.WithError(err2).WithField(logfields.Veth, veth.Name).Warn("failed to clean up and delete veth")
-					}
-				}
-			}()
+		cniID := ep.ContainerID + ":" + ep.ContainerInterfaceName
+		linkConfig := connector.LinkConfig{
+			EndpointID:     cniID,
+			PeerIfName:     epConf.IfName(),
+			PeerNamespace:  ns,
+			GROIPv6MaxSize: int(conf.GROMaxSize),
+			GSOIPv6MaxSize: int(conf.GSOMaxSize),
+			GROIPv4MaxSize: int(conf.GROIPv4MaxSize),
+			GSOIPv4MaxSize: int(conf.GSOIPv4MaxSize),
+			DeviceMTU:      int(conf.DeviceMTU),
+			DeviceHeadroom: uint16(conf.DeviceHeadroom),
+			DeviceTailroom: uint16(conf.DeviceTailroom),
+		}
 
-			res.Interfaces = append(res.Interfaces, &cniTypesV1.Interface{
-				Name: veth.Attrs().Name,
-				Mac:  veth.Attrs().HardwareAddr.String(),
-			})
-
-			if err := netlink.LinkSetNsFd(peer, ns.FD()); err != nil {
-				return fmt.Errorf("unable to move veth pair %q to netns %s: %w", peer, args.Netns, err)
-			}
-
-			err = connector.SetupVethRemoteNs(ns, tmpIfName, epConf.IfName())
-			if err != nil {
-				return fmt.Errorf("unable to set up veth on container side: %w", err)
-			}
-		case datapathOption.DatapathModeNetkit, datapathOption.DatapathModeNetkitL2:
-			l2Mode := conf.DatapathMode == datapathOption.DatapathModeNetkitL2
-			cniID := ep.ContainerID + ":" + ep.ContainerInterfaceName
-			netkit, peer, tmpIfName, err := connector.SetupNetkit(cniID, int(conf.DeviceMTU),
-				int(conf.GROMaxSize), int(conf.GSOMaxSize),
-				int(conf.GROIPV4MaxSize), int(conf.GSOIPV4MaxSize), l2Mode, ep, sysctl)
-			if err != nil {
-				return fmt.Errorf("unable to set up netkit on host side: %w", err)
-			}
-			defer func() {
-				if err != nil {
-					if err2 := netlink.LinkDel(netkit); err2 != nil {
-						logger.WithError(err2).WithField(logfields.Netkit, netkit.Name).Warn("failed to clean up and delete netkit")
-					}
-				}
-			}()
-
-			iface := &cniTypesV1.Interface{
-				Name: netkit.Attrs().Name,
-			}
-			if l2Mode {
-				iface.Mac = netkit.Attrs().HardwareAddr.String()
-			}
-			res.Interfaces = append(res.Interfaces, iface)
-
-			if err := netlink.LinkSetNsFd(peer, ns.FD()); err != nil {
-				return fmt.Errorf("unable to move netkit pair %q to netns %s: %w", peer, args.Netns, err)
-			}
-
-			err = connector.SetupNetkitRemoteNs(ns, tmpIfName, epConf.IfName())
-			if err != nil {
-				return fmt.Errorf("unable to set up netkit on container side: %w", err)
+		for _, hook := range cmd.onLinkConfigReady {
+			if err := hook.OnLinkConfigReady(&linkConfig); err != nil {
+				return err
 			}
 		}
+
+		linkMode := connector.ModeByName(string(conf.DatapathMode))
+		linkPair, err := connector.NewLinkPair(scopedLogger, linkMode, linkConfig, sysctl)
+		if err != nil {
+			return fmt.Errorf("unable to set up link on host side: %w", err)
+		}
+
+		defer func() {
+			if err != nil && linkPair != nil {
+				if err2 := linkPair.Delete(); err2 != nil {
+					scopedLogger.Warn(
+						"Failed to cleanup device",
+						logfields.Error, err2,
+					)
+				}
+			}
+		}()
+
+		isLayer2 := linkPair.GetMode().IsLayer2()
+		hostLinkAttrs := linkPair.GetHostLink().Attrs()
+		peerLinkAttrs := linkPair.GetPeerLink().Attrs()
+
+		iface := &cniTypesV1.Interface{
+			Name: hostLinkAttrs.Name,
+		}
+		if isLayer2 {
+			iface.Mac = hostLinkAttrs.HardwareAddr.String()
+		}
+		res.Interfaces = append(res.Interfaces, iface)
+
+		if isLayer2 {
+			ep.Mac = peerLinkAttrs.HardwareAddr.String()
+			ep.HostMac = hostLinkAttrs.HardwareAddr.String()
+		}
+		ep.InterfaceIndex = int64(hostLinkAttrs.Index)
+		ep.InterfaceName = hostLinkAttrs.Name
 
 		var (
-			ipConfig *cniTypesV1.IPConfig
-			routes   []*cniTypes.Route
+			ipConfig   *cniTypesV1.IPConfig
+			ipv6Config *cniTypesV1.IPConfig
+			routes     []*cniTypes.Route
 		)
-		if ipv6IsEnabled(ipam) && conf.Addressing.IPV6 != nil {
-			ep.Addressing.IPV6 = ipam.Address.IPV6
-			ep.Addressing.IPV6PoolName = ipam.Address.IPV6PoolName
-			ep.Addressing.IPV6ExpirationUUID = ipam.IPV6.ExpirationUUID
+		if ipv6IsEnabled(ipam) && conf.Addressing.IPv6 != nil {
+			ep.Addressing.IPv6 = ipam.Address.IPv6
+			ep.Addressing.IPv6PoolName = ipam.Address.IPv6PoolName
+			ep.Addressing.IPv6ExpirationUUID = ipam.IPv6.ExpirationUUID
+			if ipam.IPv6.SkipMasquerade {
+				ep.Properties[endpointtypes.PropertySkipMasqueradeV6] = true
+			}
 
-			ipConfig, routes, err = prepareIP(ep.Addressing.IPV6, state, int(conf.RouteMTU))
+			ipv6Config, routes, err = prepareIP(ep.Addressing.IPv6, state, int(conf.RouteMTU))
 			if err != nil {
-				return fmt.Errorf("unable to prepare IP addressing for %s: %w", ep.Addressing.IPV6, err)
+				return fmt.Errorf("unable to prepare IP addressing for %s: %w", ep.Addressing.IPv6, err)
+			}
+			// set the addresses interface index to that of the container-side interface
+			ipv6Config.Interface = cniTypesV1.Int(len(res.Interfaces))
+			res.IPs = append(res.IPs, ipv6Config)
+			res.Routes = append(res.Routes, routes...)
+		}
+
+		if ipv4IsEnabled(ipam) && conf.Addressing.IPv4 != nil {
+			ep.Addressing.IPv4 = ipam.Address.IPv4
+			ep.Addressing.IPv4PoolName = ipam.Address.IPv4PoolName
+			ep.Addressing.IPv4ExpirationUUID = ipam.IPv4.ExpirationUUID
+			if ipam.IPv4.SkipMasquerade {
+				ep.Properties[endpointtypes.PropertySkipMasqueradeV4] = true
+			}
+
+			ipConfig, routes, err = prepareIP(ep.Addressing.IPv4, state, int(conf.RouteMTU))
+			if err != nil {
+				return fmt.Errorf("unable to prepare IP addressing for %s: %w", ep.Addressing.IPv4, err)
 			}
 			// set the addresses interface index to that of the container-side interface
 			ipConfig.Interface = cniTypesV1.Int(len(res.Interfaces))
@@ -644,26 +771,25 @@ func (cmd *Cmd) Add(args *skel.CmdArgs) (err error) {
 			res.Routes = append(res.Routes, routes...)
 		}
 
-		if ipv4IsEnabled(ipam) && conf.Addressing.IPV4 != nil {
-			ep.Addressing.IPV4 = ipam.Address.IPV4
-			ep.Addressing.IPV4PoolName = ipam.Address.IPV4PoolName
-			ep.Addressing.IPV4ExpirationUUID = ipam.IPV4.ExpirationUUID
-
-			ipConfig, routes, err = prepareIP(ep.Addressing.IPV4, state, int(conf.RouteMTU))
-			if err != nil {
-				return fmt.Errorf("unable to prepare IP addressing for %s: %w", ep.Addressing.IPV4, err)
+		if needsEndpointRoutingOnHost(conf) {
+			if ipam.IPv4 != nil && ipConfig != nil {
+				err = interfaceAdd(scopedLogger, ipConfig, ipam.IPv4, conf)
+				if err != nil {
+					return fmt.Errorf("unable to setup interface datapath: %w", err)
+				}
 			}
-			// set the addresses interface index to that of the container-side interface
-			ipConfig.Interface = cniTypesV1.Int(len(res.Interfaces))
-			res.IPs = append(res.IPs, ipConfig)
-			res.Routes = append(res.Routes, routes...)
+
+			if ipam.IPv6 != nil && ipv6Config != nil {
+				err = interfaceAdd(scopedLogger, ipv6Config, ipam.IPv6, conf)
+				if err != nil {
+					return fmt.Errorf("unable to setup interface datapath: %w", err)
+				}
+			}
 		}
 
-		switch conf.IpamMode {
-		case ipamOption.IPAMENI, ipamOption.IPAMAzure, ipamOption.IPAMAlibabaCloud:
-			err = interfaceAdd(ipConfig, ipam.IPV4, conf)
-			if err != nil {
-				return fmt.Errorf("unable to setup interface datapath: %w", err)
+		for _, hook := range cmd.onInterfaceConfigReady {
+			if err := hook.OnInterfaceConfigReady(state, ep, res); err != nil {
+				return err
 			}
 		}
 
@@ -671,15 +797,21 @@ func (cmd *Cmd) Add(args *skel.CmdArgs) (err error) {
 
 		if err = ns.Do(func() error {
 			if err := reserveLocalIPPorts(conf, sysctl); err != nil {
-				logger.WithError(err).Warn("unable to reserve local ip ports")
+				scopedLogger.Warn(
+					"Unable to reserve local ip ports",
+					logfields.Error, err,
+				)
 			}
 
 			if ipv6IsEnabled(ipam) {
 				if err := sysctl.Disable([]string{"net", "ipv6", "conf", "all", "disable_ipv6"}); err != nil {
-					logger.WithError(err).Warn("unable to enable ipv6 on all interfaces")
+					scopedLogger.Warn(
+						"Unable to enable ipv6 on all interfaces",
+						logfields.Error, err,
+					)
 				}
 			}
-			macAddrStr, err = configureIface(ipam, epConf.IfName(), state)
+			macAddrStr, err = configureIface(scopedLogger, ipam, epConf.IfName(), state)
 			return err
 		}); err != nil {
 			return fmt.Errorf("unable to configure interfaces in container namespace: %w", err)
@@ -694,22 +826,30 @@ func (cmd *Cmd) Add(args *skel.CmdArgs) (err error) {
 				if errors.Is(err, unix.ENOPROTOOPT) {
 					getNetnsCookie = false
 				}
-				logger.WithError(err).WithFields(logrus.Fields{
-					logfields.ContainerID: args.ContainerID}).Info("unable to get netns cookie")
+				scopedLogger.Info(
+					"Unable to get netns cookie",
+					logfields.Error, err,
+					logfields.ContainerID, args.ContainerID,
+				)
 			}
 		}
 		ep.NetnsCookie = strconv.FormatUint(cookie, 10)
 
 		// Specify that endpoint must be regenerated synchronously. See GH-4409.
 		ep.SyncBuildEndpoint = true
+		ep.ContainerNetnsPath = filepath.Join(defaults.NetNsPath, filepath.Base(args.Netns))
 		var newEp *models.Endpoint
 		if newEp, err = c.EndpointCreate(ep); err != nil {
-			logger.WithError(err).WithField(logfields.ContainerID, ep.ContainerID).Warn("Unable to create endpoint")
+			scopedLogger.Warn(
+				"Unable to create endpoint",
+				logfields.Error, err,
+				logfields.ContainerID, ep.ContainerID,
+			)
 			return fmt.Errorf("unable to create endpoint: %w", err)
 		}
 		if newEp != nil && newEp.Status != nil && newEp.Status.Networking != nil && newEp.Status.Networking.Mac != "" {
 			// Set the MAC address on the interface in the container namespace
-			if conf.DatapathMode != datapathOption.DatapathModeNetkit {
+			if isLayer2 {
 				err = ns.Do(func() error {
 					return mac.ReplaceMacAddressWithLinkName(args.IfName, newEp.Status.Networking.Mac)
 				})
@@ -719,12 +859,22 @@ func (cmd *Cmd) Add(args *skel.CmdArgs) (err error) {
 			}
 			macAddrStr = newEp.Status.Networking.Mac
 		}
+		if err = ns.Do(func() error {
+			configurePacketizationLayerPMTUD(scopedLogger, conf, sysctl)
+			return configureCongestionControl(conf, sysctl)
+		}); err != nil {
+			return fmt.Errorf("unable to configure congestion control: %w", err)
+		}
 		res.Interfaces = append(res.Interfaces, &cniTypesV1.Interface{
 			Name:    epConf.IfName(),
 			Mac:     macAddrStr,
 			Sandbox: args.Netns,
 		})
-		logger.WithError(err).WithField(logfields.ContainerID, ep.ContainerID).Debug("Endpoint successfully created")
+		scopedLogger.Debug(
+			"Endpoint successfully created",
+			logfields.Error, err,
+			logfields.ContainerID, ep.ContainerID,
+		)
 	}
 
 	return cniTypes.PrintResult(res, n.CNIVersion)
@@ -743,40 +893,37 @@ func (cmd *Cmd) Del(args *skel.CmdArgs) error {
 		return fmt.Errorf("unable to parse CNI configuration %q: %w", string(args.StdinData), err)
 	}
 
-	if err := setupLogging(n); err != nil {
+	if err := cmd.setupLogging(n); err != nil {
 		return fmt.Errorf("unable to setup logging: %w", err)
 	}
 
-	logger := loggerWithArguments(log.WithField(logfields.EventUUID, uuid.New()), args)
+	scopedLogger := buildLogAttrsWithEventID(cmd.logger, args)
 
 	if n.EnableDebug {
 		if err := gops.Listen(gops.Options{}); err != nil {
-			log.WithError(err).Warn("Unable to start gops")
+			scopedLogger.Warn("Unable to start gops", logfields.Error, err)
 		} else {
 			defer gops.Close()
 		}
 	}
-	logger.WithField("netconf", logfields.Repr(n)).Debugf("Processing CNI DEL request")
+	scopedLogger.Debug("Processing CNI DEL request", logfields.NetConf, n)
 
 	cniArgs := &types.ArgsSpec{}
 	if err = cniTypes.LoadArgs(args.Args, cniArgs); err != nil {
 		return fmt.Errorf("unable to extract CNI arguments: %w", err)
 	}
-	logger = loggerWithCNIArgs(logger, cniArgs)
+	scopedLogger = buildLogAttrsWithCNIArgs(scopedLogger, cniArgs)
 
-	c, err := lib.NewDeletionFallbackClient(logger)
-	if err != nil {
-		return fmt.Errorf("unable to connect to Cilium agent: %w", err)
-	}
+	c := lib.NewDeletionFallbackClient(scopedLogger)
 
 	// If this is a chained plugin, then "delegate" to the special chaining mode and be done.
 	// Note: DEL always has PrevResult set, so that doesn't tell us if we're chained. Given
 	// that a CNI ADD could not have succeeded with an invalid chained mode, we should always
 	// find a valid chained mode
-	if chainAction, err := getChainedAction(n, logger); chainAction != nil {
+	if chainAction, err := getChainedAction(n, scopedLogger); chainAction != nil {
 		var (
 			ctx = chainingapi.PluginContext{
-				Logger:  logger,
+				Logger:  scopedLogger,
 				Args:    args,
 				CniArgs: cniArgs,
 				NetConf: n,
@@ -785,19 +932,27 @@ func (cmd *Cmd) Del(args *skel.CmdArgs) error {
 
 		return chainAction.Delete(context.TODO(), ctx, c)
 	} else if err != nil {
-		logger.WithError(err).Error("Invalid chaining mode")
+		scopedLogger.Error(
+			"Invalid chaining mode",
+			logfields.Error, err,
+		)
 		return err
 	}
 
 	req := &models.EndpointBatchDeleteRequest{ContainerID: args.ContainerID}
 	if err := c.EndpointDeleteMany(req); err != nil {
+		if errors.Is(err, lib.ErrClientFailure) {
+			scopedLogger.Error("Failed to delete endpoint", logfields.Error, err)
+			return err
+		}
+
 		// EndpointDeleteMany returns an error in the following scenarios:
 		// DeleteEndpointInvalid: Invalid delete parameters, no need to retry
 		// DeleteEndpointNotFound: No need to retry
 		// DeleteEndpointErrors: Errors encountered while deleting,
 		//                       the endpoint is always deleted though, no
 		//                       need to retry
-		log.WithError(err).Warning("Errors encountered while deleting endpoint")
+		scopedLogger.Warn("Errors encountered while deleting endpoint", logfields.Error, err)
 	}
 
 	if n.IPAM.Type != "" {
@@ -812,16 +967,43 @@ func (cmd *Cmd) Del(args *skel.CmdArgs) error {
 
 	ns, err := netns.OpenPinned(args.Netns)
 	if err != nil {
+		if os.IsNotExist(err) {
+			// We are not returning an error if the network namespace does not exist.
+			// In that case, we assume that the interface has already been deleted.
+			// Reference https://github.com/kubernetes/kubernetes/issues/133081
+			scopedLogger.Warn(
+				"Unable to open network namespace, will not delete interface",
+				logfields.Error, fmt.Errorf("namespace %s no longer exist: %w", args.Netns, err),
+				logfields.Interface, args.IfName,
+				logfields.NetNamespace, args.Netns,
+			)
+			return nil
+		}
+		// If we cannot open the network namespace, we cannot delete the interface.
+		// This is a fatal error, as we cannot proceed with the deletion.
+		// We return an error to indicate that the deletion failed.
+		scopedLogger.Warn(
+			"Unable to open network namespace, will not delete interface",
+			logfields.Error, fmt.Errorf("opening netns pinned at %s: %w", args.Netns, err),
+			logfields.Interface, args.IfName,
+			logfields.NetNamespace, args.Netns,
+		)
 		return fmt.Errorf("opening netns pinned at %s: %w", args.Netns, err)
 	}
 	defer ns.Close()
 	if err = ns.Do(func() error {
 		return link.DeleteByName(args.IfName)
 	}); err != nil {
-		log.WithError(err).Warningf("Unable to delete interface %s in namespace %q, will not delete interface", args.IfName, args.Netns)
+		scopedLogger.Warn(
+			"Unable to delete interface in namespace, will not delete interface",
+			logfields.Error, err,
+			logfields.Interface, args.IfName,
+			logfields.NetNamespace, args.Netns,
+		)
 		// We are not returning an error as this is very unlikely to be recoverable
 	}
 
+	scopedLogger.Debug("CNI DEL processing complete")
 	return nil
 }
 
@@ -838,24 +1020,30 @@ func (cmd *Cmd) Check(args *skel.CmdArgs) error {
 			fmt.Sprintf("unable to parse CNI configuration \"%s\": %v", string(args.StdinData), err))
 	}
 
-	if err := setupLogging(n); err != nil {
+	if err := cmd.setupLogging(n); err != nil {
 		return cniTypes.NewError(cniTypes.ErrInvalidNetworkConfig, "InvalidLoggingConfig",
 			fmt.Sprintf("unable to setup logging: %s", err))
 	}
 
-	logger := loggerWithArguments(log.WithField(logfields.EventUUID, uuid.New()), args)
+	scopedLogger := buildLogAttrsWithEventID(cmd.logger, args)
 
 	if n.EnableDebug {
 		if err := gops.Listen(gops.Options{}); err != nil {
-			log.WithError(err).Warn("Unable to start gops")
+			scopedLogger.Warn("Unable to start gops", logfields.Error, err)
 		} else {
 			defer gops.Close()
 		}
 	}
-	logger.WithField("netconf", logfields.Repr(n)).Debugf("Processing CNI CHECK request")
+	scopedLogger.Debug(
+		"Processing CNI CHECK request",
+		logfields.NetConf, n,
+	)
 
 	if n.PrevResult != nil {
-		logger.WithField("previousResult", logfields.Repr(n.PrevResult)).Debugf("CNI Previous result")
+		scopedLogger.Debug(
+			"CNI Previous result",
+			logfields.Previous, n.PrevResult,
+		)
 	}
 
 	cniArgs := &types.ArgsSpec{}
@@ -863,7 +1051,7 @@ func (cmd *Cmd) Check(args *skel.CmdArgs) error {
 		return cniTypes.NewError(cniTypes.ErrInvalidNetworkConfig, "InvalidArgs",
 			fmt.Sprintf("unable to extract CNI arguments: %s", err))
 	}
-	logger = loggerWithCNIArgs(logger, cniArgs)
+	scopedLogger = buildLogAttrsWithCNIArgs(scopedLogger, cniArgs)
 
 	c, err := client.NewDefaultClientWithTimeout(defaults.ClientConnectTimeout)
 	if err != nil {
@@ -874,10 +1062,10 @@ func (cmd *Cmd) Check(args *skel.CmdArgs) error {
 
 	// If this is a chained plugin, then "delegate" to the special chaining mode and be done
 	// Note: CHECK always has PrevResult set, so that doesn't tell us if we're chained.
-	if chainAction, err := getChainedAction(n, logger); chainAction != nil {
+	if chainAction, err := getChainedAction(n, scopedLogger); chainAction != nil {
 		var (
 			ctx = chainingapi.PluginContext{
-				Logger:  logger,
+				Logger:  scopedLogger,
 				Args:    args,
 				CniArgs: cniArgs,
 				NetConf: n,
@@ -886,10 +1074,17 @@ func (cmd *Cmd) Check(args *skel.CmdArgs) error {
 
 		// err is nil on success
 		err := chainAction.Check(context.TODO(), ctx, c)
-		logger.WithError(err).Debugf("Chained CHECK %s returned", n.Name)
+		scopedLogger.Debug(
+			"Chained CHECK returned",
+			logfields.Error, err,
+			logfields.Name, n.Name,
+		)
 		return err
 	} else if err != nil {
-		logger.WithError(err).Error("Invalid chaining mode")
+		scopedLogger.Error(
+			"Invalid chaining mode",
+			logfields.Error, err,
+		)
 		return err
 	}
 
@@ -904,7 +1099,10 @@ func (cmd *Cmd) Check(args *skel.CmdArgs) error {
 
 	// Ask the agent for the endpoint's health
 	eID := endpointid.NewCNIAttachmentID(args.ContainerID, args.IfName)
-	logger.WithField(logfields.EndpointID, eID).Debugf("Asking agent for healthz")
+	scopedLogger.Debug(
+		"Asking agent for healthz",
+		logfields.EndpointID, eID,
+	)
 	epHealth, err := c.EndpointHealthGet(eID)
 	if err != nil {
 		return cniTypes.NewError(types.CniErrHealthzGet, "HealthzFailed",
@@ -915,12 +1113,104 @@ func (cmd *Cmd) Check(args *skel.CmdArgs) error {
 		return cniTypes.NewError(types.CniErrUnhealthy, "Unhealthy",
 			"container is unhealthy in agent")
 	}
-	logger.Debugf("Container %s:%s has a healthy agent endpoint", args.ContainerID, args.IfName)
+	scopedLogger.Debug(
+		"Container has a healthy agent endpoint",
+		logfields.ContainerID, args.ContainerID,
+		logfields.ContainerInterface, args.IfName,
+	)
 
 	// Verify that the interface exists and has the desired IP address
 	// we can get the IP from the CNI previous result.
 	if err := verifyInterface(args.Netns, args.IfName, prevResult); err != nil {
 		return err
+	}
+
+	return nil
+}
+
+// Status implements the cni STATUS verb.
+// Currently, it
+//   - checks cilium-cni connectivity with cilium-agent using healthz endpoint
+//   - If cilium-cni depends on delegated plugins (host-local, azure etc) for IPAM,
+//     cilium-cni invokes the STATUS API of the delegated plugins and passes the result back.
+func (cmd *Cmd) Status(args *skel.CmdArgs) error {
+	n, err := types.LoadNetConf(args.StdinData)
+	if err != nil {
+		return cniTypes.NewError(cniTypes.ErrInvalidNetworkConfig, "InvalidNetworkConfig",
+			fmt.Sprintf("unable to parse CNI configuration \"%s\": %v", string(args.StdinData), err))
+	}
+
+	if err := cmd.setupLogging(n); err != nil {
+		return cniTypes.NewError(cniTypes.ErrInvalidNetworkConfig, "InvalidLoggingConfig",
+			fmt.Sprintf("unable to setup logging: %s", err))
+	}
+
+	scopedLogger := buildLogAttrsWithEventID(cmd.logger, args)
+
+	if n.EnableDebug {
+		if err := gops.Listen(gops.Options{}); err != nil {
+			scopedLogger.Warn("Unable to start gops", logfields.Error, err)
+		} else {
+			defer gops.Close()
+		}
+	}
+	scopedLogger.Debug("Processing CNI STATUS request", logfields.NetConf, n)
+
+	if n.PrevResult != nil {
+		scopedLogger.Debug("CNI Previous result", logfields.Previous, n.PrevResult)
+	}
+
+	cniArgs := &types.ArgsSpec{}
+	if err = cniTypes.LoadArgs(args.Args, cniArgs); err != nil {
+		return cniTypes.NewError(cniTypes.ErrInvalidNetworkConfig, "InvalidArgs",
+			fmt.Sprintf("unable to extract CNI arguments: %s", err))
+	}
+	scopedLogger = buildLogAttrsWithCNIArgs(scopedLogger, cniArgs)
+
+	c, err := client.NewDefaultClientWithTimeout(defaults.ClientConnectTimeout)
+	if err != nil {
+		// use ErrTryAgainLater to tell the runtime that this is not a check failure
+		return cniTypes.NewError(types.CniErrPluginNotAvailable, "DaemonDown",
+			fmt.Sprintf("unable to connect to Cilium agent: %s", client.Hint(err)))
+	}
+
+	// If this is a chained plugin, then "delegate" to the special chaining mode and be done
+	if chainAction, err := getChainedAction(n, scopedLogger); chainAction != nil {
+		var (
+			ctx = chainingapi.PluginContext{
+				Logger:  scopedLogger,
+				Args:    args,
+				CniArgs: cniArgs,
+				NetConf: n,
+			}
+		)
+
+		// err is nil on success
+		err := chainAction.Status(context.TODO(), ctx, c)
+		scopedLogger.Debug("Chained STATUS returned",
+			logfields.Error, err,
+			logfields.Name, n.Name,
+		)
+
+		return err
+	} else if err != nil {
+		scopedLogger.Error("Invalid chaining mode", logfields.Error, err)
+		return err
+	}
+
+	if _, err := c.Daemon.GetHealthz(daemon.NewGetHealthzParams()); err != nil {
+		return cniTypes.NewError(types.CniErrPluginNotAvailable, "DaemonHealthzFailed",
+			fmt.Sprintf("Cilium agent healthz check failed: %s", client.Hint(err)))
+	}
+	scopedLogger.Debug("Cilium agent is healthy")
+
+	if n.IPAM.Type != "" {
+		// If using a delegated plugin for IPAM, invoke the STATUS API of the delegated
+		// plugins and pass the result back.
+		err = cniInvoke.DelegateStatus(context.TODO(), n.IPAM.Type, args.StdinData, nil)
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -958,12 +1248,12 @@ func verifyInterface(netnsPinPath, ifName string, expected *cniTypesV1.Result) e
 	}
 	defer ns.Close()
 	return ns.Do(func() error {
-		link, err := netlink.LinkByName(ifName)
+		link, err := safenetlink.LinkByName(ifName)
 		if err != nil {
 			return fmt.Errorf("cannot find container link %v", ifName)
 		}
 
-		addrList, err := netlink.AddrList(link, netlink.FAMILY_ALL)
+		addrList, err := safenetlink.AddrList(link, netlink.FAMILY_ALL)
 		if err != nil {
 			return fmt.Errorf("failed to list link addresses: %w", err)
 		}
@@ -990,14 +1280,14 @@ func verifyInterface(netnsPinPath, ifName string, expected *cniTypesV1.Result) e
 // getChainedAction retrieves the desired chained action. It returns nil if there
 // is no chained action, and error if there is a configured chained action but it is
 // invalid.
-func getChainedAction(n *types.NetConf, logger *logrus.Entry) (chainingapi.ChainingPlugin, error) {
+func getChainedAction(n *types.NetConf, logger *slog.Logger) (chainingapi.ChainingPlugin, error) {
 	if n.ChainingMode != "" {
 		chainAction := chainingapi.Lookup(n.ChainingMode)
 		if chainAction == nil {
 			return nil, fmt.Errorf("invalid chaining-mode %s", n.ChainingMode)
 		}
 
-		logger.Infof("Using chained plugin %s", n.ChainingMode)
+		logger.Info("Using chained plugin", logfields.Mode, n.ChainingMode)
 		return chainAction, nil
 	}
 
@@ -1013,7 +1303,7 @@ func getChainedAction(n *types.NetConf, logger *logrus.Entry) (chainingapi.Chain
 			return nil, nil
 		}
 
-		logger.Infof("Using chained plugin %s", n.Name)
+		logger.Info("Using chained plugin", logfields.Name, n.Name)
 		return chainAction, nil
 	}
 
@@ -1021,19 +1311,66 @@ func getChainedAction(n *types.NetConf, logger *logrus.Entry) (chainingapi.Chain
 	return nil, nil
 }
 
-func loggerWithArguments(logger *logrus.Entry, args *skel.CmdArgs) *logrus.Entry {
-	return logger.WithFields(logrus.Fields{
-		logfields.ContainerID: args.ContainerID,
-		"netns":               args.Netns,
-		"ifName":              args.IfName,
-		"args":                args.Args,
-		logfields.Path:        args.Path,
-	})
+func buildLogAttrsWithEventID(logger *slog.Logger, args *skel.CmdArgs) *slog.Logger {
+	return logger.With(
+		logfields.EventUUID, uuid.New(),
+		logfields.ContainerID, args.ContainerID,
+		logfields.NetNSName, args.Netns,
+		logfields.Interface, args.IfName,
+		logfields.Args, args.Args,
+		logfields.Path, args.Path,
+	)
 }
 
-func loggerWithCNIArgs(logger *logrus.Entry, cniArgs *types.ArgsSpec) *logrus.Entry {
-	return logger.WithFields(logrus.Fields{
-		logfields.K8sNamespace: cniArgs.K8S_POD_NAMESPACE,
-		logfields.K8sPodName:   cniArgs.K8S_POD_NAME,
+func buildLogAttrsWithCNIArgs(logger *slog.Logger, cniArgs *types.ArgsSpec) *slog.Logger {
+	return logger.With(
+		logfields.K8sNamespace, cniArgs.K8S_POD_NAMESPACE,
+		logfields.K8sPodName, cniArgs.K8S_POD_NAME,
+	)
+}
+
+// needsEndpointRoutingOnHost returns true if extra routes/rules need to be installed
+// on host for the Pod. This is needed for following IPAM modes:
+// - Cloud ENI IPAM modes.
+// - DelegatedPlugin mode with InstallUplinkRoutesForDelegatedIPAM set to true.
+func needsEndpointRoutingOnHost(conf *models.DaemonConfigurationStatus) bool {
+	switch conf.IpamMode {
+	case ipamOption.IPAMENI, ipamOption.IPAMAzure, ipamOption.IPAMAlibabaCloud:
+		return true
+	case ipamOption.IPAMDelegatedPlugin:
+		return conf.InstallUplinkRoutesForDelegatedIPAM
+	}
+	return false
+}
+
+const (
+	// Based on recommendation in https://datatracker.ietf.org/doc/html/rfc4821.
+	mtuProbeBaseMSS = 1024
+	mtuProbeFloor   = 48
+)
+
+// configurePacketPathMTUDiscovery configures netns to use plpmtud for mtu discovery.
+// When using connection based transport protocols such as tcp, this adjusts message
+// size to discover a working MTU for network path in case of a black hole.
+func configurePacketizationLayerPMTUD(logger *slog.Logger, conf *models.DaemonConfigurationStatus, sysctl sysctl.Sysctl) {
+	// If empty just inherit host setting rather than overriding.
+	if conf.PacketizationLayerPMTUDMode == "" {
+		return
+	}
+
+	err := sysctl.ApplySettings([]tables.Sysctl{
+		{Name: []string{"net", "ipv4", "tcp_base_mss"}, Val: strconv.Itoa(mtuProbeBaseMSS)},
 	})
+	if err != nil {
+		logger.Warn("could not apply net.ipv4.tcp_base_mss setting for plmtud "+
+			"(note: this flag was only added in kernel version 5.11): %w", logfields.Error, err)
+	}
+	// Note: These setting apply to both IPv4 and IPv6.
+	if err = sysctl.ApplySettings([]tables.Sysctl{
+		{Name: []string{"net", "ipv4", "tcp_mtu_probing"}, Val: conf.PacketizationLayerPMTUDMode},
+		{Name: []string{"net", "ipv4", "tcp_mtu_probe_floor"}, Val: strconv.Itoa(mtuProbeFloor)},
+	}); err != nil {
+		logger.Warn("could not enable mtu probing",
+			logfields.Error, err)
+	}
 }

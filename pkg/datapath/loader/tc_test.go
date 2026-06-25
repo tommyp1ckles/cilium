@@ -7,11 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
-
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
+	"github.com/cilium/hive/hivetest"
+	"github.com/stretchr/testify/require"
 
+	"github.com/cilium/cilium/pkg/datapath/linux/safenetlink"
 	"github.com/cilium/cilium/pkg/testutils"
 	"github.com/cilium/cilium/pkg/testutils/netns"
 )
@@ -57,20 +58,21 @@ func mustTCProgramWithName(t *testing.T, name string) *ebpf.Program {
 	return p
 }
 
-func TestAttachDetachSKBProgramLegacy(t *testing.T) {
+func TestPrivilegedAttachDetachSKBProgramLegacy(t *testing.T) {
 	testutils.PrivilegedTest(t)
+	logger := hivetest.Logger(t)
 
 	ns := netns.NewNetNS(t)
 	ns.Do(func() error {
 		prog := mustTCProgram(t)
 		linkDir := testutils.TempBPFFS(t)
 
-		require.NoError(t, attachSKBProgram(lo, prog, "cil_test", linkDir, directionToParent(dirEgress), false))
+		require.NoError(t, attachSKBProgram(logger, lo, prog, "cil_test", linkDir, directionToParent(dirEgress), false))
 		hasFilters, err := hasCiliumTCFilters(lo, directionToParent(dirEgress))
 		require.NoError(t, err)
 		require.True(t, hasFilters)
 
-		require.NoError(t, detachSKBProgram(lo, "cil_test", linkDir, directionToParent(dirEgress)))
+		require.NoError(t, detachSKBProgram(logger, lo, "cil_test", linkDir, directionToParent(dirEgress)))
 		hasFilters, err = hasCiliumTCFilters(lo, directionToParent(dirEgress))
 		require.NoError(t, err)
 		require.False(t, hasFilters)
@@ -79,14 +81,15 @@ func TestAttachDetachSKBProgramLegacy(t *testing.T) {
 	})
 }
 
-func TestAttachDetachTCProgram(t *testing.T) {
+func TestPrivilegedAttachDetachTCProgram(t *testing.T) {
 	testutils.PrivilegedTest(t)
+	logger := hivetest.Logger(t)
 
 	ns := netns.NewNetNS(t)
 	ns.Do(func() error {
 		prog := mustTCProgram(t)
 
-		require.NoError(t, attachTCProgram(lo, prog, "cil_test", directionToParent(dirEgress)))
+		require.NoError(t, upsertTCProgram(logger, lo, prog, "cil_test", directionToParent(dirEgress), 1))
 		hasFilters, err := hasCiliumTCFilters(lo, directionToParent(dirEgress))
 		require.NoError(t, err)
 		require.True(t, hasFilters)
@@ -100,8 +103,9 @@ func TestAttachDetachTCProgram(t *testing.T) {
 	})
 }
 
-func TestHasCiliumTCFilters(t *testing.T) {
+func TestPrivilegedHasCiliumTCFilters(t *testing.T) {
 	testutils.PrivilegedTest(t)
+	logger := hivetest.Logger(t)
 
 	ns := netns.NewNetNS(t)
 	ns.Do(func() error {
@@ -112,7 +116,7 @@ func TestHasCiliumTCFilters(t *testing.T) {
 
 		prog := mustTCProgram(t)
 
-		err = attachTCProgram(lo, prog, "no_prefix_test", directionToParent(dirEgress))
+		err = upsertTCProgram(logger, lo, prog, "no_prefix_test", directionToParent(dirEgress), 1)
 		require.NoError(t, err)
 
 		// Test if function succeeds and return false if no filter with 'cil' prefix is attached
@@ -120,7 +124,7 @@ func TestHasCiliumTCFilters(t *testing.T) {
 		require.NoError(t, err)
 		require.False(t, hasFilters)
 
-		err = attachTCProgram(lo, prog, "cil_test", directionToParent(dirEgress))
+		err = upsertTCProgram(logger, lo, prog, "cil_test", directionToParent(dirEgress), 1)
 		require.NoError(t, err)
 
 		// Test if function succeeds and return true if filter with 'cil' prefix is attached
@@ -133,8 +137,9 @@ func TestHasCiliumTCFilters(t *testing.T) {
 }
 
 // Upgrade a legacy tc program to tcx.
-func TestAttachSKBUpgrade(t *testing.T) {
+func TestPrivilegedAttachSKBUpgrade(t *testing.T) {
 	testutils.PrivilegedTest(t)
+	logger := hivetest.Logger(t)
 
 	skipTCXUnsupported(t)
 
@@ -145,9 +150,9 @@ func TestAttachSKBUpgrade(t *testing.T) {
 
 		// Use the cil_ prefix so the attachment algorithm knows which tc filter to
 		// clean up after attaching tcx.
-		require.NoError(t, attachTCProgram(lo, prog, "cil_test", directionToParent(dirEgress)))
+		require.NoError(t, upsertTCProgram(logger, lo, prog, "cil_test", directionToParent(dirEgress), 1))
 
-		require.NoError(t, attachSKBProgram(lo, prog, "cil_test", linkDir, directionToParent(dirEgress), true))
+		require.NoError(t, attachSKBProgram(logger, lo, prog, "cil_test", linkDir, directionToParent(dirEgress), true))
 
 		hasFilters, err := hasCiliumTCFilters(lo, directionToParent(dirEgress))
 		require.NoError(t, err)
@@ -164,8 +169,9 @@ func TestAttachSKBUpgrade(t *testing.T) {
 }
 
 // Downgrade a tcx program to legacy tc.
-func TestAttachSKBDowngrade(t *testing.T) {
+func TestPrivilegedAttachSKBDowngrade(t *testing.T) {
 	testutils.PrivilegedTest(t)
+	logger := hivetest.Logger(t)
 
 	skipTCXUnsupported(t)
 
@@ -174,9 +180,9 @@ func TestAttachSKBDowngrade(t *testing.T) {
 		prog := mustTCProgramWithName(t, "cil_test")
 		linkDir := testutils.TempBPFFS(t)
 
-		require.NoError(t, upsertTCXProgram(lo, prog, "cil_test", linkDir, directionToParent(dirEgress)))
+		require.NoError(t, upsertTCXProgram(logger, lo, prog, "cil_test", linkDir, directionToParent(dirEgress)))
 
-		require.NoError(t, attachSKBProgram(lo, prog, "cil_test", linkDir, directionToParent(dirEgress), false))
+		require.NoError(t, attachSKBProgram(logger, lo, prog, "cil_test", linkDir, directionToParent(dirEgress), false))
 
 		hasFilters, err := hasCiliumTCFilters(lo, directionToParent(dirEgress))
 		require.NoError(t, err)
@@ -187,6 +193,28 @@ func TestAttachSKBDowngrade(t *testing.T) {
 			require.NoError(t, err)
 			return !hasLinks
 		}, time.Second))
+
+		return nil
+	})
+}
+
+func TestPrivilegedCleanupStaleTCFilters(t *testing.T) {
+	testutils.PrivilegedTest(t)
+	logger := hivetest.Logger(t)
+
+	netns.NewNetNS(t).Do(func() error {
+		prog := mustTCProgram(t)
+
+		// Attach 2 filters with a name that doesn't match the prefix, so they're
+		// not implicitly cleaned up.
+		require.NoError(t, upsertTCProgram(logger, lo, prog, "cil_test_1", directionToParent(dirEgress), 1))
+		require.NoError(t, upsertTCProgram(logger, lo, prog, "cil_test_2", directionToParent(dirEgress), 2))
+
+		filters, err := safenetlink.FilterList(lo, directionToParent(dirEgress))
+		require.NoError(t, err)
+		require.Len(t, filters, 1)
+
+		require.EqualValues(t, 2, filters[0].Attrs().Priority)
 
 		return nil
 	})

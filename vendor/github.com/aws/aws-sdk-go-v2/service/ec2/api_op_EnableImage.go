@@ -18,9 +18,9 @@ import (
 //
 // Only the AMI owner can re-enable a disabled AMI.
 //
-// For more information, see [Disable an AMI] in the Amazon EC2 User Guide.
+// For more information, see [Disable an Amazon EC2 AMI] in the Amazon EC2 User Guide.
 //
-// [Disable an AMI]: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/disable-an-ami.html
+// [Disable an Amazon EC2 AMI]: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/disable-an-ami.html
 func (c *Client) EnableImage(ctx context.Context, params *EnableImageInput, optFns ...func(*Options)) (*EnableImageOutput, error) {
 	if params == nil {
 		params = &EnableImageInput{}
@@ -97,13 +97,16 @@ func (c *Client) addOperationEnableImageMiddlewares(stack *middleware.Stack, opt
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
+	if err = addRetry(stack, options, c); err != nil {
 		return err
 	}
 	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
 	if err = addRecordResponseTiming(stack); err != nil {
+		return err
+	}
+	if err = addSpanRetryLoop(stack, options); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -118,10 +121,10 @@ func (c *Client) addOperationEnableImageMiddlewares(stack *middleware.Stack, opt
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
-	if err = addTimeOffsetBuild(stack, c); err != nil {
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
-	if err = addUserAgentRetryMode(stack, options); err != nil {
+	if err = addCredentialSource(stack, options); err != nil {
 		return err
 	}
 	if err = addOpEnableImageValidationMiddleware(stack); err != nil {
@@ -143,6 +146,15 @@ func (c *Client) addOperationEnableImageMiddlewares(stack *middleware.Stack, opt
 		return err
 	}
 	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptBeforeRetryLoop(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptAttempt(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil

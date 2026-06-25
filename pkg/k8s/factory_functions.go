@@ -6,13 +6,12 @@ package k8s
 import (
 	"fmt"
 
-	v1 "k8s.io/api/core/v1"
-	networkingv1 "k8s.io/api/networking/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8sTypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
 
 	cilium_v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	cilium_v2alpha1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
-	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	"github.com/cilium/cilium/pkg/k8s/types"
 )
@@ -28,92 +27,6 @@ func AnnotationsEqual(relevantAnnotations []string, anno1, anno2 map[string]stri
 	return true
 }
 
-func ConvertToK8sV1ServicePorts(slimPorts []slim_corev1.ServicePort) []v1.ServicePort {
-	if slimPorts == nil {
-		return nil
-	}
-
-	ports := make([]v1.ServicePort, 0, len(slimPorts))
-	for _, port := range slimPorts {
-		ports = append(ports,
-			v1.ServicePort{
-				Name:     port.Name,
-				Protocol: v1.Protocol(port.Protocol),
-				Port:     port.Port,
-				NodePort: port.NodePort,
-			},
-		)
-	}
-	return ports
-}
-
-func ConvertToK8sV1ServiceAffinityConfig(saCfg *slim_corev1.SessionAffinityConfig) *v1.SessionAffinityConfig {
-	if saCfg == nil {
-		return nil
-	}
-
-	if saCfg.ClientIP == nil {
-		return &v1.SessionAffinityConfig{}
-	}
-
-	return &v1.SessionAffinityConfig{
-		ClientIP: &v1.ClientIPConfig{
-			TimeoutSeconds: saCfg.ClientIP.TimeoutSeconds,
-		},
-	}
-}
-
-func ConvertToK8sV1LoadBalancerIngress(slimLBIngs []slim_corev1.LoadBalancerIngress) []v1.LoadBalancerIngress {
-	if slimLBIngs == nil {
-		return nil
-	}
-
-	lbIngs := make([]v1.LoadBalancerIngress, 0, len(slimLBIngs))
-	for _, lbIng := range slimLBIngs {
-		var ports []v1.PortStatus
-		for _, port := range lbIng.Ports {
-			ports = append(ports, v1.PortStatus{
-				Port:     port.Port,
-				Protocol: v1.Protocol(port.Protocol),
-				Error:    port.Error,
-			})
-		}
-		lbIngs = append(lbIngs,
-			v1.LoadBalancerIngress{
-				IP:       lbIng.IP,
-				Hostname: lbIng.Hostname,
-				Ports:    ports,
-			},
-		)
-	}
-	return lbIngs
-}
-
-func ConvertToNetworkV1IngressLoadBalancerIngress(slimLBIngs []slim_corev1.LoadBalancerIngress) []networkingv1.IngressLoadBalancerIngress {
-	if slimLBIngs == nil {
-		return nil
-	}
-
-	ingLBIngs := make([]networkingv1.IngressLoadBalancerIngress, 0, len(slimLBIngs))
-	for _, lbIng := range slimLBIngs {
-		ports := make([]networkingv1.IngressPortStatus, 0, len(lbIng.Ports))
-		for _, port := range lbIng.Ports {
-			ports = append(ports, networkingv1.IngressPortStatus{
-				Port:     port.Port,
-				Protocol: v1.Protocol(port.Protocol),
-				Error:    port.Error,
-			})
-		}
-		ingLBIngs = append(ingLBIngs,
-			networkingv1.IngressLoadBalancerIngress{
-				IP:       lbIng.IP,
-				Hostname: lbIng.Hostname,
-				Ports:    ports,
-			})
-	}
-	return ingLBIngs
-}
-
 // TransformToCCNP transforms a *cilium_v2.CiliumClusterwideNetworkPolicy into a
 // *types.SlimCNP without the Status field of the given CNP, or a
 // cache.DeletedFinalStateUnknown into a cache.DeletedFinalStateUnknown with a
@@ -122,7 +35,7 @@ func ConvertToNetworkV1IngressLoadBalancerIngress(slimLBIngs []slim_corev1.LoadB
 // in its Obj, obj is returned without any transformations. If the given obj can't be
 // cast into either *cilium_v2.CiliumClusterwideNetworkPolicy nor
 // cache.DeletedFinalStateUnknown, an error is returned.
-func TransformToCCNP(obj interface{}) (interface{}, error) {
+func TransformToCCNP(obj any) (any, error) {
 	switch concreteObj := obj.(type) {
 	case *cilium_v2.CiliumClusterwideNetworkPolicy:
 		return &types.SlimCNP{
@@ -170,7 +83,7 @@ func TransformToCCNP(obj interface{}) (interface{}, error) {
 // *types.SlimCNP in its Obj, obj is returned without any transformations.
 // If the given obj can't be cast into either *cilium_v2.CiliumNetworkPolicy
 // nor cache.DeletedFinalStateUnknown, an error is returned.
-func TransformToCNP(obj interface{}) (interface{}, error) {
+func TransformToCNP(obj any) (any, error) {
 	switch concreteObj := obj.(type) {
 	case *cilium_v2.CiliumNetworkPolicy:
 		return &types.SlimCNP{
@@ -207,49 +120,6 @@ func TransformToCNP(obj interface{}) (interface{}, error) {
 	}
 }
 
-func convertToAddress(v1Addrs []v1.NodeAddress) []slim_corev1.NodeAddress {
-	if v1Addrs == nil {
-		return nil
-	}
-
-	addrs := make([]slim_corev1.NodeAddress, 0, len(v1Addrs))
-	for _, addr := range v1Addrs {
-		addrs = append(
-			addrs,
-			slim_corev1.NodeAddress{
-				Type:    slim_corev1.NodeAddressType(addr.Type),
-				Address: addr.Address,
-			},
-		)
-	}
-	return addrs
-}
-
-func convertToTaints(v1Taints []v1.Taint) []slim_corev1.Taint {
-	if v1Taints == nil {
-		return nil
-	}
-
-	taints := make([]slim_corev1.Taint, 0, len(v1Taints))
-	for _, taint := range v1Taints {
-		var ta *slim_metav1.Time
-		if taint.TimeAdded != nil {
-			t := slim_metav1.NewTime(taint.TimeAdded.Time)
-			ta = &t
-		}
-		taints = append(
-			taints,
-			slim_corev1.Taint{
-				Key:       taint.Key,
-				Value:     taint.Value,
-				Effect:    slim_corev1.TaintEffect(taint.Effect),
-				TimeAdded: ta,
-			},
-		)
-	}
-	return taints
-}
-
 // TransformToCiliumEndpoint transforms a *cilium_v2.CiliumEndpoint into a
 // *types.CiliumEndpoint or a cache.DeletedFinalStateUnknown into a
 // cache.DeletedFinalStateUnknown with a *types.CiliumEndpoint in its Obj.
@@ -257,7 +127,7 @@ func convertToTaints(v1Taints []v1.Taint) []slim_corev1.Taint {
 // a *types.CiliumEndpoint in its Obj, obj is returned without any transformations.
 // If the given obj can't be cast into either *cilium_v2.CiliumEndpoint nor
 // cache.DeletedFinalStateUnknown, an error is returned.
-func TransformToCiliumEndpoint(obj interface{}) (interface{}, error) {
+func TransformToCiliumEndpoint(obj any) (any, error) {
 	switch concreteObj := obj.(type) {
 	case *cilium_v2.CiliumEndpoint:
 		return &types.CiliumEndpoint{
@@ -274,14 +144,17 @@ func TransformToCiliumEndpoint(obj interface{}) (interface{}, error) {
 				// they are not used by the CEP handlers.
 				Labels:      nil,
 				Annotations: nil,
+				// OwnerReferences is needed for ztunnel xDS to extract Pod UID.
+				OwnerReferences: slim_metav1.SlimOwnerReferences(concreteObj.ObjectMeta.OwnerReferences),
 			},
 			Encryption: func() *cilium_v2.EncryptionSpec {
 				enc := concreteObj.Status.Encryption
 				return &enc
 			}(),
-			Identity:   concreteObj.Status.Identity,
-			Networking: concreteObj.Status.Networking,
-			NamedPorts: concreteObj.Status.NamedPorts,
+			Identity:       concreteObj.Status.Identity,
+			Networking:     concreteObj.Status.Networking,
+			NamedPorts:     concreteObj.Status.NamedPorts,
+			ServiceAccount: concreteObj.Status.ServiceAccount,
 		}, nil
 	case *types.CiliumEndpoint:
 		return obj, nil
@@ -309,14 +182,17 @@ func TransformToCiliumEndpoint(obj interface{}) (interface{}, error) {
 					// they are not used by the CEP handlers.
 					Labels:      nil,
 					Annotations: nil,
+					// OwnerReferences is needed for ztunnel xDS to extract Pod UID.
+					OwnerReferences: slim_metav1.SlimOwnerReferences(ciliumEndpoint.ObjectMeta.OwnerReferences),
 				},
 				Encryption: func() *cilium_v2.EncryptionSpec {
 					enc := ciliumEndpoint.Status.Encryption
 					return &enc
 				}(),
-				Identity:   ciliumEndpoint.Status.Identity,
-				Networking: ciliumEndpoint.Status.Networking,
-				NamedPorts: ciliumEndpoint.Status.NamedPorts,
+				Identity:       ciliumEndpoint.Status.Identity,
+				Networking:     ciliumEndpoint.Status.Networking,
+				NamedPorts:     ciliumEndpoint.Status.NamedPorts,
+				ServiceAccount: ciliumEndpoint.Status.ServiceAccount,
 			},
 		}, nil
 	default:
@@ -338,20 +214,43 @@ func ConvertCEPToCoreCEP(cep *cilium_v2.CiliumEndpoint) *cilium_v2alpha1.CoreCil
 		identityID = cep.Status.Identity.ID
 	}
 	return &cilium_v2alpha1.CoreCiliumEndpoint{
-		Name:       cep.GetName(),
-		Networking: epNetworking,
-		Encryption: cep.Status.Encryption,
-		IdentityID: identityID,
-		NamedPorts: cep.Status.NamedPorts.DeepCopy(),
+		Name:           cep.GetName(),
+		IdentityID:     identityID,
+		PodUID:         getPodUIDFromOwnerRefs(cep.OwnerReferences),
+		Networking:     epNetworking,
+		Encryption:     cep.Status.Encryption,
+		NamedPorts:     cep.Status.NamedPorts.DeepCopy(),
+		ServiceAccount: cep.Status.ServiceAccount,
 	}
+}
+
+// getPodUIDFromOwnerRefs extracts the Pod UID from a list of OwnerReferences.
+func getPodUIDFromOwnerRefs(refs []metav1.OwnerReference) string {
+	for _, ref := range refs {
+		if ref.Kind == "Pod" {
+			return string(ref.UID)
+		}
+	}
+	return ""
 }
 
 // ConvertCoreCiliumEndpointToTypesCiliumEndpoint converts CoreCiliumEndpoint object to types.CiliumEndpoint.
 func ConvertCoreCiliumEndpointToTypesCiliumEndpoint(ccep *cilium_v2alpha1.CoreCiliumEndpoint, ns string) *types.CiliumEndpoint {
+	var ownerRefs []slim_metav1.OwnerReference
+	if ccep.PodUID != "" {
+		ownerRefs = []slim_metav1.OwnerReference{
+			{
+				Kind: "Pod",
+				UID:  k8sTypes.UID(ccep.PodUID),
+			},
+		}
+	}
+
 	return &types.CiliumEndpoint{
 		ObjectMeta: slim_metav1.ObjectMeta{
-			Name:      ccep.Name,
-			Namespace: ns,
+			Name:            ccep.Name,
+			Namespace:       ns,
+			OwnerReferences: ownerRefs,
 		},
 		Encryption: func() *cilium_v2.EncryptionSpec {
 			enc := ccep.Encryption
@@ -360,7 +259,8 @@ func ConvertCoreCiliumEndpointToTypesCiliumEndpoint(ccep *cilium_v2alpha1.CoreCi
 		Identity: &cilium_v2.EndpointIdentity{
 			ID: ccep.IdentityID,
 		},
-		Networking: ccep.Networking,
-		NamedPorts: ccep.NamedPorts,
+		Networking:     ccep.Networking,
+		NamedPorts:     ccep.NamedPorts,
+		ServiceAccount: ccep.ServiceAccount,
 	}
 }

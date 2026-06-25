@@ -5,25 +5,23 @@ package sock
 
 import (
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"strings"
-
-	"github.com/sirupsen/logrus"
-	"go4.org/netipx"
 
 	flowpb "github.com/cilium/cilium/api/v1/flow"
 	"github.com/cilium/cilium/pkg/hubble/parser/common"
 	"github.com/cilium/cilium/pkg/hubble/parser/errors"
 	"github.com/cilium/cilium/pkg/hubble/parser/getters"
+	"github.com/cilium/cilium/pkg/hubble/parser/options"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/monitor"
 	monitorAPI "github.com/cilium/cilium/pkg/monitor/api"
-	"github.com/cilium/cilium/pkg/option"
 )
 
 // Parser is a parser for SockTraceNotify payloads
 type Parser struct {
-	log            logrus.FieldLogger
+	log            *slog.Logger
 	endpointGetter getters.EndpointGetter
 	identityGetter getters.IdentityGetter
 	dnsGetter      getters.DNSGetter
@@ -32,28 +30,44 @@ type Parser struct {
 	cgroupGetter   getters.PodMetadataGetter
 	epResolver     *common.EndpointResolver
 
+	traceSockNotifyDecoder options.TraceSockNotifyDecoderFunc
+
 	skipUnknownCGroupIDs bool
 }
 
 // New creates a new parser
-func New(log logrus.FieldLogger,
+func New(log *slog.Logger,
 	endpointGetter getters.EndpointGetter,
 	identityGetter getters.IdentityGetter,
 	dnsGetter getters.DNSGetter,
 	ipGetter getters.IPGetter,
 	serviceGetter getters.ServiceGetter,
 	cgroupGetter getters.PodMetadataGetter,
+	opts ...options.Option,
 ) (*Parser, error) {
+	args := &options.Options{
+		SkipUnknownCGroupIDs: true,
+		TraceSockNotifyDecoder: func(data []byte, decoded *flowpb.Flow) (*monitor.TraceSockNotify, error) {
+			sock := &monitor.TraceSockNotify{}
+			return sock, sock.Decode(data)
+		},
+	}
+
+	for _, opt := range opts {
+		opt(args)
+	}
+
 	return &Parser{
-		log:                  log,
-		endpointGetter:       endpointGetter,
-		identityGetter:       identityGetter,
-		dnsGetter:            dnsGetter,
-		ipGetter:             ipGetter,
-		serviceGetter:        serviceGetter,
-		cgroupGetter:         cgroupGetter,
-		epResolver:           common.NewEndpointResolver(log, endpointGetter, identityGetter, ipGetter),
-		skipUnknownCGroupIDs: option.Config.HubbleSkipUnknownCGroupIDs,
+		log:                    log,
+		endpointGetter:         endpointGetter,
+		identityGetter:         identityGetter,
+		dnsGetter:              dnsGetter,
+		ipGetter:               ipGetter,
+		serviceGetter:          serviceGetter,
+		cgroupGetter:           cgroupGetter,
+		epResolver:             common.NewEndpointResolver(log, endpointGetter, identityGetter, ipGetter),
+		traceSockNotifyDecoder: args.TraceSockNotifyDecoder,
+		skipUnknownCGroupIDs:   args.SkipUnknownCGroupIDs,
 	}, nil
 }
 
@@ -69,8 +83,8 @@ func (p *Parser) Decode(data []byte, decoded *flowpb.Flow) error {
 		return errors.NewErrInvalidType(eventType)
 	}
 
-	sock := &monitor.TraceSockNotify{}
-	if err := monitor.DecodeTraceSockNotify(data, sock); err != nil {
+	sock, err := p.traceSockNotifyDecoder(data, decoded)
+	if err != nil {
 		return fmt.Errorf("failed to parse sock trace event: %w", err)
 	}
 
@@ -84,9 +98,8 @@ func (p *Parser) Decode(data []byte, decoded *flowpb.Flow) error {
 	}
 	srcPort := uint16(0) // source port is not known for TraceSock events
 
-	// Ignore invalid IPs - getters will handle invalid values.
-	// IPs can be empty for Ethernet-only packets.
-	dstIP, _ := netipx.FromStdIP(sock.IP())
+	// IPs can be zero for Ethernet-only packets.
+	dstIP := sock.IP()
 	dstPort := sock.DstPort
 
 	datapathContext := common.DatapathContext{
@@ -134,25 +147,31 @@ func decodeIPVersion(flags uint8) flowpb.IPVersion {
 func (p *Parser) decodeEndpointIP(cgroupId uint64, ipVersion flowpb.IPVersion) netip.Addr {
 	if p.cgroupGetter != nil {
 		if m := p.cgroupGetter.GetPodMetadataForContainer(cgroupId); m != nil {
-			scopedLog := p.log.WithFields(logrus.Fields{
-				logfields.CGroupID:     cgroupId,
-				logfields.K8sPodName:   m.Name,
-				logfields.K8sNamespace: m.Namespace,
-			})
-
 			for _, podIP := range m.IPs {
 				isIPv6 := strings.Contains(podIP, ":")
 				if isIPv6 && ipVersion == flowpb.IPVersion_IPv6 ||
 					!isIPv6 && ipVersion == flowpb.IPVersion_IPv4 {
 					ip, err := netip.ParseAddr(podIP)
 					if err != nil {
-						scopedLog.WithField(logfields.IPAddr, podIP).WithError(err).Debug("failed to parse pod IP")
+						p.log.Debug(
+							"failed to parse pod IP",
+							logfields.Error, err,
+							logfields.CGroupID, cgroupId,
+							logfields.K8sPodName, m.Name,
+							logfields.K8sNamespace, m.Namespace,
+							logfields.IPAddr, podIP,
+						)
 						return netip.Addr{}
 					}
 					return ip
 				}
 			}
-			scopedLog.Debug("no matching IP for pod")
+			p.log.Debug(
+				"no matching IP for pod",
+				logfields.CGroupID, cgroupId,
+				logfields.K8sPodName, m.Name,
+				logfields.K8sNamespace, m.Namespace,
+			)
 		}
 	}
 	return netip.Addr{}

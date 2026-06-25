@@ -4,8 +4,9 @@
 package mtu
 
 import (
-	"context"
+	"fmt"
 	"log/slog"
+	"strconv"
 
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/job"
@@ -13,41 +14,51 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/cilium/cilium/daemon/cmd/cni"
+	"github.com/cilium/cilium/daemon/k8s"
+	ipsec "github.com/cilium/cilium/pkg/datapath/linux/ipsec/types"
 	"github.com/cilium/cilium/pkg/datapath/tables"
 	"github.com/cilium/cilium/pkg/datapath/tunnel"
-	"github.com/cilium/cilium/pkg/datapath/types"
-	"github.com/cilium/cilium/pkg/node"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
+	wgTypes "github.com/cilium/cilium/pkg/wireguard/types"
 )
 
 var Cell = cell.Module(
 	"mtu",
 	"MTU discovery",
 
-	cell.Provide(newForCell),
+	cell.ProvidePrivate(NewMTUTable),
+	cell.Provide(
+		statedb.RWTable[RouteMTU].ToTable,
+		newForCell,
+	),
+	cell.Invoke(newEndpointUpdater),
 	cell.Config(defaultConfig),
 )
 
 type MTU interface {
 	GetDeviceMTU() int
 	GetRouteMTU() int
-	GetRoutePostEncryptMTU() int
 	IsEnableRouteMTUForCNIChaining() bool
+	// PacketizationLayerPMTUDMode returns valid plpmtud mode as string (empty means: do not set).
+	PacketizationLayerPMTUDMode() string
 }
 
 type mtuParams struct {
 	cell.In
 
-	LocalNode    *node.LocalNodeStore
-	IPsec        types.IPsecKeyCustodian
+	IPsec        ipsec.Agent
 	CNI          cni.CNIConfigManager
 	TunnelConfig tunnel.Config
 
-	DB          *statedb.DB
-	Devices     statedb.Table[*tables.Device]
-	JobRegistry job.Registry
-	Health      cell.Health
-	Log         *slog.Logger
+	DB              *statedb.DB
+	MTUTable        statedb.RWTable[RouteMTU]
+	Devices         statedb.Table[*tables.Device]
+	JobGroup        job.Group
+	Log             *slog.Logger
+	DaemonConfig    *option.DaemonConfig
+	LocalCiliumNode k8s.LocalCiliumNodeResource
+	WgConfig        wgTypes.Config
 
 	Config Config
 }
@@ -55,53 +66,158 @@ type mtuParams struct {
 type Config struct {
 	// Enable route MTU for pod netns when CNI chaining is used
 	EnableRouteMTUForCNIChaining bool
+	MTU                          int
+	// PacketizationLayerPMTUDMode configures kernel packetization layer path mtu discovery on Pod netns.
+	PacketizationLayerPMTUDMode string
 }
 
 var defaultConfig = Config{
 	EnableRouteMTUForCNIChaining: false,
+	MTU:                          0,
+	PacketizationLayerPMTUDMode:  plpmtudModeDisabled.String(),
 }
 
 func (c Config) Flags(flags *pflag.FlagSet) {
 	flags.Bool("enable-route-mtu-for-cni-chaining", c.EnableRouteMTUForCNIChaining, "Enable route MTU for pod netns when CNI chaining is used")
+	flags.Int("mtu", c.MTU, "Overwrite auto-detected MTU of underlying network")
+	flags.String("packetization-layer-pmtud-mode", plpmtudModeBlackhole.String(), "Enables kernel packetization layer path mtu discovery on Pod netns (if empty will use host setting)")
 }
 
-func newForCell(lc cell.Lifecycle, p mtuParams, cc Config) MTU {
+type plpmtudMode int
+
+func (m plpmtudMode) String() string {
+	switch m {
+	case plpmtudModeDisabled:
+		return "disabled"
+	case plpmtudModeBlackhole:
+		return "blackhole"
+	case plpmtudModeAlways:
+		return "always"
+	default:
+		return ""
+	}
+}
+
+const (
+	plpmtudModeDisabled  plpmtudMode = 0
+	plpmtudModeBlackhole plpmtudMode = 1
+	plpmtudModeAlways    plpmtudMode = 2
+)
+
+// parsePLPMTUDMode translates between valid config values (i.e. always, blackhole, disabled, unset)
+// and valid sysctl integer settings - expressed as strings (empty is do not set).
+func parsePLPMTUDMode(cc Config) (string, error) {
+	switch cc.PacketizationLayerPMTUDMode {
+	case plpmtudModeDisabled.String():
+		return strconv.Itoa(int(plpmtudModeDisabled)), nil
+	case plpmtudModeBlackhole.String():
+		return strconv.Itoa(int(plpmtudModeBlackhole)), nil
+	case plpmtudModeAlways.String():
+		return strconv.Itoa(int(plpmtudModeAlways)), nil
+	case "unset", "":
+		return "", nil
+	default:
+		return "", fmt.Errorf("packetization-layer-pmtud-mode value %q must be one of always, blackhole, disabled, unset (or empty)",
+			cc.PacketizationLayerPMTUDMode)
+	}
+}
+
+func newForCell(lc cell.Lifecycle, p mtuParams, cc Config) (MTU, error) {
+	plpmtudMode, err := parsePLPMTUDMode(cc)
+	if err != nil {
+		return nil, err
+	}
+
 	c := &Configuration{}
-	group := p.JobRegistry.NewGroup(p.Health)
-	lc.Append(group)
 	lc.Append(cell.Hook{
 		OnStart: func(ctx cell.HookContext) error {
-			node, err := p.LocalNode.Get(ctx)
-			if err != nil {
-				return err
-			}
-			externalIP := node.GetNodeIP(false)
-			if externalIP == nil {
-				externalIP = node.GetNodeIP(true)
-			}
-			configuredMTU := option.Config.MTU
-			if mtu := p.CNI.GetMTU(); mtu > 0 {
-				configuredMTU = mtu
-				log.WithField("mtu", configuredMTU).Info("Overwriting MTU based on CNI configuration")
-			}
-
+			tunnelOverIPv6 := option.Config.TunnelingEnabled() &&
+				p.TunnelConfig.UnderlayProtocol() == tunnel.IPv6
 			*c = NewConfiguration(
 				p.IPsec.AuthKeySize(),
-				option.Config.EnableIPSec,
+				p.IPsec.Enabled(),
 				p.TunnelConfig.ShouldAdaptMTU(),
-				option.Config.EnableWireguard,
-				option.Config.EnableHighScaleIPcache && option.Config.EnableNodePort,
-				configuredMTU,
-				externalIP,
-				cc.EnableRouteMTUForCNIChaining,
+				p.WgConfig.Enabled(),
+				tunnelOverIPv6,
 			)
 
-			group.Add(job.OneShot("detect-runtime-mtu-change", func(ctx context.Context, health cell.Health) error {
-				return detectRuntimeMTUChange(ctx, p, health, c.GetDeviceMTU())
-			}))
+			configuredMTU := cc.MTU
+			if mtu := p.CNI.GetMTU(); mtu > 0 {
+				configuredMTU = mtu
+				p.Log.Info("Overwriting MTU based on CNI configuration", logfields.MTU, configuredMTU)
+			}
+
+			if configuredMTU == 0 {
+				mgr := &MTUManager{
+					mtuParams:     p,
+					Config:        c,
+					localNodeInit: make(chan struct{}),
+				}
+
+				p.JobGroup.Add(job.OneShot("mtu-updater", mgr.Updater))
+				if mgr.needLocalCiliumNode() {
+					p.JobGroup.Add(job.Observer("local-cilium-node-observer", mgr.observeLocalCiliumNode, p.LocalCiliumNode))
+				}
+			} else {
+				p.Log.Info("Using configured MTU", logfields.MTU, configuredMTU)
+
+				txn := p.DB.WriteTxn(p.MTUTable)
+				defer txn.Abort()
+
+				rmtu := c.Calculate(configuredMTU)
+
+				rmtu.Prefix = DefaultPrefixV4
+				_, _, err := p.MTUTable.Insert(txn, rmtu)
+				if err != nil {
+					return err
+				}
+
+				rmtu.Prefix = DefaultPrefixV6
+				_, _, err = p.MTUTable.Insert(txn, rmtu)
+				if err != nil {
+					return err
+				}
+
+				txn.Commit()
+			}
 
 			return nil
 		},
 	})
-	return c
+
+	return &LatestMTUGetter{
+		tbl:                            p.MTUTable,
+		db:                             p.DB,
+		isEnableRouteMTUForCNIChaining: cc.EnableRouteMTUForCNIChaining,
+		packetizationLayerPMTUDMode:    plpmtudMode,
+	}, nil
+}
+
+var _ MTU = (*LatestMTUGetter)(nil)
+
+type LatestMTUGetter struct {
+	tbl                            statedb.Table[RouteMTU]
+	db                             *statedb.DB
+	isEnableRouteMTUForCNIChaining bool
+	packetizationLayerPMTUDMode    string
+}
+
+func (m *LatestMTUGetter) GetDeviceMTU() int {
+	rtx := m.db.ReadTxn()
+	mtu, _, _ := m.tbl.Get(rtx, MTURouteIndex.Query(DefaultPrefixV4))
+	return mtu.DeviceMTU
+}
+
+func (m *LatestMTUGetter) GetRouteMTU() int {
+	rtx := m.db.ReadTxn()
+	mtu, _, _ := m.tbl.Get(rtx, MTURouteIndex.Query(DefaultPrefixV4))
+	return mtu.RouteMTU
+}
+
+func (m *LatestMTUGetter) IsEnableRouteMTUForCNIChaining() bool {
+	return m.isEnableRouteMTUForCNIChaining
+}
+
+func (m *LatestMTUGetter) PacketizationLayerPMTUDMode() string {
+	return m.packetizationLayerPMTUDMode
 }

@@ -14,8 +14,8 @@ import (
 
 	"github.com/cilium/cilium/api/v1/models"
 	apiEndpoint "github.com/cilium/cilium/api/v1/server/restapi/endpoint"
-	"github.com/cilium/cilium/pkg/endpoint"
 	endpointid "github.com/cilium/cilium/pkg/endpoint/id"
+	endpointtypes "github.com/cilium/cilium/pkg/endpoint/types"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/ipam"
 	"github.com/cilium/cilium/pkg/labels"
@@ -23,22 +23,21 @@ import (
 	"github.com/cilium/cilium/pkg/testutils"
 )
 
-func getEPTemplate(t *testing.T, d *Daemon) *models.EndpointChangeRequest {
-	ip4, ip6, err := d.ipam.AllocateNext("", "test", ipam.PoolDefault())
-	require.Equal(t, nil, err)
+func getEPTemplate(t *testing.T, ipamManager *ipam.IPAM) *models.EndpointChangeRequest {
+	ip4, ip6, err := ipamManager.AllocateNext("", "test", ipam.PoolDefault())
+	require.NoError(t, err)
 	require.NotNil(t, ip4)
 	require.NotNil(t, ip6)
 
 	return &models.EndpointChangeRequest{
-		ContainerName: "foo",
-		State:         models.EndpointStateWaitingDashForDashIdentity.Pointer(),
+		State: models.EndpointStateWaitingDashForDashIdentity.Pointer(),
 		Addressing: &models.AddressPair{
-			IPV6: ip6.IP.String(),
-			IPV4: ip4.IP.String(),
+			IPv6: ip6.IP.String(),
+			IPv4: ip4.IP.String(),
 		},
-		Properties: map[string]interface{}{
-			endpoint.PropertySkipBPFRegeneration: true,
-			endpoint.PropertyFakeEndpoint:        true,
+		Properties: map[string]any{
+			endpointtypes.PropertySkipBPFRegeneration: true,
+			endpointtypes.PropertyFakeEndpoint:        true,
 		},
 	}
 }
@@ -51,10 +50,10 @@ func TestEndpointAddReservedLabelEtcd(t *testing.T) {
 func (ds *DaemonSuite) testEndpointAddReservedLabel(t *testing.T) {
 	assertOnMetric(t, string(models.EndpointStateWaitingDashForDashIdentity), 0)
 
-	epTemplate := getEPTemplate(t, ds.d)
+	epTemplate := getEPTemplate(t, ds.ipamManager)
 	epTemplate.Labels = []string{"reserved:world"}
-	_, code, err := ds.d.createEndpoint(context.TODO(), ds, epTemplate)
-	require.NotNil(t, err)
+	_, code, err := ds.endpointAPIManager.CreateEndpoint(context.TODO(), epTemplate)
+	require.Error(t, err)
 	require.Equal(t, apiEndpoint.PutEndpointIDInvalidCode, code)
 
 	// Endpoint was created with invalid data; should transition from
@@ -65,8 +64,8 @@ func (ds *DaemonSuite) testEndpointAddReservedLabel(t *testing.T) {
 	// Endpoint is created with initial label as well as disallowed
 	// reserved:world label.
 	epTemplate.Labels = append(epTemplate.Labels, "reserved:init")
-	_, code, err = ds.d.createEndpoint(context.TODO(), ds, epTemplate)
-	require.Condition(t, errorMatch(err, "not allowed to add reserved labels:.+"))
+	_, code, err = ds.endpointAPIManager.CreateEndpoint(context.TODO(), epTemplate)
+	require.ErrorContains(t, err, "not allowed to add reserved labels:")
 	require.Equal(t, apiEndpoint.PutEndpointIDInvalidCode, code)
 
 	// Endpoint was created with invalid data; should transition from
@@ -83,10 +82,10 @@ func TestEndpointAddInvalidLabelEtcd(t *testing.T) {
 func (ds *DaemonSuite) testEndpointAddInvalidLabel(t *testing.T) {
 	assertOnMetric(t, string(models.EndpointStateWaitingDashForDashIdentity), 0)
 
-	epTemplate := getEPTemplate(t, ds.d)
+	epTemplate := getEPTemplate(t, ds.ipamManager)
 	epTemplate.Labels = []string{"reserved:foo"}
-	_, code, err := ds.d.createEndpoint(context.TODO(), ds, epTemplate)
-	require.NotNil(t, err)
+	_, code, err := ds.endpointAPIManager.CreateEndpoint(context.TODO(), epTemplate)
+	require.Error(t, err)
 	require.Equal(t, apiEndpoint.PutEndpointIDInvalidCode, code)
 
 	// Endpoint was created with invalid data; should transition from
@@ -103,24 +102,19 @@ func TestEndpointAddNoLabelsEtcd(t *testing.T) {
 func (ds *DaemonSuite) testEndpointAddNoLabels(t *testing.T) {
 	assertOnMetric(t, string(models.EndpointStateWaitingDashForDashIdentity), 0)
 
-	// For this test case, we want to allow the endpoint controllers to rebuild
-	// the endpoint after getting new labels.
-	ds.OnQueueEndpointBuild = ds.d.QueueEndpointBuild
-
 	// Create the endpoint without any labels.
-	epTemplate := getEPTemplate(t, ds.d)
-	_, _, err := ds.d.createEndpoint(context.TODO(), ds, epTemplate)
-	require.Nil(t, err)
+	epTemplate := getEPTemplate(t, ds.ipamManager)
+	_, _, err := ds.endpointAPIManager.CreateEndpoint(context.TODO(), epTemplate)
+	require.NoError(t, err)
 
-	expectedLabels := labels.Labels{
-		labels.IDNameInit: labels.NewLabel(labels.IDNameInit, "", labels.LabelSourceReserved),
-	}
+	initLbl := labels.NewLabel(labels.IDNameInit, "", labels.LabelSourceReserved)
+	expectedLabels := []string{initLbl.String()}
 	// Check that the endpoint has the reserved:init label.
-	v4ip, err := netip.ParseAddr(epTemplate.Addressing.IPV4)
-	require.Nil(t, err)
-	ep, err := ds.d.endpointManager.Lookup(endpointid.NewIPPrefixID(v4ip))
-	require.Nil(t, err)
-	require.EqualValues(t, expectedLabels, ep.OpLabels.IdentityLabels())
+	v4ip, err := netip.ParseAddr(epTemplate.Addressing.IPv4)
+	require.NoError(t, err)
+	ep, err := ds.endpointManager.Lookup(endpointid.NewIPPrefixID(v4ip))
+	require.NoError(t, err)
+	require.Equal(t, expectedLabels, ep.GetOpLabels())
 
 	secID := ep.WaitForIdentity(3 * time.Second)
 	require.NotNil(t, secID)
@@ -135,8 +129,8 @@ func (ds *DaemonSuite) testEndpointAddNoLabels(t *testing.T) {
 
 func (ds *DaemonSuite) testUpdateSecLabels(t *testing.T) {
 	lbls := labels.NewLabelsFromModel([]string{"reserved:world"})
-	code, err := ds.d.modifyEndpointIdentityLabelsFromAPI("1", lbls, nil)
-	require.NotNil(t, err)
+	code, err := ds.endpointAPIManager.ModifyEndpointIdentityLabelsFromAPI("1", lbls, nil)
+	require.Error(t, err)
 	require.Equal(t, apiEndpoint.PatchEndpointIDLabelsUpdateFailedCode, code)
 }
 
@@ -150,8 +144,8 @@ func (ds *DaemonSuite) testUpdateLabelsFailed(t *testing.T) {
 	cancelFunc() // Cancel immediately to trigger the codepath to test.
 
 	// Create the endpoint without any labels.
-	epTemplate := getEPTemplate(t, ds.d)
-	_, _, err := ds.d.createEndpoint(cancelledContext, ds, epTemplate)
+	epTemplate := getEPTemplate(t, ds.ipamManager)
+	_, _, err := ds.endpointAPIManager.CreateEndpoint(cancelledContext, epTemplate)
 	require.ErrorContains(t, err, "request cancelled while resolving identity")
 
 	assertOnMetric(t, string(models.EndpointStateReady), 0)

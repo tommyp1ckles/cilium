@@ -4,13 +4,13 @@
 package types
 
 import (
+	"errors"
 	"fmt"
 
-	"github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
 
 	"github.com/cilium/cilium/pkg/defaults"
-	"github.com/cilium/cilium/pkg/logging/logfields"
+	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 )
 
 const (
@@ -47,29 +47,42 @@ func (def ClusterInfo) Flags(flags *pflag.FlagSet) {
 
 // Validate validates that the ClusterID is in the valid range (including ClusterID == 0),
 // and that the ClusterName is different from the default value if the ClusterID != 0.
-func (c ClusterInfo) Validate(log logrus.FieldLogger) error {
+func (c ClusterInfo) Validate() error {
 	if c.ID < ClusterIDMin || c.ID > ClusterIDMax {
 		return fmt.Errorf("invalid cluster id %d: must be in range %d..%d",
 			c.ID, ClusterIDMin, ClusterIDMax)
 	}
 
-	return c.validateName(log)
+	return c.validateName()
 }
 
 // ValidateStrict validates that the ClusterID is in the valid range, but not 0,
 // and that the ClusterName is different from the default value.
-func (c ClusterInfo) ValidateStrict(log logrus.FieldLogger) error {
+func (c ClusterInfo) ValidateStrict() error {
 	if err := ValidateClusterID(c.ID); err != nil {
 		return err
 	}
 
-	return c.validateName(log)
+	return c.validateName()
 }
 
-func (c ClusterInfo) validateName(log logrus.FieldLogger) error {
+// ValidateBuggyClusterID returns an error if a buggy cluster ID (i.e., with the
+// 7th bit set) is used in combination with ENI IPAM mode or AWS CNI chaining.
+func (c ClusterInfo) ValidateBuggyClusterID(ipamMode, chainingMode string) error {
+	if (c.ID&0x80) != 0 && (ipamMode == ipamOption.IPAMENI || ipamMode == ipamOption.IPAMAlibabaCloud || chainingMode == "aws-cni") {
+		return errors.New("Cilium is currently affected by a bug that causes traffic matched " +
+			"by network policies to be incorrectly dropped when running in either ENI mode (both " +
+			"AWS and AlibabaCloud) or AWS VPC CNI chaining mode, if the cluster ID is 128-255 (and " +
+			"384-511 when max-connected-clusters=511). " +
+			"Please refer to https://github.com/cilium/cilium/issues/21330 for additional details.")
+	}
+
+	return nil
+}
+
+func (c ClusterInfo) validateName() error {
 	if err := ValidateClusterName(c.Name); err != nil {
-		log.WithField(logfields.ClusterName, c.Name).WithError(err).
-			Error("Invalid cluster name. This may cause degraded functionality, and will be strictly forbidden starting from Cilium v1.17")
+		return fmt.Errorf("invalid cluster name: %w", err)
 	}
 
 	if c.ID != 0 && c.Name == defaults.ClusterName {
@@ -97,5 +110,114 @@ func (c ClusterInfo) ValidateRemoteConfig(config CiliumClusterConfig) error {
 		return fmt.Errorf("mismatched MaxConnectedClusters; local=%d, remote=%d", c.MaxConnectedClusters, config.Capabilities.MaxConnectedClusters)
 	}
 
+	switch config.Capabilities.EndpointSlicesExportMode {
+	case EndpointSlicesExportModeServicesOnly, EndpointSlicesExportModeServicesAndEndpointSlices, EndpointSlicesExportModeEndpointSlicesOnly:
+	default:
+		return fmt.Errorf("invalid EndpointSlicesExportMode %q", config.Capabilities.EndpointSlicesExportMode)
+	}
+
 	return nil
+}
+
+// QuirksConfig allows the user to configure how Cilium behaves when a set
+// of incompatible options are configured together into the agent.
+type QuirksConfig struct {
+	// AllowUnsafePolicySKBUsage determines whether to hard-fail startup
+	// due to detection of a configuration combination that may trigger
+	// connection impact in the dataplane due to clustermesh IDs
+	// conflicting with other usage of skb->mark field. See GH-21330.
+	AllowUnsafePolicySKBUsage bool
+}
+
+var DefaultQuirks = QuirksConfig{
+	AllowUnsafePolicySKBUsage: false,
+}
+
+func (_ QuirksConfig) Flags(flags *pflag.FlagSet) {
+	flags.Bool("allow-unsafe-policy-skb-usage", false,
+		"Allow the daemon to continue to operate even if conflicting "+
+			"clustermesh ID configuration is detected which may "+
+			"impact the ability for Cilium to enforce network "+
+			"policy both within and across clusters")
+	flags.MarkHidden("allow-unsafe-policy-skb-usage")
+}
+
+const PolicyAnyCluster = ""
+
+// PolicyConfig allows the user to configure config related to ClusterMesh and policies
+type PolicyConfig struct {
+	// PolicyDefaultLocalCluster control whether policy rules assume
+	// by default the local cluster if not explicitly selected
+	PolicyDefaultLocalCluster bool
+}
+
+var DefaultPolicyConfig = PolicyConfig{
+	PolicyDefaultLocalCluster: true,
+}
+
+func (p PolicyConfig) Flags(flags *pflag.FlagSet) {
+	flags.Bool(
+		"policy-default-local-cluster", p.PolicyDefaultLocalCluster,
+		"Control whether policy rules assume by default the local cluster if not explicitly selected",
+	)
+}
+
+// LocalClusterNameForPolicies returns what should be considered the local cluster
+// name in network policies
+func LocalClusterNameForPolicies(cfg PolicyConfig, localClusterName string) string {
+	if cfg.PolicyDefaultLocalCluster {
+		return localClusterName
+	} else {
+		return PolicyAnyCluster
+	}
+}
+
+type ServiceModeV2 string
+
+const (
+	ServiceV2PreferLegacy        ServiceModeV2 = "prefer-legacy"
+	ServiceV2PreferEndpointSlice ServiceModeV2 = "prefer-endpointslice"
+	ServiceV2OnlyEndpointSlice   ServiceModeV2 = "only-endpointslice"
+)
+
+func (m ServiceModeV2) String() string { return string(m) }
+
+func (m ServiceModeV2) ShouldWatchEndpointSlices() bool {
+	return m != ServiceV2PreferLegacy
+}
+
+func (m ServiceModeV2) ShouldWatchLegacyServices() bool {
+	return m == ServiceV2PreferLegacy
+}
+
+func (m ServiceModeV2) ShouldExportLegacyServices() bool {
+	return m != ServiceV2OnlyEndpointSlice
+}
+
+type ServiceModeV2Config struct {
+	// ServiceModeV2 is a configuration option to control the rollout of
+	// legacy services to endpoint slices in clustermesh.
+	ServiceModeV2 ServiceModeV2 `mapstructure:"clustermesh-service-v2"`
+}
+
+func (c ServiceModeV2Config) Flags(flags *pflag.FlagSet) {
+	flags.String("clustermesh-service-v2", c.ServiceModeV2.String(), "ClusterMesh service v2 rollout mode: prefer-legacy, prefer-endpointslice, or only-endpointslice")
+	flags.MarkHidden("clustermesh-service-v2")
+}
+
+func (c ServiceModeV2Config) Validate() error {
+	switch c.ServiceModeV2 {
+	case ServiceV2PreferLegacy, ServiceV2PreferEndpointSlice, ServiceV2OnlyEndpointSlice:
+		return nil
+	default:
+		return fmt.Errorf("invalid clustermesh-service-v2 %q: supported values are %q, %q, %q",
+			c.ServiceModeV2,
+			ServiceV2PreferLegacy,
+			ServiceV2PreferEndpointSlice,
+			ServiceV2OnlyEndpointSlice)
+	}
+}
+
+var DefaultServiceModeV2Config = ServiceModeV2Config{
+	ServiceModeV2: ServiceV2PreferLegacy,
 }

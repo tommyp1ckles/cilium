@@ -4,7 +4,6 @@
 package sysdump
 
 import (
-	"runtime"
 	"time"
 )
 
@@ -17,9 +16,11 @@ const (
 	DefaultCiliumEnvoyLabelSelector          = labelPrefix + "cilium-envoy"
 	DefaultCiliumOperatorLabelSelector       = "io.cilium/app=operator"
 	DefaultClustermeshApiserverLabelSelector = labelPrefix + "clustermesh-apiserver"
+	DefaultClustermeshCertgenLabelSelector   = labelPrefix + "clustermesh-apiserver-generate-certs"
 	DefaultCiliumNodeInitLabelSelector       = "app=cilium-node-init"
 	DefaultCiliumSpireAgentLabelSelector     = "app=spire-agent"
 	DefaultCiliumSpireServerLabelSelector    = "app=spire-server"
+	DefaultCollectLogsFromNotReadyAgents     = true
 	DefaultDebug                             = false
 	DefaultProfiling                         = true
 	DefaultTracing                           = false
@@ -52,8 +53,8 @@ const (
 )
 
 var (
-	// DefaultWorkerCount is initialized to the machine's available CPUs.
-	DefaultWorkerCount = runtime.NumCPU()
+	// DefaultWorkerCount is the default number of parallel workers for sysdump collection.
+	DefaultWorkerCount = 20
 
 	// DefaultCopyRetryLimit limits retries done while copying files from pods
 	DefaultCopyRetryLimit = 100

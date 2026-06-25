@@ -5,6 +5,7 @@ package ipam
 
 import (
 	"net"
+	"net/netip"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -12,11 +13,12 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/cilium/cilium/pkg/datapath/linux/route"
+	"github.com/cilium/cilium/pkg/datapath/linux/safenetlink"
 	"github.com/cilium/cilium/pkg/testutils"
 	"github.com/cilium/cilium/pkg/testutils/netns"
 )
 
-func Test_cleanupUnreachableRoutes(t *testing.T) {
+func TestPrivilegedCleanupUnreachableRoutes(t *testing.T) {
 	testutils.PrivilegedTest(t)
 
 	RegisterTestingT(t)
@@ -33,7 +35,7 @@ func Test_cleanupUnreachableRoutes(t *testing.T) {
 
 	getUnreachableRoutes := func(family int) []netlink.Route {
 		t.Helper()
-		routes, err := netlink.RouteListFiltered(family, &netlink.Route{
+		routes, err := safenetlink.RouteListFiltered(family, &netlink.Route{
 			Type: unix.RTN_UNREACHABLE,
 		}, netlink.RT_FILTER_TYPE)
 		Expect(err).ToNot(HaveOccurred())
@@ -52,7 +54,7 @@ func Test_cleanupUnreachableRoutes(t *testing.T) {
 			})
 			Expect(err).ToNot(HaveOccurred())
 		}
-		err := cleanupUnreachableRoutes("10.10.0.0/24")
+		err := cleanupUnreachableRoutes(netip.MustParsePrefix("10.10.0.0/24"))
 		Expect(err).ToNot(HaveOccurred())
 
 		// Ensure only first two IPv4 routes are cleaned up
@@ -62,13 +64,13 @@ func Test_cleanupUnreachableRoutes(t *testing.T) {
 		Expect(leftover[0].Dst).To(Equal(parseCIDR("10.20.0.1/32")))
 
 		// Remove remaining route
-		err = cleanupUnreachableRoutes("10.20.0.0/24")
+		err = cleanupUnreachableRoutes(netip.MustParsePrefix("10.20.0.0/24"))
 		Expect(err).ToNot(HaveOccurred())
 		leftover = getUnreachableRoutes(netlink.FAMILY_V4)
 		Expect(leftover).To(BeEmpty())
 
 		// Remove IPv6 routes
-		err = cleanupUnreachableRoutes("fe80::/16")
+		err = cleanupUnreachableRoutes(netip.MustParsePrefix("fe80::/16"))
 		Expect(err).ToNot(HaveOccurred())
 		leftover = getUnreachableRoutes(netlink.FAMILY_V6)
 		Expect(leftover).To(BeEmpty())

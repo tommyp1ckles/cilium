@@ -1,41 +1,25 @@
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 /* Copyright Authors of Cilium */
 
-#include "common.h"
 #include <bpf/ctx/unspec.h>
-#include <bpf/api.h>
+#include "common.h"
 #include "pktgen.h"
 
 #define ENABLE_IPV4 1
 #define ENABLE_IPV6 1
 #undef ENABLE_HEALTH_CHECK
-#define ENABLE_LOCAL_REDIRECT_POLICY 1
 #define ENABLE_SOCKET_LB_HOST_ONLY 1
-#define HAVE_NETNS_COOKIE 1
 
-/* Set a dummy value for netns cookie*/
-#ifdef ENDPOINT_NETNS_COOKIE
-    #undef ENDPOINT_NETNS_COOKIE
-#endif
-#define ENDPOINT_NETNS_COOKIE 5000
+#include "lib/bpf_lxc.h"
 
-#include <bpf_lxc.c>
+#define NETNS_COOKIE	5000
+
+ASSIGN_CONFIG(bool, enable_lrp, true)
+ASSIGN_CONFIG(__u64, endpoint_netns_cookie, NETNS_COOKIE)
+
 #include "lib/lb.h"
 #include "lib/ipcache.h"
 #include "lib/endpoint.h"
-
-#define FROM_CONTAINER 0
-
-struct {
-	__uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-	__uint(key_size, sizeof(__u32));
-	__uint(max_entries, 2);
-	__array(values, int());
-} entry_call_map __section(".maps") = {
-	.values = {
-		[FROM_CONTAINER] = &cil_from_container,
-	},
-};
 
 #define V4_SERVICE_IP		v4_svc_one
 #define SERVICE_PORT		tcp_svc_one
@@ -70,28 +54,25 @@ int  v4_local_backend_to_service_packetgen(struct __ctx_buff *ctx)
 SETUP("tc", "v4_local_redirect")
 int v4_local_backend_to_service_setup(struct __ctx_buff *ctx)
 {
-	lb_v4_add_service_with_flags(V4_SERVICE_IP, SERVICE_PORT, 1, 1,
+	lb_v4_add_service_with_flags(V4_SERVICE_IP, SERVICE_PORT, IPPROTO_TCP, 1, 1,
 				     SVC_FLAG_ROUTABLE, SVC_FLAG_LOCALREDIRECT);
 	lb_v4_add_backend(V4_SERVICE_IP, SERVICE_PORT, 1, 124,
 			  V4_BACKEND_IP, BACKEND_PORT, IPPROTO_TCP, 0);
 
-	/* Add the service in LB4_SKIP_MAP to skip service translation for request originating from the local backend */
+	/* Add the service in cilium_skip_lb4 to skip service translation for request originating from the local backend */
 	struct skip_lb4_key key = {
-		.netns_cookie = ENDPOINT_NETNS_COOKIE,
+		.netns_cookie = NETNS_COOKIE,
 		.address = V4_SERVICE_IP,
 		.port = SERVICE_PORT,
 	};
 	__u8 val = 0;
-	map_update_elem(&LB4_SKIP_MAP, &key, &val, BPF_ANY);
+	map_update_elem(&cilium_skip_lb4, &key, &val, BPF_ANY);
 
 	/* Add an IPCache entry for the backend pod */
 	ipcache_v4_add_entry(V4_BACKEND_IP, 0, 112233, 0, 0);
-	endpoint_v4_add_entry(V4_BACKEND_IP, 0, 0, 0, 0, NULL, NULL);
+	endpoint_v4_add_entry(V4_BACKEND_IP, 0, 0, 0, 0, 0, NULL, NULL);
 
-	/* Jump into the entrypoint */
-	tail_call_static(ctx, entry_call_map, FROM_CONTAINER);
-	/* Fail if we didn't jump */
-	return TEST_ERROR;
+	return pod_send_packet(ctx);
 }
 
 /* Test that sending a packet from a backend pod to its own service does not
@@ -107,6 +88,9 @@ int v4_local_backend_to_service_check(__maybe_unused const struct __ctx_buff *ct
 	struct tcphdr *l4;
 
 	test_init();
+
+	endpoint_v4_del_entry(V4_BACKEND_IP);
+
 	data = (void *)(long)ctx->data;
 	data_end = (void *)(long)ctx->data_end;
 	if (data + sizeof(__u32) > data_end)
@@ -162,36 +146,32 @@ int  v6_local_backend_to_service_packetgen(struct __ctx_buff *ctx)
 SETUP("tc", "v6_local_redirect")
 int v6_local_backend_to_service_setup(struct __ctx_buff *ctx)
 {
-	union v6addr service_ip = {};
-	union v6addr backend_ip = {};
+	union v6addr service_ip __align_stack_8 = {};
+	union v6addr backend_ip __align_stack_8 = {};
 
 	memcpy(service_ip.addr, (void *)V6_SERVICE_IP, 16);
 	memcpy(backend_ip.addr, (void *)V6_BACKEND_IP, 16);
 
-	lb_v6_add_service_with_flags(&service_ip, SERVICE_PORT, 1, 1,
+	lb_v6_add_service_with_flags(&service_ip, SERVICE_PORT, IPPROTO_TCP, 1, 1,
 				     SVC_FLAG_ROUTABLE, SVC_FLAG_LOCALREDIRECT);
 	lb_v6_add_backend(&service_ip, SERVICE_PORT, 1, 124, &backend_ip,
 			  BACKEND_PORT, IPPROTO_TCP, 0);
 
-
-	/* Add the service in LB6_SKIP_MAP to skip service translation for request originating from the local backend */
-	struct skip_lb6_key key = {
-		.netns_cookie = ENDPOINT_NETNS_COOKIE,
+	/* Add the service in cilium_skip_lb6 to skip service translation for request originating from the local backend */
+	struct skip_lb6_key key __align_stack_8 = {
+		.netns_cookie = NETNS_COOKIE,
 		.port = SERVICE_PORT,
 	};
 	__u8 val = 0;
 
 	memcpy(&key.address, (__u8 *)V6_SERVICE_IP, sizeof(V6_SERVICE_IP));
-	map_update_elem(&LB6_SKIP_MAP, &key, &val, BPF_ANY);
+	map_update_elem(&cilium_skip_lb6, &key, &val, BPF_ANY);
 
 	/* Add an IPCache entry for the backend pod */
 	ipcache_v6_add_entry(&backend_ip, 0, 112233, 0, 0);
 	endpoint_v6_add_entry(&backend_ip, 0, 0, 0, 0, NULL, NULL);
 
-	/* Jump into the entrypoint */
-	tail_call_static(ctx, entry_call_map, FROM_CONTAINER);
-	/* Fail if we didn't jump */
-	return TEST_ERROR;
+	return pod_send_packet(ctx);
 }
 
 CHECK("tc", "v6_local_redirect")

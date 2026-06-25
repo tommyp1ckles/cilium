@@ -64,20 +64,18 @@ var (
 		FromObject: func(obj *BandwidthQDisc) index.KeySet {
 			return index.NewKeySet(index.Int(obj.LinkIndex))
 		},
-		FromKey: index.Int,
-		Unique:  true,
+		FromKey:    index.Int,
+		FromString: index.IntString,
+		Unique:     true,
 	}
 
 	BandwidthQDiscTableName = "bandwidth-qdiscs"
 )
 
 func NewBandwidthQDiscTable(db *statedb.DB) (statedb.RWTable[*BandwidthQDisc], error) {
-	tbl, err := statedb.NewTable(
+	return statedb.NewTable(
+		db,
 		BandwidthQDiscTableName,
 		BandwidthQDiscIndex,
 	)
-	if err == nil {
-		err = db.RegisterTable(tbl)
-	}
-	return tbl, err
 }

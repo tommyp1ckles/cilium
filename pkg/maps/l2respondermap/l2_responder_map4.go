@@ -5,7 +5,7 @@ package l2respondermap
 
 import (
 	"fmt"
-	"net"
+	"log/slog"
 	"net/netip"
 	"unsafe"
 
@@ -30,15 +30,15 @@ type Map interface {
 	IterateWithCallback(cb IterateCallback) error
 }
 
-func NewMap(lifecycle cell.Lifecycle) (Map, error) {
-	return newMap(lifecycle, DefaultMaxEntries)
+func NewMap(lifecycle cell.Lifecycle, logger *slog.Logger) Map {
+	return newMap(lifecycle, DefaultMaxEntries, logger)
 }
 
 type l2ResponderMap struct {
 	*ebpf.Map
 }
 
-func newMap(lifecycle cell.Lifecycle, maxEntries int) (*l2ResponderMap, error) {
+func newMap(lifecycle cell.Lifecycle, maxEntries int, logger *slog.Logger) *l2ResponderMap {
 	outerMap := &l2ResponderMap{}
 
 	lifecycle.Append(cell.Hook{
@@ -48,8 +48,8 @@ func newMap(lifecycle cell.Lifecycle, maxEntries int) (*l2ResponderMap, error) {
 				err error
 			)
 
-			if m, err = ebpf.LoadRegisterMap(MapName); err != nil {
-				m = ebpf.NewMap(&ebpf.MapSpec{
+			if m, err = ebpf.LoadRegisterMap(logger, MapName); err != nil {
+				m = ebpf.NewMap(logger, &ebpf.MapSpec{
 					Name:       MapName,
 					Type:       ebpf.Hash,
 					KeySize:    uint32(unsafe.Sizeof(L2ResponderKey{})),
@@ -69,7 +69,7 @@ func newMap(lifecycle cell.Lifecycle, maxEntries int) (*l2ResponderMap, error) {
 		},
 	})
 
-	return outerMap, nil
+	return outerMap
 }
 
 // Create creates a new entry for the given IP and IfIndex tuple.
@@ -103,7 +103,7 @@ type IterateCallback func(*L2ResponderKey, *L2ResponderStats)
 // passing each key/value pair to the cb callback.
 func (m *l2ResponderMap) IterateWithCallback(cb IterateCallback) error {
 	return m.Map.IterateWithCallback(&L2ResponderKey{}, &L2ResponderStats{},
-		func(k, v interface{}) {
+		func(k, v any) {
 			key := k.(*L2ResponderKey)
 			value := v.(*L2ResponderStats)
 			cb(key, value)
@@ -113,14 +113,14 @@ func (m *l2ResponderMap) IterateWithCallback(cb IterateCallback) error {
 
 // L2ResponderKey implements the bpf.MapKey interface.
 //
-// Must be in sync with struct l2_responder_v4_key in <bpf/lib/maps.h>
+// Must be in sync with struct l2_responder_v4_key in <bpf/lib/l2_responder.h>
 type L2ResponderKey struct {
-	IP      types.IPv4 `align:"ip"`
+	IP      types.IPv4 `align:"ip4"`
 	IfIndex uint32     `align:"ifindex"`
 }
 
 func (k *L2ResponderKey) String() string {
-	return fmt.Sprintf("ip=%s, ifIndex=%d", net.IP(k.IP[:]), k.IfIndex)
+	return fmt.Sprintf("ip=%s, ifIndex=%d", k.IP, k.IfIndex)
 }
 
 func newL2ResponderKey(ip netip.Addr, ifIndex uint32) L2ResponderKey {
@@ -132,11 +132,11 @@ func newL2ResponderKey(ip netip.Addr, ifIndex uint32) L2ResponderKey {
 
 // L2ResponderStats implements the bpf.MapValue interface.
 //
-// Must be in sync with struct l2_responder_v4_stats in <bpf/lib/maps.h>
+// Must be in sync with struct l2_responder_stats in <bpf/lib/l2_responder.h>
 type L2ResponderStats struct {
 	ResponsesSent uint64 `align:"responses_sent"`
 }
 
 func (s *L2ResponderStats) String() string {
-	return fmt.Sprintf("responses_sent=%q", s.ResponsesSent)
+	return fmt.Sprintf("responses_sent=%d", s.ResponsesSent)
 }

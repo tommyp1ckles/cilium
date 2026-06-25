@@ -35,7 +35,7 @@ To run the tests in your local environment, execute the following command from t
 
 To run a single test, specify its name without extension. For example:
 
-    $ make run_bpf_tests BPF_TEST_FILE="xdp_nodeport_lb4_nat_lb"
+    $ make run_bpf_tests BPF_TEST="xdp_nodeport_lb4_nat_lb"
 
 Writing tests
 =============
@@ -61,6 +61,25 @@ failed(``test_fail()``, ``test_fail_now()``, ``test_fatal()``) or skipped(``test
 The name of the function has no significance for the tests themselves. The function names are still
 used as indicators in the kernel (at least the first 15 chars), used to populate tail call maps,
 and should be unique for the purposes of compilation.
+
+.. warning::
+
+    **Map Persistence Across Tests**
+
+    BPF maps are not cleared between ``CHECK`` programs in the same file.
+    Any map updates made in Test A will be visible to Test B.
+
+    If Test A updates a map entry (e.g. adds a tunnel endpoint), Test B will see
+    that entry. This allows for multi-stage testing where one test builds upon
+    the state of a previous one. However, if test isolation is intended clean up
+    map state or use unique data.
+
+.. note::
+
+    When a single ``.c`` file contains multiple tests, they are
+    executed in alphabetical order of the test names (the second argument to the
+    ``CHECK`` macro). This is important to consider if the tests have
+    dependencies on each other or on a shared state.
 
 .. code-block:: c
 
@@ -275,7 +294,7 @@ Mocking is easy with this framework:
 1. Create a function with a unique name and the same signature as the function it is replacing.
 
 2. Create a macro with the exact same name as the function we want to replace and point it to the
-   function created in step 1. For example ``#define original_function our_mocked_function```
+   function created in step 1. For example ``#define original_function our_mocked_function``
 
 3. Include the file which contains the definition we are replacing.
 

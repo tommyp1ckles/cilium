@@ -13,7 +13,7 @@ func TestLabelArrayListEquals(t *testing.T) {
 	list1 := LabelArrayList{
 		{
 			NewLabel("env", "devel", LabelSourceAny),
-			NewLabel("user", "bob", LabelSourceContainer),
+			NewLabel("user", "bob", LabelSourceK8s),
 		},
 		{
 			NewLabel("foo", "bar", LabelSourceAny),
@@ -22,7 +22,7 @@ func TestLabelArrayListEquals(t *testing.T) {
 	list2 := LabelArrayList{
 		{
 			NewLabel("env", "devel", LabelSourceAny),
-			NewLabel("user", "bob", LabelSourceContainer),
+			NewLabel("user", "bob", LabelSourceK8s),
 		},
 		{
 			NewLabel("foo", "bar", LabelSourceAny),
@@ -34,76 +34,76 @@ func TestLabelArrayListEquals(t *testing.T) {
 		},
 		{
 			NewLabel("env", "devel", LabelSourceAny),
-			NewLabel("user", "bob", LabelSourceContainer),
+			NewLabel("user", "bob", LabelSourceK8s),
 		},
 	}
 	list4 := LabelArrayList{
 		{
 			NewLabel("env", "devel", LabelSourceAny),
-			NewLabel("user", "bob", LabelSourceContainer),
+			NewLabel("user", "bob", LabelSourceK8s),
 		},
 	}
 	list5 := LabelArrayList(nil)
 	list6 := LabelArrayList{}
 
-	require.Equal(t, true, list1.Equals(list1))
-	require.Equal(t, true, list1.Equals(list2))
-	require.Equal(t, false, list1.Equals(list3))
-	require.Equal(t, false, list1.Equals(list4))
-	require.Equal(t, false, list1.Equals(list5))
-	require.Equal(t, false, list1.Equals(list6))
+	require.True(t, list1.Equals(list1))
+	require.True(t, list1.Equals(list2))
+	require.False(t, list1.Equals(list3))
+	require.False(t, list1.Equals(list4))
+	require.False(t, list1.Equals(list5))
+	require.False(t, list1.Equals(list6))
 
-	require.Equal(t, true, list2.Equals(list1))
-	require.Equal(t, true, list2.Equals(list2))
-	require.Equal(t, false, list2.Equals(list3))
-	require.Equal(t, false, list2.Equals(list4))
-	require.Equal(t, false, list2.Equals(list5))
-	require.Equal(t, false, list2.Equals(list6))
+	require.True(t, list2.Equals(list1))
+	require.True(t, list2.Equals(list2))
+	require.False(t, list2.Equals(list3))
+	require.False(t, list2.Equals(list4))
+	require.False(t, list2.Equals(list5))
+	require.False(t, list2.Equals(list6))
 
-	require.Equal(t, false, list3.Equals(list1))
-	require.Equal(t, false, list3.Equals(list2))
-	require.Equal(t, true, list3.Equals(list3))
-	require.Equal(t, false, list3.Equals(list4))
-	require.Equal(t, false, list3.Equals(list5))
-	require.Equal(t, false, list3.Equals(list6))
+	require.False(t, list3.Equals(list1))
+	require.False(t, list3.Equals(list2))
+	require.True(t, list3.Equals(list3))
+	require.False(t, list3.Equals(list4))
+	require.False(t, list3.Equals(list5))
+	require.False(t, list3.Equals(list6))
 
-	require.Equal(t, false, list4.Equals(list1))
-	require.Equal(t, false, list4.Equals(list2))
-	require.Equal(t, false, list4.Equals(list3))
-	require.Equal(t, true, list4.Equals(list4))
-	require.Equal(t, false, list4.Equals(list5))
-	require.Equal(t, false, list4.Equals(list6))
+	require.False(t, list4.Equals(list1))
+	require.False(t, list4.Equals(list2))
+	require.False(t, list4.Equals(list3))
+	require.True(t, list4.Equals(list4))
+	require.False(t, list4.Equals(list5))
+	require.False(t, list4.Equals(list6))
 
-	require.Equal(t, false, list5.Equals(list1))
-	require.Equal(t, false, list5.Equals(list2))
-	require.Equal(t, false, list5.Equals(list3))
-	require.Equal(t, false, list5.Equals(list4))
-	require.Equal(t, true, list5.Equals(list5))
-	require.Equal(t, true, list5.Equals(list6))
+	require.False(t, list5.Equals(list1))
+	require.False(t, list5.Equals(list2))
+	require.False(t, list5.Equals(list3))
+	require.False(t, list5.Equals(list4))
+	require.True(t, list5.Equals(list5))
+	require.True(t, list5.Equals(list6))
 
-	require.Equal(t, false, list6.Equals(list1))
-	require.Equal(t, false, list6.Equals(list2))
-	require.Equal(t, false, list6.Equals(list3))
-	require.Equal(t, false, list6.Equals(list4))
-	require.Equal(t, true, list6.Equals(list5))
-	require.Equal(t, true, list6.Equals(list6))
+	require.False(t, list6.Equals(list1))
+	require.False(t, list6.Equals(list2))
+	require.False(t, list6.Equals(list3))
+	require.False(t, list6.Equals(list4))
+	require.True(t, list6.Equals(list5))
+	require.True(t, list6.Equals(list6))
 }
 
 func TestLabelArrayListSort(t *testing.T) {
-	require.EqualValues(t, LabelArrayList(nil), LabelArrayList(nil).Sort())
-	require.EqualValues(t, LabelArrayList{}, LabelArrayList{}.Sort())
+	require.Equal(t, LabelArrayList(nil), LabelArrayList(nil).Sort())
+	require.Equal(t, LabelArrayList{}, LabelArrayList{}.Sort())
 
 	list1 := LabelArrayList{
 		{
 			NewLabel("env", "devel", LabelSourceAny),
-			NewLabel("user", "bob", LabelSourceContainer),
+			NewLabel("user", "bob", LabelSourceK8s),
 		},
 		{
 			NewLabel("aaa", "", LabelSourceReserved),
 		},
 		{
 			NewLabel("env", "devel", LabelSourceAny),
-			NewLabel("user", "bob", LabelSourceContainer),
+			NewLabel("user", "bob", LabelSourceK8s),
 			NewLabel("xyz", "", LabelSourceAny),
 		},
 		{
@@ -124,11 +124,11 @@ func TestLabelArrayListSort(t *testing.T) {
 		},
 		{
 			NewLabel("env", "devel", LabelSourceAny),
-			NewLabel("user", "bob", LabelSourceContainer),
+			NewLabel("user", "bob", LabelSourceK8s),
 		},
 		{
 			NewLabel("env", "devel", LabelSourceAny),
-			NewLabel("user", "bob", LabelSourceContainer),
+			NewLabel("user", "bob", LabelSourceK8s),
 			NewLabel("xyz", "", LabelSourceAny),
 		},
 		{
@@ -136,7 +136,7 @@ func TestLabelArrayListSort(t *testing.T) {
 		},
 	}
 
-	require.EqualValues(t, expected1, list1.Sort())
+	require.Equal(t, expected1, list1.Sort())
 
 	list2 := LabelArrayList{
 		{
@@ -160,14 +160,52 @@ func TestLabelArrayListSort(t *testing.T) {
 			NewLabel("env", "devel", LabelSourceAny),
 		},
 	}
-	require.EqualValues(t, expected2, list2.Sort())
+	require.Equal(t, expected2, list2.Sort())
+}
+
+func TestModelsFromLabelArrayListString(t *testing.T) {
+	arrayList := LabelArrayList{
+		nil,
+		{
+			NewLabel("aaa", "", LabelSourceReserved),
+		},
+		{
+			NewLabel("env", "devel", LabelSourceAny),
+		},
+		{
+			NewLabel("env", "devel", LabelSourceAny),
+			NewLabel("user", "bob", LabelSourceK8s),
+		},
+		{
+			NewLabel("env", "devel", LabelSourceAny),
+			NewLabel("user", "bob", LabelSourceK8s),
+			NewLabel("xyz", "", LabelSourceAny),
+		},
+		{
+			NewLabel("foo", "bar", LabelSourceAny),
+		},
+	}
+	expected := [][]string{
+		{""},
+		{"reserved:aaa"},
+		{"any:env=devel"},
+		{"any:env=devel", "k8s:user=bob"},
+		{"any:env=devel", "k8s:user=bob", "any:xyz"},
+		{"any:foo=bar"},
+	}
+
+	i := 0
+	for model := range ModelsFromLabelArrayListString(arrayList.ArrayListString()) {
+		require.Equal(t, expected[i], model)
+		i++
+	}
 }
 
 func TestLabelArrayListMergeSorted(t *testing.T) {
 	list1 := LabelArrayList{
 		{
 			NewLabel("env", "devel", LabelSourceAny),
-			NewLabel("user", "bob", LabelSourceContainer),
+			NewLabel("user", "bob", LabelSourceK8s),
 		},
 		{
 			NewLabel("foo", "bar", LabelSourceAny),
@@ -176,7 +214,7 @@ func TestLabelArrayListMergeSorted(t *testing.T) {
 	list2 := LabelArrayList{
 		{
 			NewLabel("env", "devel", LabelSourceAny),
-			NewLabel("user", "bob", LabelSourceContainer),
+			NewLabel("user", "bob", LabelSourceK8s),
 		},
 		{
 			NewLabel("foo", "bar", LabelSourceAny),
@@ -188,13 +226,13 @@ func TestLabelArrayListMergeSorted(t *testing.T) {
 		},
 		{
 			NewLabel("env", "devel", LabelSourceAny),
-			NewLabel("user", "bob", LabelSourceContainer),
+			NewLabel("user", "bob", LabelSourceK8s),
 		},
 	}
 	list4 := LabelArrayList{
 		{
 			NewLabel("env", "devel", LabelSourceAny),
-			NewLabel("user", "bob", LabelSourceContainer),
+			NewLabel("user", "bob", LabelSourceK8s),
 		},
 	}
 	list5 := LabelArrayList(nil)
@@ -202,14 +240,14 @@ func TestLabelArrayListMergeSorted(t *testing.T) {
 	list7 := LabelArrayList{
 		{
 			NewLabel("env", "prod", LabelSourceAny),
-			NewLabel("user", "alice", LabelSourceContainer),
+			NewLabel("user", "alice", LabelSourceK8s),
 		},
 	}
 
 	expected1 := LabelArrayList{
 		{
 			NewLabel("env", "devel", LabelSourceAny),
-			NewLabel("user", "bob", LabelSourceContainer),
+			NewLabel("user", "bob", LabelSourceK8s),
 		},
 		{
 			NewLabel("foo", "bar", LabelSourceAny),
@@ -231,11 +269,11 @@ func TestLabelArrayListMergeSorted(t *testing.T) {
 		{name: "two different lists", a: list1, b: list7, expected: LabelArrayList{
 			{
 				NewLabel("env", "devel", LabelSourceAny),
-				NewLabel("user", "bob", LabelSourceContainer),
+				NewLabel("user", "bob", LabelSourceK8s),
 			},
 			{
 				NewLabel("env", "prod", LabelSourceAny),
-				NewLabel("user", "alice", LabelSourceContainer),
+				NewLabel("user", "alice", LabelSourceK8s),
 			},
 			{
 				NewLabel("foo", "bar", LabelSourceAny),
@@ -248,13 +286,20 @@ func TestLabelArrayListMergeSorted(t *testing.T) {
 		a := tc.a.DeepCopy()
 		b := tc.b.DeepCopy()
 		a.Merge(b...)
-		require.EqualValues(t, tc.expected, a, tc.name)
-		require.EqualValues(t, a.Sort(), a, tc.name+" returned unsorted result")
+		require.Equal(t, tc.expected, a, tc.name)
+		require.Equal(t, a.Sort(), a, tc.name+" returned unsorted result")
 
 		a = tc.a.DeepCopy().Sort()
 		b = tc.b.DeepCopy().Sort()
+		as := a.ArrayListString()
+		bs := b.ArrayListString()
+
 		a.MergeSorted(b)
-		require.EqualValues(t, tc.expected, a, tc.name+" MergeSorted")
-		require.EqualValues(t, a.Sort(), a, tc.name+" MergeSorted returned unsorted result")
+		require.Equal(t, tc.expected, a, tc.name+" MergeSorted")
+		require.Equal(t, a.Sort(), a, tc.name+" MergeSorted returned unsorted result")
+
+		as = MergeSortedLabelArrayListStrings(as, bs)
+		require.Equal(t, tc.expected.ArrayListString(), as, tc.name+" MergeSortedLabelArrayListStrings")
+		require.Equal(t, a.Sort().ArrayListString(), as, tc.name+" MergeSortedLabelArrayListStrings returned unsorted result")
 	}
 }

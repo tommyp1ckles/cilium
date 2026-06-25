@@ -3,6 +3,7 @@ package netlink
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -22,6 +23,12 @@ const (
 	SCOPE_LINK     Scope = unix.RT_SCOPE_LINK
 	SCOPE_HOST     Scope = unix.RT_SCOPE_HOST
 	SCOPE_NOWHERE  Scope = unix.RT_SCOPE_NOWHERE
+)
+
+const (
+	// This is a workaround for missing constant in golang.org/x/sys/unix.
+	// Once it is added there, this should be removed.
+	RTA_NH_ID = 30
 )
 
 func (s Scope) String() string {
@@ -269,6 +276,7 @@ type SEG6LocalEncap struct {
 	Action   int
 	Segments []net.IP // from SRH in seg6_local_lwt
 	Table    int      // table id for End.T and End.DT6
+	VrfTable int      // vrftable id for END.DT4 and END.DT6
 	InAddr   net.IP
 	In6Addr  net.IP
 	Iif      int
@@ -304,6 +312,9 @@ func (e *SEG6LocalEncap) Decode(buf []byte) error {
 		case nl.SEG6_LOCAL_TABLE:
 			e.Table = int(native.Uint32(attr.Value[0:4]))
 			e.Flags[nl.SEG6_LOCAL_TABLE] = true
+		case nl.SEG6_LOCAL_VRFTABLE:
+			e.VrfTable = int(native.Uint32(attr.Value[0:4]))
+			e.Flags[nl.SEG6_LOCAL_VRFTABLE] = true
 		case nl.SEG6_LOCAL_NH4:
 			e.InAddr = net.IP(attr.Value[0:4])
 			e.Flags[nl.SEG6_LOCAL_NH4] = true
@@ -360,6 +371,15 @@ func (e *SEG6LocalEncap) Encode() ([]byte, error) {
 		native.PutUint32(attr[4:], uint32(e.Table))
 		res = append(res, attr...)
 	}
+
+	if e.Flags[nl.SEG6_LOCAL_VRFTABLE] {
+		attr := make([]byte, 8)
+		native.PutUint16(attr, 8)
+		native.PutUint16(attr[2:], nl.SEG6_LOCAL_VRFTABLE)
+		native.PutUint32(attr[4:], uint32(e.VrfTable))
+		res = append(res, attr...)
+	}
+
 	if e.Flags[nl.SEG6_LOCAL_NH4] {
 		attr := make([]byte, 4)
 		native.PutUint16(attr, 8)
@@ -412,6 +432,11 @@ func (e *SEG6LocalEncap) String() string {
 	if e.Flags[nl.SEG6_LOCAL_TABLE] {
 		strs = append(strs, fmt.Sprintf("table %d", e.Table))
 	}
+
+	if e.Flags[nl.SEG6_LOCAL_VRFTABLE] {
+		strs = append(strs, fmt.Sprintf("vrftable %d", e.VrfTable))
+	}
+
 	if e.Flags[nl.SEG6_LOCAL_NH4] {
 		strs = append(strs, fmt.Sprintf("nh4 %s", e.InAddr))
 	}
@@ -476,7 +501,7 @@ func (e *SEG6LocalEncap) Equal(x Encap) bool {
 	if !e.InAddr.Equal(o.InAddr) || !e.In6Addr.Equal(o.In6Addr) {
 		return false
 	}
-	if e.Action != o.Action || e.Table != o.Table || e.Iif != o.Iif || e.Oif != o.Oif || e.bpf != o.bpf {
+	if e.Action != o.Action || e.Table != o.Table || e.Iif != o.Iif || e.Oif != o.Oif || e.bpf != o.bpf || e.VrfTable != o.VrfTable {
 		return false
 	}
 	return true
@@ -650,7 +675,7 @@ func (e *IP6tnlEncap) Decode(buf []byte) error {
 	for _, attr := range attrs {
 		switch attr.Attr.Type {
 		case nl.LWTUNNEL_IP6_ID:
-			e.ID = uint64(native.Uint64(attr.Value[0:4]))
+			e.ID = uint64(binary.BigEndian.Uint64(attr.Value[0:8]))
 		case nl.LWTUNNEL_IP6_DST:
 			e.Dst = net.IP(attr.Value[:])
 		case nl.LWTUNNEL_IP6_SRC:
@@ -658,11 +683,9 @@ func (e *IP6tnlEncap) Decode(buf []byte) error {
 		case nl.LWTUNNEL_IP6_HOPLIMIT:
 			e.Hoplimit = attr.Value[0]
 		case nl.LWTUNNEL_IP6_TC:
-			// e.TC = attr.Value[0]
-			err = fmt.Errorf("decoding TC in IP6tnlEncap is not supported")
+			e.TC = attr.Value[0]
 		case nl.LWTUNNEL_IP6_FLAGS:
-			// e.Flags = uint16(native.Uint16(attr.Value[0:2]))
-			err = fmt.Errorf("decoding FLAG in IP6tnlEncap is not supported")
+			e.Flags = uint16(native.Uint16(attr.Value[0:2]))
 		case nl.LWTUNNEL_IP6_PAD:
 			err = fmt.Errorf("decoding PAD in IP6tnlEncap is not supported")
 		case nl.LWTUNNEL_IP6_OPTS:
@@ -679,7 +702,7 @@ func (e *IP6tnlEncap) Encode() ([]byte, error) {
 	resID := make([]byte, 12)
 	native.PutUint16(resID, 12) //  2+2+8
 	native.PutUint16(resID[2:], nl.LWTUNNEL_IP6_ID)
-	native.PutUint64(resID[4:], 0)
+	binary.BigEndian.PutUint64(resID[4:], e.ID)
 	final = append(final, resID...)
 
 	resDst := make([]byte, 4)
@@ -694,11 +717,11 @@ func (e *IP6tnlEncap) Encode() ([]byte, error) {
 	resSrc = append(resSrc, e.Src...)
 	final = append(final, resSrc...)
 
-	// resTc := make([]byte, 5)
-	// native.PutUint16(resTc, 5)
-	// native.PutUint16(resTc[2:], nl.LWTUNNEL_IP6_TC)
-	// resTc[4] = e.TC
-	// final = append(final,resTc...)
+	resTc := make([]byte, 5)
+	native.PutUint16(resTc, 5)
+	native.PutUint16(resTc[2:], nl.LWTUNNEL_IP6_TC)
+	resTc[4] = e.TC
+	final = append(final, resTc...)
 
 	resHops := make([]byte, 5)
 	native.PutUint16(resHops, 5)
@@ -706,11 +729,11 @@ func (e *IP6tnlEncap) Encode() ([]byte, error) {
 	resHops[4] = e.Hoplimit
 	final = append(final, resHops...)
 
-	// resFlags := make([]byte, 6)
-	// native.PutUint16(resFlags, 6)
-	// native.PutUint16(resFlags[2:], nl.LWTUNNEL_IP6_FLAGS)
-	// native.PutUint16(resFlags[4:], e.Flags)
-	// final = append(final,resFlags...)
+	resFlags := make([]byte, 6)
+	native.PutUint16(resFlags, 6)
+	native.PutUint16(resFlags[2:], nl.LWTUNNEL_IP6_FLAGS)
+	binary.BigEndian.PutUint16(resFlags[4:], e.Flags)
+	final = append(final, resFlags...)
 
 	return final, nil
 }
@@ -1067,10 +1090,25 @@ func (h *Handle) prepareRouteReq(route *Route, req *nl.NetlinkRequest, msg *nl.R
 		msg.Type = uint8(route.Type)
 	}
 
+	if route.Expires > 0 {
+		b := make([]byte, 4)
+		native.PutUint32(b, uint32(route.Expires))
+		rtAttrs = append(rtAttrs, nl.NewRtAttr(unix.RTA_EXPIRES, b))
+	}
+	if route.NHID > 0 {
+		b := make([]byte, 4)
+		native.PutUint32(b, uint32(route.NHID))
+		rtAttrs = append(rtAttrs, nl.NewRtAttr(RTA_NH_ID, b))
+	}
+
 	var metrics []*nl.RtAttr
 	if route.MTU > 0 {
 		b := nl.Uint32Attr(uint32(route.MTU))
 		metrics = append(metrics, nl.NewRtAttr(unix.RTAX_MTU, b))
+		if route.MTULock {
+			b := nl.Uint32Attr(uint32(1 << unix.RTAX_MTU))
+			metrics = append(metrics, nl.NewRtAttr(unix.RTAX_LOCK, b))
+		}
 	}
 	if route.Window > 0 {
 		b := nl.Uint32Attr(uint32(route.Window))
@@ -1115,6 +1153,10 @@ func (h *Handle) prepareRouteReq(route *Route, req *nl.NetlinkRequest, msg *nl.R
 	if route.RtoMin > 0 {
 		b := nl.Uint32Attr(uint32(route.RtoMin))
 		metrics = append(metrics, nl.NewRtAttr(unix.RTAX_RTO_MIN, b))
+		if route.RtoMinLock {
+			b := nl.Uint32Attr(uint32(1 << unix.RTAX_RTO_MIN))
+			metrics = append(metrics, nl.NewRtAttr(unix.RTAX_LOCK, b))
+		}
 	}
 	if route.InitRwnd > 0 {
 		b := nl.Uint32Attr(uint32(route.InitRwnd))
@@ -1163,6 +1205,9 @@ func (h *Handle) prepareRouteReq(route *Route, req *nl.NetlinkRequest, msg *nl.R
 // RouteList gets a list of routes in the system.
 // Equivalent to: `ip route show`.
 // The list can be filtered by link and ip family.
+//
+// If the returned error is [ErrDumpInterrupted], results may be inconsistent
+// or incomplete.
 func RouteList(link Link, family int) ([]Route, error) {
 	return pkgHandle.RouteList(link, family)
 }
@@ -1170,6 +1215,9 @@ func RouteList(link Link, family int) ([]Route, error) {
 // RouteList gets a list of routes in the system.
 // Equivalent to: `ip route show`.
 // The list can be filtered by link and ip family.
+//
+// If the returned error is [ErrDumpInterrupted], results may be inconsistent
+// or incomplete.
 func (h *Handle) RouteList(link Link, family int) ([]Route, error) {
 	routeFilter := &Route{}
 	if link != nil {
@@ -1188,6 +1236,9 @@ func RouteListFiltered(family int, filter *Route, filterMask uint64) ([]Route, e
 
 // RouteListFiltered gets a list of routes in the system filtered with specified rules.
 // All rules must be defined in RouteFilter struct
+//
+// If the returned error is [ErrDumpInterrupted], results may be inconsistent
+// or incomplete.
 func (h *Handle) RouteListFiltered(family int, filter *Route, filterMask uint64) ([]Route, error) {
 	var res []Route
 	err := h.RouteListFilteredIter(family, filter, filterMask, func(route Route) (cont bool) {
@@ -1195,24 +1246,29 @@ func (h *Handle) RouteListFiltered(family int, filter *Route, filterMask uint64)
 		return true
 	})
 	if err != nil {
-		return nil, err
+		return res, err
 	}
 	return res, nil
 }
 
 // RouteListFilteredIter passes each route that matches the filter to the given iterator func.  Iteration continues
 // until all routes are loaded or the func returns false.
+//
+// If the returned error is [ErrDumpInterrupted], results may be inconsistent
+// or incomplete.
 func RouteListFilteredIter(family int, filter *Route, filterMask uint64, f func(Route) (cont bool)) error {
 	return pkgHandle.RouteListFilteredIter(family, filter, filterMask, f)
 }
 
+// If the returned error is [ErrDumpInterrupted], results may be inconsistent
+// or incomplete.
 func (h *Handle) RouteListFilteredIter(family int, filter *Route, filterMask uint64, f func(Route) (cont bool)) error {
 	req := h.newNetlinkRequest(unix.RTM_GETROUTE, unix.NLM_F_DUMP)
 	rtmsg := &nl.RtMsg{}
 	rtmsg.Family = uint8(family)
 
 	var parseErr error
-	err := h.routeHandleIter(filter, req, rtmsg, func(m []byte) bool {
+	executeErr := h.routeHandleIter(filter, req, rtmsg, func(m []byte) bool {
 		msg := nl.DeserializeRtMsg(m)
 		if family != FAMILY_ALL && msg.Family != uint8(family) {
 			// Ignore routes not matching requested family
@@ -1270,13 +1326,32 @@ func (h *Handle) RouteListFilteredIter(family int, filter *Route, filterMask uin
 		}
 		return f(route)
 	})
-	if err != nil {
-		return err
+	if executeErr != nil && !errors.Is(executeErr, ErrDumpInterrupted) {
+		return executeErr
 	}
 	if parseErr != nil {
 		return parseErr
 	}
-	return nil
+	return executeErr
+}
+
+// deserializeRouteCacheInfo decodes a RTA_CACHEINFO attribute into a RouteCacheInfo struct
+func deserializeRouteCacheInfo(b []byte) (*RouteCacheInfo, error) {
+	if len(b) != 32 {
+		return nil, unix.EINVAL
+	}
+
+	e := nl.NativeEndian()
+	return &RouteCacheInfo{
+		e.Uint32(b),
+		e.Uint32(b[4:]),
+		int32(e.Uint32(b[8:])),
+		e.Uint32(b[12:]),
+		e.Uint32(b[16:]),
+		e.Uint32(b[20:]),
+		e.Uint32(b[24:]),
+		e.Uint32(b[28:]),
+	}, nil
 }
 
 // deserializeRoute decodes a binary netlink message into a Route struct
@@ -1322,6 +1397,12 @@ func deserializeRoute(m []byte) (Route, error) {
 			route.ILinkIndex = int(native.Uint32(attr.Value[0:4]))
 		case unix.RTA_PRIORITY:
 			route.Priority = int(native.Uint32(attr.Value[0:4]))
+		case unix.RTA_CACHEINFO:
+			route.CacheInfo, err = deserializeRouteCacheInfo(attr.Value)
+			if err != nil {
+				return route, err
+			}
+			route.Expires = int(route.CacheInfo.Expires) / 100
 		case unix.RTA_FLOW:
 			route.Realm = int(native.Uint32(attr.Value[0:4]))
 		case unix.RTA_TABLE:
@@ -1425,6 +1506,9 @@ func deserializeRoute(m []byte) (Route, error) {
 				switch metric.Attr.Type {
 				case unix.RTAX_MTU:
 					route.MTU = int(native.Uint32(metric.Value[0:4]))
+				case unix.RTAX_LOCK:
+					route.MTULock = native.Uint32(metric.Value[0:4]) == uint32(1<<unix.RTAX_MTU)
+					route.RtoMinLock = native.Uint32(metric.Value[0:4]) == uint32(1<<unix.RTAX_RTO_MIN)
 				case unix.RTAX_WINDOW:
 					route.Window = int(native.Uint32(metric.Value[0:4]))
 				case unix.RTAX_RTT:
@@ -1457,6 +1541,8 @@ func deserializeRoute(m []byte) (Route, error) {
 					route.FastOpenNoCookie = int(native.Uint32(metric.Value[0:4]))
 				}
 			}
+		case RTA_NH_ID:
+			route.NHID = native.Uint32(attr.Value[0:4])
 		}
 	}
 
@@ -1505,6 +1591,11 @@ func deserializeRoute(m []byte) (Route, error) {
 			if err := e.Decode(encap.Value); err != nil {
 				return route, err
 			}
+		case nl.LWTUNNEL_ENCAP_IP6:
+			e = &IP6tnlEncap{}
+			if err := e.Decode(encap.Value); err != nil {
+				return route, err
+			}
 		}
 		route.Encap = e
 	}
@@ -1518,6 +1609,7 @@ type RouteGetOptions struct {
 	Iif      string
 	IifIndex int
 	Oif      string
+	OifIndex int
 	VrfName  string
 	SrcAddr  net.IP
 	UID      *uint32
@@ -1597,14 +1689,20 @@ func (h *Handle) RouteGetWithOptions(destination net.IP, options *RouteGetOption
 			req.AddData(nl.NewRtAttr(unix.RTA_IIF, b))
 		}
 
+		oifIndex := uint32(0)
 		if len(options.Oif) > 0 {
 			link, err := h.LinkByName(options.Oif)
 			if err != nil {
 				return nil, err
 			}
+			oifIndex = uint32(link.Attrs().Index)
+		} else if options.OifIndex > 0 {
+			oifIndex = uint32(options.OifIndex)
+		}
 
+		if oifIndex > 0 {
 			b := make([]byte, 4)
-			native.PutUint32(b, uint32(link.Attrs().Index))
+			native.PutUint32(b, oifIndex)
 
 			req.AddData(nl.NewRtAttr(unix.RTA_OIF, b))
 		}
@@ -1684,6 +1782,10 @@ type RouteSubscribeOptions struct {
 // RouteSubscribeWithOptions work like RouteSubscribe but enable to
 // provide additional options to modify the behavior. Currently, the
 // namespace can be provided as well as an error callback.
+//
+// When options.ListExisting is true, options.ErrorCallback may be
+// called with [ErrDumpInterrupted] to indicate that results from
+// the initial dump of links may be inconsistent or incomplete.
 func RouteSubscribeWithOptions(ch chan<- RouteUpdate, done <-chan struct{}, options RouteSubscribeOptions) error {
 	if options.Namespace == nil {
 		none := netns.None()
@@ -1743,6 +1845,9 @@ func routeSubscribeAt(newNs, curNs netns.NsHandle, ch chan<- RouteUpdate, done <
 				continue
 			}
 			for _, m := range msgs {
+				if m.Header.Flags&unix.NLM_F_DUMP_INTR != 0 && cberr != nil {
+					cberr(ErrDumpInterrupted)
+				}
 				if m.Header.Type == unix.NLMSG_DONE {
 					continue
 				}

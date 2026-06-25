@@ -5,6 +5,7 @@ package cmd
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/cilium/cilium/pkg/common"
 	"github.com/cilium/cilium/pkg/common/ipsec"
 	"github.com/cilium/cilium/pkg/datapath/linux/linux_defaults"
+	"github.com/cilium/cilium/pkg/datapath/linux/safenetlink"
 	"github.com/cilium/cilium/pkg/maps/nodemap"
 )
 
@@ -31,7 +33,7 @@ var encryptFlushCmd = &cobra.Command{
 	Long:  "Will cause a short connectivity disruption",
 	Run: func(cmd *cobra.Command, args []string) {
 		common.RequireRootPrivilege("cilium encrypt flush")
-		runXFRMFlush()
+		runXFRMFlush(log)
 	},
 }
 
@@ -42,7 +44,7 @@ var (
 	cleanStale     bool
 )
 
-func runXFRMFlush() {
+func runXFRMFlush(logger *slog.Logger) {
 	if spiToFilter == 0 && nodeIDParam == "" && !cleanStale {
 		flushEverything()
 		return
@@ -64,11 +66,11 @@ func runXFRMFlush() {
 		}
 	}
 
-	states, err := netlink.XfrmStateList(netlink.FAMILY_ALL)
+	states, err := safenetlink.XfrmStateList(netlink.FAMILY_ALL)
 	if err != nil {
 		Fatalf("Failed to retrieve XFRM states: %s", err)
 	}
-	policies, err := netlink.XfrmPolicyList(netlink.FAMILY_ALL)
+	policies, err := safenetlink.XfrmPolicyList(netlink.FAMILY_ALL)
 	if err != nil {
 		Fatalf("Failed to retrieve XFRM policies: %s", err)
 	}
@@ -82,7 +84,7 @@ func runXFRMFlush() {
 		policies, states = filterXFRMByNodeID(policies, states)
 	}
 	if cleanStale {
-		policies, states = filterStaleXFRMs(policies, states)
+		policies, states = filterStaleXFRMs(logger, policies, states)
 	}
 
 	confirmationMsg := ""
@@ -185,12 +187,12 @@ func filterXFRMs(policies []netlink.XfrmPolicy, states []netlink.XfrmState,
 	return policiesToDel, statesToDel
 }
 
-func filterStaleXFRMs(policies []netlink.XfrmPolicy, states []netlink.XfrmState) ([]netlink.XfrmPolicy, []netlink.XfrmState) {
+func filterStaleXFRMs(logger *slog.Logger, policies []netlink.XfrmPolicy, states []netlink.XfrmState) ([]netlink.XfrmPolicy, []netlink.XfrmState) {
 	bpfNodeIDs := map[uint16]bool{}
-	parse := func(key *nodemap.NodeKey, val *nodemap.NodeValue) {
+	parse := func(key *nodemap.NodeKey, val *nodemap.NodeValueV2) {
 		bpfNodeIDs[val.NodeID] = true
 	}
-	nodeMap, err := nodemap.LoadNodeMap()
+	nodeMap, err := nodemap.LoadNodeMapV2(logger)
 	if err != nil {
 		Fatalf("Cannot load node bpf map: %s", err)
 	}

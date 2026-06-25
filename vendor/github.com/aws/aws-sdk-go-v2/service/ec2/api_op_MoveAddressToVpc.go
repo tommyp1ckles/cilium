@@ -16,10 +16,9 @@ import (
 // Moves an Elastic IP address from the EC2-Classic platform to the EC2-VPC
 // platform. The Elastic IP address must be allocated to your account for more than
 // 24 hours, and it must not be associated with an instance. After the Elastic IP
-// address is moved, it is no longer available for use in the EC2-Classic platform,
-// unless you move it back using the RestoreAddressToClassicrequest. You cannot move an Elastic IP
-// address that was originally allocated for use in the EC2-VPC platform to the
-// EC2-Classic platform.
+// address is moved, it is no longer available for use in the EC2-Classic platform.
+// You cannot move an Elastic IP address that was originally allocated for use in
+// the EC2-VPC platform to the EC2-Classic platform.
 func (c *Client) MoveAddressToVpc(ctx context.Context, params *MoveAddressToVpcInput, optFns ...func(*Options)) (*MoveAddressToVpcOutput, error) {
 	if params == nil {
 		params = &MoveAddressToVpcInput{}
@@ -99,13 +98,16 @@ func (c *Client) addOperationMoveAddressToVpcMiddlewares(stack *middleware.Stack
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
+	if err = addRetry(stack, options, c); err != nil {
 		return err
 	}
 	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
 	if err = addRecordResponseTiming(stack); err != nil {
+		return err
+	}
+	if err = addSpanRetryLoop(stack, options); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -120,10 +122,10 @@ func (c *Client) addOperationMoveAddressToVpcMiddlewares(stack *middleware.Stack
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
-	if err = addTimeOffsetBuild(stack, c); err != nil {
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
-	if err = addUserAgentRetryMode(stack, options); err != nil {
+	if err = addCredentialSource(stack, options); err != nil {
 		return err
 	}
 	if err = addOpMoveAddressToVpcValidationMiddleware(stack); err != nil {
@@ -145,6 +147,15 @@ func (c *Client) addOperationMoveAddressToVpcMiddlewares(stack *middleware.Stack
 		return err
 	}
 	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptBeforeRetryLoop(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptAttempt(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil

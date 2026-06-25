@@ -1,13 +1,9 @@
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 /* Copyright Authors of Cilium */
 
-#include "common.h"
-
 #include <bpf/ctx/skb.h>
+#include "common.h"
 #include "pktgen.h"
-
-/* Set ETH_HLEN to 14 to indicate that the packet has a 14 byte ethernet header */
-#define ETH_HLEN 14
 
 /* Enable code paths under test */
 #define ENABLE_IPV4		1
@@ -17,8 +13,6 @@
 #define DSR_ENCAP_IPIP		2
 #define DSR_ENCAP_MODE		DSR_ENCAP_IPIP
 #define ENABLE_HEALTH_CHECK	1
-
-#define DISABLE_LOOPBACK_LB
 
 #define CLIENT_IP		v4_pod_one
 #define CLIENT_PORT		__bpf_htons(111)
@@ -74,22 +68,7 @@ int mock_skb_set_tunnel_key(__maybe_unused struct __sk_buff *skb,
 	return 0;
 }
 
-#define SECCTX_FROM_IPCACHE 1
-
-#include "bpf_host.c"
-
-#define TO_NETDEV	0
-
-struct {
-	__uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-	__uint(key_size, sizeof(__u32));
-	__uint(max_entries, 1);
-	__array(values, int());
-} entry_call_map __section(".maps") = {
-	.values = {
-		[TO_NETDEV] = &cil_to_netdev,
-	},
-};
+#include "lib/bpf_host.h"
 
 /* Test that a health-check request to a remote backend is IPIP-encapsulated. */
 PKTGEN("tc", "l4lb_health_check_host")
@@ -129,12 +108,9 @@ int l4lb_health_check_host_setup(struct __ctx_buff *ctx)
 		}
 	};
 
-	map_update_elem(&LB4_HEALTH_MAP, &key, &value, 0);
+	map_update_elem(&cilium_lb4_health, &key, &value, 0);
 
-	/* Jump into the entrypoint */
-	tail_call_static(ctx, entry_call_map, TO_NETDEV);
-	/* Fail if we didn't jump */
-	return TEST_ERROR;
+	return netdev_send_packet(ctx);
 }
 
 CHECK("tc", "l4lb_health_check_host")
@@ -182,13 +158,16 @@ int l4lb_health_check_host_check(const struct __ctx_buff *ctx)
 		test_fatal("dst IP has changed");
 
 	if (l3->check != bpf_htons(0x402))
-		test_fatal("L3 checksum is invalid: %d", bpf_htons(l3->check));
+		test_fatal("L3 checksum is invalid: %x", bpf_htons(l3->check));
 
 	if (l4->source != CLIENT_PORT)
 		test_fatal("src port has changed");
 
 	if (l4->dest != FRONTEND_PORT)
 		test_fatal("dst port has changed");
+
+	if (l4->check != bpf_htons(0x19a1))
+		test_fatal("L4 checksum is invalid: %x != %x", l4->check, bpf_ntohs(0x19a1));
 
 	test_finish();
 }

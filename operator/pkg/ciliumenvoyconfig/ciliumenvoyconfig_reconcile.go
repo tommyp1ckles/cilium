@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -24,16 +23,15 @@ const (
 )
 
 func (r *ciliumEnvoyConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	scopedLog := r.logger.WithFields(logrus.Fields{
-		logfields.Controller: "ciliumenvoyconfig",
-		logfields.Resource:   req.NamespacedName,
-	})
-	scopedLog.Info("Starting reconciliation")
+	scopedLog := r.logger.With(
+		logfields.Resource, req.NamespacedName,
+	)
+	scopedLog.InfoContext(ctx, "Starting reconciliation")
 
 	svc := &corev1.Service{}
 	if err := r.client.Get(ctx, req.NamespacedName, svc); err != nil {
 		if k8serrors.IsNotFound(err) {
-			scopedLog.WithError(err).Debug("Unable to get service - either deleted or not yet available")
+			scopedLog.DebugContext(ctx, "Unable to get service - either deleted or not yet available", logfields.Error, err)
 			return ctrl.Result{}, nil
 		}
 
@@ -50,7 +48,7 @@ func (r *ciliumEnvoyConfigReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 	}
 
-	scopedLog.Info("Successfully reconciled")
+	scopedLog.InfoContext(ctx, "Successfully reconciled")
 	return ctrl.Result{}, nil
 }
 
@@ -94,10 +92,11 @@ func (r *ciliumEnvoyConfigReconciler) createOrUpdateEnvoyConfig(ctx context.Cont
 		exists = false
 	}
 
-	scopedLog := r.logger.WithField(logfields.ServiceKey, getName(svc))
+	scopedLog := r.logger.With(logfields.ServiceKey, getName(svc))
 	if exists {
 		if desired.DeepEqual(&existing) {
-			r.logger.WithField(logfields.CiliumEnvoyConfigName, fmt.Sprintf("%s/%s", desired.Namespace, desired.Name)).Debug("No change for existing CiliumEnvoyConfig")
+			r.logger.DebugContext(ctx, "No change for existing CiliumEnvoyConfig",
+				logfields.CiliumEnvoyConfigName, fmt.Sprintf("%s/%s", desired.Namespace, desired.Name))
 			return nil
 		}
 
@@ -105,21 +104,21 @@ func (r *ciliumEnvoyConfigReconciler) createOrUpdateEnvoyConfig(ctx context.Cont
 		updated := existing.DeepCopy()
 		updated.Spec = desired.Spec
 
-		scopedLog.Debug("Updating CiliumEnvoyConfig")
+		scopedLog.DebugContext(ctx, "Updating CiliumEnvoyConfig")
 		if err := r.client.Update(ctx, updated); err != nil {
 			return fmt.Errorf("failed to update CiliumEnvoyConfig for service: %w", err)
 		}
 
-		scopedLog.Debug("Updated CiliumEnvoyConfig for service")
+		scopedLog.DebugContext(ctx, "Updated CiliumEnvoyConfig for service")
 		return nil
 	}
 
-	scopedLog.Debug("Creating CiliumEnvoyConfig")
+	scopedLog.DebugContext(ctx, "Creating CiliumEnvoyConfig")
 	if err := r.client.Create(ctx, desired); err != nil {
 		return fmt.Errorf("failed to create CiliumEnvoyConfig for service: %w", err)
 	}
 
-	scopedLog.Debug("Created CiliumEnvoyConfig for service")
+	scopedLog.DebugContext(ctx, "Created CiliumEnvoyConfig for service")
 	return nil
 }
 
@@ -132,7 +131,7 @@ func (r *ciliumEnvoyConfigReconciler) deleteEnvoyConfig(ctx context.Context, svc
 		return nil
 	}
 
-	r.logger.Debug("Deleting CiliumEnvoyConfig")
+	r.logger.DebugContext(ctx, "Deleting CiliumEnvoyConfig")
 	if err := r.client.Delete(ctx, &existing); err != nil {
 		return fmt.Errorf("failed to delete CiliumEnvoyConfig for service: %w", err)
 	}

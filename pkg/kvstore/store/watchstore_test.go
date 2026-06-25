@@ -5,7 +5,6 @@ package store
 
 import (
 	"context"
-	"path"
 	"sync"
 	"testing"
 	"time"
@@ -32,15 +31,15 @@ func NewFakeLWBackend(t *testing.T, prefix string, events []kvstore.KeyValueEven
 	}
 }
 
-func (fb *fakeLWBackend) ListAndWatch(ctx context.Context, prefix string, _ int) *kvstore.Watcher {
-	ch := make(kvstore.EventChan)
+func (fb *fakeLWBackend) ListAndWatch(ctx context.Context, prefix string) kvstore.EventChan {
+	ch := make(chan kvstore.KeyValueEvent)
 
 	go func() {
 		defer close(ch)
 		require.Equal(fb.t, fb.prefix, prefix)
 
 		for _, event := range fb.events {
-			event.Key = path.Join(fb.prefix, event.Key)
+			event.Key = kvstore.JoinKey(fb.prefix, event.Key)
 			select {
 			case ch <- event:
 			case <-ctx.Done():
@@ -51,7 +50,7 @@ func (fb *fakeLWBackend) ListAndWatch(ctx context.Context, prefix string, _ int)
 		<-ctx.Done()
 	}()
 
-	return &kvstore.Watcher{Events: ch}
+	return ch
 }
 
 type fakeObserver struct {
@@ -87,11 +86,9 @@ func rwsRun(store WatchStore, prefix string, body func(), backend WatchStoreBack
 	ctx, cancel := context.WithCancel(context.Background())
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		store.Watch(ctx, backend, prefix)
-	}()
+	})
 
 	defer func() {
 		cancel()
@@ -265,11 +262,9 @@ func TestRestartableWatchStoreConcurrent(t *testing.T) {
 	f, _ := GetFactory(t)
 	store := f.NewWatchStore("qux", KVPairCreator, observer)
 
-	wg.Add(1)
-	go func() {
+	wg.Go(func() {
 		store.Watch(ctx, backend, "foo/bar/")
-		wg.Done()
-	}()
+	})
 
 	// Ensure that the Watch operation running in the goroutine has started
 	require.Equal(t, NewKVPair("key1", "value1"), eventually(observer.updated))

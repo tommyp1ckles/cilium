@@ -5,13 +5,15 @@ package endpoint
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 
 	"github.com/cilium/hive/cell"
-	"github.com/sirupsen/logrus"
 
 	"github.com/cilium/cilium/pkg/clustermesh"
 	"github.com/cilium/cilium/pkg/clustermesh/wait"
+	"github.com/cilium/cilium/pkg/endpoint/regeneration"
+	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/time"
 )
 
@@ -20,7 +22,13 @@ var (
 		"endpoint-regeneration",
 		"Endpoints regeneration",
 
-		cell.Provide(newRegenerator),
+		cell.Provide(
+			newRegenerator,
+
+			// Provide [regeneration.Fence] to allow sub-systems to delay the initial
+			// endpoint regeneration.
+			regeneration.NewFence,
+		),
 	)
 )
 
@@ -28,32 +36,56 @@ var (
 type Regenerator struct {
 	cmWaitFn      wait.Fn
 	cmWaitTimeout time.Duration
+	fence         regeneration.Fence
 
-	logger        logrus.FieldLogger
+	logger        *slog.Logger
 	cmSyncLogOnce sync.Once
 }
 
 func newRegenerator(in struct {
 	cell.In
 
-	Logger logrus.FieldLogger
+	Logger *slog.Logger
 
-	Config      wait.TimeoutConfig
-	ClusterMesh *clustermesh.ClusterMesh
+	Config         wait.TimeoutConfig
+	ClusterMesh    *clustermesh.ClusterMesh
+	Fence          regeneration.Fence
+	LBInitWaitFunc loadbalancer.InitWaitFunc
 }) *Regenerator {
 	waitFn := func(context.Context) error { return nil }
 	if in.ClusterMesh != nil {
 		waitFn = in.ClusterMesh.IPIdentitiesSynced
 	}
-
-	return &Regenerator{
+	r := &Regenerator{
 		logger:        in.Logger,
 		cmWaitFn:      waitFn,
 		cmWaitTimeout: in.Config.ClusterMeshSyncTimeout,
+		fence:         in.Fence,
 	}
+
+	// !!! Do not add more waits here. These will eventually move out from here
+	// to their proper places !!!
+
+	// Wait for ipcache and identities synchronization from all remote clusters,
+	// to prevent disrupting cross-cluster connections on endpoint regeneration.
+	in.Fence.Add(
+		"clustermesh",
+		r.waitForClusterMeshIPIdentitiesSync,
+	)
+
+	// Wait for the initial load-balancing state to be reconciled to BPF maps.
+	in.Fence.Add(
+		"loadbalancer",
+		in.LBInitWaitFunc,
+	)
+	return r
 }
 
-func (r *Regenerator) WaitForClusterMeshIPIdentitiesSync(ctx context.Context) error {
+func (r *Regenerator) WaitForFence(ctx context.Context) error {
+	return r.fence.Wait(ctx)
+}
+
+func (r *Regenerator) waitForClusterMeshIPIdentitiesSync(ctx context.Context) error {
 	wctx, cancel := context.WithTimeout(ctx, r.cmWaitTimeout)
 	defer cancel()
 	err := r.cmWaitFn(wctx)
@@ -68,7 +100,7 @@ func (r *Regenerator) WaitForClusterMeshIPIdentitiesSync(ctx context.Context) er
 		// connectivity drops for cross-cluster connections. We additionally print
 		// the warning message only once, to avoid repeating it for every endpoint.
 		r.cmSyncLogOnce.Do(func() {
-			r.logger.Warning("Failed waiting for clustermesh IPs and identities synchronization before regenerating endpoints, expect possible disruption of cross-cluster connections")
+			r.logger.Warn("Failed waiting for clustermesh IPs and identities synchronization before regenerating endpoints, expect possible disruption of cross-cluster connections")
 		})
 	}
 

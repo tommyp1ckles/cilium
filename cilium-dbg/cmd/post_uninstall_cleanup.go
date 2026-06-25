@@ -16,9 +16,10 @@ import (
 
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/common"
+	"github.com/cilium/cilium/pkg/datapath/linux/safenetlink"
 	"github.com/cilium/cilium/pkg/datapath/loader"
 	"github.com/cilium/cilium/pkg/defaults"
-	"github.com/cilium/cilium/pkg/maps/tunnel"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/socketlb"
 )
@@ -114,8 +115,7 @@ type bpfCleanup struct{}
 
 func (c bpfCleanup) whatWillBeRemoved() []string {
 	return []string{
-		fmt.Sprintf("all BPF maps in %s containing '%s' and '%s'",
-			bpf.TCGlobalsPath(), ciliumLinkPrefix, tunnel.MapName),
+		fmt.Sprintf("all BPF maps in %s containing '%s'", bpf.TCGlobalsPath(), ciliumLinkPrefix),
 		fmt.Sprintf("mounted bpffs at %s", bpf.BPFFSRoot()),
 	}
 }
@@ -150,7 +150,7 @@ func newCiliumCleanup(bpfOnly bool) ciliumCleanup {
 	}
 
 	tcFilters := map[string][]*netlink.BpfFilter{}
-	links, err := netlink.LinkList()
+	links, err := safenetlink.LinkList()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 	} else {
@@ -179,18 +179,20 @@ func (c ciliumCleanup) whatWillBeRemoved() []string {
 	toBeRemoved := []string{}
 
 	if len(c.tcFilters) > 0 {
-		section := "tc filters\n"
+		var section strings.Builder
+		section.WriteString("tc filters\n")
 		for linkName, f := range c.tcFilters {
-			section += fmt.Sprintf("%s %v\n", linkName, f)
+			fmt.Fprintf(&section, "%s %v\n", linkName, f)
 		}
-		toBeRemoved = append(toBeRemoved, section)
+		toBeRemoved = append(toBeRemoved, section.String())
 	}
 	if len(c.xdpLinks) > 0 {
-		section := "xdp programs\n"
+		var section strings.Builder
+		section.WriteString("xdp programs\n")
 		for _, l := range c.xdpLinks {
-			section += fmt.Sprintf("%s: xdp/prog id %v\n", l.Attrs().Name, l.Attrs().Xdp.ProgId)
+			fmt.Fprintf(&section, "%s: xdp/prog id %v\n", l.Attrs().Name, l.Attrs().Xdp.ProgId)
 		}
-		toBeRemoved = append(toBeRemoved, section)
+		toBeRemoved = append(toBeRemoved, section.String())
 	}
 
 	if c.bpfOnly {
@@ -198,27 +200,30 @@ func (c ciliumCleanup) whatWillBeRemoved() []string {
 	}
 
 	if len(c.routes) > 0 {
-		section := "routes\n"
+		var section strings.Builder
+		section.WriteString("routes\n")
 		for _, v := range c.routes {
-			section += fmt.Sprintf("%v\n", v)
+			fmt.Fprintf(&section, "%v\n", v)
 		}
-		toBeRemoved = append(toBeRemoved, section)
+		toBeRemoved = append(toBeRemoved, section.String())
 	}
 
 	if len(c.links) > 0 {
-		section := "links\n"
+		var section strings.Builder
+		section.WriteString("links\n")
 		for _, v := range c.links {
-			section += fmt.Sprintf("%v\n", v)
+			fmt.Fprintf(&section, "%v\n", v)
 		}
-		toBeRemoved = append(toBeRemoved, section)
+		toBeRemoved = append(toBeRemoved, section.String())
 	}
 
 	if len(c.netNSs) > 0 {
-		section := "network namespaces\n"
+		var section strings.Builder
+		section.WriteString("network namespaces\n")
 		for _, n := range c.netNSs {
-			section += fmt.Sprintf("%s\n", n)
+			fmt.Fprintf(&section, "%s\n", n)
 		}
-		toBeRemoved = append(toBeRemoved, section)
+		toBeRemoved = append(toBeRemoved, section.String())
 	}
 	toBeRemoved = append(toBeRemoved, fmt.Sprintf("socketlb bpf programs at %s",
 		defaults.DefaultCgroupRoot))
@@ -324,12 +329,13 @@ func showWhatWillBeRemoved(cleanups []cleanup) {
 		toBeRemoved = append(toBeRemoved, cleanup.whatWillBeRemoved()...)
 	}
 
-	warning := "Warning: Destructive operation. You are about to remove:\n"
+	var warning strings.Builder
+	warning.WriteString("Warning: Destructive operation. You are about to remove:\n")
 	for _, warn := range toBeRemoved {
-		warning += fmt.Sprintf("- %s\n", warn)
+		fmt.Fprintf(&warning, "- %s\n", warn)
 	}
 
-	fmt.Print(warning)
+	fmt.Print(warning.String())
 }
 
 func confirmCleanup() bool {
@@ -378,7 +384,7 @@ func revertCNIBackup() error {
 }
 
 func removeSocketLBPrograms() error {
-	if err := socketlb.Disable(); err != nil {
+	if err := socketlb.Disable(log); err != nil {
 		return fmt.Errorf("Failed to detach all socketlb bpf programs from %s: %w", defaults.DefaultCgroupRoot, err)
 	}
 	fmt.Println("removed all socketlb bpf programs")
@@ -394,7 +400,7 @@ func unmountCgroup() error {
 		return fmt.Errorf("%s is a file which is not a directory", cgroupRoot)
 	}
 
-	log.Info("Trying to unmount ", cgroupRoot)
+	log.Info("Trying to unmount path", logfields.Path, cgroupRoot)
 	if err := unix.Unmount(cgroupRoot, unix.MNT_FORCE); err != nil {
 		return fmt.Errorf("Failed to unmount %s: %w", cgroupRoot, err)
 	}
@@ -431,7 +437,7 @@ func removeAllMaps() error {
 	for _, m := range maps {
 		name := m.Name()
 		// Skip non Cilium looking maps
-		if !strings.HasPrefix(name, ciliumLinkPrefix) && name != tunnel.MapName {
+		if !strings.HasPrefix(name, ciliumLinkPrefix) {
 			continue
 		}
 		if err = os.Remove(filepath.Join(mapDir, name)); err != nil {
@@ -451,7 +457,7 @@ func findRoutesAndLinks() (map[int]netlink.Route, map[int]netlink.Link, error) {
 	routesToRemove := map[int]netlink.Route{}
 	linksToRemove := map[int]netlink.Link{}
 
-	if routes, err := netlink.RouteList(nil, netlink.FAMILY_V4); err == nil {
+	if routes, err := safenetlink.RouteList(nil, netlink.FAMILY_V4); err == nil {
 		for _, r := range routes {
 			link, err := netlink.LinkByIndex(r.LinkIndex)
 			if err != nil {
@@ -471,7 +477,7 @@ func findRoutesAndLinks() (map[int]netlink.Route, map[int]netlink.Link, error) {
 		}
 	}
 
-	if links, err := netlink.LinkList(); err == nil {
+	if links, err := safenetlink.LinkList(); err == nil {
 		for _, link := range links {
 			linkName := link.Attrs().Name
 			if !linkMatch(linkName) {
@@ -508,22 +514,15 @@ func getTCFilters(link netlink.Link) ([]*netlink.BpfFilter, error) {
 	allFilters := []*netlink.BpfFilter{}
 
 	for _, parent := range []uint32{tcFilterParentIngress, tcFilterParentEgress} {
-		filters, err := netlink.FilterList(link, parent)
+		filters, err := safenetlink.FilterList(link, parent)
 		if err != nil {
 			return nil, err
 		}
 		for _, f := range filters {
 			if bpfFilter, ok := f.(*netlink.BpfFilter); ok {
-				// iproute2 uses the filename and section (bpf_overlay.o:[from-overlay])
-				// as the filter name.
-				if strings.Contains(bpfFilter.Name, "bpf_netdev") ||
-					strings.Contains(bpfFilter.Name, "bpf_network") ||
-					strings.Contains(bpfFilter.Name, "bpf_host") ||
-					strings.Contains(bpfFilter.Name, "bpf_lxc") ||
-					strings.Contains(bpfFilter.Name, "bpf_overlay") ||
-					// Filters created by the Go bpf loader contain the bpf function and
-					// interface name, like cil_from_netdev-eth0.
-					strings.Contains(bpfFilter.Name, "cil_") ||
+				// Filters created by the Go bpf loader contain the bpf function and
+				// interface name, like cil_from_netdev-eth0.
+				if strings.Contains(bpfFilter.Name, "cil_") ||
 					// Filters created by the cilium agent whose version is lower than 1.13.1
 					// are prefixed with cilium
 					strings.Contains(bpfFilter.Name, "cilium") {

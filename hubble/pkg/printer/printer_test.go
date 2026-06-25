@@ -13,48 +13,53 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	flowpb "github.com/cilium/cilium/api/v1/flow"
 	observerpb "github.com/cilium/cilium/api/v1/observer"
 	"github.com/cilium/cilium/hubble/pkg/defaults"
+	"github.com/cilium/cilium/pkg/hubble/parser/fieldmask"
+	"github.com/cilium/cilium/pkg/monitor/api"
 	monitorAPI "github.com/cilium/cilium/pkg/monitor/api"
 )
 
-var f = flowpb.Flow{
-	Time: &timestamppb.Timestamp{
-		Seconds: 1234,
-		Nanos:   567800000,
-	},
-	Type:     flowpb.FlowType_L3_L4,
-	NodeName: "k8s1",
-	Verdict:  flowpb.Verdict_DROPPED,
-	IP: &flowpb.IP{
-		Source:      "1.1.1.1",
-		Destination: "2.2.2.2",
-	},
-	Source: &flowpb.Endpoint{
-		Identity: 4,
-	},
-	Destination: &flowpb.Endpoint{
-		Identity: 12345,
-	},
-	L4: &flowpb.Layer4{
-		Protocol: &flowpb.Layer4_TCP{
-			TCP: &flowpb.TCP{
-				SourcePort:      31793,
-				DestinationPort: 8080,
+var (
+	f = flowpb.Flow{
+		Time: &timestamppb.Timestamp{
+			Seconds: 1234,
+			Nanos:   567800000,
+		},
+		Type:     flowpb.FlowType_L3_L4,
+		NodeName: "k8s1",
+		Verdict:  flowpb.Verdict_DROPPED,
+		IP: &flowpb.IP{
+			Source:      "1.1.1.1",
+			Destination: "2.2.2.2",
+		},
+		Source: &flowpb.Endpoint{
+			Identity: 4,
+		},
+		Destination: &flowpb.Endpoint{
+			Identity: 12345,
+		},
+		L4: &flowpb.Layer4{
+			Protocol: &flowpb.Layer4_TCP{
+				TCP: &flowpb.TCP{
+					SourcePort:      31793,
+					DestinationPort: 8080,
+				},
 			},
 		},
-	},
-	EventType: &flowpb.CiliumEventType{
-		Type:    monitorAPI.MessageTypeDrop,
-		SubType: 133,
-	},
-	Summary: "TCP Flags: SYN",
-	IsReply: &wrapperspb.BoolValue{Value: false},
-}
+		EventType: &flowpb.CiliumEventType{
+			Type:    monitorAPI.MessageTypeDrop,
+			SubType: 133,
+		},
+		Summary: "TCP Flags: SYN",
+		IsReply: &wrapperspb.BoolValue{Value: false},
+	}
+)
 
 func TestPrinter_AllFieldsInMask(t *testing.T) {
 	fm := make(map[string]bool)
@@ -63,7 +68,7 @@ func TestPrinter_AllFieldsInMask(t *testing.T) {
 	}
 	check := func(msg protoreflect.Message, prefix string) {
 		fds := msg.Descriptor().Fields()
-		for i := 0; i < fds.Len(); i++ {
+		for i := range fds.Len() {
 			fd := fds.Get(i)
 			if !msg.Has(fd) {
 				continue
@@ -83,18 +88,48 @@ func TestPrinter_AllFieldsInMask(t *testing.T) {
 
 func TestPrinter_WriteProtoFlow(t *testing.T) {
 	buf := bytes.Buffer{}
+
 	reply := proto.Clone(&f).(*flowpb.Flow)
 	reply.IsReply = &wrapperspb.BoolValue{Value: true}
+
 	unknown := proto.Clone(&f).(*flowpb.Flow)
 	unknown.IsReply = nil
+
 	policyDenied := proto.Clone(&f).(*flowpb.Flow)
 	policyDenied.EventType = &flowpb.CiliumEventType{
 		Type: monitorAPI.MessageTypePolicyVerdict,
 	}
 	policyDenied.IsReply = nil
 	policyDenied.TrafficDirection = flowpb.TrafficDirection_EGRESS
+	policyDenied.EgressDeniedBy = []*flowpb.Policy{{Name: "my-policy", Namespace: "my-policy-namespace", Kind: "CiliumNetworkPolicy"}}
+
+	policyAllowed := proto.Clone(&f).(*flowpb.Flow)
+	policyAllowed.EventType = &flowpb.CiliumEventType{
+		Type: monitorAPI.MessageTypePolicyVerdict,
+	}
+	policyAllowed.Verdict = flowpb.Verdict_FORWARDED
+	policyAllowed.IsReply = nil
+	policyAllowed.TrafficDirection = flowpb.TrafficDirection_INGRESS
+	policyAllowed.IngressAllowedBy = []*flowpb.Policy{{Name: "my-policy", Namespace: "my-policy-namespace", Kind: "CiliumNetworkPolicy"}, {Name: "my-policy-2", Kind: "CiliumClusterwideNetworkPolicy"}}
+	policyAllowed.PolicyMatchType = api.PolicyMatchL3Only
+
+	policyAudited := proto.Clone(&f).(*flowpb.Flow)
+	policyAudited.EventType = &flowpb.CiliumEventType{
+		Type: monitorAPI.MessageTypePolicyVerdict,
+	}
+	policyAudited.Verdict = flowpb.Verdict_AUDIT
+	policyAudited.IsReply = nil
+	policyAudited.TrafficDirection = flowpb.TrafficDirection_EGRESS
+	policyAudited.EgressDeniedBy = []*flowpb.Policy{{Name: "my-policy", Namespace: "my-policy-namespace", Kind: "CiliumNetworkPolicy"}}
+
+	fmp, err := fieldmaskpb.New(&flowpb.Flow{}, defaults.FieldMask...)
+	require.NoError(t, err)
+	fm, err := fieldmask.New(fmp)
+	require.NoError(t, err)
+
 	type args struct {
-		f *flowpb.Flow
+		f     *flowpb.Flow
+		merge *flowpb.Flow
 	}
 	tests := []struct {
 		name     string
@@ -162,6 +197,26 @@ Jan  1 00:20:34.567   k8s1   1.1.1.1:31793   2.2.2.2:8080   Policy denied   DROP
 				"Policy denied DROPPED (TCP Flags: SYN)\n",
 		},
 		{
+			name: "compact-with-trace-id",
+			options: []Option{
+				Compact(),
+				WithColor("never"),
+				WithNodeName(),
+				Writer(&buf),
+			},
+			args: args{
+				f: &f,
+				merge: &flowpb.Flow{
+					IpTraceId: &flowpb.IPTraceID{TraceId: 1234},
+				},
+			},
+			wantErr: false,
+			expected: "Jan  1 00:20:34.567 [k8s1]: " +
+				"1.1.1.1:31793 (health) -> 2.2.2.2:8080 (ID:12345) " +
+				"Policy denied DROPPED " +
+				"(IP Trace ID: 1234; TCP Flags: SYN)\n",
+		},
+		{
 			name: "compact-reply",
 			options: []Option{
 				Compact(),
@@ -194,6 +249,57 @@ Jan  1 00:20:34.567   k8s1   1.1.1.1:31793   2.2.2.2:8080   Policy denied   DROP
 				"policy-verdict:none EGRESS DENIED (TCP Flags: SYN)\n",
 		},
 		{
+			name: "compact-policy-verdict-denied-with-policy-name",
+			options: []Option{
+				Compact(),
+				WithColor("never"),
+				WithNodeName(),
+				WithPolicyNames(),
+				Writer(&buf),
+			},
+			args: args{
+				f: policyDenied,
+			},
+			wantErr: false,
+			expected: "Jan  1 00:20:34.567 [k8s1]: " +
+				"1.1.1.1:31793 (health) <> 2.2.2.2:8080 (ID:12345) " +
+				"policy-verdict:none EGRESS DENIED BY my-policy (CiliumNetworkPolicy) (TCP Flags: SYN)\n",
+		},
+		{
+			name: "compact-policy-verdict-allowed-with-policy-name",
+			options: []Option{
+				Compact(),
+				WithColor("never"),
+				WithNodeName(),
+				WithPolicyNames(),
+				Writer(&buf),
+			},
+			args: args{
+				f: policyAllowed,
+			},
+			wantErr: false,
+			expected: "Jan  1 00:20:34.567 [k8s1]: " +
+				"1.1.1.1:31793 (health) <> 2.2.2.2:8080 (ID:12345) " +
+				"policy-verdict:L3-Only INGRESS ALLOWED BY my-policy (CiliumNetworkPolicy), my-policy-2 (CiliumClusterwideNetworkPolicy) (TCP Flags: SYN)\n",
+		},
+		{
+			name: "compact-policy-verdict-audited-with-policy-name",
+			options: []Option{
+				Compact(),
+				WithColor("never"),
+				WithNodeName(),
+				WithPolicyNames(),
+				Writer(&buf),
+			},
+			args: args{
+				f: policyAudited,
+			},
+			wantErr: false,
+			expected: "Jan  1 00:20:34.567 [k8s1]: " +
+				"1.1.1.1:31793 (health) <> 2.2.2.2:8080 (ID:12345) " +
+				"policy-verdict:none EGRESS AUDITED BY my-policy (CiliumNetworkPolicy) (TCP Flags: SYN)\n",
+		},
+		{
 			name: "compact-direction-unknown",
 			options: []Option{
 				Compact(),
@@ -212,7 +318,7 @@ Jan  1 00:20:34.567   k8s1   1.1.1.1:31793   2.2.2.2:8080   Policy denied   DROP
 		{
 			name: "json",
 			options: []Option{
-				JSONPB(),
+				JSONLegacy(),
 				WithColor("never"),
 				Writer(&buf),
 			},
@@ -220,14 +326,14 @@ Jan  1 00:20:34.567   k8s1   1.1.1.1:31793   2.2.2.2:8080   Policy denied   DROP
 				f: &f,
 			},
 			wantErr: false,
-			expected: `{"flow":{"time":"1970-01-01T00:20:34.567800Z",` +
+			expected: `{"time":"1970-01-01T00:20:34.567800Z",` +
 				`"verdict":"DROPPED",` +
 				`"IP":{"source":"1.1.1.1","destination":"2.2.2.2"},` +
 				`"l4":{"TCP":{"source_port":31793,"destination_port":8080}},` +
 				`"source":{"identity":4},"destination":{"identity":12345},` +
 				`"Type":"L3_L4","node_name":"k8s1",` +
 				`"event_type":{"type":1,"sub_type":133},` +
-				`"is_reply":false,"Summary":"TCP Flags: SYN"}}`,
+				`"is_reply":false,"Summary":"TCP Flags: SYN"}`,
 		},
 		{
 			name: "jsonpb",
@@ -247,6 +353,33 @@ Jan  1 00:20:34.567   k8s1   1.1.1.1:31793   2.2.2.2:8080   Policy denied   DROP
 				`"source":{"identity":4},"destination":{"identity":12345},` +
 				`"Type":"L3_L4","node_name":"k8s1",` +
 				`"event_type":{"type":1,"sub_type":133},` +
+				`"is_reply":false,"Summary":"TCP Flags: SYN"}}`,
+		},
+		{
+			name: "jsonpb_with_trace",
+			options: []Option{
+				JSONPB(),
+				WithColor("never"),
+				Writer(&buf),
+			},
+			args: args{
+				f: &f,
+				merge: &flowpb.Flow{
+					IpTraceId: &flowpb.IPTraceID{
+						IpOptionType: 136,
+						TraceId:      1234,
+					},
+				},
+			},
+			wantErr: false,
+			expected: `{"flow":{"time":"1970-01-01T00:20:34.567800Z",` +
+				`"verdict":"DROPPED",` +
+				`"IP":{"source":"1.1.1.1","destination":"2.2.2.2"},` +
+				`"l4":{"TCP":{"source_port":31793,"destination_port":8080}},` +
+				`"source":{"identity":4},"destination":{"identity":12345},` +
+				`"Type":"L3_L4","node_name":"k8s1",` +
+				`"event_type":{"type":1,"sub_type":133},` +
+				`"ip_trace_id":{"trace_id":"1234","ip_option_type":136},` +
 				`"is_reply":false,"Summary":"TCP Flags: SYN"}}`,
 		},
 		{
@@ -287,14 +420,40 @@ DESTINATION: 2.2.2.2:8080
     VERDICT: DROPPED
     SUMMARY: TCP Flags: SYN`,
 		},
+		{
+			name: "dict-with-policy-name",
+			options: []Option{
+				Dict(),
+				WithColor("never"),
+				WithPolicyNames(),
+				Writer(&buf),
+			},
+			args: args{
+				f: policyDenied,
+			},
+			wantErr: false,
+			expected: `  TIMESTAMP: Jan  1 00:20:34.567
+     SOURCE: 1.1.1.1:31793
+DESTINATION: 2.2.2.2:8080
+       TYPE: policy-verdict:none EGRESS
+    VERDICT: DENIED BY my-policy (CiliumNetworkPolicy)
+    SUMMARY: TCP Flags: SYN`,
+		},
 	}
 	for _, tt := range tests {
 		buf.Reset()
 		t.Run(tt.name, func(t *testing.T) {
+			f := proto.Clone(tt.args.f).(*flowpb.Flow)
+			proto.Merge(f, tt.args.merge)
+
+			fc := &flowpb.Flow{}
+			fm.Copy(fc.ProtoReflect(), f.ProtoReflect())
+
 			p := New(tt.options...)
 			res := &observerpb.GetFlowsResponse{
-				ResponseTypes: &observerpb.GetFlowsResponse_Flow{Flow: tt.args.f},
+				ResponseTypes: &observerpb.GetFlowsResponse_Flow{Flow: fc},
 			}
+
 			// writes a node status event into the error stream
 			if err := p.WriteProtoFlow(res); (err != nil) != tt.wantErr {
 				t.Errorf("WriteProtoFlow() error = %v, wantErr %v", err, tt.wantErr)
@@ -641,21 +800,6 @@ func Test_getFlowType(t *testing.T) {
 			want: "http-response",
 		},
 		{
-			name: "Kafka",
-			args: args{
-				f: &flowpb.Flow{
-					L7: &flowpb.Layer7{
-						Type:   flowpb.L7FlowType_REQUEST,
-						Record: &flowpb.Layer7_Kafka{},
-					},
-					EventType: &flowpb.CiliumEventType{
-						Type: monitorAPI.MessageTypeAccessLog,
-					},
-				},
-			},
-			want: "kafka-request",
-		},
-		{
 			name: "DNS",
 			args: args{
 				f: &flowpb.Flow{
@@ -718,9 +862,9 @@ func Test_getFlowType(t *testing.T) {
 				f: &flowpb.Flow{
 					Verdict: flowpb.Verdict_TRACED,
 					EventType: &flowpb.CiliumEventType{
-						Type: monitorAPI.MessageTypeTraceSock,
+						Type:    monitorAPI.MessageTypeTraceSock,
+						SubType: int32(flowpb.SocketTranslationPoint_SOCK_XLATE_POINT_PRE_DIRECTION_FWD),
 					},
-					SockXlatePoint: flowpb.SocketTranslationPoint_SOCK_XLATE_POINT_PRE_DIRECTION_FWD,
 				},
 			},
 			want: "pre-xlate-fwd",
@@ -731,9 +875,9 @@ func Test_getFlowType(t *testing.T) {
 				f: &flowpb.Flow{
 					Verdict: flowpb.Verdict_TRANSLATED,
 					EventType: &flowpb.CiliumEventType{
-						Type: monitorAPI.MessageTypeTraceSock,
+						Type:    monitorAPI.MessageTypeTraceSock,
+						SubType: int32(flowpb.SocketTranslationPoint_SOCK_XLATE_POINT_POST_DIRECTION_FWD),
 					},
-					SockXlatePoint: flowpb.SocketTranslationPoint_SOCK_XLATE_POINT_POST_DIRECTION_FWD,
 				},
 			},
 			want: "post-xlate-fwd",
@@ -1404,6 +1548,318 @@ NUM CONNECTED NODES: N/A
 			}
 			require.NoError(t, p.Close())
 			require.Equal(t, strings.TrimSpace(tt.expected), strings.TrimSpace(buf.String()))
+		})
+	}
+}
+
+func TestPrinter_WriteLostEventsResponse(t *testing.T) {
+	buf := bytes.Buffer{}
+	gfr := &observerpb.GetFlowsResponse{
+		Time: &timestamppb.Timestamp{
+			Seconds: 1234,
+			Nanos:   567800000,
+		},
+		ResponseTypes: &observerpb.GetFlowsResponse_LostEvents{
+			LostEvents: &observerpb.LostEvent{
+				Source:        observerpb.LostEventSource_HUBBLE_RING_BUFFER,
+				NumEventsLost: 1,
+				Cpu:           wrapperspb.Int32(5),
+			},
+		},
+	}
+	gfrWithNode := &observerpb.GetFlowsResponse{
+		Time: &timestamppb.Timestamp{
+			Seconds: 1234,
+			Nanos:   567800000,
+		},
+		NodeName: "node-name",
+		ResponseTypes: &observerpb.GetFlowsResponse_LostEvents{
+			LostEvents: &observerpb.LostEvent{
+				Source:        observerpb.LostEventSource_HUBBLE_RING_BUFFER,
+				NumEventsLost: 1,
+				Cpu:           wrapperspb.Int32(5),
+			},
+		},
+	}
+	gfrWithTimestamps := &observerpb.GetFlowsResponse{
+		Time: &timestamppb.Timestamp{
+			Seconds: 1234,
+			Nanos:   567800000,
+		},
+		ResponseTypes: &observerpb.GetFlowsResponse_LostEvents{
+			LostEvents: &observerpb.LostEvent{
+				Source:        observerpb.LostEventSource_HUBBLE_RING_BUFFER,
+				NumEventsLost: 1,
+				Cpu:           wrapperspb.Int32(5),
+				First: &timestamppb.Timestamp{
+					Seconds: 1230,
+					Nanos:   567800000,
+				},
+				Last: &timestamppb.Timestamp{
+					Seconds: 1238,
+					Nanos:   567800000,
+				},
+			},
+		},
+	}
+	type args struct {
+		le *observerpb.GetFlowsResponse
+	}
+	tests := []struct {
+		name     string
+		options  []Option
+		args     args
+		expected string
+	}{
+		{
+			name: "tabular",
+			options: []Option{
+				WithColor("never"),
+				Writer(&buf),
+			},
+			args: args{gfr},
+			expected: `
+TIMESTAMP             SOURCE               DESTINATION   TYPE          VERDICT   SUMMARY
+Jan  1 00:20:34.567   HUBBLE_RING_BUFFER   -             EVENTS LOST   -         CPU(5) - 1`,
+		},
+		{
+			name: "compact",
+			options: []Option{
+				Compact(),
+				WithColor("never"),
+				Writer(&buf),
+			},
+			args: args{gfr},
+			expected: `
+Jan  1 00:20:34.567 EVENTS LOST: HUBBLE_RING_BUFFER CPU(5) 1`,
+		},
+		{
+			name: "json",
+			options: []Option{
+				JSONPB(),
+				WithColor("never"),
+				Writer(&buf),
+			},
+			args:     args{gfr},
+			expected: `{"lost_events":{"source":"HUBBLE_RING_BUFFER","num_events_lost":"1","cpu":5},"time":"1970-01-01T00:20:34.567800Z"}`,
+		},
+		{
+			name: "jsonpb",
+			options: []Option{
+				JSONPB(),
+				WithColor("never"),
+				Writer(&buf),
+			},
+			args:     args{gfr},
+			expected: `{"lost_events":{"source":"HUBBLE_RING_BUFFER","num_events_lost":"1","cpu":5},"time":"1970-01-01T00:20:34.567800Z"}`,
+		},
+		{
+			name: "dict",
+			options: []Option{
+				Dict(),
+				WithColor("never"),
+				Writer(&buf),
+			},
+			args: args{gfr},
+			expected: `
+  TIMESTAMP: Jan  1 00:20:34.567
+     SOURCE: HUBBLE_RING_BUFFER
+       TYPE: EVENTS LOST
+    VERDICT: -
+    SUMMARY: CPU(5) - 1`,
+		},
+		// with node name
+		{
+			name: "tabular with node",
+			options: []Option{
+				WithColor("never"),
+				WithNodeName(),
+				Writer(&buf),
+			},
+			args: args{gfrWithNode},
+			expected: `
+TIMESTAMP             NODE        SOURCE               DESTINATION   TYPE          VERDICT   SUMMARY
+Jan  1 00:20:34.567   node-name   HUBBLE_RING_BUFFER   -             EVENTS LOST   -         CPU(5) - 1`,
+		},
+		{
+			name: "compact with node",
+			options: []Option{
+				Compact(),
+				WithColor("never"),
+				WithNodeName(),
+				Writer(&buf),
+			},
+			args: args{gfrWithNode},
+			expected: `
+Jan  1 00:20:34.567 EVENTS LOST: HUBBLE_RING_BUFFER CPU(5) 1`,
+		},
+		{
+			name: "json with node",
+			options: []Option{
+				JSONPB(),
+				WithColor("never"),
+				WithNodeName(),
+				Writer(&buf),
+			},
+			args:     args{gfrWithNode},
+			expected: `{"lost_events":{"source":"HUBBLE_RING_BUFFER","num_events_lost":"1","cpu":5},"node_name":"node-name","time":"1970-01-01T00:20:34.567800Z"}`,
+		},
+		{
+			name: "jsonpb with node",
+			options: []Option{
+				JSONPB(),
+				WithColor("never"),
+				WithNodeName(),
+				Writer(&buf),
+			},
+			args:     args{gfrWithNode},
+			expected: `{"lost_events":{"source":"HUBBLE_RING_BUFFER","num_events_lost":"1","cpu":5},"node_name":"node-name","time":"1970-01-01T00:20:34.567800Z"}`,
+		},
+		{
+			name: "dict with node",
+			options: []Option{
+				Dict(),
+				WithColor("never"),
+				WithNodeName(),
+				Writer(&buf),
+			},
+			args: args{gfrWithNode},
+			expected: `
+  TIMESTAMP: Jan  1 00:20:34.567
+       NODE: node-name
+     SOURCE: HUBBLE_RING_BUFFER
+       TYPE: EVENTS LOST
+    VERDICT: -
+    SUMMARY: CPU(5) - 1`,
+		},
+		// with lost event timestamps
+		{
+			name: "tabular with timestamps",
+			options: []Option{
+				WithColor("never"),
+				Writer(&buf),
+			},
+			args: args{gfrWithTimestamps},
+			expected: `
+TIMESTAMP             SOURCE               DESTINATION   TYPE          VERDICT   SUMMARY
+Jan  1 00:20:34.567   HUBBLE_RING_BUFFER   -             EVENTS LOST   -         CPU(5) - 1 (first: Jan  1 00:20:30.567, last: Jan  1 00:20:38.567)`,
+		},
+		{
+			name: "compact with timestamps",
+			options: []Option{
+				Compact(),
+				WithColor("never"),
+				Writer(&buf),
+			},
+			args: args{gfrWithTimestamps},
+			expected: `
+Jan  1 00:20:34.567 EVENTS LOST: HUBBLE_RING_BUFFER CPU(5) 1 (first: Jan  1 00:20:30.567, last: Jan  1 00:20:38.567)`,
+		},
+		{
+			name: "json with timestamps",
+			options: []Option{
+				JSONPB(),
+				WithColor("never"),
+				Writer(&buf),
+			},
+			args:     args{gfrWithTimestamps},
+			expected: `{"lost_events":{"source":"HUBBLE_RING_BUFFER","num_events_lost":"1","cpu":5,"first":"1970-01-01T00:20:30.567800Z","last":"1970-01-01T00:20:38.567800Z"},"time":"1970-01-01T00:20:34.567800Z"}`,
+		},
+		{
+			name: "jsonpb with timestamps",
+			options: []Option{
+				JSONPB(),
+				WithColor("never"),
+				Writer(&buf),
+			},
+			args:     args{gfrWithTimestamps},
+			expected: `{"lost_events":{"source":"HUBBLE_RING_BUFFER","num_events_lost":"1","cpu":5,"first":"1970-01-01T00:20:30.567800Z","last":"1970-01-01T00:20:38.567800Z"},"time":"1970-01-01T00:20:34.567800Z"}`,
+		},
+		{
+			name: "dict with timestamps",
+			options: []Option{
+				Dict(),
+				WithColor("never"),
+				Writer(&buf),
+			},
+			args: args{gfrWithTimestamps},
+			expected: `
+  TIMESTAMP: Jan  1 00:20:34.567
+     SOURCE: HUBBLE_RING_BUFFER
+       TYPE: EVENTS LOST
+    VERDICT: -
+    SUMMARY: CPU(5) - 1 (first: Jan  1 00:20:30.567, last: Jan  1 00:20:38.567)`,
+		},
+	}
+	for _, tt := range tests {
+		buf.Reset()
+		t.Run(tt.name, func(t *testing.T) {
+			p := New(tt.options...)
+			err := p.WriteLostEvent(tt.args.le)
+			require.NoError(t, err)
+			require.NoError(t, p.Close())
+			require.Equal(t, strings.TrimSpace(tt.expected), strings.TrimSpace(buf.String()))
+		})
+	}
+}
+
+func TestFormatPolicyNames(t *testing.T) {
+	tests := []struct {
+		name     string
+		policies []*flowpb.Policy
+		expected string
+	}{
+		{
+			name:     "No policies",
+			policies: []*flowpb.Policy{},
+			expected: "",
+		},
+		{
+			name: "Single policy with kind and name",
+			policies: []*flowpb.Policy{
+				{Kind: "CiliumNetworkPolicy", Name: "AllowHTTP"},
+			},
+			expected: " BY AllowHTTP (CiliumNetworkPolicy)",
+		},
+		{
+			name: "Multiple policies with kind and name",
+			policies: []*flowpb.Policy{
+				{Kind: "CiliumNetworkPolicy", Name: "AllowHTTP"},
+				{Kind: "CiliumClusterwideNetworkPolicy", Name: "AllowDNS"},
+			},
+			expected: " BY AllowHTTP (CiliumNetworkPolicy), AllowDNS (CiliumClusterwideNetworkPolicy)",
+		},
+		{
+			name: "Policy with missing kind",
+			policies: []*flowpb.Policy{
+				{Kind: "", Name: "AllowAll"},
+			},
+			expected: "",
+		},
+		{
+			name: "Policy with missing name",
+			policies: []*flowpb.Policy{
+				{Kind: "CiliumNetworkPolicy", Name: ""},
+			},
+			expected: "",
+		},
+		{
+			name: "Mixed valid and invalid policies",
+			policies: []*flowpb.Policy{
+				{Kind: "CiliumNetworkPolicy", Name: "AllowHTTP"},
+				{Kind: "", Name: "InvalidPolicy"},
+				{Kind: "CiliumClusterwideNetworkPolicy", Name: "AllowDNS"},
+			},
+			expected: " BY AllowHTTP (CiliumNetworkPolicy), AllowDNS (CiliumClusterwideNetworkPolicy)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := formatPolicyNames(tt.policies)
+			if result != tt.expected {
+				t.Errorf("formatPolicyNames() = %q, want %q", result, tt.expected)
+			}
 		})
 	}
 }

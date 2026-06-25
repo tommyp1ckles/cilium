@@ -9,7 +9,6 @@
 #error "Proxy redirection is only supported from skb context"
 #endif
 
-#ifdef ENABLE_TPROXY
 static __always_inline int
 assign_socket_tcp(struct __ctx_buff *ctx,
 		  struct bpf_sock_tuple *tuple, __u32 len, bool established)
@@ -168,7 +167,6 @@ CTX_REDIRECT_FN(ctx_redirect_to_proxy_ingress6, struct ipv6_ct_tuple, ipv6,
 		DBG_SK_LOOKUP6, daddr[3], saddr[3])
 #endif
 #undef CTX_REDIRECT_FN
-#endif /* ENABLE_TPROXY */
 
 /**
  * __ctx_redirect_to_proxy configures the ctx with the proxy mark and proxy
@@ -206,17 +204,14 @@ __ctx_redirect_to_proxy(struct __ctx_buff *ctx, void *tuple __maybe_unused,
 {
 	int result __maybe_unused = CTX_ACT_OK;
 
-#ifdef ENABLE_TPROXY
-	if (!from_host)
+	if (CONFIG(enable_tproxy) && !from_host)
 		ctx->mark |= MARK_MAGIC_TO_PROXY;
 	else
-#endif
 		ctx->mark = MARK_MAGIC_TO_PROXY | proxy_port << 16;
 
 	cilium_dbg_capture(ctx, DBG_CAPTURE_PROXY_PRE, proxy_port);
 
-#ifdef ENABLE_TPROXY
-	if (proxy_port && !from_host) {
+	if (CONFIG(enable_tproxy) && proxy_port && !from_host) {
 #ifdef ENABLE_IPV4
 		if (ipv4) {
 			__be32 ipv4_localhost = bpf_htonl(INADDR_LOOPBACK);
@@ -234,7 +229,6 @@ __ctx_redirect_to_proxy(struct __ctx_buff *ctx, void *tuple __maybe_unused,
 		}
 #endif /* ENABLE_IPV6 */
 	}
-#endif /* ENABLE_TPROXY */
 	return result;
 }
 
@@ -256,7 +250,6 @@ ctx_redirect_to_proxy6(struct __ctx_buff *ctx, void *tuple __maybe_unused,
 }
 #endif /* ENABLE_IPV6 */
 
-#ifdef ENABLE_TPROXY
 #define IP_TUPLE_EXTRACT_FN(NAME, PREFIX)				\
 /**									\
  * extract_tuple4 / extract_tuple6					\
@@ -272,12 +265,12 @@ NAME(struct __ctx_buff *ctx, struct PREFIX ## _ct_tuple *tuple)		\
 	int err;							\
 									\
 	err = PREFIX ## _extract_tuple(ctx, tuple);			\
-	if (err != CTX_ACT_OK)						\
+	if (err < 0)							\
 		return err;						\
 									\
 	__ ## PREFIX ## _ct_tuple_reverse(tuple);			\
 									\
-	return CTX_ACT_OK;						\
+	return 0;							\
 }
 
 #ifdef ENABLE_IPV4
@@ -286,25 +279,12 @@ IP_TUPLE_EXTRACT_FN(extract_tuple4, ipv4)
 #ifdef ENABLE_IPV6
 IP_TUPLE_EXTRACT_FN(extract_tuple6, ipv6)
 #endif /* ENABLE_IPV6 */
-#endif /* ENABLE_TPROXY */
 
-/**
- * ctx_redirect_to_proxy_first() applies changes to the context to forward
- * the packet towards the proxy. It is designed to run as the first function
- * that accesses the context from the current BPF program.
- */
 static __always_inline int
-ctx_redirect_to_proxy_first(struct __ctx_buff *ctx, __be16 proxy_port)
+ctx_redirect_to_proxy_first_tproxy(struct __ctx_buff *ctx, __be16 proxy_port)
 {
 	int ret = CTX_ACT_OK;
-#if defined(ENABLE_TPROXY)
-	__u16 proto;
-#ifdef ENABLE_IPV4
-	__be32 ipv4_localhost = bpf_htonl(INADDR_LOOPBACK);
-#endif
-#ifdef ENABLE_IPV6
-	union v6addr ipv6_localhost = { .addr[15] = 1,};
-#endif
+	__be16 proto;
 
 	/**
 	 * For reply traffic to egress proxy for a local endpoint, we skip the
@@ -315,15 +295,15 @@ ctx_redirect_to_proxy_first(struct __ctx_buff *ctx, __be16 proxy_port)
 	 * See ct_state.proxy_redirect usage in bpf_lxc.c for more info.
 	 */
 	if (!proxy_port)
-		goto mark;
+		return CTX_ACT_OK;
 
 	if (!validate_ethertype(ctx, &proto))
 		return DROP_UNSUPPORTED_L2;
 
-	ret = DROP_UNKNOWN_L3;
 	switch (proto) {
 #ifdef ENABLE_IPV6
 	case bpf_htons(ETH_P_IPV6): {
+		union v6addr ipv6_localhost = { .addr[15] = 1,};
 		struct ipv6_ct_tuple tuple;
 
 		ret = extract_tuple6(ctx, &tuple);
@@ -335,6 +315,7 @@ ctx_redirect_to_proxy_first(struct __ctx_buff *ctx, __be16 proxy_port)
 #endif /* ENABLE_IPV6 */
 #ifdef ENABLE_IPV4
 	case bpf_htons(ETH_P_IP): {
+		__be32 ipv4_localhost = bpf_htonl(INADDR_LOOPBACK);
 		struct ipv4_ct_tuple tuple;
 
 		ret = extract_tuple4(ctx, &tuple);
@@ -346,16 +327,32 @@ ctx_redirect_to_proxy_first(struct __ctx_buff *ctx, __be16 proxy_port)
 	}
 #endif /* ENABLE_IPV4 */
 	default:
-		goto out;
+		ret = DROP_UNKNOWN_L3;
+		break;
 	}
-#endif /* ENABLE_TPROXY */
 
-mark: __maybe_unused;
+	return ret;
+}
+
+/**
+ * ctx_redirect_to_proxy_first() applies changes to the context to forward
+ * the packet towards the proxy. It is designed to run as the first function
+ * that accesses the context from the current BPF program.
+ */
+static __always_inline int
+ctx_redirect_to_proxy_first(struct __ctx_buff *ctx, __be16 proxy_port)
+{
+	int ret = CTX_ACT_OK;
+
+	if (CONFIG(enable_tproxy)) {
+		ret = ctx_redirect_to_proxy_first_tproxy(ctx, proxy_port);
+		if (IS_ERR(ret))
+			return ret;
+	}
+
 	cilium_dbg_capture(ctx, DBG_CAPTURE_PROXY_POST, proxy_port);
 	ctx->mark = MARK_MAGIC_TO_PROXY | (proxy_port << 16);
 	ctx_change_type(ctx, PACKET_HOST);
-
-out: __maybe_unused;
 	return ret;
 }
 
@@ -370,7 +367,7 @@ out: __maybe_unused;
 static __always_inline int
 ctx_redirect_to_proxy_host_egress(struct __ctx_buff *ctx, __be16 proxy_port)
 {
-	union macaddr mac = HOST_IFINDEX_MAC;
+	union macaddr mac = CONFIG(cilium_host_mac);
 
 	ctx->mark = MARK_MAGIC_TO_PROXY | proxy_port << 16;
 
@@ -379,7 +376,7 @@ ctx_redirect_to_proxy_host_egress(struct __ctx_buff *ctx, __be16 proxy_port)
 	if (eth_store_daddr(ctx, (__u8 *)&mac, 0) < 0)
 		return DROP_WRITE_ERROR;
 
-	return ctx_redirect(ctx, CILIUM_IFINDEX, BPF_F_INGRESS);
+	return ctx_redirect(ctx, CONFIG(cilium_host_ifindex), BPF_F_INGRESS);
 }
 
 /**

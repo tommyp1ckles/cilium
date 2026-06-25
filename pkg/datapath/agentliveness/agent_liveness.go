@@ -13,7 +13,6 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/cilium/cilium/pkg/bpf"
-	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/maps/configmap"
 	"github.com/cilium/cilium/pkg/time"
 )
@@ -41,14 +40,13 @@ func (alc agentLivenessConfig) Flags(flags *pflag.FlagSet) {
 }
 
 func newAgentLivenessUpdater(
-	lifecycle cell.Lifecycle,
 	jobRegistry job.Registry,
 	health cell.Health,
 	configMap configmap.Map,
 	agentLivenessConfig agentLivenessConfig,
 ) {
 	// Discard even debug logs since this particular job is very noisy
-	log := slog.New(logging.SlogNopHandler)
+	log := slog.New(slog.DiscardHandler)
 	group := jobRegistry.NewGroup(health, job.WithLogger(log))
 	group.Add(job.Timer("agent-liveness-updater", func(_ context.Context) error {
 		mtime, err := bpf.GetMtime()
@@ -64,5 +62,4 @@ func newAgentLivenessUpdater(
 		return nil
 	}, agentLivenessConfig.AgentLivenessUpdateInterval))
 
-	lifecycle.Append(group)
 }

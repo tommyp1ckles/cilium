@@ -4,34 +4,51 @@
 package policymap
 
 import (
-	"errors"
+	"log/slog"
 	"os"
 	"testing"
 
 	"github.com/cilium/ebpf/rlimit"
+	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
 
 	"github.com/cilium/cilium/pkg/bpf"
-
 	"github.com/cilium/cilium/pkg/policy/trafficdirection"
+	policyTypes "github.com/cilium/cilium/pkg/policy/types"
 	"github.com/cilium/cilium/pkg/testutils"
 	"github.com/cilium/cilium/pkg/u8proto"
 )
 
-func setupPolicyMapPrivilegedTestSuite(tb testing.TB) *PolicyMap {
+const (
+	testMapSize = 1024
+)
+
+func createStatsMapForTest(maxStatsEntries int) (*StatsMap, error) {
+	m, _ := newStatsMap(maxStatsEntries, slog.Default())
+	return m, m.OpenOrCreate()
+}
+
+func setupPolicyMapPrivilegedTestSuite(tb testing.TB) PolicyMap {
 	testutils.PrivilegedTest(tb)
 
-	bpf.CheckOrMountFS("")
+	logger := hivetest.Logger(tb)
+	bpf.CheckOrMountFS(logger, "")
 
 	if err := rlimit.RemoveMemlock(); err != nil {
 		tb.Fatal(err)
 	}
 
-	testMap := newMap("cilium_policy_test")
+	stats, err := createStatsMapForTest(testMapSize)
+	require.NoError(tb, err)
+	require.NotNil(tb, stats)
 
-	_ = os.RemoveAll(bpf.MapPath("cilium_policy_test"))
-	err := testMap.CreateUnpinned()
+	testMap, err := newPolicyMap(logger, 0, testMapSize, stats)
+	require.NoError(tb, err)
+	require.NotNil(tb, testMap)
+
+	_ = os.RemoveAll(bpf.LocalMapPath(logger, MapName, 0))
+	err = testMap.CreateUnpinned()
 	require.NoError(tb, err)
 
 	tb.Cleanup(func() {
@@ -42,60 +59,68 @@ func setupPolicyMapPrivilegedTestSuite(tb testing.TB) *PolicyMap {
 	return testMap
 }
 
-func TestPolicyMapDumpToSlice(t *testing.T) {
+func TestPrivilegedPolicyMapDumpToSlice(t *testing.T) {
 	testMap := setupPolicyMapPrivilegedTestSuite(t)
 
-	fooEntry := NewKey(1, 1, 1, 1, SinglePortPrefixLen)
-	err := testMap.AllowKey(fooEntry, 0, 0)
-	require.Nil(t, err)
+	fooKey := newKey(1, 1, 1, 1, SinglePortPrefixLen)
+	entry := newAllowEntry(fooKey, 42, policyTypes.AuthTypeSpire.AsDerivedRequirement(), 0)
+	// err := testMap.AllowKey(fooKey, 42, policyTypes.AuthTypeSpire.AsDerivedRequirement(), 0)
+	err := testMap.Update(&fooKey, &entry)
+	require.NoError(t, err)
 
 	dump, err := testMap.DumpToSlice()
-	require.Nil(t, err)
-	require.Equal(t, 1, len(dump))
+	require.NoError(t, err)
+	require.Len(t, dump, 1)
 
-	require.EqualValues(t, fooEntry, dump[0].Key)
+	require.Equal(t, fooKey, dump[0].Key)
+
+	require.False(t, dump[0].PolicyEntry.AuthRequirement.IsExplicit())
+	require.Equal(t, policyTypes.AuthType(1), dump[0].PolicyEntry.AuthRequirement.AuthType())
+	require.Equal(t, policyTypes.Precedence(42), dump[0].PolicyEntry.Precedence)
 
 	// Special case: allow-all entry
-	barEntry := NewKey(0, 0, 0, 0, 0)
-	err = testMap.AllowKey(barEntry, 0, 0)
-	require.Nil(t, err)
+	barKey := newKey(0, 0, 0, 0, 0)
+	barEntry := newAllowEntry(barKey, 0, policyTypes.AuthRequirement(0), 0)
+	err = testMap.Update(&barKey, &barEntry)
+	require.NoError(t, err)
 
 	dump, err = testMap.DumpToSlice()
-	require.Nil(t, err)
-	require.Equal(t, 2, len(dump))
+	require.NoError(t, err)
+	require.Len(t, dump, 2)
 }
 
-func TestDeleteNonexistentKey(t *testing.T) {
+func TestPrivilegedDeleteNonexistentKey(t *testing.T) {
 	testMap := setupPolicyMapPrivilegedTestSuite(t)
-	key := NewKey(trafficdirection.Ingress, 27, u8proto.TCP, 80, SinglePortPrefixLen)
-	err := testMap.Map.Delete(&key)
-	require.NotNil(t, err)
+	key := newKey(trafficdirection.Ingress, 27, u8proto.TCP, 80, SinglePortPrefixLen)
+	err := testMap.DeleteKey(key)
+	require.Error(t, err)
 	var errno unix.Errno
-	require.Equal(t, true, errors.As(err, &errno))
+	require.ErrorAs(t, err, &errno)
 	require.Equal(t, unix.ENOENT, errno)
 }
 
-func TestDenyPolicyMapDumpToSlice(t *testing.T) {
+func TestPrivilegedDenyPolicyMapDumpToSlice(t *testing.T) {
 	testMap := setupPolicyMapPrivilegedTestSuite(t)
 
-	fooKey := NewKey(1, 1, 1, 1, SinglePortPrefixLen)
-	fooEntry := newDenyEntry(fooKey)
-	err := testMap.DenyKey(fooKey)
-	require.Nil(t, err)
+	fooKey := newKey(1, 1, 1, 1, SinglePortPrefixLen)
+	fooEntry := newDenyEntry(fooKey, 321)
+	err := testMap.Update(&fooKey, &fooEntry)
+	require.NoError(t, err)
 
 	dump, err := testMap.DumpToSlice()
-	require.Nil(t, err)
-	require.Equal(t, 1, len(dump))
+	require.NoError(t, err)
+	require.Len(t, dump, 1)
 
-	require.EqualValues(t, fooKey, dump[0].Key)
-	require.EqualValues(t, fooEntry, dump[0].PolicyEntry)
+	require.Equal(t, fooKey, dump[0].Key)
+	require.Equal(t, fooEntry, dump[0].PolicyEntry)
 
 	// Special case: deny-all entry
-	barKey := NewKey(0, 0, 0, 0, 0)
-	err = testMap.DenyKey(barKey)
-	require.Nil(t, err)
+	barKey := newKey(0, 0, 0, 0, 0)
+	barEntry := newDenyEntry(barKey, 0)
+	err = testMap.Update(&barKey, &barEntry)
+	require.NoError(t, err)
 
 	dump, err = testMap.DumpToSlice()
-	require.Nil(t, err)
-	require.Equal(t, 2, len(dump))
+	require.NoError(t, err)
+	require.Len(t, dump, 2)
 }

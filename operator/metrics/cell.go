@@ -6,6 +6,8 @@ package metrics
 import (
 	"github.com/cilium/hive/cell"
 	"github.com/spf13/pflag"
+
+	"github.com/cilium/cilium/pkg/metrics"
 )
 
 const (
@@ -20,33 +22,34 @@ var Cell = cell.Module(
 	"operator-metrics",
 	"Operator Metrics",
 
+	certloaderGroup,
 	cell.Config(defaultConfig),
-	cell.Invoke(registerMetricsManager),
+	// RegistryConfig implements the config type for the agent Cell,
+	// however the operator has a different flag name for this the
+	// server address flag so we configure this ourselves.
+	cell.Provide(func(conf Config) metrics.RegistryConfig {
+		return metrics.RegistryConfig{
+			PrometheusServeAddr: conf.OperatorPrometheusServeAddr,
+		}
+	}),
+	// Metrics cell provides a bare-bones registry that has not been initialized yet.
+	metrics.NewCell("operator"),
+	cell.Invoke(initializeMetrics),
 )
 
 // Config contains the configuration for the operator-metrics cell.
 type Config struct {
 	OperatorPrometheusServeAddr string
+	EnableMetrics               bool
 }
 
 var defaultConfig = Config{
 	// default server address for operator metrics
 	OperatorPrometheusServeAddr: ":9963",
+	EnableMetrics:               false,
 }
 
 func (def Config) Flags(flags *pflag.FlagSet) {
 	flags.String(OperatorPrometheusServeAddr, def.OperatorPrometheusServeAddr, "Address to serve Prometheus metrics")
-}
-
-// SharedConfig contains the configuration that is shared between
-// this module and others.
-// Metrics cell needs to know if GatewayAPI is enabled in order to use
-// the same Registry as controller-runtime and avoid to expose
-// multiple metrics endpoints or servers.
-type SharedConfig struct {
-	// EnableMetrics is set to true if operator metrics are enabled
-	EnableMetrics bool
-
-	// EnableGatewayAPI enables support of Gateway API
-	EnableGatewayAPI bool
+	flags.Bool("enable-metrics", def.EnableMetrics, "Enable Prometheus metrics")
 }

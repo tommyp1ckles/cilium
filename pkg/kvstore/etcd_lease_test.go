@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/require"
 	v3rpcErrors "go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	client "go.etcd.io/etcd/client/v3"
@@ -25,6 +27,7 @@ type fakeEtcdLeaseClient struct {
 	ctx                context.Context
 	expectedTTLSeconds int64
 	grantDelay         time.Duration
+	keepAliveTimeout   time.Duration
 
 	lease    client.LeaseID
 	contexts map[client.LeaseID]context.Context
@@ -36,10 +39,11 @@ func newFakeEtcdClient(leases *fakeEtcdLeaseClient) *client.Client {
 	return cl
 }
 
-func newFakeEtcdLeaseClient(ctx context.Context, expectedTTLSeconds int64) fakeEtcdLeaseClient {
+func newFakeEtcdLeaseClient(ctx context.Context, expectedTTLSeconds int64, keepaliveTimeoutSeconds int64) fakeEtcdLeaseClient {
 	return fakeEtcdLeaseClient{
 		ctx:                ctx,
 		expectedTTLSeconds: expectedTTLSeconds,
+		keepAliveTimeout:   time.Duration(keepaliveTimeoutSeconds) * time.Second,
 		contexts:           make(map[client.LeaseID]context.Context),
 	}
 }
@@ -62,7 +66,10 @@ func (f *fakeEtcdLeaseClient) KeepAlive(ctx context.Context, id client.LeaseID) 
 
 	ch := make(chan *client.LeaseKeepAliveResponse)
 	go func() {
-		<-ctx.Done()
+		select {
+		case <-ctx.Done():
+		case <-time.After(f.keepAliveTimeout):
+		}
 		close(ch)
 	}()
 
@@ -86,8 +93,8 @@ func (f *fakeEtcdLeaseClient) Close() error { return ErrNotImplemented }
 
 func TestLeaseManager(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	cl := newFakeEtcdLeaseClient(ctx, 10)
-	mgr := newEtcdLeaseManager(newFakeEtcdClient(&cl), 10*time.Second, 5, nil, log)
+	cl := newFakeEtcdLeaseClient(ctx, 10, 100)
+	mgr := newEtcdLeaseManager(hivetest.Logger(t), newFakeEtcdClient(&cl), 10*time.Second, 5, nil)
 
 	t.Cleanup(func() {
 		cancel()
@@ -95,14 +102,14 @@ func TestLeaseManager(t *testing.T) {
 	})
 
 	// Get the lease ID five times, and assert that the same ID is always returned
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		leaseID, err := mgr.GetLeaseID(ctx, fmt.Sprintf("key%d", i))
 		require.NoError(t, err, "GetLeaseID should succeed")
 		require.Equal(t, client.LeaseID(1), leaseID)
 	}
 
 	// Get the lease ID five more times, and assert that the same ID is always returned
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		leaseID, err := mgr.GetLeaseID(ctx, fmt.Sprintf("key%d", i+5))
 		require.NoError(t, err, "GetLeaseID should succeed")
 		require.Equal(t, client.LeaseID(2), leaseID)
@@ -143,10 +150,37 @@ func TestLeaseManager(t *testing.T) {
 	require.Equal(t, uint32(3), mgr.TotalLeases())
 }
 
+func TestLeaseThatExpiresImmediately(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cl := newFakeEtcdLeaseClient(ctx, 0, 0)
+	mgr := newEtcdLeaseManager(hivetest.Logger(t), newFakeEtcdClient(&cl), 0*time.Second, 5, nil)
+
+	t.Cleanup(func() {
+		cancel()
+		mgr.Wait()
+	})
+
+	// Perform multiple requests in parallel, simulating a lot of clients doing operations
+	var wg sync.WaitGroup
+	for i := range 2000 {
+		wg.Go(func() {
+			_, err := mgr.GetLeaseID(ctx, fmt.Sprintf("key%d", i))
+			require.NoError(t, err)
+		})
+	}
+	wg.Wait()
+
+	// Wait for all leases to expire and do cleanup
+	mgr.Wait()
+
+	// Ensure all leases have been cleaned up since they have all expired
+	require.Equal(t, uint32(0), mgr.TotalLeases())
+}
+
 func TestLeaseManagerParallel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	cl := newFakeEtcdLeaseClient(ctx, 10)
-	mgr := newEtcdLeaseManager(newFakeEtcdClient(&cl), 10*time.Second, 5, nil, log)
+	cl := newFakeEtcdLeaseClient(ctx, 10, 100)
+	mgr := newEtcdLeaseManager(hivetest.Logger(t), newFakeEtcdClient(&cl), 10*time.Second, 5, nil)
 
 	t.Cleanup(func() {
 		cancel()
@@ -159,7 +193,7 @@ func TestLeaseManagerParallel(t *testing.T) {
 	// assert that they all return the same lease ID
 	cl.grantDelay = 500 * time.Millisecond
 
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		go func(idx int) {
 			if idx%2 == 0 {
 				leaseID, err := mgr.GetLeaseID(ctx, fmt.Sprintf("key%d", idx))
@@ -173,22 +207,22 @@ func TestLeaseManagerParallel(t *testing.T) {
 		}(i)
 	}
 
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		require.Equal(t, client.LeaseID(1), <-ch)
 	}
 }
 
 func TestLeaseManagerReleasePrefix(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	cl := newFakeEtcdLeaseClient(ctx, 10)
-	mgr := newEtcdLeaseManager(newFakeEtcdClient(&cl), 10*time.Second, 5, nil, log)
+	cl := newFakeEtcdLeaseClient(ctx, 10, 100)
+	mgr := newEtcdLeaseManager(hivetest.Logger(t), newFakeEtcdClient(&cl), 10*time.Second, 5, nil)
 
 	t.Cleanup(func() {
 		cancel()
 		mgr.Wait()
 	})
 
-	for i := 0; i < 9; i++ {
+	for i := range 9 {
 		leaseID, err := mgr.GetLeaseID(ctx, fmt.Sprintf("key%d%d", i/3, i))
 		require.NoError(t, err, "GetLeaseID should succeed")
 		require.Equal(t, client.LeaseID(1+i/5), leaseID)
@@ -197,7 +231,7 @@ func TestLeaseManagerReleasePrefix(t *testing.T) {
 	// Delete the prefix which includes keys attached to both leases
 	mgr.ReleasePrefix("key1")
 
-	for i := 0; i < 9; i++ {
+	for i := range 9 {
 		// Verify that the leases for the keys matching the prefix have been
 		// released, and that the others are still in place.
 		require.Equal(t, i/3 != 1, mgr.KeyHasLease(fmt.Sprintf("key%d%d", i/3, i), client.LeaseID(1+i/5)))
@@ -211,8 +245,8 @@ func TestLeaseManagerCancelIfExpired(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cl := newFakeEtcdLeaseClient(ctx, 10)
-	mgr := newEtcdLeaseManager(newFakeEtcdClient(&cl), 10*time.Second, 5, observer, log)
+	cl := newFakeEtcdLeaseClient(ctx, 10, 100)
+	mgr := newEtcdLeaseManager(hivetest.Logger(t), newFakeEtcdClient(&cl), 10*time.Second, 5, observer)
 
 	t.Cleanup(func() {
 		close(expiredCH)
@@ -220,7 +254,7 @@ func TestLeaseManagerCancelIfExpired(t *testing.T) {
 		mgr.Wait()
 	})
 
-	for i := 0; i < 15; i++ {
+	for i := range 15 {
 		leaseID, err := mgr.GetLeaseID(ctx, fmt.Sprintf("key%d", i))
 		require.NoError(t, err, "GetLeaseID should succeed")
 		require.Equal(t, client.LeaseID(1+i/5), leaseID)
@@ -244,7 +278,7 @@ func TestLeaseManagerCancelIfExpired(t *testing.T) {
 
 	// Ensure consistent ordering since the expired entries are retrieved from a map.
 	var expired []string
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		expired = append(expired, <-expiredCH)
 	}
 	slices.Sort(expired)
@@ -258,15 +292,15 @@ func TestLeaseManagerCancelIfExpired(t *testing.T) {
 
 func TestLeaseManagerKeyHasLease(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	cl := newFakeEtcdLeaseClient(ctx, 10)
-	mgr := newEtcdLeaseManager(newFakeEtcdClient(&cl), 10*time.Second, 5, nil, log)
+	cl := newFakeEtcdLeaseClient(ctx, 10, 100)
+	mgr := newEtcdLeaseManager(hivetest.Logger(t), newFakeEtcdClient(&cl), 10*time.Second, 5, nil)
 
 	t.Cleanup(func() {
 		cancel()
 		mgr.Wait()
 	})
 
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		leaseID, err := mgr.GetLeaseID(ctx, fmt.Sprintf("key%d", i))
 		require.NoError(t, err, "GetLeaseID should succeed")
 		require.Equal(t, client.LeaseID(1+i/5), leaseID)

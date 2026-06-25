@@ -7,26 +7,26 @@
 package endpoint
 
 import (
-	"context"
 	"fmt"
+	"io"
+	"maps"
 	"slices"
 	"sort"
 	"strconv"
 
-	"github.com/sirupsen/logrus"
 	"go4.org/netipx"
 
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/endpoint/regeneration"
-	"github.com/cilium/cilium/pkg/identity/cache"
 	identitymodel "github.com/cilium/cilium/pkg/identity/model"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/labels/model"
 	"github.com/cilium/cilium/pkg/labelsfilter"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/mac"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
-	"github.com/cilium/cilium/pkg/types"
+	"github.com/cilium/cilium/pkg/policy/trafficdirection"
 	"github.com/cilium/cilium/pkg/u8proto"
 )
 
@@ -37,16 +37,16 @@ func (e *Endpoint) GetLabelsModel() (*models.LabelConfiguration, error) {
 		return nil, err
 	}
 	spec := &models.LabelConfigurationSpec{
-		User: e.OpLabels.Custom.GetModel(),
+		User: e.labels.Custom.GetModel(),
 	}
 
 	cfg := models.LabelConfiguration{
 		Spec: spec,
 		Status: &models.LabelConfigurationStatus{
 			Realized:         spec,
-			SecurityRelevant: e.OpLabels.OrchestrationIdentity.GetModel(),
-			Derived:          e.OpLabels.OrchestrationInfo.GetModel(),
-			Disabled:         e.OpLabels.Disabled.GetModel(),
+			SecurityRelevant: e.labels.OrchestrationIdentity.GetModel(),
+			Derived:          e.labels.OrchestrationInfo.GetModel(),
+			Disabled:         e.labels.Disabled.GetModel(),
 		},
 	}
 	e.runlock()
@@ -54,60 +54,59 @@ func (e *Endpoint) GetLabelsModel() (*models.LabelConfiguration, error) {
 }
 
 // NewEndpointFromChangeModel creates a new endpoint from a request
-func NewEndpointFromChangeModel(ctx context.Context, owner regeneration.Owner, policyGetter policyRepoGetter, namedPortsGetter namedPortsGetter, proxy EndpointProxy, allocator cache.IdentityAllocator, base *models.EndpointChangeRequest) (*Endpoint, error) {
-	if base == nil {
+func NewEndpointFromChangeModel(p EndpointParams, dnsRulesAPI DNSRulesAPI, proxy EndpointProxy, model *models.EndpointChangeRequest, policyDebugLog io.Writer) (*Endpoint, error) {
+	if model == nil {
 		return nil, nil
 	}
 
-	ep := createEndpoint(owner, policyGetter, namedPortsGetter, proxy, allocator, uint16(base.ID), base.InterfaceName)
-	ep.ifIndex = int(base.InterfaceIndex)
-	ep.containerIfName = base.ContainerInterfaceName
-	if base.ContainerName != "" {
-		ep.containerName.Store(&base.ContainerName)
+	ep := createEndpoint(p, dnsRulesAPI, proxy, uint16(model.ID), model.InterfaceName, policyDebugLog)
+	ep.ifIndex = int(model.InterfaceIndex)
+	ep.containerIfName = model.ContainerInterfaceName
+	ep.containerNetnsPath = model.ContainerNetnsPath
+	ep.parentIfIndex = int(model.ParentInterfaceIndex)
+	if model.ContainerID != "" {
+		ep.containerID.Store(&model.ContainerID)
 	}
-	if base.ContainerID != "" {
-		ep.containerID.Store(&base.ContainerID)
-	}
-	ep.dockerNetworkID = base.DockerNetworkID
-	ep.dockerEndpointID = base.DockerEndpointID
-	ep.K8sPodName = base.K8sPodName
-	ep.K8sNamespace = base.K8sNamespace
-	ep.K8sUID = base.K8sUID
-	ep.disableLegacyIdentifiers = base.DisableLegacyIdentifiers
+	ep.K8sPodName = model.K8sPodName
+	ep.K8sNamespace = model.K8sNamespace
+	ep.K8sUID = model.K8sUID
+	ep.disableLegacyIdentifiers = model.DisableLegacyIdentifiers
 
-	if base.Mac != "" {
-		m, err := mac.ParseMAC(base.Mac)
+	if model.Mac != "" {
+		m, err := mac.ParseMAC(model.Mac)
 		if err != nil {
 			return nil, err
 		}
 		ep.mac = m
 	}
 
-	if base.HostMac != "" {
-		m, err := mac.ParseMAC(base.HostMac)
+	if model.HostMac != "" {
+		m, err := mac.ParseMAC(model.HostMac)
 		if err != nil {
 			return nil, err
 		}
 		ep.nodeMAC = m
 	}
 
-	if base.NetnsCookie != "" {
-		cookie64, err := strconv.ParseInt(base.NetnsCookie, 10, 64)
+	if model.NetnsCookie != "" {
+		cookie64, err := strconv.ParseInt(model.NetnsCookie, 10, 64)
 		if err != nil {
 			// Don't return on error (and block the endpoint creation) as this
 			// is an unusual case where data could have been malformed. Defer error
 			// logging to individual features depending on the metadata.
-			log.WithError(err).WithFields(logrus.Fields{
-				"netns_cookie": base.NetnsCookie,
-				"ep_id":        base.ID,
-			}).Error("unable to parse netns cookie for ep")
+			ep.getLogger().Error(
+				"unable to parse netns cookie for ep",
+				logfields.Error, err,
+				logfields.NetnsCookie, model.NetnsCookie,
+				logfields.EndpointID, model.ID,
+			)
 		} else {
 			ep.NetNsCookie = uint64(cookie64)
 		}
 	}
 
-	if base.Addressing != nil {
-		if ip := base.Addressing.IPV6; ip != "" {
+	if model.Addressing != nil {
+		if ip := model.Addressing.IPv6; ip != "" {
 			ip6, err := netipx.ParsePrefixOrAddr(ip)
 			if err != nil {
 				return nil, err
@@ -116,10 +115,10 @@ func NewEndpointFromChangeModel(ctx context.Context, owner regeneration.Owner, p
 				return nil, fmt.Errorf("invalid IPv6 address %q", ip)
 			}
 			ep.IPv6 = ip6
-			ep.IPv6IPAMPool = base.Addressing.IPV6PoolName
+			ep.IPv6IPAMPool = model.Addressing.IPv6PoolName
 		}
 
-		if ip := base.Addressing.IPV4; ip != "" {
+		if ip := model.Addressing.IPv4; ip != "" {
 			ip4, err := netipx.ParsePrefixOrAddr(ip)
 			if err != nil {
 				return nil, err
@@ -128,12 +127,12 @@ func NewEndpointFromChangeModel(ctx context.Context, owner regeneration.Owner, p
 				return nil, fmt.Errorf("invalid IPv4 address %q", ip)
 			}
 			ep.IPv4 = ip4
-			ep.IPv4IPAMPool = base.Addressing.IPV4PoolName
+			ep.IPv4IPAMPool = model.Addressing.IPv4PoolName
 		}
 	}
 
-	if base.DatapathConfiguration != nil {
-		ep.DatapathConfiguration = *base.DatapathConfiguration
+	if model.DatapathConfiguration != nil {
+		ep.DatapathConfiguration = *model.DatapathConfiguration
 		// We need to make sure DatapathConfiguration.DisableSipVerification value
 		// overrides the value of SourceIPVerification runtime option of the endpoint.
 		if ep.DatapathConfiguration.DisableSipVerification {
@@ -141,19 +140,19 @@ func NewEndpointFromChangeModel(ctx context.Context, owner regeneration.Owner, p
 		}
 	}
 
-	if base.Labels != nil {
-		lbls := labels.NewLabelsFromModel(base.Labels)
+	if model.Labels != nil {
+		lbls := labels.NewLabelsFromModel(model.Labels)
 		identityLabels, infoLabels := labelsfilter.Filter(lbls)
-		ep.OpLabels.OrchestrationIdentity = identityLabels
-		ep.OpLabels.OrchestrationInfo = infoLabels
+		ep.labels.OrchestrationIdentity = identityLabels
+		ep.labels.OrchestrationInfo = infoLabels
 	}
 
-	if base.State != nil {
-		ep.setState(State(*base.State), "Endpoint creation")
+	if model.State != nil {
+		ep.setState(State(*model.State), "Endpoint creation")
 	}
 
-	if base.Properties != nil {
-		ep.properties = base.Properties
+	if model.Properties != nil {
+		ep.properties = model.Properties
 	}
 
 	return ep, nil
@@ -161,15 +160,12 @@ func NewEndpointFromChangeModel(ctx context.Context, owner regeneration.Owner, p
 
 func (e *Endpoint) getModelEndpointIdentitiersRLocked() *models.EndpointIdentifiers {
 	identifiers := &models.EndpointIdentifiers{
-		CniAttachmentID:  e.GetCNIAttachmentID(),
-		DockerEndpointID: e.dockerEndpointID,
-		DockerNetworkID:  e.dockerNetworkID,
+		CniAttachmentID: e.GetCNIAttachmentID(),
 	}
 
 	// Use legacy endpoint identifiers only if the endpoint has not opted out
 	if !e.disableLegacyIdentifiers {
 		identifiers.ContainerID = e.GetContainerID()
-		identifiers.ContainerName = e.GetContainerName()
 		identifiers.PodName = e.GetK8sNamespaceAndPodName()
 		identifiers.K8sPodName = e.K8sPodName
 		identifiers.K8sNamespace = e.K8sNamespace
@@ -181,10 +177,10 @@ func (e *Endpoint) getModelEndpointIdentitiersRLocked() *models.EndpointIdentifi
 func (e *Endpoint) getModelNetworkingRLocked() *models.EndpointNetworking {
 	return &models.EndpointNetworking{
 		Addressing: []*models.AddressPair{{
-			IPV4:         e.GetIPv4Address(),
-			IPV4PoolName: e.IPv4IPAMPool,
-			IPV6:         e.GetIPv6Address(),
-			IPV6PoolName: e.IPv6IPAMPool,
+			IPv4:         e.GetIPv4Address(),
+			IPv4PoolName: e.IPv4IPAMPool,
+			IPv6:         e.GetIPv6Address(),
+			IPv6PoolName: e.IPv6IPAMPool,
 		}},
 		InterfaceIndex:         int64(e.ifIndex),
 		InterfaceName:          e.ifName,
@@ -217,7 +213,7 @@ func (e *Endpoint) GetModelRLocked() *models.Endpoint {
 		statusLog = statusLog[:1]
 	}
 
-	lblMdl := model.NewModel(&e.OpLabels)
+	lblMdl := model.NewModel(&e.labels)
 
 	// Sort these slices since they come out in random orders. This allows
 	// reflect.DeepEqual to succeed.
@@ -328,22 +324,17 @@ func (e *Endpoint) GetHealthModel() *models.EndpointHealth {
 }
 
 // getNamedPortsModel returns the endpoint's NamedPorts object.
-func (e *Endpoint) getNamedPortsModel() (np models.NamedPorts) {
-	var k8sPorts types.NamedPortMap
-	if p := e.k8sPorts.Load(); p != nil {
-		k8sPorts = *p
+func (e *Endpoint) getNamedPortsModel() models.NamedPorts {
+	p := e.k8sPorts.Load()
+	if p == nil || *p == nil {
+		return models.NamedPorts{}
 	}
+	k8sPorts := *p
 
+	np := make(models.NamedPorts, 0, len(k8sPorts))
 	// keep named ports ordered to avoid the unnecessary updates to
 	// kube-apiserver
-	names := make([]string, 0, len(k8sPorts))
-	for name := range k8sPorts {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-
-	np = make(models.NamedPorts, 0, len(k8sPorts))
-	for _, name := range names {
+	for _, name := range slices.Sorted(maps.Keys(k8sPorts)) {
 		value := k8sPorts[name]
 		np = append(np, &models.Port{
 			Name:     name,
@@ -375,6 +366,43 @@ func (e *Endpoint) GetModel() *models.Endpoint {
 	return e.GetModelRLocked()
 }
 
+// getIdentities returns the ingress and egress identities stored in the
+// MapState.
+// Used only for API requests.
+func getIdentities(ep *policy.EndpointPolicy) (ingIdentities, ingDenyIdentities, egIdentities, egDenyIdentities []int64) {
+	for key, entry := range ep.Entries() {
+		if key.Nexthdr != 0 || key.DestPort != 0 {
+			// If the protocol or port is non-zero, then the Key no longer only applies
+			// at L3. AllowedIngressIdentities and AllowedEgressIdentities
+			// contain sets of which identities (i.e., label-based L3 only)
+			// are allowed, so anything which contains L4-related policy should
+			// not be added to these sets.
+			continue
+		}
+		if key.TrafficDirection() == trafficdirection.Ingress {
+			if entry.IsDeny() {
+				ingDenyIdentities = append(ingDenyIdentities, int64(key.Identity))
+			} else {
+				ingIdentities = append(ingIdentities, int64(key.Identity))
+			}
+		} else {
+			if entry.IsDeny() {
+				egDenyIdentities = append(egDenyIdentities, int64(key.Identity))
+			} else {
+				egIdentities = append(egIdentities, int64(key.Identity))
+			}
+		}
+	}
+
+	slices.Sort(ingIdentities)
+	slices.Sort(ingDenyIdentities)
+	slices.Sort(egIdentities)
+	slices.Sort(egDenyIdentities)
+
+	return slices.Compact(ingIdentities), slices.Compact(ingDenyIdentities),
+		slices.Compact(egIdentities), slices.Compact(egDenyIdentities)
+}
+
 // GetPolicyModel returns the endpoint's policy as an API model.
 //
 // Must be called with e.mutex RLock()ed.
@@ -387,19 +415,9 @@ func (e *Endpoint) GetPolicyModel() *models.EndpointPolicyStatus {
 		return nil
 	}
 
-	realizedLog := log.WithField("map-name", "realized").Logger
-	realizedIngressIdentities, realizedEgressIdentities :=
-		e.realizedPolicy.GetPolicyMap().GetIdentities(realizedLog)
+	realizedIngressIdentities, realizedDenyIngressIdentities, realizedEgressIdentities, realizedDenyEgressIdentities := getIdentities(e.realizedPolicy)
 
-	realizedDenyIngressIdentities, realizedDenyEgressIdentities :=
-		e.realizedPolicy.GetPolicyMap().GetDenyIdentities(realizedLog)
-
-	desiredLog := log.WithField("map-name", "desired").Logger
-	desiredIngressIdentities, desiredEgressIdentities :=
-		e.desiredPolicy.GetPolicyMap().GetIdentities(desiredLog)
-
-	desiredDenyIngressIdentities, desiredDenyEgressIdentities :=
-		e.desiredPolicy.GetPolicyMap().GetDenyIdentities(desiredLog)
+	desiredIngressIdentities, desiredDenyIngressIdentities, desiredEgressIdentities, desiredDenyEgressIdentities := getIdentities(e.desiredPolicy)
 
 	policyEnabled := e.policyStatus()
 
@@ -411,11 +429,9 @@ func (e *Endpoint) GetPolicyModel() *models.EndpointPolicyStatus {
 	e.proxyStatisticsMutex.RUnlock()
 	sortProxyStats(proxyStats)
 
-	var (
-		realizedL4Policy *policy.L4Policy
-	)
+	var realizedL4Policy *policy.L4Policy
 	if e.realizedPolicy != nil {
-		realizedL4Policy = &e.realizedPolicy.L4Policy
+		realizedL4Policy = &e.realizedPolicy.SelectorPolicy.L4Policy
 	}
 
 	mdl := &models.EndpointPolicy{
@@ -431,18 +447,16 @@ func (e *Endpoint) GetPolicyModel() *models.EndpointPolicyStatus {
 		PolicyEnabled:            policyEnabled,
 	}
 
-	var (
-		desiredL4Policy *policy.L4Policy
-	)
+	var desiredL4Policy *policy.L4Policy
 	if e.desiredPolicy != nil {
-		desiredL4Policy = &e.desiredPolicy.L4Policy
+		desiredL4Policy = &e.desiredPolicy.SelectorPolicy.L4Policy
 	}
 
 	desiredMdl := &models.EndpointPolicy{
 		ID: int64(e.SecurityIdentity.ID),
 		// This field should be removed.
-		Build:                    int64(e.nextPolicyRevision),
-		PolicyRevision:           int64(e.nextPolicyRevision),
+		Build:                    int64(e.desiredPolicyRevision),
+		PolicyRevision:           int64(e.desiredPolicyRevision),
 		AllowedIngressIdentities: desiredIngressIdentities,
 		AllowedEgressIdentities:  desiredEgressIdentities,
 		DeniedIngressIdentities:  desiredDenyIngressIdentities,
@@ -466,11 +480,11 @@ func (e *Endpoint) GetPolicyModel() *models.EndpointPolicyStatus {
 func (e *Endpoint) policyStatus() models.EndpointPolicyEnabled {
 	policyEnabled := models.EndpointPolicyEnabledNone
 	switch {
-	case e.realizedPolicy.IngressPolicyEnabled && e.realizedPolicy.EgressPolicyEnabled:
+	case e.realizedPolicy.SelectorPolicy.IngressPolicyEnabled && e.realizedPolicy.SelectorPolicy.EgressPolicyEnabled:
 		policyEnabled = models.EndpointPolicyEnabledBoth
-	case e.realizedPolicy.IngressPolicyEnabled:
+	case e.realizedPolicy.SelectorPolicy.IngressPolicyEnabled:
 		policyEnabled = models.EndpointPolicyEnabledIngress
-	case e.realizedPolicy.EgressPolicyEnabled:
+	case e.realizedPolicy.SelectorPolicy.EgressPolicyEnabled:
 		policyEnabled = models.EndpointPolicyEnabledEgress
 	}
 
@@ -531,21 +545,18 @@ func (e *Endpoint) ProcessChangeRequest(newEp *Endpoint, validPatchTransitionSta
 		}
 	}
 
-	if newContainerName := newEp.containerName.Load(); newContainerName != nil && *newContainerName != "" {
-		e.containerName.Store(newContainerName)
-		// no need to set changed here
-	}
-
 	if newContainerID := newEp.containerID.Load(); newContainerID != nil && *newContainerID != "" {
 		e.containerID.Store(newContainerID)
 		// no need to set changed here
 	}
 
-	e.replaceInformationLabels(labels.LabelSourceAny, newEp.OpLabels.OrchestrationInfo)
-	rev := e.replaceIdentityLabels(labels.LabelSourceAny, newEp.OpLabels.IdentityLabels())
+	e.replaceInformationLabels(labels.LabelSourceAny, newEp.labels.OrchestrationInfo)
+	// PATCH does not remove generated labels and the caller has a comment stating that
+	// labels are ignored, but here we go.
+	rev := e.replaceNonGeneratedIdentityLabels(labels.LabelSourceAny, newEp.labels.IdentityLabels())
 	if rev != 0 {
 		// Run as a goroutine since the runIdentityResolver needs to get the lock
-		go e.runIdentityResolver(e.aliveCtx, false)
+		go e.runIdentityResolver(e.aliveCtx, false, 0)
 	}
 
 	// If desired state is waiting-for-identity but identity is already
@@ -592,7 +603,7 @@ func (e *Endpoint) GetConfigurationStatus() *models.EndpointConfigurationStatus 
 	return &models.EndpointConfigurationStatus{
 		Realized: &models.EndpointConfigurationSpec{
 			LabelConfiguration: &models.LabelConfigurationSpec{
-				User: e.OpLabels.Custom.GetModel(),
+				User: e.labels.Custom.GetModel(),
 			},
 			Options: *e.Options.GetMutableModel(),
 		},
@@ -608,11 +619,35 @@ func (e *Endpoint) ApplyUserLabelChanges(lbls labels.Labels) (add, del labels.La
 		return nil, nil, err
 	}
 	defer e.runlock()
-	add, del = e.OpLabels.SplitUserLabelChanges(lbls)
+	add, del = e.labels.SplitUserLabelChanges(lbls)
 	return
 }
 
 // GetStatusModel returns the model of the status of this endpoint.
 func (e *Endpoint) GetStatusModel() []*models.EndpointStatusChange {
 	return e.status.GetModel()
+}
+
+// GetRealizedL4PolicyRuleOriginModel returns the realized L4 policy of the endpoint.
+func (e *Endpoint) GetRealizedL4PolicyRuleOriginModel() (policy *models.L4Policy, policyRevision uint64, err error) {
+	if e == nil {
+		return
+	}
+	err = e.lockAlive()
+	if err != nil {
+		return
+	}
+	defer e.unlock()
+	if e.realizedPolicy == nil {
+		return
+	}
+	return e.realizedPolicy.SelectorPolicy.L4Policy.GetRuleOriginModel(), e.policyRevision, nil
+}
+
+// GetDesiredPolicy returns the desired or current endpoint policy.
+// May return nil in certain circumstances.
+func (e *Endpoint) GetDesiredPolicy() *policy.EndpointPolicy {
+	e.mutex.RLock()
+	defer e.mutex.RUnlock()
+	return e.desiredPolicy
 }

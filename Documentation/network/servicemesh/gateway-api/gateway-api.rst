@@ -23,15 +23,21 @@ See the `Gateway API site <https://gateway-api.sigs.k8s.io/>`__ for more details
 Cilium Gateway API Support
 ##########################
 
-Cilium supports Gateway API v1.1.0 for below resources, all the Core conformance
+Cilium supports Gateway API v1.5.1 for below resources, all the Core conformance
 tests are passed.
 
-- `GatewayClass <https://gateway-api.sigs.k8s.io/api-types/gatewayclass/>`_
-- `Gateway <https://gateway-api.sigs.k8s.io/api-types/gateway/>`_
-- `HTTPRoute <https://gateway-api.sigs.k8s.io/api-types/httproute/>`_
-- `GRPCRoute <https://gateway-api.sigs.k8s.io/api-types/grpcroute/>`__
-- `TLSRoute (experimental) <https://gateway-api.sigs.k8s.io/references/spec/#gateway.networking.k8s.io/v1alpha2.TLSRoute>`__
-- `ReferenceGrant <https://gateway-api.sigs.k8s.io/api-types/referencegrant/>`_
+- `GatewayClass <https://gateway-api.sigs.k8s.io/reference/api-types/gatewayclass/>`_
+- `Gateway <https://gateway-api.sigs.k8s.io/reference/api-types/gateway/>`_
+- `HTTPRoute <https://gateway-api.sigs.k8s.io/reference/api-types/httproute/>`_
+- `GRPCRoute <https://gateway-api.sigs.k8s.io/reference/api-types/grpcroute/>`__
+- `TLSRoute <https://gateway-api.sigs.k8s.io/reference/api-types/tlsroute/>`__
+- `BackendTLSPolicy <https://gateway-api.sigs.k8s.io/reference/api-types/policy/backendtlspolicy/>`__
+- `ReferenceGrant <https://gateway-api.sigs.k8s.io/reference/api-types/referencegrant/>`_
+- `TCPRoute (experimental) <https://gateway-api.sigs.k8s.io/reference/api-spec/main/spec/#tcproute>`__
+- `UDPRoute (experimental) <https://gateway-api.sigs.k8s.io/reference/api-spec/main/spec/#udproute>`__
+
+Additionally, Cilium provides ``CiliumGatewayClassConfig`` CRD, which can be referenced in
+`GatewayClass.parametersRef <https://gateway-api.sigs.k8s.io/reference/api-types/gatewayclass/#gatewayclass-parameters>`_.
 
 .. admonition:: Video
  :class: attention
@@ -45,6 +51,9 @@ tests are passed.
 .. _gs_gateway_host_network_mode:
 .. include:: host-network-mode.rst
 
+.. _gs_gateway_addresses:
+.. include:: addresses.rst
+
 Examples
 ########
 
@@ -57,10 +66,14 @@ Cilium's Gateway API features:
 
    http
    https
+   grpc
    splitting
    header
+   parameterized-gatewayclass
+   default-tls-certificate
+   backendtlspolicy
 
-More examples can be found in the `upstream repository <https://github.com/kubernetes-sigs/gateway-api/tree/v1.1.0/examples/standard>`_.
+More examples can be found in the `upstream repository <https://github.com/kubernetes-sigs/gateway-api/tree/v1.3.0/examples/standard>`_.
 
 Troubleshooting
 ###############

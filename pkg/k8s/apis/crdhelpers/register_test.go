@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/require"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apiextensionsv1beta1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
@@ -86,8 +87,8 @@ func TestCreateUpdateCRD(t *testing.T) {
 			test: func() error {
 				crd := getV1TestCRD()
 				client := fake.NewSimpleClientset()
-				require.Nil(t, k8sversion.Force(v1Support.Major+"."+v1Support.Minor))
-				return CreateUpdateCRD(client, crd, newFakePoller(), labelKey, minVersion)
+				require.NoError(t, k8sversion.Force(v1Support.Major+"."+v1Support.Minor))
+				return CreateUpdateCRD(hivetest.Logger(t), client, crd, newFakePoller(), NeedsUpdateV1Factory(labelKey, minVersion))
 			},
 			wantErr: false,
 		},
@@ -97,8 +98,8 @@ func TestCreateUpdateCRD(t *testing.T) {
 				// createUpdateCRD works with v1 CRDs and converts to v1beta1 CRDs if needed.
 				crd := getV1TestCRD()
 				client := fake.NewSimpleClientset()
-				require.Nil(t, k8sversion.Force(v1beta1Support.Major+"."+v1beta1Support.Minor))
-				return CreateUpdateCRD(client, crd, newFakePoller(), labelKey, minVersion)
+				require.NoError(t, k8sversion.Force(v1beta1Support.Major+"."+v1beta1Support.Minor))
+				return CreateUpdateCRD(hivetest.Logger(t), client, crd, newFakePoller(), NeedsUpdateV1Factory(labelKey, minVersion))
 			},
 			wantErr: false,
 		},
@@ -108,7 +109,7 @@ func TestCreateUpdateCRD(t *testing.T) {
 				// This test will install a v1beta1 CRD to simulate the
 				// scenario where a user already has v1beta1 CRDs installed.
 
-				require.Nil(t, k8sversion.Force(v1Support.Major+"."+v1Support.Minor))
+				require.NoError(t, k8sversion.Force(v1Support.Major+"."+v1Support.Minor))
 
 				// Ensure same name as to-be installed CRD.
 				crd := getV1TestCRD()
@@ -125,7 +126,7 @@ func TestCreateUpdateCRD(t *testing.T) {
 				)
 				require.NoError(t, err)
 
-				return CreateUpdateCRD(client, crd, newFakePoller(), labelKey, minVersion)
+				return CreateUpdateCRD(hivetest.Logger(t), client, crd, newFakePoller(), NeedsUpdateV1Factory(labelKey, minVersion))
 			},
 			wantErr: false,
 		},
@@ -137,7 +138,7 @@ func TestCreateUpdateCRD(t *testing.T) {
 				// that the apiserver will interoperate between the two
 				// versions (v1 & v1beta1).
 
-				require.Nil(t, k8sversion.Force(v1Support.Major+"."+v1Support.Minor))
+				require.NoError(t, k8sversion.Force(v1Support.Major+"."+v1Support.Minor))
 
 				// Ensure same name as to-be installed CRD.
 				crdToInstall := getV1beta1TestCRD()
@@ -156,7 +157,7 @@ func TestCreateUpdateCRD(t *testing.T) {
 
 				// Revert back to v1beta1 apiserver.
 				client.Discovery().(*fakediscovery.FakeDiscovery).FakedServerVersion = v1beta1Support
-				require.Nil(t, k8sversion.Force(v1beta1Support.Major+"."+v1beta1Support.Minor))
+				require.NoError(t, k8sversion.Force(v1beta1Support.Major+"."+v1beta1Support.Minor))
 
 				// Retrieve v1 CRD here as that's what CreateUpdateCRD will be
 				// expecting, and change the name to match to-be installed CRD.
@@ -165,7 +166,7 @@ func TestCreateUpdateCRD(t *testing.T) {
 				crd := getV1TestCRD()
 				crd.ObjectMeta.Name = crdToInstall.ObjectMeta.Name
 
-				return CreateUpdateCRD(client, crd, newFakePoller(), labelKey, minVersion)
+				return CreateUpdateCRD(hivetest.Logger(t), client, crd, newFakePoller(), NeedsUpdateV1Factory(labelKey, minVersion))
 			},
 			wantErr: false,
 		},
@@ -180,31 +181,41 @@ func TestCreateUpdateCRD(t *testing.T) {
 func TestNeedsUpdateNoValidation(t *testing.T) {
 	v1CRD := getV1TestCRD()
 	v1CRD.Spec.Versions[0].Schema = nil
-	require.Equal(t, true, needsUpdateV1(v1CRD, labelKey, minVersion))
+	needUpdates, err := NeedsUpdateV1Factory(labelKey, minVersion)(nil, v1CRD)
+	require.NoError(t, err)
+	require.True(t, needUpdates)
 }
 
 func TestNeedsUpdateNoLabels(t *testing.T) {
 	v1CRD := getV1TestCRD()
 	v1CRD.Labels = nil
-	require.Equal(t, true, needsUpdateV1(v1CRD, labelKey, minVersion))
+	needUpdates, err := NeedsUpdateV1Factory(labelKey, minVersion)(nil, v1CRD)
+	require.NoError(t, err)
+	require.True(t, needUpdates)
 }
 
 func TestNeedsUpdateNoVersionLabel(t *testing.T) {
 	v1CRD := getV1TestCRD()
 	v1CRD.Labels = map[string]string{"test": "test"}
-	require.Equal(t, true, needsUpdateV1(v1CRD, labelKey, minVersion))
+	needUpdates, err := NeedsUpdateV1Factory(labelKey, minVersion)(nil, v1CRD)
+	require.NoError(t, err)
+	require.True(t, needUpdates)
 }
 
 func TestNeedsUpdateOlderVersion(t *testing.T) {
 	v1CRD := getV1TestCRD()
 	v1CRD.Labels[k8sconst.CustomResourceDefinitionSchemaVersionKey] = "0.9"
-	require.Equal(t, true, needsUpdateV1(v1CRD, labelKey, minVersion))
+	needUpdates, err := NeedsUpdateV1Factory(labelKey, minVersion)(nil, v1CRD)
+	require.NoError(t, err)
+	require.True(t, needUpdates)
 }
 
 func TestNeedsUpdateCorruptedVersion(t *testing.T) {
 	v1CRD := getV1TestCRD()
 	v1CRD.Labels[k8sconst.CustomResourceDefinitionSchemaVersionKey] = "totally-not-semver"
-	require.Equal(t, true, needsUpdateV1(v1CRD, labelKey, minVersion))
+	needUpdates, err := NeedsUpdateV1Factory(labelKey, minVersion)(nil, v1CRD)
+	require.NoError(t, err)
+	require.True(t, needUpdates)
 }
 
 func TestFQDNNameRegex(t *testing.T) {
@@ -242,23 +253,23 @@ func TestFQDNNameRegex(t *testing.T) {
 	}
 
 	for _, f := range badFqdns {
-		require.Equal(t, false, nameRegex.MatchString(f), f)
-		require.Equal(t, false, patternRegex.MatchString(f), f)
+		require.False(t, nameRegex.MatchString(f), f)
+		require.False(t, patternRegex.MatchString(f), f)
 	}
 
 	for _, f := range goodFqdns {
-		require.Equal(t, true, nameRegex.MatchString(f), f)
-		require.Equal(t, true, patternRegex.MatchString(f), f)
+		require.True(t, nameRegex.MatchString(f), f)
+		require.True(t, patternRegex.MatchString(f), f)
 	}
 
 	for _, f := range badFqdnPatterns {
-		require.Equal(t, false, nameRegex.MatchString(f), f)
-		require.Equal(t, false, patternRegex.MatchString(f), f)
+		require.False(t, nameRegex.MatchString(f), f)
+		require.False(t, patternRegex.MatchString(f), f)
 	}
 
 	for _, f := range goodFqdnPatterns {
-		require.Equal(t, false, nameRegex.MatchString(f), f)
-		require.Equal(t, true, patternRegex.MatchString(f), f)
+		require.False(t, nameRegex.MatchString(f), f)
+		require.True(t, patternRegex.MatchString(f), f)
 	}
 }
 

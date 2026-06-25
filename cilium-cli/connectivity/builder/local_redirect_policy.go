@@ -15,44 +15,67 @@ import (
 var (
 	//go:embed manifests/local-redirect-policy.yaml
 	localRedirectPolicyYAML string
+	//go:embed manifests/client-egress-to-cidr-lrp-frontend-deny.yaml
+	localRedirectPolicyFrontendDenyYAML string
 )
 
 type localRedirectPolicy struct{}
 
 func (t localRedirectPolicy) build(ct *check.ConnectivityTest, _ map[string]string) {
-	lrpFrontendIP := "169.254.169.254"
-	lrpFrontendIPSkipRedirect := "169.254.169.255"
-	newTest("local-redirect-policy", ct).
+	lrpFrontendIPV4 := "169.254.169.249"
+	lrpFrontendIPV6 := "fd00::169:254:169:249"
+	lrpFrontendIPSkipRedirectV4 := "169.254.169.248"
+	lrpFrontendIPSkipRedirectV6 := "fd00::169:254:169:248"
+
+	lrpTest := newTest("local-redirect-policy", ct).
+		WithCiliumVersion(">=1.16.0").
 		WithCondition(func() bool {
-			return versioncheck.MustCompile(">=1.16.0")(ct.CiliumVersion)
-		}).
-		WithCondition(func() bool {
-			// Disable until https://github.com/cilium/cilium-cli/issues/2733 is fixed.
-			return false
+			return ct.IsSocketLBFull() || versioncheck.MustCompile(">=1.17.0")(ct.CiliumVersion)
 		}).
 		WithCiliumLocalRedirectPolicy(check.CiliumLocalRedirectPolicyParams{
 			Policy:                  localRedirectPolicyYAML,
-			Name:                    "lrp-address-matcher",
-			FrontendIP:              lrpFrontendIP,
+			Name:                    "lrp-address-matcher-v4",
+			FrontendIP:              lrpFrontendIPV4,
 			SkipRedirectFromBackend: false,
 		}).
+		WithCiliumPolicy(localRedirectPolicyFrontendDenyYAML).
 		WithCiliumLocalRedirectPolicy(check.CiliumLocalRedirectPolicyParams{
 			Policy:                  localRedirectPolicyYAML,
-			Name:                    "lrp-address-matcher-skip-redirect-from-backend",
-			FrontendIP:              lrpFrontendIPSkipRedirect,
+			Name:                    "lrp-address-matcher-skip-redirect-from-backend-v4",
+			FrontendIP:              lrpFrontendIPSkipRedirectV4,
 			SkipRedirectFromBackend: true,
-		}).
-		WithFeatureRequirements(features.RequireEnabled(features.LocalRedirectPolicy)).
-		WithFeatureRequirements(features.RequireEnabled(features.KPRSocketLB)).
+		})
+
+	// Skip to apply CLRPs with ipv6 frontend if IPv6 is disabled to avoid the agent crash
+	// caused by https://github.com/cilium/cilium/issues/38570
+	if f, ok := ct.Features[features.IPv6]; ok && f.Enabled {
+		lrpTest.WithCiliumLocalRedirectPolicy(check.CiliumLocalRedirectPolicyParams{
+			Policy:                  localRedirectPolicyYAML,
+			Name:                    "lrp-address-matcher-v6",
+			FrontendIP:              lrpFrontendIPV6,
+			SkipRedirectFromBackend: false,
+		}).WithCiliumLocalRedirectPolicy(check.CiliumLocalRedirectPolicyParams{
+			Policy:                  localRedirectPolicyYAML,
+			Name:                    "lrp-address-matcher-skip-redirect-from-backend-v6",
+			FrontendIP:              lrpFrontendIPSkipRedirectV6,
+			SkipRedirectFromBackend: true,
+		})
+	}
+
+	lrpTest.WithFeatureRequirements(features.RequireEnabled(features.LocalRedirectPolicy)).
 		WithScenarios(
 			tests.LRP(false),
 			tests.LRP(true),
 		).
 		WithExpectations(func(a *check.Action) (egress, ingress check.Result) {
 			if a.Scenario().Name() == "lrp-skip-redirect-from-backend" {
-				if a.Source().HasLabel("lrp", "backend") &&
-					a.Destination().Address(features.IPFamilyV4) == lrpFrontendIPSkipRedirect {
-					return check.ResultCurlTimeout, check.ResultNone
+				if a.Source().HasLabel("lrp", "backend") {
+					if a.Destination().Address(features.IPFamilyV4) == lrpFrontendIPSkipRedirectV4 {
+						return check.ResultPolicyDenyEgressDrop, check.ResultNone
+					}
+					if a.Destination().Address(features.IPFamilyV6) == lrpFrontendIPSkipRedirectV6 {
+						return check.ResultPolicyDenyEgressDrop, check.ResultNone
+					}
 				}
 				return check.ResultOK, check.ResultNone
 			}

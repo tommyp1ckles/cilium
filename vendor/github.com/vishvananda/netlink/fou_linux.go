@@ -1,3 +1,4 @@
+//go:build linux
 // +build linux
 
 package netlink
@@ -5,6 +6,7 @@ package netlink
 import (
 	"encoding/binary"
 	"errors"
+	"net"
 
 	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/sys/unix"
@@ -29,6 +31,12 @@ const (
 	FOU_ATTR_IPPROTO
 	FOU_ATTR_TYPE
 	FOU_ATTR_REMCSUM_NOPARTIAL
+	FOU_ATTR_LOCAL_V4
+	FOU_ATTR_LOCAL_V6
+	FOU_ATTR_PEER_V4
+	FOU_ATTR_PEER_V6
+	FOU_ATTR_PEER_PORT
+	FOU_ATTR_IFINDEX
 	FOU_ATTR_MAX = FOU_ATTR_REMCSUM_NOPARTIAL
 )
 
@@ -65,11 +73,6 @@ func (h *Handle) FouAdd(f Fou) error {
 		return err
 	}
 
-	// setting ip protocol conflicts with encapsulation type GUE
-	if f.EncapType == FOU_ENCAP_GUE && f.Protocol != 0 {
-		return errors.New("GUE encapsulation doesn't specify an IP protocol")
-	}
-
 	req := h.newNetlinkRequest(fam_id, unix.NLM_F_ACK)
 
 	// int to byte for port
@@ -80,7 +83,10 @@ func (h *Handle) FouAdd(f Fou) error {
 		nl.NewRtAttr(FOU_ATTR_PORT, bp),
 		nl.NewRtAttr(FOU_ATTR_TYPE, []byte{uint8(f.EncapType)}),
 		nl.NewRtAttr(FOU_ATTR_AF, []byte{uint8(f.Family)}),
-		nl.NewRtAttr(FOU_ATTR_IPPROTO, []byte{uint8(f.Protocol)}),
+	}
+	// FOU_ATTR_IPPROTO must be omitted for GUE; kernels ≥ 6.x return ERANGE if present.
+	if f.EncapType != FOU_ENCAP_GUE {
+		attrs = append(attrs, nl.NewRtAttr(FOU_ATTR_IPPROTO, []byte{uint8(f.Protocol)}))
 	}
 	raw := []byte{FOU_CMD_ADD, 1, 0, 0}
 	for _, a := range attrs {
@@ -128,10 +134,14 @@ func (h *Handle) FouDel(f Fou) error {
 	return nil
 }
 
+// If the returned error is [ErrDumpInterrupted], results may be inconsistent
+// or incomplete.
 func FouList(fam int) ([]Fou, error) {
 	return pkgHandle.FouList(fam)
 }
 
+// If the returned error is [ErrDumpInterrupted], results may be inconsistent
+// or incomplete.
 func (h *Handle) FouList(fam int) ([]Fou, error) {
 	fam_id, err := FouFamilyId()
 	if err != nil {
@@ -150,62 +160,42 @@ func (h *Handle) FouList(fam int) ([]Fou, error) {
 
 	req.AddRawData(raw)
 
-	msgs, err := req.Execute(unix.NETLINK_GENERIC, 0)
-	if err != nil {
-		return nil, err
+	msgs, executeErr := req.Execute(unix.NETLINK_GENERIC, 0)
+	if executeErr != nil && !errors.Is(executeErr, ErrDumpInterrupted) {
+		return nil, executeErr
 	}
 
 	fous := make([]Fou, 0, len(msgs))
 	for _, m := range msgs {
-		f, err := deserializeFouMsg(m)
-		if err != nil {
-			return fous, err
-		}
-
-		fous = append(fous, f)
+		fous = append(fous, deserializeFouMsg(m))
 	}
 
-	return fous, nil
+	return fous, executeErr
 }
 
-func deserializeFouMsg(msg []byte) (Fou, error) {
-	// we'll skip to byte 4 to first attribute
-	msg = msg[3:]
-	var shift int
+func deserializeFouMsg(msg []byte) Fou {
 	fou := Fou{}
 
-	for {
-		// attribute header is at least 16 bits
-		if len(msg) < 4 {
-			return fou, ErrAttrHeaderTruncated
-		}
-
-		lgt := int(binary.BigEndian.Uint16(msg[0:2]))
-		if len(msg) < lgt+4 {
-			return fou, ErrAttrBodyTruncated
-		}
-		attr := binary.BigEndian.Uint16(msg[2:4])
-
-		shift = lgt + 3
-		switch attr {
+	for attr := range nl.ParseAttributes(msg[4:]) {
+		switch attr.Type {
 		case FOU_ATTR_AF:
-			fou.Family = int(msg[5])
+			fou.Family = int(attr.Value[0])
 		case FOU_ATTR_PORT:
-			fou.Port = int(binary.BigEndian.Uint16(msg[5:7]))
-			// port is 2 bytes
-			shift = lgt + 2
+			fou.Port = int(networkOrder.Uint16(attr.Value))
 		case FOU_ATTR_IPPROTO:
-			fou.Protocol = int(msg[5])
+			fou.Protocol = int(attr.Value[0])
 		case FOU_ATTR_TYPE:
-			fou.EncapType = int(msg[5])
-		}
-
-		msg = msg[shift:]
-
-		if len(msg) < 4 {
-			break
+			fou.EncapType = int(attr.Value[0])
+		case FOU_ATTR_LOCAL_V4, FOU_ATTR_LOCAL_V6:
+			fou.Local = net.IP(attr.Value)
+		case FOU_ATTR_PEER_V4, FOU_ATTR_PEER_V6:
+			fou.Peer = net.IP(attr.Value)
+		case FOU_ATTR_PEER_PORT:
+			fou.PeerPort = int(networkOrder.Uint16(attr.Value))
+		case FOU_ATTR_IFINDEX:
+			fou.IfIndex = int(native.Uint16(attr.Value))
 		}
 	}
 
-	return fou, nil
+	return fou
 }

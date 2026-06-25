@@ -6,6 +6,7 @@ package ciliumidentity
 import (
 	"context"
 	"strconv"
+	"sync"
 
 	"github.com/cilium/cilium/pkg/k8s/resource"
 	"github.com/cilium/cilium/pkg/logging/logfields"
@@ -14,8 +15,9 @@ import (
 // CID controller also watches for CESs. The only reason is to keep a cache of
 // what CIDs are used in CESs. This is required only when CESs are enabled.
 // CID controller won't delete a CID until it is no longer present in any CESs.
-func (c *Controller) processCiliumEndpointSliceEvents(ctx context.Context) error {
+func (c *Controller) processCiliumEndpointSliceEvents(ctx context.Context, wg *sync.WaitGroup) error {
 	if !c.cesEnabled {
+		wg.Done()
 		return nil
 	}
 
@@ -23,17 +25,19 @@ func (c *Controller) processCiliumEndpointSliceEvents(ctx context.Context) error
 		var idsWithNoCESUsage []int64
 
 		switch event.Kind {
+		case resource.Sync:
+			wg.Done()
 		case resource.Upsert:
-			c.logger.Debug("Got Upsert CES event", logfields.CESName, event.Key.String())
+			c.logger.DebugContext(ctx, "Got Upsert CES event", logfields.CESName, event.Key)
 			idsWithNoCESUsage = c.reconciler.cidUsageInCES.ProcessCESUpsert(event.Object.Name, event.Object.Endpoints)
 		case resource.Delete:
-			c.logger.Debug("Got Delete CES event", logfields.CESName, event.Key.String())
+			c.logger.DebugContext(ctx, "Got Delete CES event", logfields.CESName, event.Key)
 			idsWithNoCESUsage = c.reconciler.cidUsageInCES.ProcessCESDelete(event.Object.Name, event.Object.Endpoints)
 		}
 
 		for _, cid := range idsWithNoCESUsage {
 			cidName := strconv.Itoa(int(cid))
-			c.logger.Info("Reconciling CID as it is no longer used in CESs", logfields.CIDName, cidName)
+			c.logger.InfoContext(ctx, "Reconciling CID as it is no longer used in CESs", logfields.CIDName, cidName)
 			c.enqueueReconciliation(CIDItem{cidResourceKey(cidName)}, 0)
 		}
 

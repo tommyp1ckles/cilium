@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 /* Copyright Authors of Cilium */
 
+#include <bpf/ctx/xdp.h>
 #include "common.h"
-
-#include "bpf/ctx/xdp.h"
 
 #define ENABLE_IPV4
 #define ENABLE_NODEPORT
@@ -22,26 +21,20 @@ long mock_fib_lookup(__maybe_unused void *ctx, struct bpf_fib_lookup *params,
 	return 0;
 }
 
-#include "bpf_xdp.c"
+#include "lib/bpf_xdp.h"
 #include "lib/nodeport.h"
 
-#include "lib/lb.h"
+ASSIGN_CONFIG(bool, enable_no_service_endpoints_routable, true)
 
-struct {
-	__uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-	__uint(key_size, sizeof(__u32));
-	__uint(max_entries, 2);
-	__array(values, int());
-} entry_call_map __section(".maps") = {
-	.values = {
-		[0] = &cil_xdp_entry,
-	},
-};
+#include "lib/lb.h"
 
 #define FRONTEND_IP 0x0F00010A /* 10.0.1.15 */
 #define FRONTEND_PORT 80
 #define BACKEND_IP 0x0F00020A /* 10.2.0.15 */
 #define BACKEND_PORT 8080
+
+/* Set port ranges to have deterministic source port selection */
+#include "nodeport_defaults.h"
 
 static long (*bpf_xdp_adjust_tail)(struct xdp_md *xdp_md, int delta) = (void *)65;
 
@@ -108,7 +101,7 @@ static __always_inline int build_packet(struct __ctx_buff *ctx)
 	data += sizeof(struct tcphdr) + sizeof(tcp_data);
 
 	/* Shrink ctx to the exact size we used */
-	offset = (long)data - (long)ctx->data_end;
+	offset = (int)((long)data - (long)ctx->data_end);
 	bpf_xdp_adjust_tail(ctx, offset);
 
 	return 0;
@@ -123,14 +116,11 @@ int test1_setup(struct __ctx_buff *ctx)
 	if (ret)
 		return ret;
 
-	lb_v4_add_service(FRONTEND_IP, FRONTEND_PORT, 1, 1);
+	lb_v4_add_service(FRONTEND_IP, FRONTEND_PORT, IPPROTO_TCP, 1, 1);
 	lb_v4_add_backend(FRONTEND_IP, FRONTEND_PORT, 1, 124,
 			  BACKEND_IP, BACKEND_PORT, IPPROTO_TCP, 0);
 
-	/* Jump into the entrypoint */
-	tail_call_static(ctx, entry_call_map, 0);
-	/* Fail if we didn't jump */
-	return TEST_ERROR;
+	return xdp_receive_packet(ctx);
 }
 
 CHECK("xdp", "xdp_lb4_forward_to_other_node")
@@ -184,6 +174,9 @@ int test1_check(__maybe_unused const struct __ctx_buff *ctx)
 	if (l4->dest != BACKEND_PORT)
 		test_fatal("dst port != backend port");
 
+	if (l4->check != bpf_htons(0xc9ee))
+		test_fatal("L4 checksum is invalid: %x != %x", l4->check, bpf_ntohs(0xc9ee));
+
 	char msg[20] = "Should not change!!";
 
 	if (data + sizeof(msg) > data_end)
@@ -206,12 +199,9 @@ int test2_setup(struct __ctx_buff *ctx)
 	if (ret)
 		return ret;
 
-	lb_v4_add_service(FRONTEND_IP, FRONTEND_PORT, 0, 1);
+	lb_v4_add_service(FRONTEND_IP, FRONTEND_PORT, IPPROTO_TCP, 0, 1);
 
-	/* Jump into the entrypoint */
-	tail_call_static(ctx, entry_call_map, 0);
-	/* Fail if we didn't jump */
-	return TEST_ERROR;
+	return xdp_receive_packet(ctx);
 }
 
 CHECK("xdp", "xdp_lb4_drop_no_backend")

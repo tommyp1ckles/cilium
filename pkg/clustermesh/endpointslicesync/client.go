@@ -11,7 +11,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/watch"
 	discoveryv1 "k8s.io/client-go/kubernetes/typed/discovery/v1"
-	mcsapiv1alpha1 "sigs.k8s.io/mcs-api/pkg/apis/v1alpha1"
+	mcsapiv1beta1 "sigs.k8s.io/mcs-api/pkg/apis/v1beta1"
 
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
 	"github.com/cilium/cilium/pkg/k8s/utils"
@@ -65,7 +65,7 @@ func addEndpointSliceMeshHacks(endpointSlice *discovery.EndpointSlice) {
 	}
 
 	endpointSlice.Labels[meshRealServiceNameLabel] = endpointSlice.Labels[discovery.LabelServiceName]
-	endpointSlice.Labels[discovery.LabelServiceName] = endpointSlice.Labels[meshRealServiceNameLabel] + "-" + endpointSlice.Labels[mcsapiv1alpha1.LabelSourceCluster]
+	endpointSlice.Labels[discovery.LabelServiceName] = endpointSlice.Labels[meshRealServiceNameLabel] + "-" + endpointSlice.Labels[mcsapiv1beta1.LabelSourceCluster]
 
 	for i, ownerReference := range endpointSlice.OwnerReferences {
 		if !isServiceOwnerReference(ownerReference) || ownerReference.Name != endpointSlice.Labels[meshRealServiceNameLabel] {
@@ -130,7 +130,10 @@ func (c meshClientEndpointSlice) List(ctx context.Context, opts metav1.ListOptio
 }
 func (c meshClientEndpointSlice) Watch(ctx context.Context, opts metav1.ListOptions) (watch.Interface, error) {
 	watchInterface, err := c.EndpointSliceInterface.Watch(ctx, opts)
-	return NewMeshEndpointSliceWatcher(watchInterface), err
+	if err != nil {
+		return nil, err
+	}
+	return NewMeshEndpointSliceWatcher(watchInterface), nil
 }
 
 // Pretty much a copy of watch.Streamwatcher but simplified to have another Streamwatcher
@@ -139,12 +142,14 @@ type meshEndpointSliceWatcher struct {
 	lock.Mutex
 	backend watch.Interface
 	result  chan watch.Event
+	done    chan struct{}
 }
 
 func NewMeshEndpointSliceWatcher(backend watch.Interface) *meshEndpointSliceWatcher {
 	sw := &meshEndpointSliceWatcher{
 		backend: backend,
 		result:  make(chan watch.Event),
+		done:    make(chan struct{}),
 	}
 
 	go sw.receive()
@@ -156,7 +161,14 @@ func (sw *meshEndpointSliceWatcher) ResultChan() <-chan watch.Event {
 }
 
 func (sw *meshEndpointSliceWatcher) Stop() {
-	sw.backend.Stop()
+	sw.Lock()
+	defer sw.Unlock()
+	select {
+	case <-sw.done:
+	default:
+		close(sw.done)
+		sw.backend.Stop()
+	}
 }
 
 func (sw *meshEndpointSliceWatcher) receive() {
@@ -169,6 +181,10 @@ func (sw *meshEndpointSliceWatcher) receive() {
 				addEndpointSliceMeshHacks(endpointSlice)
 			}
 		}
-		sw.result <- event
+		select {
+		case <-sw.done:
+			return
+		case sw.result <- event:
+		}
 	}
 }

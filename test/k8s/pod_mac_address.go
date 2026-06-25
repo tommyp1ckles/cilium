@@ -16,7 +16,7 @@ import (
 
 // The 5.4 CI job is intended to catch BPF complexity regressions and as such
 // doesn't need to execute this test suite.
-var _ = SkipDescribeIf(func() bool { return helpers.RunsOn54Kernel() && helpers.DoesNotRunOnAKS() }, "K8sSpecificMACAddressTests", func() {
+var _ = SkipDescribeIf(func() bool { return helpers.RunsOn54Kernel() }, "K8sSpecificMACAddressTests", func() {
 	var (
 		kubectl        *helpers.Kubectl
 		ciliumFilename string
@@ -29,6 +29,7 @@ var _ = SkipDescribeIf(func() bool { return helpers.RunsOn54Kernel() && helpers.
 
 	JustAfterEach(func() {
 		kubectl.ValidateNoErrorsInLogs(CurrentGinkgoTestDescription().Duration)
+		kubectl.CollectFeatures()
 	})
 
 	AfterAll(func() {
@@ -40,7 +41,7 @@ var _ = SkipDescribeIf(func() bool { return helpers.RunsOn54Kernel() && helpers.
 		kubectl.CiliumReport("cilium-dbg endpoint list -o jsonpath='{range [*]}{@.id}{\"=\"}{@.status.networking.mac}{\"\\n\"}{end}'")
 	})
 
-	SkipContextIf(func() bool { return helpers.RunsOnAKS() }, "Check whether the pod is created", func() {
+	Context("Check whether the pod is created", func() {
 		const specificMACAddress = "specific-mac-address=specific-mac-address"
 		var podYAML string
 

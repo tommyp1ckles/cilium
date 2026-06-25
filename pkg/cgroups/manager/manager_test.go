@@ -5,10 +5,10 @@ package manager
 
 import (
 	"fmt"
-	"io"
+	"log/slog"
 	"testing"
 
-	"github.com/sirupsen/logrus"
+	"github.com/cilium/hive/cell"
 	"github.com/stretchr/testify/require"
 
 	slimcorev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
@@ -122,16 +122,14 @@ var (
 )
 
 func newCgroupManagerTest(t testing.TB, pMock providerMock, cg cgroup, events chan podEventStatus) CGroupManager {
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
+	logger := slog.New(slog.DiscardHandler)
 
 	// Unbuffered channel tests to detect any issues on the caller side.
 	tcm := newManager(logger, cg, pMock, 0)
 
 	tcm.podEventsDone = events
 
-	go tcm.processPodEvents()
-	t.Cleanup(tcm.Close)
+	go tcm.processPodEvents(t.Context(), &cell.SimpleHealth{})
 
 	return tcm
 }
@@ -252,7 +250,7 @@ func TestGetPodMetadataOnPodUpdate(t *testing.T) {
 
 func TestGetPodMetadataOnManagerDisabled(t *testing.T) {
 	// Disable the feature flag.
-	option.Config.EnableSocketLBTracing = false
+	option.Config.UnsafeDaemonConfigOption.EnableSocketLBTracing = false
 	mm := newCgroupManagerTest(t, providerMock{}, cgroupMock{}, nil)
 	c1CId := uint64(1234)
 
@@ -262,7 +260,7 @@ func TestGetPodMetadataOnManagerDisabled(t *testing.T) {
 	require.Nil(t, got)
 
 	// Enable the feature flag, but the cgroup base path validation fails.
-	option.Config.EnableSocketLBTracing = true
+	option.Config.UnsafeDaemonConfigOption.EnableSocketLBTracing = true
 	mm.OnAddPod(pod1)
 
 	got = mm.GetPodMetadataForContainer(c1CId)
@@ -286,8 +284,7 @@ func BenchmarkGetPodMetadataForContainer(b *testing.B) {
 	// Add pod, and check for pod metadata for their containers.
 	mm.OnAddPod(pod3)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		got := mm.GetPodMetadataForContainer(c3CId)
 		require.Equal(b, &PodMetadata{Name: pod3.Name, Namespace: pod3.Namespace, IPs: pod3Ipstrs}, got)
 	}

@@ -5,6 +5,7 @@ package tables
 
 import (
 	"net/netip"
+	"strings"
 
 	"github.com/cilium/statedb"
 	"github.com/cilium/statedb/index"
@@ -28,18 +29,27 @@ var IPSetEntryIndex = statedb.Index[*IPSetEntry, IPSetEntryKey]{
 		return index.NewKeySet(IPSetEntryKey{s.Name, s.Addr}.Key())
 	},
 	FromKey: IPSetEntryKey.Key,
-	Unique:  true,
+	FromString: func(s string) (index.Key, error) {
+		var key IPSetEntryKey
+		name, addrS, _ := strings.Cut(s, "/")
+		key.Name = name
+		if addrS != "" {
+			var err error
+			if key.Addr, err = netip.ParseAddr(addrS); err != nil {
+				return index.Key{}, err
+			}
+		}
+		return key.Key(), nil
+	},
+	Unique: true,
 }
 
 func NewIPSetTable(db *statedb.DB) (statedb.RWTable[*IPSetEntry], error) {
-	tbl, err := statedb.NewTable(
+	return statedb.NewTable(
+		db,
 		IPSetsTableName,
 		IPSetEntryIndex,
 	)
-	if err != nil {
-		return nil, err
-	}
-	return tbl, db.RegisterTable(tbl)
 }
 
 func (s *IPSetEntry) TableHeader() []string {

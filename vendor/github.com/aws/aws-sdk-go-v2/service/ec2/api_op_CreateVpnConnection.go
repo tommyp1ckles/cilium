@@ -69,12 +69,20 @@ type CreateVpnConnectionInput struct {
 	// The options for the VPN connection.
 	Options *types.VpnConnectionOptionsSpecification
 
+	// Specifies the storage mode for the pre-shared key (PSK). Valid values are
+	// Standard " (stored in the Site-to-Site VPN service) or SecretsManager (stored
+	// in Amazon Web Services Secrets Manager).
+	PreSharedKeyStorage *string
+
 	// The tags to apply to the VPN connection.
 	TagSpecifications []types.TagSpecification
 
 	// The ID of the transit gateway. If you specify a transit gateway, you cannot
 	// specify a virtual private gateway.
 	TransitGatewayId *string
+
+	// The ID of the VPN concentrator to associate with the VPN connection.
+	VpnConcentratorId *string
 
 	// The ID of the virtual private gateway. If you specify a virtual private
 	// gateway, you cannot specify a transit gateway.
@@ -129,13 +137,16 @@ func (c *Client) addOperationCreateVpnConnectionMiddlewares(stack *middleware.St
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
+	if err = addRetry(stack, options, c); err != nil {
 		return err
 	}
 	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
 	if err = addRecordResponseTiming(stack); err != nil {
+		return err
+	}
+	if err = addSpanRetryLoop(stack, options); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -150,10 +161,10 @@ func (c *Client) addOperationCreateVpnConnectionMiddlewares(stack *middleware.St
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
-	if err = addTimeOffsetBuild(stack, c); err != nil {
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
-	if err = addUserAgentRetryMode(stack, options); err != nil {
+	if err = addCredentialSource(stack, options); err != nil {
 		return err
 	}
 	if err = addOpCreateVpnConnectionValidationMiddleware(stack); err != nil {
@@ -175,6 +186,15 @@ func (c *Client) addOperationCreateVpnConnectionMiddlewares(stack *middleware.St
 		return err
 	}
 	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptBeforeRetryLoop(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptAttempt(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil

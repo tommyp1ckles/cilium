@@ -64,7 +64,7 @@ func newReconciler(
 	cesEnabled bool,
 	queueOps queueOperation,
 ) (*reconciler, error) {
-	logger.Info("Creating CID controller Operator reconciler")
+	logger.InfoContext(ctx, "Creating CID controller Operator reconciler")
 
 	minIDValue := idpool.ID(identity.GetMinimalAllocationIdentity(option.Config.ClusterID))
 	maxIDValue := idpool.ID(identity.GetMaximumAllocationIdentity(option.Config.ClusterID))
@@ -86,9 +86,13 @@ func newReconciler(
 	if err != nil {
 		return nil, err
 	}
-	cesStore, err := ciliumEndpointSlice.Store(ctx)
-	if err != nil {
-		return nil, err
+
+	var cesStore resource.Store[*v2alpha1.CiliumEndpointSlice]
+	if cesEnabled {
+		cesStore, err = ciliumEndpointSlice.Store(ctx)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	r := &reconciler{
@@ -111,36 +115,6 @@ func newReconciler(
 	return r, nil
 }
 
-// syncCESsOnStartup updates the cache of CID usage in CES for all the
-// existing CESs.
-func (r *reconciler) calcDesiredStateOnStartup() error {
-	r.syncCESsOnStartup()
-	return r.syncPodsOnStartup()
-}
-
-func (r *reconciler) syncCESsOnStartup() {
-	if !r.cesEnabled {
-		return
-	}
-
-	for _, ces := range r.cesStore.List() {
-		r.cidUsageInCES.ProcessCESUpsert(ces.Name, ces.Endpoints)
-	}
-}
-
-// syncPodsOnStartup ensures that all pods have a CID for their labels.
-func (r *reconciler) syncPodsOnStartup() error {
-	var lastError error
-
-	for _, pod := range r.podStore.List() {
-		if err := r.reconcilePod(podResourceKey(pod.Name, pod.Namespace)); err != nil {
-			lastError = err
-		}
-	}
-
-	return lastError
-}
-
 // reconcileCID ensures that the desired state for the CID is reached, by
 // comparing the CID in desired state cache and watcher's store and doing one of
 // the following:
@@ -160,10 +134,6 @@ func (r *reconciler) reconcileCID(cidResourceKey resource.Key) error {
 
 	cidKey, existsInDesiredState := r.desiredCIDState.LookupByID(cidName)
 	if !existsInDesiredState && !existsInStore {
-		err := r.makeIDAvailable(cidName)
-		r.logger.Warn("Failed to return CID to pool",
-			logfields.CIDName, cidName,
-			logfields.Error, err)
 		return nil
 	}
 
@@ -188,7 +158,12 @@ func (r *reconciler) reconcileCID(cidResourceKey resource.Key) error {
 		if cidIsUsed {
 			return r.createCID(cidName, cidKey)
 		} else {
-			r.desiredCIDState.Remove(cidName)
+			if err := r.makeIDAvailable(cidName); err != nil {
+				r.logger.Warn("Failed to return CID to pool",
+					logfields.CIDName, cidName,
+					logfields.Labels, cidKey.Labels(),
+					logfields.Error, err)
+			}
 			return nil
 		}
 	}
@@ -203,8 +178,7 @@ func (r *reconciler) reconcileCID(cidResourceKey resource.Key) error {
 
 func (r *reconciler) createCID(cidName string, cidKey *key.GlobalIdentity) error {
 	cidLabels := cidKey.GetAsMap()
-	selectedLabels, skippedLabels := identitybackend.SanitizeK8sLabels(cidLabels)
-	r.logger.Debug("Skipped non-kubernetes labels when labelling CID. All labels will still be used in identity determination", logfields.Labels, skippedLabels)
+	selectedLabels := identitybackend.SelectK8sLabels(cidLabels)
 
 	cid := &cilium_api_v2.CiliumIdentity{
 		ObjectMeta: metav1.ObjectMeta{
@@ -214,7 +188,10 @@ func (r *reconciler) createCID(cidName string, cidKey *key.GlobalIdentity) error
 		SecurityLabels: cidLabels,
 	}
 
-	r.logger.Info("Creating CID", "labels", cidLabels, logfields.CIDName, cidName)
+	r.logger.InfoContext(r.ctx, "Creating CID",
+		logfields.Labels, cidLabels,
+		logfields.CIDName, cidName,
+	)
 
 	_, err := r.clientset.CiliumV2().CiliumIdentities().Create(r.ctx, cid, metav1.CreateOptions{})
 	return err
@@ -222,14 +199,13 @@ func (r *reconciler) createCID(cidName string, cidKey *key.GlobalIdentity) error
 
 func (r *reconciler) updateCID(cid *cilium_api_v2.CiliumIdentity, cidKey *key.GlobalIdentity) error {
 	cidLabels := cidKey.GetAsMap()
-	selectedLabels, skippedLabels := identitybackend.SanitizeK8sLabels(cidLabels)
-	r.logger.Debug("Skipped non-kubernetes labels when labelling CID. All labels will still be used in identity determination", logfields.Labels, skippedLabels)
+	selectedLabels := identitybackend.SelectK8sLabels(cidLabels)
 
 	updatedId := cid.DeepCopy()
 	updatedId.Labels = selectedLabels
 	updatedId.SecurityLabels = cidLabels
 
-	r.logger.Info("Updating CID", logfields.CIDName, updatedId.Name)
+	r.logger.InfoContext(r.ctx, "Updating CID", logfields.CIDName, updatedId.Name)
 
 	_, err := r.clientset.CiliumV2().CiliumIdentities().Update(r.ctx, updatedId, metav1.UpdateOptions{})
 	return err
@@ -240,6 +216,8 @@ func (r *reconciler) makeIDAvailable(cidName string) error {
 	if err != nil {
 		return err
 	}
+
+	r.desiredCIDState.Remove(cidName)
 	return r.idAllocator.ReturnToAvailablePool(idpool.ID(cidNum))
 }
 
@@ -301,7 +279,7 @@ func (r *reconciler) cidIsUsedInCEPOrCES(cidName string) bool {
 // 1. CID exists: No action.
 // 2. CID doesn't exist: Create CID.
 func (r *reconciler) allocateCIDForPod(pod *slim_corev1.Pod) error {
-	k8sLabels, err := r.getRelevantLabelsForPod(pod)
+	k8sLabels, err := GetRelevantLabelsForPod(r.logger, pod, r.nsStore)
 	if err != nil {
 		return fmt.Errorf("failed to get relevant labels for pod: %w", err)
 	}
@@ -321,10 +299,10 @@ func (r *reconciler) allocateCIDForPod(pod *slim_corev1.Pod) error {
 	prevCIDName, _ := r.cidUsageInPods.AssignCIDToPod(podName, cidName)
 
 	if cidName != prevCIDName {
-		r.logger.Info("CID allocated for pod",
+		r.logger.InfoContext(r.ctx, "CID allocated for pod",
 			logfields.K8sPodName, fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
 			logfields.CIDName, cidName,
-			logfields.OldIdentity, prevCIDName,
+			logfields.IdentityOld, prevCIDName,
 			logfields.Labels, k8sLabels)
 	}
 
@@ -353,7 +331,7 @@ func (r *reconciler) allocateCID(cidKey *key.GlobalIdentity) (string, bool, erro
 		// Return the assignment from the CID store, otherwise allocates a new identity
 		cidName, err = r.handleStoreCIDMatch(storeCIDs)
 		if err != nil {
-			r.logger.Error("Failed to access CID store", logfields.Error, err)
+			r.logger.ErrorContext(r.ctx, "Failed to access CID store", logfields.Error, err)
 		} else {
 			return cidName, false, nil
 		}
@@ -367,22 +345,19 @@ func (r *reconciler) allocateCID(cidKey *key.GlobalIdentity) (string, bool, erro
 	return allocatedID.String(), true, nil
 }
 
-func (r *reconciler) getRelevantLabelsForPod(pod *slim_corev1.Pod) (map[string]string, error) {
-	ns, err := r.getNamespace(pod.Namespace)
+// GetRelevantLabelsForPod returns the pod and namespace labels for a given pod
+func GetRelevantLabelsForPod(logger *slog.Logger, pod *slim_corev1.Pod, nsStore resource.Store[*slim_corev1.Namespace]) (map[string]string, error) {
+	ns, err := getNamespace(pod.Namespace, nsStore)
 	if err != nil {
 		return nil, err
 	}
 
-	_, labelsMap, _, err := k8s.GetPodMetadata(ns, pod)
-	if err != nil {
-		return nil, err
-	}
-
+	_, labelsMap := k8s.GetPodMetadata(logger, ns, pod)
 	return labelsMap, nil
 }
 
-func (r *reconciler) getNamespace(namespace string) (*slim_corev1.Namespace, error) {
-	ns, exists, err := r.nsStore.GetByKey(resource.Key{Name: namespace})
+func getNamespace(namespace string, nsStore resource.Store[*slim_corev1.Namespace]) (*slim_corev1.Namespace, error) {
+	ns, exists, err := nsStore.GetByKey(resource.Key{Name: namespace})
 	if err != nil {
 		return nil, fmt.Errorf("unable to get namespace %q, error: %w", namespace, err)
 	}
@@ -399,7 +374,7 @@ func (r *reconciler) handleStoreCIDMatch(storeCIDs []*cilium_api_v2.CiliumIdenti
 	cidKey := key.GetCIDKeyFromLabels(cid.SecurityLabels, "")
 
 	if err := r.upsertDesiredState(cid.Name, cidKey); err != nil {
-		r.logger.Warn("Failed to add CID to cache",
+		r.logger.WarnContext(r.ctx, "Failed to add CID to cache",
 			logfields.CIDName, cid.Name,
 			logfields.Error, err)
 		return "", err
@@ -418,7 +393,7 @@ func (r *reconciler) reconcileNamespace(nsKey resource.Key) error {
 }
 
 func (r *reconciler) updateAllPodsInNamespace(namespace string) error {
-	r.logger.Info("Reconcile all pods in namespace", logfields.K8sNamespace, namespace)
+	r.logger.InfoContext(r.ctx, "Reconcile all pods in namespace", logfields.K8sNamespace, namespace)
 
 	if r.podStore == nil {
 		return fmt.Errorf("pod store is not initialized")
@@ -431,7 +406,10 @@ func (r *reconciler) updateAllPodsInNamespace(namespace string) error {
 	var lastErr error
 
 	for _, pod := range podList {
-		r.queueOps.enqueueReconciliation(PodItem{podResourceKey(pod.Name, pod.Namespace)}, 0)
+		if !pod.Spec.HostNetwork {
+			r.logger.DebugContext(r.ctx, "Reconcile Pod in namespace", logfields.K8sPodName, pod.Name)
+			r.queueOps.enqueueReconciliation(PodItem{podResourceKey(pod.Name, pod.Namespace)}, 0)
+		}
 	}
 
 	return lastErr

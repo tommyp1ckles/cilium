@@ -58,17 +58,7 @@ func TestIsReservedIdentity(t *testing.T) {
 	require.True(t, ReservedIdentityInit.IsReservedIdentity())
 	require.True(t, ReservedIdentityUnmanaged.IsReservedIdentity())
 
-	require.Equal(t, false, NumericIdentity(123456).IsReservedIdentity())
-}
-
-func TestRequiresGlobalIdentity(t *testing.T) {
-	prefix := netip.MustParsePrefix("0.0.0.0/0")
-	require.Equal(t, false, RequiresGlobalIdentity(labels.GetCIDRLabels(prefix)))
-
-	prefix = netip.MustParsePrefix("192.168.23.0/24")
-	require.Equal(t, false, RequiresGlobalIdentity(labels.GetCIDRLabels(prefix)))
-
-	require.True(t, RequiresGlobalIdentity(labels.NewLabelsFromModel([]string{"k8s:foo=bar"})))
+	require.False(t, NumericIdentity(123456).IsReservedIdentity())
 }
 
 func TestScopeForLabels(t *testing.T) {
@@ -116,6 +106,10 @@ func TestScopeForLabels(t *testing.T) {
 			lbls:  labels.NewLabelsFromModel([]string{"reserved:remote-node", "reserved:kube-apiserver"}),
 			scope: IdentityScopeRemoteNode,
 		},
+		{
+			lbls:  labels.NewLabelsFromModel([]string{"k8s:ingress=allowed"}),
+			scope: IdentityScopeGlobal,
+		},
 	}
 
 	for i, test := range tests {
@@ -139,8 +133,8 @@ func TestNewIdentityFromLabelArray(t *testing.T) {
 		"b": labels.ParseLabel("b"),
 	}
 	require.Equal(t, NumericIdentity(1001), id.ID)
-	require.EqualValues(t, lbls, id.Labels)
-	require.EqualValues(t, lbls.LabelArray(), id.LabelArray)
+	require.Equal(t, lbls, id.Labels)
+	require.Equal(t, lbls.LabelArray(), id.LabelArray)
 }
 
 func TestLookupReservedIdentityByLabels(t *testing.T) {
@@ -450,58 +444,8 @@ func TestIPIdentityPair_PrefixString(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			prefix := tt.pair.PrefixString()
-			assert.Equal(t, len(tt.expected), len(prefix))
+			assert.Len(t, prefix, len(tt.expected))
 			assert.Equal(t, tt.expected, prefix)
-		})
-	}
-}
-
-func BenchmarkIPIdentityPair_PrefixString(b *testing.B) {
-	cases := []struct {
-		name     string
-		expected string
-		pair     *IPIdentityPair
-	}{
-		{
-			name:     "host",
-			expected: "10.1.128.15/32",
-			pair: &IPIdentityPair{
-				IP:           net.ParseIP("10.1.128.15"),
-				Mask:         net.IPv4Mask(255, 255, 255, 255),
-				HostIP:       net.ParseIP("10.1.128.15"),
-				ID:           1,
-				Key:          3,
-				Metadata:     "metadata",
-				K8sNamespace: "kube-system",
-				K8sPodName:   "pod-name",
-				NamedPorts: []NamedPort{
-					{Name: "port", Port: 8080, Protocol: "TCP"},
-				},
-			},
-		},
-		{
-			name: "not host",
-			pair: &IPIdentityPair{
-				IP:           net.ParseIP("10.1.128.15"),
-				HostIP:       net.ParseIP("10.1.128.15"),
-				ID:           1,
-				Key:          3,
-				Metadata:     "metadata",
-				K8sNamespace: "kube-system",
-				K8sPodName:   "pod-name",
-				NamedPorts: []NamedPort{
-					{Name: "port", Port: 8080, Protocol: "TCP"},
-				},
-			},
-		},
-	}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for _, tt := range cases {
-		b.Run(tt.name, func(bb *testing.B) {
-			for i := 0; i < bb.N; i++ {
-				_ = tt.pair.PrefixString()
-			}
 		})
 	}
 }

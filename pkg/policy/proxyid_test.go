@@ -13,20 +13,20 @@ import (
 
 func TestProxyID(t *testing.T) {
 	id := ProxyID(123, true, "TCP", uint16(8080), "")
-	require.Equal(t, id, "123:ingress:TCP:8080:")
+	require.Equal(t, "123:ingress:TCP:8080:", id)
 	endpointID, ingress, protocol, port, listener, err := ParseProxyID(id)
 	require.Equal(t, uint16(123), endpointID)
 	require.True(t, ingress)
 	require.Equal(t, "TCP", protocol)
 	require.Equal(t, uint16(8080), port)
-	require.Equal(t, "", listener)
+	require.Empty(t, listener)
 	require.NoError(t, err)
 
 	id = ProxyID(321, false, "TCP", uint16(80), "myListener")
-	require.Equal(t, id, "321:egress:TCP:80:myListener")
+	require.Equal(t, "321:egress:TCP:80:myListener", id)
 	endpointID, ingress, protocol, port, listener, err = ParseProxyID(id)
 	require.Equal(t, uint16(321), endpointID)
-	require.Equal(t, false, ingress)
+	require.False(t, ingress)
 	require.Equal(t, "TCP", protocol)
 	require.Equal(t, uint16(80), port)
 	require.Equal(t, "myListener", listener)
@@ -38,7 +38,7 @@ func BenchmarkProxyID(b *testing.B) {
 	port := uint16(rand.IntN(65535))
 
 	b.ReportAllocs()
-	for i := 0; i < 1000; i++ {
+	for range 1000 {
 		b.StartTimer()
 		proxyID := ProxyID(id, true, "TCP", port, "")
 		if proxyID != strconv.FormatInt(int64(id), 10)+"ingress:TCP:8080:" {

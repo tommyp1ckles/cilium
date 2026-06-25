@@ -3,15 +3,15 @@
 - CiliumBGPNodeConfig
 - CiliumBGPNodeConfigOverride
 - CiliumBGPPeerConfig
-- CiliumBGPPeeringPolicy
 - :ref:`CiliumCIDRGroup<CiliumCIDRGroup>`
 - CiliumClusterwideEnvoyConfig
 - :ref:`CiliumClusterwideNetworkPolicy<CiliumClusterwideNetworkPolicy>`
+- CiliumDatapathPlugin
 - CiliumEgressGatewayPolicy
 - :ref:`CiliumEndpoint<CiliumEndpoint>`
 - :ref:`CiliumEndpointSlice<CiliumEndpointSlice>`
 - CiliumEnvoyConfig
-- CiliumExternalWorkload
+- CiliumGatewayClassConfig
 - CiliumIdentity
 - CiliumL2AnnouncementPolicy
 - CiliumLoadBalancerIPPool

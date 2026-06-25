@@ -4,16 +4,25 @@
 #pragma once
 
 #include "common.h"
-#include "maps.h"
 #include "utime.h"
 #include "signal.h"
+#include "node.h"
+
+/* Global auth map for enforcing authentication policy */
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, struct auth_key);
+	__type(value, struct auth_info);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
+	__uint(max_entries, 524288);
+	__uint(map_flags, BPF_F_NO_PREALLOC | BPF_F_RDONLY_PROG_COND);
+} cilium_auth_map __section_maps_btf;
 
 static __always_inline int
-auth_lookup(struct __ctx_buff *ctx, __u32 local_id, __u32 remote_id, __u32 remote_node_ip,
+auth_lookup(const struct __ctx_buff *ctx, __u32 local_id, __u32 remote_id, __u32 remote_node_ip,
 	    __u8 auth_type)
 {
-	struct node_key node_ip = {};
-	struct node_value *node_value = NULL;
+	const struct node_value *node_value = NULL;
 	struct auth_info *auth;
 	struct auth_key key = {
 		.local_sec_label = local_id,
@@ -23,9 +32,7 @@ auth_lookup(struct __ctx_buff *ctx, __u32 local_id, __u32 remote_id, __u32 remot
 	};
 
 	if (remote_node_ip) {
-		node_ip.family = ENDPOINT_KEY_IPV4;
-		node_ip.ip4 = remote_node_ip;
-		node_value = map_lookup_elem(&NODE_MAP_V2, &node_ip);
+		node_value = lookup_ip4_node(remote_node_ip);
 		if (!node_value || !node_value->id)
 			return DROP_NO_NODE_ID;
 		key.remote_node_id = node_value->id;
@@ -35,7 +42,7 @@ auth_lookup(struct __ctx_buff *ctx, __u32 local_id, __u32 remote_id, __u32 remot
 	}
 
 	/* Check L3-proto policy */
-	auth = map_lookup_elem(&AUTH_MAP, &key);
+	auth = map_lookup_elem(&cilium_auth_map, &key);
 	if (likely(auth)) {
 		/* check that entry has not expired */
 		if (utime_get_time() < auth->expiration)

@@ -5,46 +5,44 @@ package nodeipam
 
 import (
 	"fmt"
+	"log/slog"
 
 	"github.com/cilium/hive/cell"
-	"github.com/sirupsen/logrus"
-	"github.com/spf13/pflag"
 	ctrlRuntime "sigs.k8s.io/controller-runtime"
 
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
+	"github.com/cilium/cilium/pkg/lbipamconfig"
+	"github.com/cilium/cilium/pkg/nodeipamconfig"
 )
 
 var Cell = cell.Module(
 	"nodeipam",
 	"Node-IPAM",
 
-	cell.Config(nodeIpamConfig{}),
+	nodeipamconfig.Cell,
 	cell.Invoke(registerNodeSvcLBReconciler),
 )
 
 type nodeipamCellParams struct {
 	cell.In
 
-	Logger             logrus.FieldLogger
+	Logger             *slog.Logger
 	Clientset          k8sClient.Clientset
 	CtrlRuntimeManager ctrlRuntime.Manager
-	Config             nodeIpamConfig
-}
-
-type nodeIpamConfig struct {
-	EnableNodeIPAM bool
-}
-
-func (r nodeIpamConfig) Flags(flags *pflag.FlagSet) {
-	flags.Bool("enable-node-ipam", r.EnableNodeIPAM, "Enable Node IPAM")
+	NodeIPAMConfig     nodeipamconfig.NodeIPAMConfig
+	LBIPAMConfig       lbipamconfig.Config
 }
 
 func registerNodeSvcLBReconciler(params nodeipamCellParams) error {
-	if !params.Clientset.IsEnabled() || !params.Config.EnableNodeIPAM {
+	if !params.Clientset.IsEnabled() || !params.NodeIPAMConfig.IsEnabled() {
 		return nil
 	}
 
-	if err := newNodeSvcLBReconciler(params.CtrlRuntimeManager, params.Logger).SetupWithManager(params.CtrlRuntimeManager); err != nil {
+	if err := newNodeSvcLBReconciler(
+		params.CtrlRuntimeManager,
+		params.Logger,
+		params.LBIPAMConfig.GetDefaultLBServiceIPAM() == lbipamconfig.DefaultLBClassNodeIPAM,
+	).SetupWithManager(params.CtrlRuntimeManager); err != nil {
 		return fmt.Errorf("Failed to register NodeSvcLBReconciler: %w", err)
 	}
 

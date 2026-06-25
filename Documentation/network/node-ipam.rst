@@ -39,6 +39,12 @@ all the Pods selected by the Service (via their EndpointSlices) as candidates.
     If they don't, check if the matching EndpointSlices look correct and/or
     try setting ``.spec.externalTrafficPolicy`` to ``Cluster``.
 
+Node IPAM honors the Node label ``node.kubernetes.io/exclude-from-external-load-balancers``
+and the Node taint ``ToBeDeletedByClusterAutoscaler``. Node IPAM **doesn't**
+consider a node as a candidate for load balancing if the label
+``node.kubernetes.io/exclude-from-external-load-balancers`` or the taint
+``ToBeDeletedByClusterAutoscaler`` is present.
+
 To restrict the Nodes that should listen for incoming traffic, add annotation
 ``io.cilium.nodeipam/match-node-labels`` to the Service. The value of the
 annotation is a
@@ -47,25 +53,22 @@ annotation is a
 Enable and use Node IPAM
 ------------------------
 
-To use this feature your service must be of type ``LoadBalancer`` and have the
+To use this feature your Service must be of type ``LoadBalancer`` and have the
 `loadBalancerClass <https://kubernetes.io/docs/concepts/services-networking/service/#load-balancer-class>`__
-set to ``io.cilium/node``.
+set to ``io.cilium/node``. You can also allow set ``defaultLBServiceIPAM``
+to ``nodeipam`` to use this feature on a Service that doesn't specify a loadBalancerClass.
 
 Cilium's node IPAM is disabled by default.
 To install Cilium with the node IPAM, run:
 
-.. parsed-literal::
-
-   helm install cilium |CHART_RELEASE| \\
-     --namespace kube-system \\
-     --set nodeIPAM.enabled=true
+.. cilium-helm-install::
+   :namespace: kube-system
+   :set: nodeIPAM.enabled=true
 
 To enable node IPAM on an existing installation, run:
 
-.. parsed-literal::
-
-   helm upgrade cilium |CHART_RELEASE| \\
-     --namespace kube-system \\
-     --reuse-values \\
-     --set nodeIPAM.enabled=true
-   kubectl -n kube-system rollout restart deployment/cilium-operator
+.. cilium-helm-upgrade::
+   :namespace: kube-system
+   :extra-args: --reuse-values
+   :set: nodeIPAM.enabled=true
+   :post-commands: kubectl -n kube-system rollout restart deployment/cilium-operator

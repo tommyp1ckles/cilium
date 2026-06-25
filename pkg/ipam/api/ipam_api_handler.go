@@ -4,8 +4,11 @@
 package ipamapi
 
 import (
+	"context"
 	"fmt"
-	"net"
+	"log/slog"
+	"net/http"
+	"net/netip"
 	"strings"
 
 	"github.com/go-openapi/runtime/middleware"
@@ -18,8 +21,21 @@ import (
 	"github.com/cilium/cilium/pkg/endpointmanager"
 	"github.com/cilium/cilium/pkg/ipam"
 	"github.com/cilium/cilium/pkg/node"
+	"github.com/cilium/cilium/pkg/option"
+	cslices "github.com/cilium/cilium/pkg/slices"
 	"github.com/cilium/cilium/pkg/time"
 )
+
+func prefixesToStrings(prefixes []netip.Prefix) []string {
+	return cslices.Map(prefixes, func(p netip.Prefix) string { return p.String() })
+}
+
+func gatewayString(addr netip.Addr) string {
+	if !addr.IsValid() {
+		return ""
+	}
+	return addr.String()
+}
 
 type IpamDeleteIpamIPHandler struct {
 	IPAM            *ipam.IPAM
@@ -27,7 +43,10 @@ type IpamDeleteIpamIPHandler struct {
 }
 
 type IpamPostIpamHandler struct {
-	IPAM *ipam.IPAM
+	DaemonConfig   *option.DaemonConfig
+	Logger         *slog.Logger
+	IPAM           *ipam.IPAM
+	LocalNodeStore *node.LocalNodeStore
 }
 
 type IpamPostIpamIPHandler struct {
@@ -47,41 +66,75 @@ func (r *IpamPostIpamHandler) Handle(params ipamapi.PostIpamParams) middleware.R
 		return api.Error(ipamapi.PostIpamFailureCode, err)
 	}
 
+	nodeRouterAddressing, err := r.getNodeRouterAddressing(params.HTTPRequest.Context())
+	if err != nil {
+		return api.Error(http.StatusInternalServerError, err)
+	}
+
 	resp := &models.IPAMResponse{
-		HostAddressing: node.GetNodeAddressing(),
+		HostAddressing: nodeRouterAddressing,
 		Address:        &models.AddressPair{},
 	}
 
 	if ipv4Result != nil {
-		resp.Address.IPV4 = ipv4Result.IP.String()
-		resp.Address.IPV4PoolName = ipv4Result.IPPoolName.String()
-		resp.IPV4 = &models.IPAMAddressResponse{
-			Cidrs:           ipv4Result.CIDRs,
+		resp.Address.IPv4 = ipv4Result.IP.String()
+		resp.Address.IPv4PoolName = ipv4Result.IPPoolName.String()
+		resp.IPv4 = &models.IPAMAddressResponse{
+			Cidrs:           prefixesToStrings(ipv4Result.CIDRs),
 			IP:              ipv4Result.IP.String(),
 			MasterMac:       ipv4Result.PrimaryMAC,
-			Gateway:         ipv4Result.GatewayIP,
+			Gateway:         gatewayString(ipv4Result.GatewayIP),
 			ExpirationUUID:  ipv4Result.ExpirationUUID,
 			InterfaceNumber: ipv4Result.InterfaceNumber,
+			SkipMasquerade:  ipv4Result.SkipMasquerade,
 		}
 	}
 
 	if ipv6Result != nil {
-		resp.Address.IPV6 = ipv6Result.IP.String()
-		resp.Address.IPV6PoolName = ipv6Result.IPPoolName.String()
-		resp.IPV6 = &models.IPAMAddressResponse{
-			Cidrs:           ipv6Result.CIDRs,
+		resp.Address.IPv6 = ipv6Result.IP.String()
+		resp.Address.IPv6PoolName = ipv6Result.IPPoolName.String()
+		resp.IPv6 = &models.IPAMAddressResponse{
+			Cidrs:           prefixesToStrings(ipv6Result.CIDRs),
 			IP:              ipv6Result.IP.String(),
 			MasterMac:       ipv6Result.PrimaryMAC,
-			Gateway:         ipv6Result.GatewayIP,
+			Gateway:         gatewayString(ipv6Result.GatewayIP),
 			ExpirationUUID:  ipv6Result.ExpirationUUID,
 			InterfaceNumber: ipv6Result.InterfaceNumber,
+			SkipMasquerade:  ipv6Result.SkipMasquerade,
 		}
 	}
 
 	return ipamapi.NewPostIpamCreated().WithPayload(resp)
 }
 
-// Handle incoming requests address allocation requests for the daemon.
+func (r *IpamPostIpamHandler) getNodeRouterAddressing(ctx context.Context) (*models.NodeAddressing, error) {
+	ln, err := r.LocalNodeStore.Get(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get local node: %w", err)
+	}
+
+	nodeRouterAddressing := &models.NodeAddressing{}
+
+	if r.DaemonConfig.EnableIPv6 {
+		nodeRouterAddressing.IPv6 = &models.NodeAddressingElement{
+			Enabled:    r.DaemonConfig.EnableIPv6,
+			IP:         ln.GetCiliumInternalIP(true).String(),
+			AllocRange: ln.IPv6AllocCIDR.String(),
+		}
+	}
+
+	if r.DaemonConfig.EnableIPv4 {
+		nodeRouterAddressing.IPv4 = &models.NodeAddressingElement{
+			Enabled:    r.DaemonConfig.EnableIPv4,
+			IP:         ln.GetCiliumInternalIP(false).String(),
+			AllocRange: ln.IPv4AllocCIDR.String(),
+		}
+	}
+
+	return nodeRouterAddressing, nil
+}
+
+// Handle incoming address allocation requests for the daemon.
 func (r *IpamPostIpamIPHandler) Handle(params ipamapi.PostIpamIPParams) middleware.Responder {
 	owner := swag.StringValue(params.Owner)
 	pool := ipam.Pool(swag.StringValue(params.Pool))
@@ -101,9 +154,9 @@ func (r *IpamDeleteIpamIPHandler) Handle(params ipamapi.DeleteIpamIPParams) midd
 		return api.Error(ipamapi.DeleteIpamIPFailureCode, fmt.Errorf("IP is in use by endpoint %d", ep.ID))
 	}
 
-	ip := net.ParseIP(params.IP)
-	if ip == nil {
-		return api.Error(ipamapi.DeleteIpamIPInvalidCode, fmt.Errorf("Invalid IP address: %s", params.IP))
+	ip, err := netip.ParseAddr(params.IP)
+	if err != nil {
+		return api.Error(ipamapi.DeleteIpamIPInvalidCode, fmt.Errorf("Invalid IP address %s: %w", params.IP, err))
 	}
 
 	pool := ipam.Pool(swag.StringValue(params.Pool))

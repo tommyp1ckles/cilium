@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 
-set -ex
+set -eux
 shopt -s expand_aliases
 
 DOCKER=${DOCKER:-docker}
 ORG=${ORG:-cilium}
 
 cosign() {
-  "${DOCKER}" run --rm gcr.io/projectsigstore/cosign:v2.2.4 "$@"
+  "${DOCKER}" run --rm ghcr.io/sigstore/cosign/cosign:v3.0.2 "$@"
 }
 
 helm() {
@@ -23,6 +23,15 @@ usage() {
     >&2 echo
     >&2 echo "example: $0 cilium v1.15.0"
     >&2 echo "example: $0 tetragon v1.2.0"
+}
+
+# $1 - target ref
+# $2 - remote
+symbolic_ref() {
+    local target="$1"
+    local remote="$2"
+
+    git symbolic-ref "$target" | sed 's@^refs/remotes/'"$remote"'/@@'
 }
 
 # $1 - project
@@ -44,6 +53,15 @@ main() {
         exit 1
     fi
 
+    remote=$(git remote -v | grep "${ORG}/charts" | awk '{print $1;exit}')
+    default_branch=$(symbolic_ref "refs/remotes/${remote}/HEAD" "${remote}")
+    if [ "$(symbolic_ref HEAD "${remote}")" !=  "${default_branch}" ]; then
+        git stash
+        git checkout $default_branch
+        git fetch "${remote}"
+        git merge --ff-only "${remote}/${default_branch}"
+    fi
+
     CWD=$(git rev-parse --show-toplevel)
     chart_dir="${PROJECT}/install/kubernetes"
     if [ -d "${PROJECT}" ]; then
@@ -51,7 +69,7 @@ main() {
         git stash
         remote=$(git remote -v | grep "${ORG}/${PROJECT}" | awk '{print $1;exit}')
         git fetch "${remote}"
-        git checkout -b "$version"
+        git checkout "$version"
         cd -
     else
         git clone --depth 1 --branch "$version" "https://github.com/cilium/${PROJECT}.git"
@@ -68,7 +86,10 @@ main() {
             --certificate-github-workflow-name "Image Release Build" \
             --certificate-github-workflow-ref "refs/tags/${version}" \
             --certificate-identity "https://github.com/cilium/${PROJECT}/.github/workflows/build-images-releases.yaml@refs/tags/${version}" \
-            "quay.io/cilium/${image}:${version}" 2>/dev/null | jq '.[].critical.image.["docker-manifest-digest"]')
+            "quay.io/cilium/${image}:${version}" 2>/dev/null | \
+            jq -r '.[].critical
+              | select(.type == "https://sigstore.dev/cosign/sign/v1" or .type == "cosign container image signature")
+              | .image["docker-manifest-digest"]')
           echo "export $variable_name := $digest" >> Makefile.digests.tmp
         done
 

@@ -23,7 +23,10 @@ understand the workflow of getting these changes reviewed and merged upstream.
    dev_setup
    images
    codeoverview
+   datapath_config
+   bpf_tests
    hive
+   statedb
    debugging
    hubble
    introducing_new_crds

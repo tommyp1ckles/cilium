@@ -10,14 +10,13 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/cilium/cilium/pkg/byteorder"
 	"github.com/cilium/cilium/pkg/types"
 )
 
 func TestDecodeTraceSockNotify(t *testing.T) {
 	// This check on the struct length constant is there to ensure that this
 	// test is updated when the struct changes.
-	require.Equal(t, 38, TraceSockNotifyLen)
+	require.Equal(t, 40, TraceSockNotifyLen)
 
 	input := TraceSockNotify{
 		Type:       0x00,
@@ -39,12 +38,12 @@ func TestDecodeTraceSockNotify(t *testing.T) {
 	}
 
 	buf := bytes.NewBuffer(nil)
-	err := binary.Write(buf, byteorder.Native, input)
-	require.Nil(t, err)
+	err := binary.Write(buf, binary.NativeEndian, input)
+	require.NoError(t, err)
 
 	output := &TraceSockNotify{}
-	err = DecodeTraceSockNotify(buf.Bytes(), output)
-	require.Nil(t, err)
+	err = output.Decode(buf.Bytes())
+	require.NoError(t, err)
 
 	require.Equal(t, input.Type, output.Type)
 	require.Equal(t, input.XlatePoint, output.XlatePoint)
@@ -59,16 +58,15 @@ func BenchmarkNewDecodeTraceSockNotify(b *testing.B) {
 	input := &TraceSockNotify{}
 	buf := bytes.NewBuffer(nil)
 
-	if err := binary.Write(buf, byteorder.Native, input); err != nil {
+	if err := binary.Write(buf, binary.NativeEndian, input); err != nil {
 		b.Fatal(err)
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		tsn := &TraceSockNotify{}
-		if err := DecodeTraceSockNotify(buf.Bytes(), tsn); err != nil {
+		if err := tsn.Decode(buf.Bytes()); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -78,16 +76,15 @@ func BenchmarkOldDecodeTraceSockNotify(b *testing.B) {
 	input := &TraceSockNotify{}
 	buf := bytes.NewBuffer(nil)
 
-	if err := binary.Write(buf, byteorder.Native, input); err != nil {
+	if err := binary.Write(buf, binary.NativeEndian, input); err != nil {
 		b.Fatal(err)
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		tsn := &TraceSockNotify{}
-		if err := binary.Read(bytes.NewBuffer(buf.Bytes()), byteorder.Native, tsn); err != nil {
+		if err := binary.Read(bytes.NewBuffer(buf.Bytes()), binary.NativeEndian, tsn); err != nil {
 			b.Fatal(err)
 		}
 	}

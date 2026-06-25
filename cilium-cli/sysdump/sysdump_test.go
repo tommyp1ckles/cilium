@@ -21,6 +21,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -114,7 +115,7 @@ func TestAddTasks(t *testing.T) {
 	}
 	collector, err := NewCollector(&client, options, &nopHooks{}, time.Now())
 	assert.NoError(t, err)
-	assert.Len(t, collector.additionalTasks, 0)
+	assert.Empty(t, collector.additionalTasks)
 	collector.AddTasks([]Task{{}, {}, {}})
 	assert.Len(t, collector.additionalTasks, 3)
 	collector.AddTasks([]Task{{}, {}, {}})
@@ -123,13 +124,13 @@ func TestAddTasks(t *testing.T) {
 	collector, err = NewCollector(&client, options, &extendingHooks{}, time.Now())
 	assert.NoError(t, err)
 	assert.Len(t, collector.additionalTasks, 1)
-	assert.Equal(t, collector.additionalTasks[0].Description, "extended")
+	assert.Equal(t, "extended", collector.additionalTasks[0].Description)
 	collector.AddTasks([]Task{{}, {}})
 	assert.Len(t, collector.additionalTasks, 3)
-	assert.Equal(t, collector.additionalTasks[0].Description, "extended")
+	assert.Equal(t, "extended", collector.additionalTasks[0].Description)
 	collector.AddTasks([]Task{{}, {}, {}})
 	assert.Len(t, collector.additionalTasks, 6)
-	assert.Equal(t, collector.additionalTasks[0].Description, "extended")
+	assert.Equal(t, "extended", collector.additionalTasks[0].Description)
 
 }
 
@@ -227,16 +228,144 @@ func TestListCiliumEndpointSlices(t *testing.T) {
 
 	endpointSlices, err := client.ListCiliumEndpointSlices(context.Background(), metav1.ListOptions{})
 	assert.NoError(err)
-	assert.GreaterOrEqual(len(endpointSlices.Items), 0)
+	assert.Len(endpointSlices.Items, 1)
 }
 
-func TestListCiliumExternalWorkloads(t *testing.T) {
-	assert := assert.New(t)
-	client := &fakeClient{}
+func TestFilterPods(t *testing.T) {
+	crashingPod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "crashingPod",
+		},
+		Status: corev1.PodStatus{
+			ContainerStatuses: []corev1.ContainerStatus{
+				{
+					State: corev1.ContainerState{
+						Waiting: &corev1.ContainerStateWaiting{
+							Reason: "CrashLoopBackOff",
+						},
+					},
+				},
+			},
+		},
+	}
+	crashingInitContainerPod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "crashingInitContainerPod",
+		},
+		Status: corev1.PodStatus{
+			InitContainerStatuses: []corev1.ContainerStatus{
+				{
+					State: corev1.ContainerState{
+						Waiting: &corev1.ContainerStateWaiting{
+							Reason: "CrashLoopBackOff",
+						},
+					},
+				},
+			},
+		},
+	}
+	restartedInitContainerPod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "restartedInitContainerPod",
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodPending,
+			InitContainerStatuses: []corev1.ContainerStatus{
+				{
+					RestartCount: 1,
+					State: corev1.ContainerState{
+						Terminated: &corev1.ContainerStateTerminated{
+							Reason: "Error",
+						},
+					},
+				},
+			},
+		},
+	}
+	runningReadyPod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "runningReadyPod",
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			Conditions: []corev1.PodCondition{
+				{
+					Type:   corev1.PodReady,
+					Status: corev1.ConditionTrue,
+				},
+			},
+		},
+	}
+	notRunningPod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "nonRunningPod",
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodFailed,
+		},
+	}
+	notReadyPod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "notReadyPod",
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			Conditions: []corev1.PodCondition{
+				{
+					Type:   corev1.PodReady,
+					Status: corev1.ConditionFalse,
+				},
+			},
+		},
+	}
 
-	externalWorkloads, err := client.ListCiliumExternalWorkloads(context.Background(), metav1.ListOptions{})
-	assert.NoError(err)
-	assert.GreaterOrEqual(len(externalWorkloads.Items), 0)
+	podList := &corev1.PodList{
+		Items: []corev1.Pod{crashingPod, crashingInitContainerPod, restartedInitContainerPod,
+			runningReadyPod, notRunningPod, notReadyPod},
+	}
+	result := filterCrashedPods(podList, 0)
+	assert.Len(t, result, 2)
+	assert.Equal(t, crashingPod.Name, result[0].Name)
+	assert.Equal(t, crashingInitContainerPod.Name, result[1].Name)
+
+	result = filterRunningNotReadyPods(podList, 0)
+	assert.Len(t, result, 1)
+	assert.Equal(t, notReadyPod.Name, result[0].Name)
+
+	result = filterRestartedContainersPods(podList, 0)
+	assert.Len(t, result, 1)
+	assert.Equal(t, restartedInitContainerPod.Name, result[0].Name)
+}
+
+func TestFilterPodsLimit(t *testing.T) {
+	examplePod := corev1.Pod{}
+	podList := &corev1.PodList{
+		Items: []corev1.Pod{examplePod, examplePod, examplePod, examplePod, examplePod},
+	}
+	filterFunc := func(po *corev1.Pod) bool {
+		return true
+	}
+	testCases := []struct {
+		limit   int
+		wantLen int
+	}{
+		{
+			limit:   0,
+			wantLen: 5,
+		},
+		{
+			limit:   3,
+			wantLen: 3,
+		},
+		{
+			limit:   100,
+			wantLen: 5,
+		},
+	}
+	for _, tc := range testCases {
+		result := filterPods(podList, filterFunc, tc.limit)
+		assert.Len(t, result, tc.wantLen)
+	}
 }
 
 type execRequest struct {
@@ -255,10 +384,6 @@ type execResult struct {
 type fakeClient struct {
 	nodeList *corev1.NodeList
 	execs    map[execRequest]execResult
-}
-
-func (c *fakeClient) ListCiliumBGPPeeringPolicies(_ context.Context, _ metav1.ListOptions) (*ciliumv2alpha1.CiliumBGPPeeringPolicyList, error) {
-	panic("implement me")
 }
 
 func (c *fakeClient) ListCiliumBGPClusterConfigs(ctx context.Context, opts metav1.ListOptions) (*ciliumv2alpha1.CiliumBGPClusterConfigList, error) {
@@ -281,15 +406,15 @@ func (c *fakeClient) ListCiliumBGPNodeConfigOverrides(ctx context.Context, opts 
 	panic("implement me")
 }
 
-func (c *fakeClient) ListCiliumLoadBalancerIPPools(_ context.Context, _ metav1.ListOptions) (*ciliumv2alpha1.CiliumLoadBalancerIPPoolList, error) {
-	panic("implement me")
-}
-
-func (c *fakeClient) ListCiliumNodeConfigs(_ context.Context, _ string, _ metav1.ListOptions) (*ciliumv2alpha1.CiliumNodeConfigList, error) {
+func (c *fakeClient) ListCiliumNodeConfigs(_ context.Context, _ string, _ metav1.ListOptions) (*ciliumv2.CiliumNodeConfigList, error) {
 	panic("implement me")
 }
 
 func (c *fakeClient) ListCiliumPodIPPools(_ context.Context, _ metav1.ListOptions) (*ciliumv2alpha1.CiliumPodIPPoolList, error) {
+	panic("implement me")
+}
+
+func (c *fakeClient) ListCiliumL2AnnouncementPolicies(_ context.Context, _ metav1.ListOptions) (*ciliumv2alpha1.CiliumL2AnnouncementPolicyList, error) {
 	panic("implement me")
 }
 
@@ -352,6 +477,21 @@ func (c *fakeClient) ExecInPodWithStderr(_ context.Context, namespace, pod, cont
 	return *bytes.NewBuffer(out.stdout), *bytes.NewBuffer(out.stderr), out.err
 }
 
+func (c *fakeClient) ExecInPodWithWriters(_, _ context.Context, namespace, pod, container string, command []string, stdout, stderr io.Writer) error {
+	r := execRequest{namespace, pod, container, strings.Join(command, " ")}
+	out, ok := c.execs[r]
+	if !ok {
+		panic(fmt.Sprintf("unexpected exec: %v", r))
+	}
+
+	fmt.Println("out: ", string(out.stdout))
+	fmt.Println("err: ", string(out.stderr))
+
+	stdout.Write(out.stdout)
+	stderr.Write(out.stderr)
+	return out.err
+}
+
 func (c *fakeClient) GetCiliumVersion(_ context.Context, _ *corev1.Pod) (*semver.Version, error) {
 	panic("implement me")
 }
@@ -376,7 +516,11 @@ func (c *fakeClient) GetDeployment(_ context.Context, _, _ string, _ metav1.GetO
 	return nil, nil
 }
 
-func (c *fakeClient) GetLogs(_ context.Context, _, _, _ string, _ corev1.PodLogOptions) (string, error) {
+func (c *fakeClient) ListDeployment(_ context.Context, _ string, _ metav1.ListOptions) (*appsv1.DeploymentList, error) {
+	return &appsv1.DeploymentList{}, nil
+}
+
+func (c *fakeClient) GetLogs(_ context.Context, _, _, _ string, _ corev1.PodLogOptions, _ io.Writer) error {
 	panic("implement me")
 }
 
@@ -465,31 +609,6 @@ func (c *fakeClient) ListCiliumEndpointSlices(_ context.Context, _ metav1.ListOp
 	return &ciliumEndpointSliceList, nil
 }
 
-func (c *fakeClient) ListCiliumExternalWorkloads(_ context.Context, _ metav1.ListOptions) (*ciliumv2.CiliumExternalWorkloadList, error) {
-	ciliumExternalWorkloadList := ciliumv2.CiliumExternalWorkloadList{
-		TypeMeta: metav1.TypeMeta{
-			Kind:       "List",
-			APIVersion: "v1",
-		},
-		ListMeta: metav1.ListMeta{},
-		Items: []ciliumv2.CiliumExternalWorkload{{
-			TypeMeta: metav1.TypeMeta{
-				Kind:       "CiliumEndpointSlice",
-				APIVersion: "v2alpha1",
-			},
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "testEndpointSlice1",
-			},
-			Spec: ciliumv2.CiliumExternalWorkloadSpec{
-				IPv4AllocCIDR: "10.100.0.0/24",
-				IPv6AllocCIDR: "FD00::/64",
-			},
-		},
-		},
-	}
-	return &ciliumExternalWorkloadList, nil
-}
-
 func (c *fakeClient) ListCiliumLocalRedirectPolicies(_ context.Context, _ string, _ metav1.ListOptions) (*ciliumv2.CiliumLocalRedirectPolicyList, error) {
 	panic("implement me")
 }
@@ -515,6 +634,10 @@ func (c *fakeClient) ListNamespaces(_ context.Context, _ metav1.ListOptions) (*c
 }
 
 func (c *fakeClient) ListEndpoints(_ context.Context, _ metav1.ListOptions) (*corev1.EndpointsList, error) {
+	panic("implement me")
+}
+
+func (c *fakeClient) ListEndpointSlices(_ context.Context, _ metav1.ListOptions) (*discoveryv1.EndpointSliceList, error) {
 	panic("implement me")
 }
 
@@ -564,7 +687,7 @@ func (c *fakeClient) GetNamespace(_ context.Context, ns string, _ metav1.GetOpti
 func Test_removeTopDirectory(t *testing.T) {
 	result, err := removeTopDirectory("/")
 	assert.NoError(t, err)
-	assert.Equal(t, "", result)
+	assert.Empty(t, result)
 
 	result, err = removeTopDirectory("a/b/c")
 	assert.NoError(t, err)

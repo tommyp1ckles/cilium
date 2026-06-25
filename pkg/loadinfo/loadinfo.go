@@ -6,6 +6,7 @@ package loadinfo
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -13,10 +14,7 @@ import (
 	"github.com/mackerelio/go-osstat/loadavg"
 	"github.com/mackerelio/go-osstat/memory"
 	"github.com/prometheus/procfs"
-	"github.com/sirupsen/logrus"
 
-	"github.com/cilium/cilium/pkg/inctimer"
-	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 )
 
@@ -29,10 +27,8 @@ const (
 	cpuWatermark = 1.0
 )
 
-var log = logging.DefaultLogger.WithField(logfields.LogSubsys, "loadinfo")
-
 // LogFunc is the function to used to log the system load
-type LogFunc func(format string, args ...interface{})
+type LogFunc func(format string, args ...any)
 
 func toMB(total uint64) uint64 {
 	return total / 1024 / 1024
@@ -43,7 +39,7 @@ func toPercent(part uint64, total uint64) float64 {
 }
 
 func pids() (pids []int, err error) {
-	//scan /proc/*/exe to find all active processes
+	// scan /proc/*/exe to find all active processes
 	matches, err := filepath.Glob("/proc/[0-9]*/exe")
 	if err != nil {
 		return nil, err
@@ -51,7 +47,7 @@ func pids() (pids []int, err error) {
 
 	pids = []int{}
 	for _, file := range matches {
-		//extract the pid from the path
+		// extract the pid from the path
 		pid := filepath.Base(filepath.Dir(file))
 		ipid, _ := strconv.Atoi(pid)
 		pids = append(pids, ipid)
@@ -132,13 +128,11 @@ func LogPeriodicSystemLoad(ctx context.Context, logFunc LogFunc, interval time.D
 	go func() {
 		LogCurrentSystemLoad(logFunc)
 
-		timer, timerDone := inctimer.New()
-		defer timerDone()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-timer.After(interval):
+			case <-time.After(interval):
 				LogCurrentSystemLoad(logFunc)
 			}
 		}
@@ -146,6 +140,13 @@ func LogPeriodicSystemLoad(ctx context.Context, logFunc LogFunc, interval time.D
 }
 
 // StartBackgroundLogger starts background logging
-func StartBackgroundLogger() {
-	LogPeriodicSystemLoad(context.Background(), log.WithFields(logrus.Fields{"type": "background"}).Debugf, backgroundInterval)
+func StartBackgroundLogger(logger *slog.Logger) {
+	l := logger.With(logfields.Type, "background")
+	ctx := context.Background()
+	logFunc := LogFunc(func(format string, args ...any) {
+		if l.Enabled(ctx, slog.LevelDebug) {
+			l.Debug(fmt.Sprintf(format, args...))
+		}
+	})
+	LogPeriodicSystemLoad(ctx, logFunc, backgroundInterval)
 }

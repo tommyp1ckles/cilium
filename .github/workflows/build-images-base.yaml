@@ -10,24 +10,27 @@ on:
     paths:
       - images/runtime/**
       - images/builder/**
+    branches-ignore:
+      - v1.19
+      - v1.18
+      - v1.17
   # This workflow can be reused so that renovate can execute this workflow_dispatch:
   # run from a different environment than 'release-base-images'. See
   # build-images-base-renovate.yaml
   workflow_call:
     secrets:
-      QUAY_BASE_RELEASE_USERNAME:
+      QUAY_BASE_RELEASE_USERNAME_202411:
         required: true
-      QUAY_BASE_RELEASE_PASSWORD:
+      QUAY_BASE_RELEASE_PASSWORD_202411:
         required: true
-      AUTO_COMMITTER_PEM:
+      AUTO_COMMITTER_PEM_202411:
         required: true
-      AUTO_COMMITTER_APP_ID:
+      AUTO_COMMITTER_APP_ID_202411:
         required: true
     inputs:
       environment:
         required: true
         type: string
-        default: "release-base-images"
 
 permissions:
   # To be able to access the repository with `actions/checkout`
@@ -41,17 +44,20 @@ concurrency:
 
 jobs:
   build-and-push:
-    # Skip this workflow for branches that are created by renovate and event type is pull_request_target
-    if: ${{ ! (github.event_name == 'pull_request_target' && startsWith(github.head_ref, 'renovate/')) }}
+    # Skip this workflow for repositories without credentials and branches that are created by renovate where the event type is pull_request_target
+    if: ${{ vars.QUAY_BASE_RELEASE_ENABLED == 'true' && ! (github.event_name == 'pull_request_target' && startsWith(github.head_ref, 'renovate/')) }}
     name: Build and Push Images
-    timeout-minutes: 45
-    environment: ${{ inputs.environment || 'release-base-images' }}
-    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    environment:
+      name: ${{ inputs.environment || 'release-base-images' }}
+      deployment: false
+    runs-on: ubuntu-24.04
     steps:
-      - name: Checkout default branch (trusted)
-        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+      - name: Checkout base or default branch (trusted)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          # This workflow is supposed to run only on pull_request_target context, but in case workflow call is made from a push context we still keep the default to default_branch
+          ref: ${{ github.base_ref || github.event.repository.default_branch }}
           persist-credentials: false
 
       - name: Cleanup Disk space in runner
@@ -63,28 +69,29 @@ jobs:
           cp ./images/runtime/update-cilium-runtime-image.sh ../cilium-base-branch/images/runtime/
           mkdir -p ../cilium-base-branch/images/builder/
           cp ./images/builder/update-cilium-builder-image.sh ../cilium-base-branch/images/builder/
+          mkdir -p ../cilium-base-branch/images/scripts/
+          cp ./images/scripts/get-image-digest.sh ../cilium-base-branch/images/scripts/
           mkdir -p ../cilium-base-branch/api/v1
           cp ./api/v1/Makefile ../cilium-base-branch/api/v1/
           cp ./Makefile.defs ../cilium-base-branch/Makefile.defs
           cp ./Makefile.quiet ../cilium-base-branch/Makefile.quiet
+          mkdir -p ../cilium-base-branch/.github/actions
+          cp -r .github/actions/cosign ../cilium-base-branch/.github/actions/
 
       - name: Set Environment Variables
         uses: ./.github/actions/set-env-variables
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@988b5a0280414f521da01fcc63a27aeeb4b104db # v3.6.1
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
       - name: Set up QEMU
         id: qemu
-        uses: docker/setup-qemu-action@49b3bc8e6bdd4a60e6116a5414239cba5943d3cf # v3.2.0
-
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@4959ce089c160fddf62f7b42464195ba1a56d382 # v3.6.0
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
 
       # Warning: since this is a privileged workflow, subsequent workflow job
       # steps must take care not to execute untrusted code.
       - name: Checkout pull request branch (NOT TRUSTED)
-        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
@@ -103,23 +110,23 @@ jobs:
         id: cilium-runtime-tag-in-repositories
         shell: bash
         run: |
-          if docker buildx imagetools inspect quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-runtime:${{  steps.runtime-tag.outputs.tag }} &>/dev/null; then
+          if docker buildx imagetools inspect ${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/cilium-runtime:${{  steps.runtime-tag.outputs.tag }} &>/dev/null; then
             echo exists="true" >> $GITHUB_OUTPUT
           else
             echo exists="false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Login to quay.io
+      - name: Login to ${{ env.REGISTRY_DEV }}
         if: ${{ steps.cilium-runtime-tag-in-repositories.outputs.exists == 'false' }}
-        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
-          registry: quay.io
-          username: ${{ secrets.QUAY_BASE_RELEASE_USERNAME }}
-          password: ${{ secrets.QUAY_BASE_RELEASE_PASSWORD }}
+          registry: ${{ env.REGISTRY_DEV }}
+          username: ${{ secrets.QUAY_BASE_RELEASE_USERNAME_202411 }}
+          password: ${{ secrets.QUAY_BASE_RELEASE_PASSWORD_202411 }}
 
       - name: Release build cilium-runtime
         if: ${{ steps.cilium-runtime-tag-in-repositories.outputs.exists == 'false' }}
-        uses: docker/build-push-action@5cd11c3a4ced054e52742c5fd54dca954e0edd85 # v6.7.0
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         id: docker_build_release_runtime
         with:
           provenance: false
@@ -128,26 +135,15 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-runtime:${{ steps.runtime-tag.outputs.tag }}
+            ${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/cilium-runtime:${{ steps.runtime-tag.outputs.tag }}
 
-      - name: Sign Container Image Runtime
+      - name: Generate SBOM, Sign, and Attest Runtime Image
         if: ${{ steps.cilium-runtime-tag-in-repositories.outputs.exists == 'false' }}
-        run: |
-          cosign sign -y quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-runtime@${{ steps.docker_build_release_runtime.outputs.digest }}
-
-
-      - name: Generate SBOM
-        if: ${{ steps.cilium-runtime-tag-in-repositories.outputs.exists == 'false' }}
-        uses: anchore/sbom-action@61119d458adab75f756bc0b9e4bde25725f86a7a # v0.17.2
+        uses: ./../cilium-base-branch/.github/actions/cosign
         with:
-          artifact-name: sbom_cilium-runtime_${{ steps.runtime-tag.outputs.tag }}.spdx.json
-          output-file: ./sbom_cilium-runtime_${{ steps.runtime-tag.outputs.tag }}.spdx.json
-          image: quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-runtime:${{ steps.runtime-tag.outputs.tag }}
-
-      - name: Attach SBOM attestation to container image
-        if: ${{ steps.cilium-runtime-tag-in-repositories.outputs.exists == 'false' }}
-        run: |
-          cosign attest -r -y --predicate sbom_cilium-runtime_${{ steps.runtime-tag.outputs.tag }}.spdx.json --type spdxjson quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-runtime@${{ steps.docker_build_release_runtime.outputs.digest }}
+          image: "${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/cilium-runtime@${{ steps.docker_build_release_runtime.outputs.digest }}"
+          image_tag: "${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/cilium-runtime:${{ steps.runtime-tag.outputs.tag }}"
+          sbom_name: "cilium-runtime_${{ steps.runtime-tag.outputs.tag }}"
 
       - name: Image Release Digest Runtime
         if: ${{ steps.cilium-runtime-tag-in-repositories.outputs.exists == 'false' }}
@@ -156,22 +152,32 @@ jobs:
           mkdir -p image-digest/
           echo "## cilium-runtime" > image-digest/cilium-runtime.txt
           echo "" >> image-digest/cilium-runtime.txt
-          echo "\`quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-runtime:${{ steps.runtime-tag.outputs.tag }}@${{ steps.docker_build_release_runtime.outputs.digest }}\`" >> image-digest/cilium-runtime.txt
+          echo "\`${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/cilium-runtime:${{ steps.runtime-tag.outputs.tag }}@${{ steps.docker_build_release_runtime.outputs.digest }}\`" >> image-digest/cilium-runtime.txt
           echo "" >> image-digest/cilium-runtime.txt
 
       - name: Upload artifact digests runtime
         if: ${{ steps.cilium-runtime-tag-in-repositories.outputs.exists == 'false' }}
-        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: image-digest cilium-runtime
           path: image-digest
           retention-days: 1
 
       - name: Update Runtime Image
-        if: ${{ steps.cilium-runtime-tag-in-repositories.outputs.exists == 'false' }}
+        id: update-runtime-image
         run: |
-          ../cilium-base-branch/images/runtime/update-cilium-runtime-image.sh "quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-runtime:${{ steps.runtime-tag.outputs.tag }}@${{ steps.docker_build_release_runtime.outputs.digest }}"
-          git commit -sam "images: update cilium-{runtime,builder}"
+          if [[ "${{ steps.cilium-runtime-tag-in-repositories.outputs.exists == 'false' }}" == "true" ]]; then
+            ../cilium-base-branch/images/runtime/update-cilium-runtime-image.sh "${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/cilium-runtime:${{ steps.runtime-tag.outputs.tag }}@${{ steps.docker_build_release_runtime.outputs.digest }}"
+          else
+            digest=$(../cilium-base-branch/images/scripts/get-image-digest.sh "${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/cilium-runtime:${{ steps.runtime-tag.outputs.tag }}")
+            ../cilium-base-branch/images/runtime/update-cilium-runtime-image.sh "${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/cilium-runtime:${{ steps.runtime-tag.outputs.tag }}@${digest}"
+          fi
+          if ! git diff --quiet; then
+            git commit -sam "images: update cilium-{runtime,builder}"
+            echo committed="true" >> $GITHUB_OUTPUT
+          else
+            echo committed="false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Generating image tag for Cilium-Builder
         id: builder-tag
@@ -182,23 +188,23 @@ jobs:
         id: cilium-builder-tag-in-repositories
         shell: bash
         run: |
-          if docker buildx imagetools inspect quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-builder:${{  steps.builder-tag.outputs.tag }} &>/dev/null; then
+          if docker buildx imagetools inspect ${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/cilium-builder:${{  steps.builder-tag.outputs.tag }} &>/dev/null; then
             echo exists="true" >> $GITHUB_OUTPUT
           else
             echo exists="false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Login to quay.io
+      - name: Login to ${{ env.REGISTRY_DEV }}
         if: ${{ steps.cilium-builder-tag-in-repositories.outputs.exists == 'false' && steps.cilium-runtime-tag-in-repositories.outputs.exists != 'false' }}
-        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
-          registry: quay.io
-          username: ${{ secrets.QUAY_BASE_RELEASE_USERNAME }}
-          password: ${{ secrets.QUAY_BASE_RELEASE_PASSWORD }}
+          registry: ${{ env.REGISTRY_DEV }}
+          username: ${{ secrets.QUAY_BASE_RELEASE_USERNAME_202411 }}
+          password: ${{ secrets.QUAY_BASE_RELEASE_PASSWORD_202411 }}
 
       - name: Release build cilium-builder
         if: ${{ steps.cilium-builder-tag-in-repositories.outputs.exists == 'false' }}
-        uses: docker/build-push-action@5cd11c3a4ced054e52742c5fd54dca954e0edd85 # v6.7.0
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         id: docker_build_release_builder
         with:
           provenance: false
@@ -207,25 +213,15 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-builder:${{ steps.builder-tag.outputs.tag }}
+            ${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/cilium-builder:${{ steps.builder-tag.outputs.tag }}
 
-      - name: Sign Container Image Builder
+      - name: Generate SBOM, Sign, and Attest Builder Image
         if: ${{ steps.cilium-builder-tag-in-repositories.outputs.exists == 'false' }}
-        run: |
-          cosign sign -y quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-builder@${{ steps.docker_build_release_builder.outputs.digest }}
-
-      - name: Generate SBOM
-        if: ${{ steps.cilium-builder-tag-in-repositories.outputs.exists == 'false' }}
-        uses: anchore/sbom-action@61119d458adab75f756bc0b9e4bde25725f86a7a # v0.17.2
+        uses: ./../cilium-base-branch/.github/actions/cosign
         with:
-          artifact-name: sbom_cilium-builder_${{ steps.builder-tag.outputs.tag }}.spdx.json
-          output-file: ./sbom_cilium-builder_${{ steps.builder-tag.outputs.tag }}.spdx.json
-          image: quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-builder:${{ steps.builder-tag.outputs.tag }}
-
-      - name: Attach SBOM attestation to container image
-        if: ${{ steps.cilium-runtime-tag-in-repositories.outputs.exists == 'false' }}
-        run: |
-          cosign attest -r -y --predicate sbom_cilium-builder_${{ steps.builder-tag.outputs.tag }}.spdx.json --type spdxjson quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-builder@${{ steps.docker_build_release_builder.outputs.digest }}
+          image: "${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/cilium-builder@${{ steps.docker_build_release_builder.outputs.digest }}"
+          image_tag: "${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/cilium-builder:${{ steps.builder-tag.outputs.tag }}"
+          sbom_name: "cilium-builder_${{ steps.builder-tag.outputs.tag }}"
 
       - name: Image Release Digest Builder
         if: ${{ steps.cilium-builder-tag-in-repositories.outputs.exists == 'false' }}
@@ -234,78 +230,83 @@ jobs:
           mkdir -p image-digest/
           echo "## cilium-builder" > image-digest/cilium-builder.txt
           echo "" >> image-digest/cilium-builder.txt
-          echo "\`quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-builder:${{ steps.builder-tag.outputs.tag }}@${{ steps.docker_build_release_builder.outputs.digest }}\`" >> image-digest/cilium-builder.txt
+          echo "\`${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/cilium-builder:${{ steps.builder-tag.outputs.tag }}@${{ steps.docker_build_release_builder.outputs.digest }}\`" >> image-digest/cilium-builder.txt
           echo "" >> image-digest/cilium-builder.txt
 
       - name: Upload artifact digests builder
         if: ${{ steps.cilium-builder-tag-in-repositories.outputs.exists == 'false' }}
-        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: image-digest cilium-builder
           path: image-digest
           retention-days: 1
 
-      - name: Update Runtime Images
-        if: ${{ steps.cilium-runtime-tag-in-repositories.outputs.exists == 'false' }}
+      - name: Update Runtime Image
         run: |
-          ../cilium-base-branch/images/runtime/update-cilium-runtime-image.sh "quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-runtime:${{ steps.runtime-tag.outputs.tag }}@${{ steps.docker_build_release_runtime.outputs.digest }}"
+          if [[ "${{ steps.cilium-runtime-tag-in-repositories.outputs.exists == 'false' }}" == "true" ]]; then
+            ../cilium-base-branch/images/runtime/update-cilium-runtime-image.sh "${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/cilium-runtime:${{ steps.runtime-tag.outputs.tag }}@${{ steps.docker_build_release_runtime.outputs.digest }}"
+          else
+            digest=$(../cilium-base-branch/images/scripts/get-image-digest.sh "${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/cilium-runtime:${{ steps.runtime-tag.outputs.tag }}")
+            ../cilium-base-branch/images/runtime/update-cilium-runtime-image.sh "${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/cilium-runtime:${{ steps.runtime-tag.outputs.tag }}@${digest}"
+          fi
 
       - name: Update Builder Images
-        if: ${{ steps.cilium-builder-tag-in-repositories.outputs.exists == 'false' }}
         run: |
-          ../cilium-base-branch/images/builder/update-cilium-builder-image.sh "quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-builder:${{ steps.builder-tag.outputs.tag }}@${{ steps.docker_build_release_builder.outputs.digest }}"
+          if [[ "${{ steps.cilium-builder-tag-in-repositories.outputs.exists == 'false' }}" == "true" ]]; then
+            ../cilium-base-branch/images/builder/update-cilium-builder-image.sh "${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/cilium-builder:${{ steps.builder-tag.outputs.tag }}@${{ steps.docker_build_release_builder.outputs.digest }}"
+          else
+            digest=$(../cilium-base-branch/images/scripts/get-image-digest.sh "${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/cilium-builder:${{ steps.builder-tag.outputs.tag }}")
+            ../cilium-base-branch/images/builder/update-cilium-builder-image.sh "${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/cilium-builder:${{ steps.builder-tag.outputs.tag }}@${digest}"
+          fi
 
-      - name: Update Protobuf APIs
-        # The builder image contains 'protoc', which can cause autogenerated
-        # protobuf files to change. Re-generate the API to compensate.
-        if: ${{ steps.cilium-builder-tag-in-repositories.outputs.exists == 'false' }}
-        env:
-          CONTAINER_IMAGE: quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-builder:${{ steps.builder-tag.outputs.tag }}@${{ steps.docker_build_release_builder.outputs.digest }}
+      - name: Update protobuf APIs and commit changes
+        id: update-builder-image
         run: |
+          if [[ "${{ steps.cilium-builder-tag-in-repositories.outputs.exists == 'false' }}" == "true" ]]; then
+            ../cilium-base-branch/images/builder/update-cilium-builder-image.sh "${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/cilium-builder:${{ steps.builder-tag.outputs.tag }}@${{ steps.docker_build_release_builder.outputs.digest }}"
+            export CONTAINER_IMAGE=${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/cilium-builder:${{ steps.builder-tag.outputs.tag }}@${{ steps.docker_build_release_builder.outputs.digest }}
+          else
+            digest=$(../cilium-base-branch/images/scripts/get-image-digest.sh "${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/cilium-builder:${{ steps.builder-tag.outputs.tag }}")
+            ../cilium-base-branch/images/builder/update-cilium-builder-image.sh "${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/cilium-builder:${{ steps.builder-tag.outputs.tag }}@${digest}"
+            export CONTAINER_IMAGE="${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/cilium-builder:${{ steps.builder-tag.outputs.tag }}@${digest}"
+          fi
           export VOLUME=$PWD/api/v1
           make -C ../cilium-base-branch/api/v1
-
-      - name: Commit changes by amending previous commit
-        # Run this step in case we have committed the cilium-runtime changes before
-        if: ${{ steps.cilium-runtime-tag-in-repositories.outputs.exists == 'false' }}
-        run: |
-          git commit --amend -sam "images: update cilium-{runtime,builder}"
-
-      - name: Commit changes
-        # Run this step in case we have NOT committed the cilium-runtime changes before
-        if: ${{ steps.cilium-runtime-tag-in-repositories.outputs.exists != 'false' && steps.cilium-builder-tag-in-repositories.outputs.exists == 'false' }}
-        run: |
-          git commit -sam "images: update cilium-{runtime,builder}"
+          if ! git diff --quiet; then
+            if [[ "${{ steps.update-runtime-image.outputs.committed }}" == "true" ]]; then
+              git commit --amend -sam "images: update cilium-{runtime,builder}"
+            else
+              git commit -sam "images: update cilium-{runtime,builder}"
+            fi
+            echo committed="true" >> $GITHUB_OUTPUT
+          else
+            echo committed="false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Get token
-        if: ${{ steps.cilium-builder-tag-in-repositories.outputs.exists == 'false' || steps.cilium-runtime-tag-in-repositories.outputs.exists == 'false' }}
+        if: ${{ steps.update-runtime-image.outputs.committed == 'true' || steps.update-builder-image.outputs.committed == 'true' }}
         id: get_token
         uses: cilium/actions-app-token@61a6271ce92ba02f49bf81c755685d59fb25a59a # v0.21.1
         with:
-          APP_PEM: ${{ secrets.AUTO_COMMITTER_PEM }}
-          APP_ID: ${{ secrets.AUTO_COMMITTER_APP_ID }}
+          APP_PEM: ${{ secrets.AUTO_COMMITTER_PEM_202411 }}
+          APP_ID: ${{ secrets.AUTO_COMMITTER_APP_ID_202411 }}
 
       - name: Push changes into PR
+        if: ${{ steps.update-runtime-image.outputs.committed == 'true' || steps.update-builder-image.outputs.committed == 'true' }}
         env:
           ref: ${{ github.event.pull_request.head.ref || github.ref }}
-          repository:  ${{ startsWith(github.head_ref, 'renovate/') && github.repository || github.event.pull_request.head.repo.full_name }}
-        if: ${{ steps.cilium-runtime-tag-in-repositories.outputs.exists == 'false' || steps.cilium-builder-tag-in-repositories.outputs.exists == 'false' }}
+          repository:  ${{ github.event.pull_request.head.repo.full_name || github.repository }}
         run: |
           git diff HEAD^
-          git push https://x-access-token:${{ steps.get_token.outputs.app_token }}@github.com/${{ env.repository }}.git HEAD:${{ env.ref }}
+          git push https://x-access-token:${{ steps.get_token.outputs.app_token }}@github.com/${{ env.repository }}.git HEAD:$ref
 
-  image-digests:
-    name: Display Digests
-    runs-on: ubuntu-22.04
-    needs: build-and-push
-    steps:
-      - name: Downloading Image Digests
+      - name: Prepare for Image Digests
         shell: bash
         run: |
           mkdir -p image-digest/
 
       - name: Download digests of all images built
-        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: image-digest/
           pattern: "*image-digest *"

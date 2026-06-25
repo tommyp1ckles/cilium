@@ -14,8 +14,6 @@ import (
 // Describes available Amazon Web Services services in a prefix list format, which
 // includes the prefix list name and prefix list ID of the service and the IP
 // address range for the service.
-//
-// We recommend that you use DescribeManagedPrefixLists instead.
 func (c *Client) DescribePrefixLists(ctx context.Context, params *DescribePrefixListsInput, optFns ...func(*Options)) (*DescribePrefixListsOutput, error) {
 	if params == nil {
 		params = &DescribePrefixListsInput{}
@@ -108,13 +106,16 @@ func (c *Client) addOperationDescribePrefixListsMiddlewares(stack *middleware.St
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
+	if err = addRetry(stack, options, c); err != nil {
 		return err
 	}
 	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
 	if err = addRecordResponseTiming(stack); err != nil {
+		return err
+	}
+	if err = addSpanRetryLoop(stack, options); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -129,10 +130,10 @@ func (c *Client) addOperationDescribePrefixListsMiddlewares(stack *middleware.St
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
-	if err = addTimeOffsetBuild(stack, c); err != nil {
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
-	if err = addUserAgentRetryMode(stack, options); err != nil {
+	if err = addCredentialSource(stack, options); err != nil {
 		return err
 	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opDescribePrefixLists(options.Region), middleware.Before); err != nil {
@@ -151,6 +152,15 @@ func (c *Client) addOperationDescribePrefixListsMiddlewares(stack *middleware.St
 		return err
 	}
 	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptBeforeRetryLoop(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptAttempt(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil

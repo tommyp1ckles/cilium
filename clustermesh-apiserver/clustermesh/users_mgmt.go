@@ -6,19 +6,19 @@ package clustermesh
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"sync"
 
 	"github.com/cilium/hive/cell"
 	"github.com/spf13/pflag"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/fswatcher"
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/logging/logfields"
-	"github.com/cilium/cilium/pkg/promise"
 )
 
 const (
@@ -29,7 +29,8 @@ var usersManagementCell = cell.Module(
 	"clustermesh-users-management",
 	"ClusterMesh Etcd Users Management",
 
-	kvstore.GlobalUserMgmtClientPromiseCell,
+	cell.ProvidePrivate(func(client kvstore.Client) kvstore.BackendOperationsUserMgmt { return client }),
+
 	cell.Config(UsersManagementConfig{}),
 	cell.Invoke(registerUsersManager),
 )
@@ -59,35 +60,38 @@ type usersManager struct {
 	UsersManagementConfig
 	clusterInfo cmtypes.ClusterInfo
 
-	client        kvstore.BackendOperationsUserMgmt
-	clientPromise promise.Promise[kvstore.BackendOperationsUserMgmt]
+	client kvstore.BackendOperationsUserMgmt
 
 	manager *controller.Manager
 	users   map[string]string
 
-	stop chan struct{}
-	wg   sync.WaitGroup
+	stop   chan struct{}
+	wg     sync.WaitGroup
+	logger *slog.Logger
 }
 
 func registerUsersManager(
 	lc cell.Lifecycle,
 	cfg UsersManagementConfig,
 	cinfo cmtypes.ClusterInfo,
-	clientPromise promise.Promise[kvstore.BackendOperationsUserMgmt],
+	client kvstore.BackendOperationsUserMgmt,
+	logger *slog.Logger,
 ) error {
 	if !cfg.ClusterUsersEnabled {
-		log.Info("etcd users management disabled")
+		logger.Info("etcd users management disabled")
 		return nil
 	}
 
 	manager := usersManager{
 		UsersManagementConfig: cfg,
-		clientPromise:         clientPromise,
+		client:                client,
 
 		manager: controller.NewManager(),
 		users:   make(map[string]string),
 
 		stop: make(chan struct{}),
+
+		logger: logger,
 	}
 
 	lc.Append(&manager)
@@ -95,12 +99,14 @@ func registerUsersManager(
 }
 
 func (us *usersManager) Start(cell.HookContext) error {
-	log.WithField(logfields.Path, us.ClusterUsersConfigPath).
-		Info("Starting managing etcd users based on configuration")
+	us.logger.Info(
+		"Starting managing etcd users based on configuration",
+		logfields.Path, us.ClusterUsersConfigPath,
+	)
 
-	configWatcher, err := fswatcher.New([]string{us.ClusterUsersConfigPath})
+	configWatcher, err := fswatcher.New(us.logger, []string{us.ClusterUsersConfigPath})
 	if err != nil {
-		log.WithError(err).Error("Unable to setup config watcher")
+		us.logger.Error("Unable to setup config watcher", logfields.Error, err)
 		return fmt.Errorf("unable to setup config watcher: %w", err)
 	}
 
@@ -110,31 +116,34 @@ func (us *usersManager) Start(cell.HookContext) error {
 		DoFunc:  us.sync,
 	})
 
-	us.wg.Add(1)
-	go func() {
-		defer us.wg.Done()
+	us.wg.Go(func() {
 
 		for {
 			select {
 			case <-configWatcher.Events:
 				us.manager.TriggerController(usersMgmtCtrl)
 			case err := <-configWatcher.Errors:
-				log.WithError(err).WithField(logfields.Path, us.ClusterUsersConfigPath).
-					Warning("Error encountered while watching file with fsnotify")
+				us.logger.Warn(
+					"Error encountered while watching file with fsnotify",
+					logfields.Error, err,
+					logfields.Path, us.ClusterUsersConfigPath,
+				)
 			case <-us.stop:
-				log.Info("Closing")
+				us.logger.Info("Closing")
 				configWatcher.Close()
 				return
 			}
 		}
-	}()
+	})
 
 	return nil
 }
 
 func (us *usersManager) Stop(cell.HookContext) error {
-	log.WithField(logfields.Path, us.ClusterUsersConfigPath).
-		Info("Stopping managing etcd users based on configuration")
+	us.logger.Info(
+		"Stopping managing etcd users based on configuration",
+		logfields.Path, us.ClusterUsersConfigPath,
+	)
 
 	us.manager.RemoveAllAndWait()
 	close(us.stop)
@@ -143,27 +152,26 @@ func (us *usersManager) Stop(cell.HookContext) error {
 }
 
 func (us *usersManager) sync(ctx context.Context) error {
-	if us.client == nil {
-		client, err := us.clientPromise.Await(ctx)
-		if err != nil {
-			log.WithError(err).Error("Unable to retrieve the kvstore client")
-			return err
-		}
-		us.client = client
-	}
-
 	config, err := os.ReadFile(us.ClusterUsersConfigPath)
 	if err != nil {
-		log.WithError(err).WithField(logfields.Path, us.ClusterUsersConfigPath).
-			Error("Failed reading users configuration file")
+		us.logger.Error(
+			"Failed reading users configuration file",
+			logfields.Error, err,
+			logfields.Path, us.ClusterUsersConfigPath,
+		)
 		return err
 	}
 
 	var users usersConfigFile
 	if err := yaml.Unmarshal(config, &users); err != nil {
-		log.WithError(err).WithField(logfields.Path, us.ClusterUsersConfigPath).
-			Error("Failed un-marshalling users configuration file")
-		return err
+		us.logger.Error(
+			"Failed un-marshalling users configuration file",
+			logfields.Error, err,
+			logfields.Path, us.ClusterUsersConfigPath,
+		)
+		// We don't have to return an error to retry here since the filewatcher
+		// will notify us and we would be able to retry on actual file changes
+		return nil
 	}
 
 	// Mark all users as stale
@@ -180,11 +188,15 @@ func (us *usersManager) sync(ctx context.Context) error {
 		role, found := us.users[user.Name]
 		if !found || role != user.Role {
 			if err := us.client.UserEnforcePresence(ctx, user.Name, []string{user.Role}); err != nil {
-				log.WithError(err).WithField(logfields.User, user.Name).Error("Failed configuring user")
+				us.logger.Error(
+					"Failed configuring user",
+					logfields.Error, err,
+					logfields.User, user.Name,
+				)
 				return err
 			}
 
-			log.WithField(logfields.User, user.Name).Info("User successfully configured")
+			us.logger.Info("User successfully configured", logfields.User, user.Name)
 		}
 
 		us.users[user.Name] = user.Role
@@ -194,11 +206,15 @@ func (us *usersManager) sync(ctx context.Context) error {
 	// Delete all stale users
 	for user := range stale {
 		if err := us.client.UserEnforceAbsence(ctx, user); err != nil {
-			log.WithError(err).WithField(logfields.User, user).Error("Failed removing user")
+			us.logger.Error(
+				"Failed removing user",
+				logfields.Error, err,
+				logfields.User, user,
+			)
 			return err
 		}
 
-		log.WithField(logfields.User, user).Info("User successfully removed")
+		us.logger.Info("User successfully removed", logfields.User, user)
 		delete(us.users, user)
 	}
 

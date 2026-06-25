@@ -65,7 +65,7 @@ type ServiceView struct {
 	Generation int64
 	Status     *slim_core_v1.ServiceStatus
 
-	SharingKey            string
+	SharingKey            sharingKey
 	SharingCrossNamespace []string
 	// These required to determine if a service conflicts with another for sharing an ip
 	ExternalTrafficPolicy slim_core_v1.ServiceExternalTrafficPolicy
@@ -100,13 +100,15 @@ func (sv *ServiceView) isCompatible(osv *ServiceView) (bool, string) {
 		}
 	}
 
-	// Compatible services don't have any overlapping ports.
-	// NOTE: Normally we would also consider the protocol, but the Cilium datapath can't differentiate between
-	// 	     protocols, so we don't either for this purpose. https://github.com/cilium/cilium/issues/9207
+	// Compatible services don't have any overlapping ports with the same protocol.
+	// NOTE: The Cilium datapath can differentiate between protocols,thanks to the merge
+	//       of PR https://github.com/cilium/cilium/pull/33434.
 	for _, port1 := range sv.Ports {
 		for _, port2 := range osv.Ports {
-			if port1.Port == port2.Port {
-				return false, "same port"
+			portsEqual := port1.Port == port2.Port
+			protocolEqual := port1.Protocol == port2.Protocol
+			if portsEqual && protocolEqual {
+				return false, "same port and protocol"
 			}
 		}
 	}

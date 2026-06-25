@@ -5,7 +5,6 @@
 
 #include "lib/common.h"
 #include "linux/ip.h"
-#include "lib/clustermesh.h"
 
 
 static __always_inline __maybe_unused void
@@ -42,118 +41,24 @@ ctx_load_meta_ipv6(const struct __sk_buff *ctx, union v6addr *addr, const __u32 
 }
 
 /**
- * get_identity - returns source identity from the mark field
- *
- * Identity stored in the mark is rearranged to place identity in the most
- * significant bits and cluster_id in the least significant bits, separated by 8
- * bits that are used for other options. When retrieving identity from the mark,
- * we need to rearrange it back to the original format.
- *
- * Example mark containing identity, where I is a bit for identity, C is a bit
- * for cluster_id, and X is a bit that should not be touched by this function:
- * IIIIIIII IIIIIIII XXXXXXXX CCCCCCCC
- *
- * This function should return an identity that looks like the following:
- * CCCCCCCC IIIIIIII IIIIIIII
- *
- * The agent flag 'max-connected-clusters' can effect the allocation of bits
- * for identity and cluster_id in the mark (see comment in set_identity_mark).
+ * get_epid - returns endpoint identifier from the mark field
  */
-static __always_inline __maybe_unused int
-get_identity(const struct __sk_buff *ctx)
-{
-	__u32 cluster_id_lower = ctx->mark & CLUSTER_ID_LOWER_MASK;
-	__u32 cluster_id_upper = (ctx->mark & get_cluster_id_upper_mask()) >> (8 + IDENTITY_LEN);
-	__u32 identity = (ctx->mark >> 16) & IDENTITY_MAX;
-
-	return (cluster_id_lower | cluster_id_upper) << IDENTITY_LEN | identity;
-}
-
-/**
- * get_epid - returns source endpoint identity from the mark field
- */
-static __always_inline __maybe_unused __u32
+static __always_inline __maybe_unused __u16
 get_epid(const struct __sk_buff *ctx)
 {
 	return ctx->mark >> 16;
 }
 
-/**
- * set_identity_mark - pushes 24 bit identity into ctx mark value.
- *
- * Identity in the mark looks like the following, where I is a bit for
- * identity, C is a bit for cluster_id, and X is a bit that should not be
- * touched by this function:
- * IIIIIIII IIIIIIII XXXXXXXX CCCCCCCC
- *
- * With the agent flag 'max-connected-clusters', it is possible to extend the
- * cluster_id range by sacrificing some bits of the identity. When this is set
- * to a value other than the default 255, the most significant bits are taken
- * from identity and used for the most significant bits of cluster_id.
- *
- * An agent with 'max-connected-clusters=512' would set identity in the mark
- * like the following:
- * CIIIIIII IIIIIIII XXXXXXXX CCCCCCCC
- */
 static __always_inline __maybe_unused void
-set_identity_mark(struct __sk_buff *ctx, __u32 identity, __u32 magic)
-{
-	__u32 cluster_id = (identity >> IDENTITY_LEN) & CLUSTER_ID_MAX;
-	__u32 cluster_id_lower = cluster_id & 0xFF;
-	__u32 cluster_id_upper = ((cluster_id & 0xFFFFFF00) << (8 + IDENTITY_LEN));
-
-	ctx->mark |= magic;
-	ctx->mark &= MARK_MAGIC_KEY_MASK;
-	ctx->mark |= (identity & IDENTITY_MAX) << 16 | cluster_id_lower | cluster_id_upper;
-}
-
-static __always_inline __maybe_unused void
-set_identity_meta(struct __sk_buff *ctx, __u32 identity)
+set_encrypt_identity_meta(struct __sk_buff *ctx, __u32 identity)
 {
 	ctx->cb[CB_ENCRYPT_IDENTITY] = identity;
 }
 
-/**
- * set_encrypt_key - pushes 8 bit key, 16 bit node ID, and encryption marker into ctx mark value.
- */
-static __always_inline __maybe_unused void
-set_encrypt_key_mark(struct __sk_buff *ctx, __u8 key, __u32 node_id)
-{
-	ctx->mark = or_encrypt_key(key) | node_id << 16;
-}
-
-static __always_inline __maybe_unused void
-set_encrypt_key_meta(struct __sk_buff *ctx, __u8 key, __u32 node_id)
-{
-	ctx->cb[CB_ENCRYPT_MAGIC] = or_encrypt_key(key) | node_id << 16;
-}
-
-/**
- * set_cluster_id_mark - sets the cluster_id mark.
- */
-static __always_inline __maybe_unused void
-ctx_set_cluster_id_mark(struct __sk_buff *ctx, __u32 cluster_id)
-{
-	__u32 cluster_id_lower = (cluster_id & 0xFF);
-	__u32 cluster_id_upper = ((cluster_id & 0xFFFFFF00) << (8 + IDENTITY_LEN));
-
-	ctx->mark |=  cluster_id_lower | cluster_id_upper | MARK_MAGIC_CLUSTER_ID;
-}
-
 static __always_inline __maybe_unused __u32
-ctx_get_cluster_id_mark(struct __sk_buff *ctx)
+get_encrypt_identity_meta(const struct __sk_buff *ctx)
 {
-	__u32 ret = 0;
-	__u32 cluster_id_lower = ctx->mark & CLUSTER_ID_LOWER_MASK;
-	__u32 cluster_id_upper = (ctx->mark & get_cluster_id_upper_mask()) >> (8 + IDENTITY_LEN);
-
-	if ((ctx->mark & MARK_MAGIC_CLUSTER_ID) != MARK_MAGIC_CLUSTER_ID)
-		return ret;
-
-	ret = (cluster_id_upper | cluster_id_lower) & CLUSTER_ID_MAX;
-	ctx->mark &= ~(__u32)(MARK_MAGIC_CLUSTER_ID | get_mark_magic_cluster_id_mask());
-
-	return ret;
+	return ctx->cb[CB_ENCRYPT_IDENTITY];
 }
 
 static __always_inline __maybe_unused int
@@ -162,13 +67,13 @@ redirect_self(const struct __sk_buff *ctx)
 	/* Looping back the packet into the originating netns. We xmit into the
 	 * hosts' veth device such that we end up on ingress in the peer.
 	 */
-	return ctx_redirect(ctx, ctx->ifindex, 0);
+	return (int)ctx_redirect(ctx, ctx->ifindex, 0);
 }
 
 static __always_inline __maybe_unused bool
 neigh_resolver_available(void)
 {
-	return is_defined(HAVE_FIB_NEIGH);
+	return true;
 }
 
 static __always_inline __maybe_unused void
@@ -262,13 +167,23 @@ static __always_inline bool ctx_is_overlay(const struct __sk_buff *ctx)
 	return (ctx->mark & MARK_MAGIC_HOST_MASK) == MARK_MAGIC_OVERLAY;
 }
 
-#ifdef ENABLE_EGRESS_GATEWAY_COMMON
-static __always_inline void ctx_egw_done_set(struct __sk_buff *ctx)
+static __always_inline bool ctx_is_encrypt(const struct __sk_buff *ctx)
 {
-	ctx->mark &= ~MARK_MAGIC_HOST_MASK;
-	ctx->mark |= MARK_MAGIC_EGW_DONE;
+	if (!is_defined(ENABLE_WIREGUARD) && !is_defined(ENABLE_IPSEC))
+		return false;
+
+	return (ctx->mark & MARK_MAGIC_HOST_MASK) == MARK_MAGIC_ENCRYPT;
 }
 
+static __always_inline bool ctx_is_decrypt(const struct __sk_buff *ctx)
+{
+	if (!is_defined(ENABLE_WIREGUARD) && !is_defined(ENABLE_IPSEC))
+		return false;
+
+	return (ctx->mark & MARK_MAGIC_HOST_MASK) == MARK_MAGIC_DECRYPT;
+}
+
+#ifdef ENABLE_EGRESS_GATEWAY_COMMON
 static __always_inline bool ctx_egw_done(const struct __sk_buff *ctx)
 {
 	return (ctx->mark & MARK_MAGIC_HOST_MASK) == MARK_MAGIC_EGW_DONE;
@@ -277,10 +192,10 @@ static __always_inline bool ctx_egw_done(const struct __sk_buff *ctx)
 
 #ifdef HAVE_ENCAP
 static __always_inline __maybe_unused int
-ctx_set_encap_info(struct __sk_buff *ctx, __u32 src_ip,
-		   __be16 src_port __maybe_unused, __u32 node_id,
-		   __u32 seclabel, __u32 vni __maybe_unused,
-		   void *opt, __u32 opt_len)
+ctx_set_encap_info4(struct __sk_buff *ctx, __u32 src_ip,
+		    __be16 src_port __maybe_unused, __u32 tunnel_endpoint,
+		    __u32 seclabel, __u32 vni __maybe_unused,
+		    void *opt, __u32 opt_len)
 {
 	struct bpf_tunnel_key key = {};
 	__u32 key_size = TUNNEL_KEY_WITHOUT_SRC_IP;
@@ -297,10 +212,38 @@ ctx_set_encap_info(struct __sk_buff *ctx, __u32 src_ip,
 		key.local_ipv4 = bpf_ntohl(src_ip);
 		key_size = sizeof(key);
 	}
-	key.remote_ipv4 = node_id;
+	key.remote_ipv4 = bpf_ntohl(tunnel_endpoint);
 	key.tunnel_ttl = IPDEFTTL;
 
 	ret = ctx_set_tunnel_key(ctx, &key, key_size, BPF_F_ZERO_CSUM_TX);
+	if (unlikely(ret < 0))
+		return DROP_WRITE_ERROR;
+
+	if (opt && opt_len > 0) {
+		ret = ctx_set_tunnel_opt(ctx, opt, opt_len);
+		if (unlikely(ret < 0))
+			return DROP_WRITE_ERROR;
+	}
+
+	return CTX_ACT_REDIRECT;
+}
+
+static __always_inline __maybe_unused int
+ctx_set_encap_info6(struct __sk_buff *ctx, const union v6addr *tunnel_endpoint,
+		    __u32 seclabel, void *opt, __u32 opt_len)
+{
+	struct bpf_tunnel_key key = {};
+	__u32 key_size = TUNNEL_KEY_WITHOUT_SRC_IP;
+	int ret;
+
+	key.tunnel_id = get_tunnel_id(seclabel);
+	key.remote_ipv6[0] = tunnel_endpoint->p1;
+	key.remote_ipv6[1] = tunnel_endpoint->p2;
+	key.remote_ipv6[2] = tunnel_endpoint->p3;
+	key.remote_ipv6[3] = tunnel_endpoint->p4;
+	key.tunnel_ttl = IPDEFTTL;
+
+	ret = ctx_set_tunnel_key(ctx, &key, key_size, BPF_F_TUNINFO_IPV6);
 	if (unlikely(ret < 0))
 		return DROP_WRITE_ERROR;
 

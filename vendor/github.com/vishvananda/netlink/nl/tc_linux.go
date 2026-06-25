@@ -78,6 +78,17 @@ const (
 )
 
 const (
+	TCA_ACT_SAMPLE_UNSPEC = iota
+	TCA_ACT_SAMPLE_TM
+	TCA_ACT_SAMPLE_PARMS
+	TCA_ACT_SAMPLE_RATE
+	TCA_ACT_SAMPLE_TRUNC_SIZE
+	TCA_ACT_SAMPLE_PSAMPLE_GROUP
+	TCA_ACT_SAMPLE_PAD
+	TCA_ACT_SAMPLE_MAX
+)
+
+const (
 	TCA_PRIO_UNSPEC = iota
 	TCA_PRIO_MQ
 	TCA_PRIO_MAX = TCA_PRIO_MQ
@@ -115,6 +126,7 @@ const (
 	SizeofTcConnmark     = SizeofTcGen + 0x04
 	SizeofTcCsum         = SizeofTcGen + 0x04
 	SizeofTcMirred       = SizeofTcGen + 0x08
+	SizeofTcVlan         = SizeofTcGen + 0x04
 	SizeofTcTunnelKey    = SizeofTcGen + 0x04
 	SizeofTcSkbEdit      = SizeofTcGen
 	SizeofTcPolice       = 2*SizeofTcRateSpec + 0x20
@@ -817,6 +829,41 @@ func (x *TcMirred) Serialize() []byte {
 }
 
 const (
+	TCA_VLAN_UNSPEC = iota
+	TCA_VLAN_TM
+	TCA_VLAN_PARMS
+	TCA_VLAN_PUSH_VLAN_ID
+	TCA_VLAN_PUSH_VLAN_PROTOCOL
+	TCA_VLAN_PAD
+	TCA_VLAN_PUSH_VLAN_PRIORITY
+	TCA_VLAN_PUSH_ETH_DST
+	TCA_VLAN_PUSH_ETH_SRC
+	TCA_VLAN_MAX
+)
+
+//struct tc_vlan {
+//	tc_gen;
+//	int v_action;
+//};
+
+type TcVlan struct {
+	TcGen
+	Action int32
+}
+
+func (msg *TcVlan) Len() int {
+	return SizeofTcVlan
+}
+
+func DeserializeTcVlan(b []byte) *TcVlan {
+	return (*TcVlan)(unsafe.Pointer(&b[0:SizeofTcVlan][0]))
+}
+
+func (x *TcVlan) Serialize() []byte {
+	return (*(*[SizeofTcVlan]byte)(unsafe.Pointer(x)))[:]
+}
+
+const (
 	TCA_TUNNEL_KEY_UNSPEC = iota
 	TCA_TUNNEL_KEY_TM
 	TCA_TUNNEL_KEY_PARMS
@@ -1076,6 +1123,13 @@ const (
 	TCA_FLOWER_KEY_ENC_OPTS
 	TCA_FLOWER_KEY_ENC_OPTS_MASK
 
+	TCA_FLOWER_IN_HW_COUNT
+
+	TCA_FLOWER_KEY_PORT_SRC_MIN /* be16 */
+	TCA_FLOWER_KEY_PORT_SRC_MAX /* be16 */
+	TCA_FLOWER_KEY_PORT_DST_MIN /* be16 */
+	TCA_FLOWER_KEY_PORT_DST_MAX /* be16 */
+
 	__TCA_FLOWER_MAX
 )
 
@@ -1091,11 +1145,11 @@ const TCA_CLS_FLAGS_SKIP_SW = 1 << 1 /* don't use filter in SW */
 // };
 
 type TcSfqQopt struct {
-	Quantum uint8
+	Quantum uint32
 	Perturb int32
 	Limit   uint32
-	Divisor uint8
-	Flows   uint8
+	Divisor uint32
+	Flows   uint32
 }
 
 func (x *TcSfqQopt) Len() int {
@@ -1239,8 +1293,8 @@ const (
 )
 
 // /* TCA_PEDIT_KEY_EX_HDR_TYPE_NETWROK is a special case for legacy users. It
-//  * means no specific header type - offset is relative to the network layer
-//  */
+//   - means no specific header type - offset is relative to the network layer
+//     */
 type PeditHeaderType uint16
 
 const (
@@ -1271,19 +1325,52 @@ func DeserializeTcPeditKey(b []byte) *TcPeditKey {
 }
 
 func DeserializeTcPedit(b []byte) (*TcPeditSel, []TcPeditKey) {
-	x := &TcPeditSel{}
-	copy((*(*[SizeOfPeditSel]byte)(unsafe.Pointer(x)))[:SizeOfPeditSel], b)
+	sel := &TcPeditSel{}
+	copy((*(*[SizeOfPeditSel]byte)(unsafe.Pointer(sel)))[:SizeOfPeditSel], b)
 
 	var keys []TcPeditKey
 
-	next := SizeOfPeditKey
+	next := SizeOfPeditSel
 	var i uint8
-	for i = 0; i < x.NKeys; i++ {
+	for i = 0; i < sel.NKeys; i++ {
 		keys = append(keys, *DeserializeTcPeditKey(b[next:]))
 		next += SizeOfPeditKey
 	}
 
-	return x, keys
+	return sel, keys
+}
+
+func DeserializeTcPeditKeysEx(b []byte) []TcPeditKeyEx {
+	var keysEx []TcPeditKeyEx
+
+	attrs, err := ParseRouteAttr(b)
+	if err != nil {
+		return keysEx
+	}
+
+	for _, attr := range attrs {
+		keyAttrs, err := ParseRouteAttr(attr.Value)
+		if err != nil {
+			continue
+		}
+
+		var key TcPeditKeyEx
+		for _, ka := range keyAttrs {
+			switch ka.Attr.Type {
+			case TCA_PEDIT_KEY_EX_HTYPE:
+				if len(ka.Value) >= 2 {
+					key.HeaderType = PeditHeaderType(NativeEndian().Uint16(ka.Value[:2]))
+				}
+			case TCA_PEDIT_KEY_EX_CMD:
+				if len(ka.Value) >= 2 {
+					key.Cmd = PeditCmd(NativeEndian().Uint16(ka.Value[:2]))
+				}
+			}
+		}
+		keysEx = append(keysEx, key)
+	}
+
+	return keysEx
 }
 
 type TcPeditKey struct {
@@ -1533,7 +1620,7 @@ func (p *TcPedit) SetIPv6Dst(ip6 net.IP) {
 }
 
 func (p *TcPedit) SetIPv4Src(ip net.IP) {
-	u32 := NativeEndian().Uint32(ip[:4])
+	u32 := NativeEndian().Uint32(ip.To4())
 
 	tKey := TcPeditKey{}
 	tKeyEx := TcPeditKeyEx{}
@@ -1549,7 +1636,7 @@ func (p *TcPedit) SetIPv4Src(ip net.IP) {
 }
 
 func (p *TcPedit) SetIPv4Dst(ip net.IP) {
-	u32 := NativeEndian().Uint32(ip[:4])
+	u32 := NativeEndian().Uint32(ip.To4())
 
 	tKey := TcPeditKey{}
 	tKeyEx := TcPeditKeyEx{}
@@ -1608,4 +1695,100 @@ func (p *TcPedit) SetSrcPort(srcPort uint16, protocol uint8) {
 	p.Keys = append(p.Keys, tKey)
 	p.KeysEx = append(p.KeysEx, tKeyEx)
 	p.Sel.NKeys++
+}
+
+// ParsePeditEthKeys extracts and assembles complete Ethernet MAC addresses from pedit keys
+func ParsePeditEthKeys(keys []TcPeditKey) (srcMac, dstMac net.HardwareAddr) {
+	srcParts := make([]byte, 0, 6)
+	dstParts := make([]byte, 0, 6)
+
+	for _, key := range keys {
+		valBytes := make([]byte, 4)
+		NativeEndian().PutUint32(valBytes, key.Val)
+
+		switch key.Off {
+		case 0:
+			dstParts = append(dstParts, valBytes...)
+		case 4:
+			if key.Mask == 0xffff0000 {
+				dstParts = append(dstParts, valBytes[0:2]...)
+			} else if key.Mask == 0x0000ffff {
+				srcParts = append(srcParts, valBytes[2:4]...)
+			}
+		case 8:
+			srcParts = append(srcParts, valBytes...)
+		}
+	}
+
+	if len(srcParts) == 6 {
+		srcMac = net.HardwareAddr(srcParts)
+	}
+	if len(dstParts) == 6 {
+		dstMac = net.HardwareAddr(dstParts)
+	}
+
+	return srcMac, dstMac
+}
+
+// ParsePeditIP4Keys extracts IPv4 addresses from pedit keys
+func ParsePeditIP4Keys(keys []TcPeditKey) (srcIP, dstIP net.IP) {
+	for _, key := range keys {
+		valBytes := make([]byte, 4)
+		NativeEndian().PutUint32(valBytes, key.Val)
+
+		switch key.Off {
+		case 12:
+			srcIP = net.IP(valBytes)
+		case 16:
+			dstIP = net.IP(valBytes)
+		}
+	}
+
+	return srcIP, dstIP
+}
+
+// ParsePeditIP6Keys parses IPv6 header modifications
+func ParsePeditIP6Keys(keys []TcPeditKey) (srcIP, dstIP net.IP) {
+	// Helper to parse 4 consecutive keys for a complete IPv6 address
+	parseIPv6Addr := func(startIdx int) net.IP {
+		if startIdx+3 >= len(keys) {
+			return nil
+		}
+
+		ip := make(net.IP, 16)
+		baseOffset := keys[startIdx].Off
+
+		for j := 0; j < 4; j++ {
+			if keys[startIdx+j].Off != baseOffset+uint32(j*4) {
+				return nil
+			}
+			NativeEndian().PutUint32(ip[j*4:], keys[startIdx+j].Val)
+		}
+
+		return ip
+	}
+
+	for idx, key := range keys {
+		switch key.Off {
+		case 8:
+			srcIP = parseIPv6Addr(idx)
+		case 24:
+			dstIP = parseIPv6Addr(idx)
+		}
+	}
+
+	return srcIP, dstIP
+}
+
+// ParsePeditL4Keys extracts TCP/UDP ports from pedit keys
+func ParsePeditL4Keys(keys []TcPeditKey) (srcPort, dstPort uint16) {
+	for _, key := range keys {
+		if key.Mask == 0xffff0000 {
+			srcPort = Swap16(uint16(key.Val & 0xFFFF))
+		} else if key.Mask == 0x0000ffff {
+			dstPort = Swap16(uint16(key.Val >> 16))
+		}
+	}
+
+	return srcPort, dstPort
 }

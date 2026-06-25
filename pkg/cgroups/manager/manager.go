@@ -4,12 +4,14 @@
 package manager
 
 import (
+	"context"
+	"log/slog"
 	"maps"
 	"os"
 	"slices"
 	"strings"
 
-	"github.com/sirupsen/logrus"
+	"github.com/cilium/hive/cell"
 
 	"github.com/cilium/cilium/pkg/cgroups"
 	v1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
@@ -51,7 +53,7 @@ type CGroupManager interface {
 // During initialization, the manager checks for a valid cgroup path pathProvider.
 // If it fails to find a pathProvider, it will ignore all the subsequent pod events.
 type cgroupManager struct {
-	logger logrus.FieldLogger
+	logger *slog.Logger
 	// Map of pod metadata indexed by their UIDs
 	podMetadataById map[podUID]*podMetadata
 	// Map of container metadata indexed by their cgroup ids
@@ -62,8 +64,6 @@ type cgroupManager struct {
 	podEventsDone chan podEventStatus
 	// Cgroup path provider
 	pathProvider cgroupPathProvider
-	// Channel to shut down manager
-	shutdown chan struct{}
 	// Interface to do cgroups related operations
 	cgroupsChecker cgroup
 	// Cache indexed by cgroup id to store pod metadata
@@ -152,11 +152,6 @@ func (m *cgroupManager) DumpPodMetadata() []*FullPodMetadata {
 	return <-allMetaOut
 }
 
-// Close should only be called once from daemon close.
-func (m *cgroupManager) Close() {
-	close(m.shutdown)
-}
-
 type podUID = string
 
 type podMetadata struct {
@@ -201,20 +196,19 @@ func (c cgroupImpl) GetCgroupID(cgroupPath string) (uint64, error) {
 	return cgroups.GetCgroupID(cgroupPath)
 }
 
-func newManager(logger logrus.FieldLogger, cg cgroup, pathProvider cgroupPathProvider, channelSize int) *cgroupManager {
+func newManager(logger *slog.Logger, cg cgroup, pathProvider cgroupPathProvider, channelSize int) *cgroupManager {
 	return &cgroupManager{
 		logger:                    logger,
 		podMetadataById:           make(map[string]*podMetadata),
 		containerMetadataByCgrpId: make(map[uint64]*containerMetadata),
 		podEvents:                 make(chan podEvent, channelSize),
-		shutdown:                  make(chan struct{}),
 		metadataCache:             map[uint64]PodMetadata{},
 		cgroupsChecker:            cg,
 		pathProvider:              pathProvider,
 	}
 }
 
-func (m *cgroupManager) processPodEvents() {
+func (m *cgroupManager) processPodEvents(ctx context.Context, _ cell.Health) error {
 	for {
 		select {
 		case ev := <-m.podEvents:
@@ -242,11 +236,11 @@ func (m *cgroupManager) processPodEvents() {
 			case podDumpMetadataEvent:
 				m.dumpPodMetadata(ev.allMetadataOut)
 			}
-		case <-m.shutdown:
+		case <-ctx.Done():
 			if m.podEventsDone != nil {
 				close(m.podEventsDone)
 			}
-			return
+			return nil
 		}
 	}
 }
@@ -290,11 +284,12 @@ func (m *cgroupManager) updatePodMetadata(pod, oldPod *v1.Pod) {
 		// Example:containerd://e275d1a37782ab30008aa3ae6666cccefe53b3a14a2ab5a8dc459939107c8c0e
 		_, after, found := strings.Cut(cId, "//")
 		if !found || after == "" {
-			m.logger.WithFields(logrus.Fields{
-				logfields.K8sPodName:   pod.Name,
-				logfields.K8sNamespace: pod.Namespace,
-				"container-id":         cId,
-			}).Error("unexpected container ID")
+			m.logger.Error(
+				"unexpected container ID",
+				logfields.K8sPodName, pod.Name,
+				logfields.K8sNamespace, pod.Namespace,
+				logfields.ContainerID, cId,
+			)
 			continue
 		}
 		cId = after
@@ -310,20 +305,24 @@ func (m *cgroupManager) updatePodMetadata(pod, oldPod *v1.Pod) {
 		// Container could've been gone, so don't log any errors.
 		cgrpPath, err := m.pathProvider.getContainerPath(id, cId, pod.Status.QOSClass)
 		if err != nil {
-			m.logger.WithFields(logrus.Fields{
-				logfields.K8sPodName:   pod.Name,
-				logfields.K8sNamespace: pod.Namespace,
-				"container-id":         cId,
-			}).WithError(err).Debugf("failed to get container metadata")
+			m.logger.Debug(
+				"failed to get container metadata",
+				logfields.Error, err,
+				logfields.K8sPodName, pod.Name,
+				logfields.K8sNamespace, pod.Namespace,
+				logfields.ContainerID, cId,
+			)
 			continue
 		}
 		cgrpId, err := m.cgroupsChecker.GetCgroupID(cgrpPath)
 		if err != nil {
-			m.logger.WithFields(logrus.Fields{
-				logfields.K8sPodName:   pod.Name,
-				logfields.K8sNamespace: pod.Namespace,
-				"cgroup-path":          cgrpPath,
-			}).WithError(err).Debugf("failed to get cgroup id")
+			m.logger.Debug(
+				"failed to get cgroup id",
+				logfields.Error, err,
+				logfields.K8sPodName, pod.Name,
+				logfields.K8sNamespace, pod.Namespace,
+				logfields.ContainerID, cId,
+			)
 			continue
 		}
 		m.containerMetadataByCgrpId[cgrpId] = &containerMetadata{
@@ -400,9 +399,10 @@ func (m *cgroupManager) dumpPodMetadata(allMetadataOut chan []*FullPodMetadata) 
 	for _, cm := range m.containerMetadataByCgrpId {
 		pm, ok := m.podMetadataById[cm.podId]
 		if !ok {
-			m.logger.WithFields(logrus.Fields{
-				"container-cgroup-id": cm.cgroupId,
-			}).Debugf("Pod metadata not found")
+			m.logger.Debug(
+				"Pod metadata not found",
+				logfields.CGroupID, cm.cgroupId,
+			)
 			continue
 		}
 		fullPm, ok := allMetas[cm.podId]

@@ -7,30 +7,31 @@ import (
 	"context"
 	"testing"
 
+	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/require"
 
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	"github.com/cilium/cilium/pkg/identity"
+	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/testutils"
-)
-
-var (
-	kvstoreLabels = labels.NewLabelsFromModel([]string{
-		"k8s:app=etcd",
-		"k8s:etcd_cluster=cilium-etcd",
-		"k8s:io.cilium/app=etcd-operator",
-		"k8s:io.kubernetes.pod.namespace=kube-system",
-		"k8s:io.cilium.k8s.policy.serviceaccount=default",
-		"k8s:io.cilium.k8s.policy.cluster=default",
-	})
 )
 
 func TestLookupReservedIdentity(t *testing.T) {
 	testutils.IntegrationTest(t)
 
-	mgr := NewCachingIdentityAllocator(newDummyOwner())
-	<-mgr.InitIdentityAllocator(nil)
+	client := kvstore.SetupDummy(t, "etcd")
+	for _, testConfig := range testConfigs {
+		t.Run(testConfig.name, func(t *testing.T) {
+			testLookupReservedIdentity(t, testConfig, client)
+		})
+	}
+}
+
+func testLookupReservedIdentity(t *testing.T, testConfig testConfig, client kvstore.Client) {
+	logger := hivetest.Logger(t)
+	mgr := NewCachingIdentityAllocator(logger, newDummyOwner(logger), testConfig.allocatorConfig)
+	<-mgr.InitIdentityAllocator(nil, client)
 
 	hostID := identity.GetReservedID("host")
 	require.NotNil(t, mgr.LookupIdentityByID(context.TODO(), hostID))
@@ -47,17 +48,13 @@ func TestLookupReservedIdentity(t *testing.T) {
 	require.Equal(t, worldID, id.ID)
 
 	identity.InitWellKnownIdentities(fakeConfig, cmtypes.ClusterInfo{Name: "default", ID: 5})
-
-	id = mgr.LookupIdentity(context.TODO(), kvstoreLabels)
-	require.NotNil(t, id)
-	require.Equal(t, identity.ReservedCiliumKVStore, id.ID)
 }
 
 func TestLookupReservedIdentityByLabels(t *testing.T) {
 	testutils.IntegrationTest(t)
 
 	ni, err := identity.ParseNumericIdentity("129")
-	require.Nil(t, err)
+	require.NoError(t, err)
 	identity.AddUserDefinedNumericIdentity(ni, "kvstore")
 	identity.AddReservedIdentity(ni, "kvstore")
 
@@ -123,13 +120,6 @@ func TestLookupReservedIdentityByLabels(t *testing.T) {
 				"id.foo":          labels.ParseLabel("id.foo"),
 			},
 			),
-		},
-		{
-			name: "well-known-kvstore",
-			args: args{
-				lbls: kvstoreLabels,
-			},
-			want: identity.NewIdentity(identity.ReservedCiliumKVStore, kvstoreLabels),
 		},
 		{
 			name: "no fixed and reserved identities returns nil",

@@ -47,10 +47,8 @@ func (f filterTracker) String() string {
 }
 
 func (f *filterTracker) add(name string) bool {
-	for _, exists := range f.changed {
-		if name == exists {
-			return false
-		}
+	if slices.Contains(f.changed, name) {
+		return false
 	}
 
 	// wipe the existing values if this is the first time usage of this
@@ -210,12 +208,13 @@ func newFlowFilter() *flowFilter {
 			{"identity", "from-identity"},
 			{"workload", "to-workload"},
 			{"workload", "from-workload"},
-			{"node-name", "cluster"},
 			{"node-label"},
 			{"tcp-flags"},
 			{"uuid"},
 			{"traffic-direction"},
 			{"cel-expression"},
+			{"encrypted", "unencrypted"},
+			{"reply", "not-reply"},
 		},
 	}
 }
@@ -276,8 +275,7 @@ func (t *filterTracker) checkNamespaceConflicts(ff *flowpb.FlowFilter) error {
 
 func parseTCPFlags(val string) (*flowpb.TCPFlags, error) {
 	flags := &flowpb.TCPFlags{}
-	s := strings.Split(val, ",")
-	for _, f := range s {
+	for f := range strings.SplitSeq(val, ",") {
 		switch strings.ToUpper(f) {
 		case "SYN":
 			flags.SYN = true
@@ -363,8 +361,6 @@ var agentEventSubtypes = map[string]monitorAPI.AgentNotification{
 	"endpoint-deleted":            monitorAPI.AgentNotifyEndpointDeleted,
 	"ipcache-upserted":            monitorAPI.AgentNotifyIPCacheUpserted,
 	"ipcache-deleted":             monitorAPI.AgentNotifyIPCacheDeleted,
-	"service-upserted":            monitorAPI.AgentNotifyServiceUpserted,
-	"service-deleted":             monitorAPI.AgentNotifyServiceDeleted,
 }
 
 func (of *flowFilter) set(f *filterTracker, name, val string, track bool) error {
@@ -474,8 +470,6 @@ func (of *flowFilter) set(f *filterTracker, name, val string, track bool) error 
 		f.srcNs = append(f.srcNs, val)
 	case "to-namespace":
 		f.dstNs = append(f.dstNs, val)
-
-	// namespace filters (will be applied to pods and/or service filters)
 	case "all-namespaces":
 		f.ns = append(f.ns, "")
 	case "from-all-namespaces":
@@ -520,6 +514,18 @@ func (of *flowFilter) set(f *filterTracker, name, val string, track bool) error 
 	case "trace-id":
 		f.apply(func(f *flowpb.FlowFilter) {
 			f.TraceId = append(f.GetTraceId(), val)
+		})
+
+	case "ip-trace-id":
+		if val == "0" {
+			return fmt.Errorf("invalid --ip-trace-id value; must be greater than 0")
+		}
+		traceID, err := strconv.ParseUint(val, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid --ip-trace-id value: %w", err)
+		}
+		f.apply(func(f *flowpb.FlowFilter) {
+			f.IpTraceId = append(f.GetIpTraceId(), traceID)
 		})
 
 	case "verdict":
@@ -692,10 +698,21 @@ func (of *flowFilter) set(f *filterTracker, name, val string, track bool) error 
 			f.NodeLabels = append(f.GetNodeLabels(), val)
 		})
 
-		// cluster Name filters
+	// cluster name filters
 	case "cluster":
+		f.applyLeft(func(f *flowpb.FlowFilter) {
+			f.SourceClusterName = append(f.GetSourceClusterName(), val)
+		})
+		f.applyRight(func(f *flowpb.FlowFilter) {
+			f.DestinationClusterName = append(f.GetDestinationClusterName(), val)
+		})
+	case "from-cluster":
 		f.apply(func(f *flowpb.FlowFilter) {
-			f.NodeName = append(f.GetNodeName(), val+"/")
+			f.SourceClusterName = append(f.GetSourceClusterName(), val)
+		})
+	case "to-cluster":
+		f.apply(func(f *flowpb.FlowFilter) {
+			f.DestinationClusterName = append(f.GetDestinationClusterName(), val)
 		})
 
 	// TCP Flags filter
@@ -732,6 +749,22 @@ func (of *flowFilter) set(f *filterTracker, name, val string, track bool) error 
 	case "interface":
 		f.apply(func(f *flowpb.FlowFilter) {
 			f.Interface = append(f.Interface, &flowpb.NetworkInterface{Name: val})
+		})
+	case "encrypted":
+		f.apply(func(f *flowpb.FlowFilter) {
+			f.Encrypted = append(f.GetEncrypted(), true)
+		})
+	case "unencrypted":
+		f.apply(func(f *flowpb.FlowFilter) {
+			f.Encrypted = append(f.GetEncrypted(), false)
+		})
+	case "reply":
+		f.apply(func(f *flowpb.FlowFilter) {
+			f.Reply = append(f.GetReply(), true)
+		})
+	case "not-reply":
+		f.apply(func(f *flowpb.FlowFilter) {
+			f.Reply = append(f.GetReply(), false)
 		})
 	}
 

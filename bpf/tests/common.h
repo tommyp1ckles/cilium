@@ -58,10 +58,10 @@
 
 /* These values have to stay in sync with the enum */
 /* values in bpf/tests/bpftest/trf.proto */
-#define TEST_ERROR 0
-#define TEST_PASS 1
-#define TEST_FAIL 2
-#define TEST_SKIP 3
+#define TEST_ERROR 100
+#define TEST_PASS 101
+#define TEST_FAIL 102
+#define TEST_SKIP 103
 
 /* Max number of cpus to check when doing percpu hash assertions */
 #define NR_CPUS 128
@@ -104,27 +104,31 @@ struct {
  *      **%li**, **%lu**, **%lx**, **%lld**, **%lli**, **%llu**, **%llx**,
  *      **%p**. No modifier (size of field, padding with zeroes, etc.)
  *      is available
+ * Each log message is automatically prefixed with the source file name and
+ * line number in the format "file:line: " to help with identifying the exact
+ * origin of the log entry in the source code. This information is particularly
+ * useful for debugging and tracing test execution flow.
  */
-#define test_log(fmt, args...)						\
-({									\
-	static const char ____fmt[] = fmt;				\
-	if (test_result_cursor) {					\
-		*(suite_result_cursor++) = MKR_TEST_LOG;		\
-	} else {							\
-		*(suite_result_cursor++) = MKR_SUITE_LOG;		\
-	}								\
-	*(suite_result_cursor++) = 2 + sizeof(____fmt) +		\
-		___bpf_narg(args) +					\
-		(___bpf_narg(args) * sizeof(unsigned long long));	\
-	*(suite_result_cursor++) = MKR_LOG_FMT;			\
-	*(suite_result_cursor++) = sizeof(____fmt);			\
-	memcpy(suite_result_cursor, ____fmt, sizeof(____fmt));		\
-	suite_result_cursor += sizeof(____fmt);			\
-									\
-									\
-	if (___bpf_narg(args) > 0) {					\
-		__bpf_log_arg(suite_result_cursor, args);		\
-	}								\
+#define test_log(fmt, args...)								\
+({											\
+	static const char ____fileline[] = __FILE__ ":" LINE_STRING  ": ";		\
+	static const char ____fmt[] = fmt;						\
+	if (test_result_cursor) {							\
+		*(suite_result_cursor++) = MKR_TEST_LOG;				\
+	} else {									\
+		*(suite_result_cursor++) = MKR_SUITE_LOG;				\
+	}										\
+	*(suite_result_cursor++) = 2 + sizeof(____fileline) - 1 + sizeof(____fmt) +	\
+		___bpf_narg(args) + (___bpf_narg(args) * sizeof(unsigned long long));	\
+	*(suite_result_cursor++) = MKR_LOG_FMT;						\
+	*(suite_result_cursor++) = sizeof(____fileline) - 1 + sizeof(____fmt);		\
+	memcpy(suite_result_cursor, ____fileline, sizeof(____fileline) - 1);		\
+	suite_result_cursor += sizeof(____fileline) - 1;				\
+	memcpy(suite_result_cursor, ____fmt, sizeof(____fmt));				\
+	suite_result_cursor += sizeof(____fmt);						\
+	if (___bpf_narg(args) > 0) {							\
+		__bpf_log_arg(suite_result_cursor, args);				\
+	}										\
 })
 
 /* This is a hack to allow us to convert the integer produced by __LINE__ */
@@ -200,7 +204,7 @@ static void *(*test_bpf_map_lookup_elem)(void *map, const void *key) = (void *)1
 /*   write the amount of bytes used after a test is done. */
 #define test_init()							  \
 	char suite_result = TEST_PASS;					  \
-	__maybe_unused char *test_result_status = 0;			  \
+	__maybe_unused char *test_result_status = NULL;			  \
 	char *suite_result_cursor;					  \
 	{								  \
 		__u32 __key = 0;						  \
@@ -210,7 +214,7 @@ static void *(*test_bpf_map_lookup_elem)(void *map, const void *key) = (void *)1
 			return TEST_ERROR;				  \
 		}							  \
 	}								  \
-	__maybe_unused char *test_result_cursor = 0;			  \
+	__maybe_unused char *test_result_cursor = NULL;			  \
 	__maybe_unused __u16 test_result_size;				  \
 	do {
 /* */
@@ -260,18 +264,18 @@ test_result_cursor = 0;
 #define CHECK(progtype, name) __section(progtype "/test/" name "/check")
 
 /* Asserts that the sum of per-cpu metrics map slots for a key equals count */
-#define assert_metrics_count(key, count) \
+#define assert_metrics_count(key, __count) \
 ({ \
 	struct metrics_value *__entry = NULL; \
 	__u64 sum = 0; \
 	/* Iterate until lookup encounters null when hitting cpu number */ \
 	/* Assumes at most 128 CPUS */ \
 	for (int i = 0; i < NR_CPUS; i++) { \
-		__entry = map_lookup_percpu_elem(&METRICS_MAP, &key, i); \
+		__entry = map_lookup_percpu_elem(&cilium_metrics, &key, i); \
 		if (!__entry) { \
 			break; \
 		} \
 		sum += __entry->count; \
 	} \
-	assert(sum == count); \
+	assert(sum == __count); \
 })

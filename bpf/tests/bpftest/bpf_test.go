@@ -9,12 +9,15 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
+	"os/exec"
 	"path"
 	"regexp"
 	"slices"
@@ -26,16 +29,18 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/perf"
 	"github.com/cilium/ebpf/rlimit"
+	"github.com/cilium/hive/hivetest"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/tools/cover"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/cilium/cilium/pkg/bpf"
-	"github.com/cilium/cilium/pkg/byteorder"
 	"github.com/cilium/cilium/pkg/datapath/link"
-	"github.com/cilium/cilium/pkg/monitor"
+	"github.com/cilium/cilium/pkg/maps/eventsmap"
+	"github.com/cilium/cilium/pkg/monitor/api"
+	"github.com/cilium/cilium/pkg/monitor/format"
+	"github.com/cilium/cilium/pkg/testutils/netns"
 )
 
 var (
@@ -50,7 +55,19 @@ var (
 	dumpCtx = flag.Bool("dump-ctx", false, "If set, the program context will be dumped after a CHECK and SETUP run.")
 )
 
+type testLogWriter struct {
+	t *testing.T
+}
+
+func (w *testLogWriter) Write(p []byte) (n int, err error) {
+	// use the formatted output to avoid the new line
+	w.t.Logf("%s", string(p))
+	return len(p), nil
+}
+
 func TestBPF(t *testing.T) {
+	ranTests := 0
+
 	if testPath == nil || *testPath == "" {
 		t.Skip("Set -bpf-test-path to run BPF tests")
 	}
@@ -93,13 +110,23 @@ func TestBPF(t *testing.T) {
 		}
 
 		t.Run(entry.Name(), func(t *testing.T) {
-			profiles := loadAndRunSpec(t, entry, instrLog)
+			testNetNS := netns.NewNetNS(t)
+			profiles := loadAndRunSpec(t, entry, instrLog, testNetNS)
 			for _, profile := range profiles {
 				if len(profile.Blocks) > 0 {
 					mergedProfiles = addProfile(mergedProfiles, profile)
 				}
 			}
+			if err := testNetNS.Close(); err != nil {
+				t.Fatal("netns close: ", err)
+			}
 		})
+
+		ranTests++
+	}
+
+	if ranTests == 0 {
+		t.Fatal("no BPF programs found to test. Check --bpf-test-path and --test filter.")
 	}
 
 	if *testCoverageReport != "" {
@@ -122,7 +149,8 @@ func TestBPF(t *testing.T) {
 	}
 }
 
-func loadAndRunSpec(t *testing.T, entry fs.DirEntry, instrLog io.Writer) []*cover.Profile {
+func loadAndRunSpec(t *testing.T, entry fs.DirEntry, instrLog io.Writer, testNetNS *netns.NetNS) []*cover.Profile {
+	logger := hivetest.Logger(t)
 	elfPath := path.Join(*testPath, entry.Name())
 
 	if instrLog != nil {
@@ -156,7 +184,7 @@ func loadAndRunSpec(t *testing.T, entry fs.DirEntry, instrLog io.Writer) []*cove
 	}
 
 	if !collectCoverage {
-		coll, _, err = bpf.LoadCollection(spec, nil)
+		coll, _, err = bpf.LoadCollection(logger, spec, nil)
 	} else {
 		coll, cfg, err = coverbee.InstrumentAndLoadCollection(spec, ebpf.CollectionOptions{}, instrLog)
 	}
@@ -172,6 +200,17 @@ func loadAndRunSpec(t *testing.T, entry fs.DirEntry, instrLog io.Writer) []*cove
 
 	testNameToPrograms := make(map[string]programSet)
 
+	checkProgUnique := func(prog *ebpf.Program, testName, progType string) {
+		if prog != nil {
+			t.Fatalf(
+				"File '%s' contains duplicate %s programs for the '%s' test.",
+				elfPath,
+				progType,
+				testName,
+			)
+		}
+	}
+
 	for progName, spec := range spec.Programs {
 		match := checkProgRegex.FindStringSubmatch(spec.SectionName)
 		if len(match) == 0 {
@@ -180,69 +219,61 @@ func loadAndRunSpec(t *testing.T, entry fs.DirEntry, instrLog io.Writer) []*cove
 
 		progs := testNameToPrograms[match[1]]
 		if match[2] == "pktgen" {
+			checkProgUnique(progs.pktgenProg, match[1], match[2])
 			progs.pktgenProg = coll.Programs[progName]
 		}
 		if match[2] == "setup" {
+			checkProgUnique(progs.setupProg, match[1], match[2])
 			progs.setupProg = coll.Programs[progName]
 		}
 		if match[2] == "check" {
+			checkProgUnique(progs.checkProg, match[1], match[2])
 			progs.checkProg = coll.Programs[progName]
 		}
 		testNameToPrograms[match[1]] = progs
 	}
 
-	for progName, set := range testNameToPrograms {
-		if set.checkProg == nil {
+	for testName, progSet := range testNameToPrograms {
+		if progSet.checkProg == nil {
 			t.Fatalf(
-				"File '%s' contains a setup program in section '%s' but no check program.",
+				"File '%s' does not contain a check program for the '%s' test.",
 				elfPath,
-				spec.Programs[progName].SectionName,
+				testName,
 			)
 		}
 	}
 
 	// Collect debug events and add them as logs of the main test
 	var globalLogReader *perf.Reader
-	if m := coll.Maps["test_cilium_events"]; m != nil {
+	if m := coll.Maps[eventsmap.MapName]; m != nil {
 		globalLogReader, err = perf.NewReader(m, os.Getpagesize()*16)
 		if err != nil {
 			t.Fatalf("new global log reader: %s", err.Error())
 		}
 		defer globalLogReader.Close()
 
-		linkCache := link.NewLinkCache()
-
+		formatter := format.NewMonitorFormatter(api.DEBUG, link.NewLinkCache(), &testLogWriter{t: t})
 		go func() {
 			for {
 				rec, err := globalLogReader.Read()
 				if err != nil {
 					return
 				}
-
-				dm := monitor.DebugMsg{}
-				reader := bytes.NewReader(rec.RawSample)
-				if err := binary.Read(reader, byteorder.Native, &dm); err != nil {
-					return
-				}
-
-				t.Log(dm.Message(linkCache))
+				formatter.FormatSample(rec.RawSample, rec.CPU)
 			}
 		}()
 	}
 
 	// Make sure sub-tests are executed in alphabetic order, to make test results repeatable if programs rely on
 	// the order of execution.
-	testNames := make([]string, 0, len(testNameToPrograms))
-	for name := range testNameToPrograms {
-		testNames = append(testNames, name)
-	}
-	slices.Sort(testNames)
+	testNames := slices.Sorted(maps.Keys(testNameToPrograms))
 
 	// Get maps used for common mocking facilities
 	skbMdMap := coll.Maps[mockSkbMetaMap]
+	scapyAssertMap := coll.Maps[scapyAssertionsMap]
 
 	for _, name := range testNames {
-		t.Run(name, subTest(testNameToPrograms[name], coll.Maps[suiteResultMap], skbMdMap))
+		t.Run(name, subTest(testNameToPrograms[name], coll.Maps[suiteResultMap], scapyAssertMap, skbMdMap, testNetNS))
 	}
 
 	if globalLogReader != nil {
@@ -276,7 +307,7 @@ func loadAndRunSpec(t *testing.T, entry fs.DirEntry, instrLog io.Writer) []*cove
 }
 
 func loadAndPrepSpec(t *testing.T, elfPath string) *ebpf.CollectionSpec {
-	spec, err := bpf.LoadCollectionSpec(elfPath)
+	spec, err := ebpf.LoadCollectionSpec(elfPath)
 	if err != nil {
 		t.Fatalf("load spec %s: %v", elfPath, err)
 	}
@@ -291,7 +322,8 @@ func loadAndPrepSpec(t *testing.T, elfPath string) *ebpf.CollectionSpec {
 			continue
 		}
 
-		t.Logf("Skipping program '%s' of type '%s': BPF_PROG_RUN not supported", p.Name, p.Type)
+		t.Logf("Skipping program '%s' of type '%s': BPF_PROG_RUN not supported on program type",
+			p.Name, p.Type)
 		delete(spec.Programs, n)
 	}
 
@@ -311,9 +343,92 @@ const (
 
 	suiteResultMap = "suite_result_map"
 	mockSkbMetaMap = "mock_skb_meta_map"
+
+	scapyTraceDiffCmd  = "../scapy/trace_diff_pkts.py"
+	scapyAssertionsMap = "scapy_assert_map"
+	scapyMaxStrLen     = 128
+	scapyMaxBuf        = 1518
 )
 
-func subTest(progSet programSet, resultMap *ebpf.Map, skbMdMap *ebpf.Map) func(t *testing.T) {
+type ScapyAssert struct {
+	Name       [scapyMaxStrLen]byte
+	File       [scapyMaxStrLen]byte
+	LNum       [scapyMaxStrLen]byte
+	FirstLayer [scapyMaxStrLen]byte
+	ExpLen     uint16
+	ExpBuf     [scapyMaxBuf]byte
+	GotLen     uint16
+	GotBuf     [scapyMaxBuf]byte
+	Pad        [2]byte
+}
+
+func assertToJSONMap(a ScapyAssert) map[string]any {
+	return map[string]any{
+		"name":        string(bytes.TrimRight(a.Name[:], "\x00")),
+		"file":        string(bytes.TrimRight(a.File[:], "\x00")),
+		"linenum":     string(bytes.TrimRight(a.LNum[:], "\x00")),
+		"first-layer": string(bytes.TrimRight(a.FirstLayer[:], "\x00")),
+		"exp-len":     a.ExpLen,
+		"exp-buf":     hex.EncodeToString(a.ExpBuf[:a.ExpLen]),
+		"got-len":     a.GotLen,
+		"got-buf":     hex.EncodeToString(a.GotBuf[:a.GotLen]),
+	}
+}
+
+func scapyParseAsserts(t *testing.T, scapyAssertMap *ebpf.Map) {
+	if scapyAssertMap == nil {
+		return
+	}
+
+	info, err := scapyAssertMap.Info()
+	if err != nil {
+		t.Fatalf("error while getting the assert map capacity: %s", err)
+	}
+
+	count := 0
+	var aval ScapyAssert
+
+	asserts := []map[string]any{}
+
+	for i := range info.MaxEntries {
+		err = scapyAssertMap.Lookup(&i, &aval)
+		if err != nil {
+			t.Fatalf("error while getting iterating over the assert map: %s", err)
+		}
+
+		if aval.GotLen == 0 || aval.ExpLen == 0 {
+			break
+		}
+
+		if aval.GotLen < aval.ExpLen {
+			fName := string(bytes.TrimRight(aval.File[:], "\x00"))
+			lNum := string(bytes.TrimRight(aval.LNum[:], "\x00"))
+
+			t.Logf("  Warning: assert '%s' at %s:%s expected CTX to have at least '%d' bytes, but only had '%d'. Got buffer will be NULL and diff invalid!", aval.Name, fName, lNum, aval.ExpLen, aval.GotLen)
+			t.Logf("  Tip: temporally lower the expected size in the assert to '%d' to parse the ctx contents in Scapy.", aval.GotLen)
+		}
+
+		asserts = append(asserts, assertToJSONMap(aval))
+		count++
+	}
+
+	if count != 0 {
+		jsonBytes, err := json.Marshal(asserts)
+		if err != nil {
+			t.Fatalf("error while JSON marshalling an asserts: %s", err)
+		}
+		t.Logf("  Scapy asserts failed: %d\n", count)
+		cmd := exec.Command(scapyTraceDiffCmd)
+		cmd.Stdin = bytes.NewBufferString(string(jsonBytes))
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Logf("error while tracing diff pkts: %s %s", err, output)
+		}
+		t.Logf("\n%s", string(output))
+	}
+}
+
+func subTest(progSet programSet, resultMap *ebpf.Map, scapyAssertMap *ebpf.Map, skbMdMap *ebpf.Map, testNetNS *netns.NetNS) func(t *testing.T) {
 	return func(t *testing.T) {
 		// create ctx with the max allowed size(4k - head room - tailroom)
 		data := make([]byte, 4096-256-320)
@@ -330,53 +445,67 @@ func subTest(progSet programSet, resultMap *ebpf.Map, skbMdMap *ebpf.Map) func(t
 			statusCode uint32
 			err        error
 		)
-		if progSet.pktgenProg != nil {
-			if statusCode, data, ctx, err = runBpfProgram(progSet.pktgenProg, data, ctx); err != nil {
-				t.Fatalf("error while running pktgen prog: %s", err)
+		testNetNS.Do(func() error {
+			if progSet.pktgenProg != nil {
+				if statusCode, data, ctx, err = runBpfProgram(progSet.pktgenProg, data, ctx); err != nil {
+					t.Fatalf("error while running pktgen prog: %s", err)
+				}
+
+				if testSetUpError(statusCode) {
+					t.Fatalf("error while running pktgen prog: status code (%d)", statusCode)
+				}
+
+				if *dumpCtx {
+					t.Log("Pktgen returned status: ")
+					t.Log(statusCode)
+					t.Log("data after pktgen: ")
+					t.Log(spew.Sdump(data))
+					t.Log("ctx after pktgen: ")
+					t.Log(spew.Sdump(ctx))
+				}
+			}
+
+			if progSet.setupProg != nil {
+				if statusCode, data, ctx, err = runBpfProgram(progSet.setupProg, data, ctx); err != nil {
+					t.Fatalf("error while running setup prog: %s", err)
+				}
+
+				if testSetUpError(statusCode) {
+					t.Fatalf("error while running setup prog: status code (%d)", statusCode)
+				}
+
+				if *dumpCtx {
+					t.Log("Setup returned status: ")
+					t.Log(statusCode)
+					t.Log("data after setup: ")
+					t.Log(spew.Sdump(data))
+					t.Log("ctx after setup: ")
+					t.Log(spew.Sdump(ctx))
+				}
+
+				status := make([]byte, 4)
+				binary.NativeEndian.PutUint32(status, statusCode)
+				data = append(status, data...)
+			}
+
+			// Run test, input a
+			if statusCode, data, ctx, err = runBpfProgram(progSet.checkProg, data, ctx); err != nil {
+				t.Fatal("error while running check program:", err)
 			}
 
 			if *dumpCtx {
-				t.Log("Pktgen returned status: ")
+				t.Log("Check returned status: ")
 				t.Log(statusCode)
-				t.Log("data after pktgen: ")
+				t.Logf("data after check: %d", len(data))
 				t.Log(spew.Sdump(data))
-				t.Log("ctx after pktgen: ")
-				t.Log(spew.Sdump(ctx))
-			}
-		}
-
-		if progSet.setupProg != nil {
-			if statusCode, data, ctx, err = runBpfProgram(progSet.setupProg, data, ctx); err != nil {
-				t.Fatalf("error while running setup prog: %s", err)
-			}
-
-			if *dumpCtx {
-				t.Log("Setup returned status: ")
-				t.Log(statusCode)
-				t.Log("data after setup: ")
-				t.Log(spew.Sdump(data))
-				t.Log("ctx after setup: ")
+				t.Log("ctx after check: ")
 				t.Log(spew.Sdump(ctx))
 			}
 
-			status := make([]byte, 4)
-			nl.NativeEndian().PutUint32(status, statusCode)
-			data = append(status, data...)
-		}
+			return nil
+		})
 
-		// Run test, input a
-		if statusCode, data, ctx, err = runBpfProgram(progSet.checkProg, data, ctx); err != nil {
-			t.Fatal("error while running check program:", err)
-		}
-
-		if *dumpCtx {
-			t.Log("Check returned status: ")
-			t.Log(statusCode)
-			t.Logf("data after check: %d", len(data))
-			t.Log(spew.Sdump(data))
-			t.Log("ctx after check: ")
-			t.Log(spew.Sdump(ctx))
-		}
+		defer scapyParseAsserts(t, scapyAssertMap)
 
 		// Clear map value after each test
 		defer func() {
@@ -388,7 +517,7 @@ func subTest(progSet programSet, resultMap *ebpf.Map, skbMdMap *ebpf.Map) func(t
 				var key int32
 				value := make([]byte, m.ValueSize())
 				m.Lookup(&key, &value)
-				for i := 0; i < len(value); i++ {
+				for i := range value {
 					value[i] = 0
 				}
 				m.Update(&key, &value, ebpf.UpdateAny)
@@ -500,7 +629,7 @@ func (l *Log) FmtString() string {
 				break loop
 			}
 		}
-		// Advance to to next char
+		// Advance to next char
 		i++
 
 		// No argument left over to print for the current verb.
@@ -568,4 +697,16 @@ func runBpfProgram(prog *ebpf.Program, data, ctx []byte) (statusCode uint32, dat
 	}
 	ret, err := prog.Run(opts)
 	return ret, opts.DataOut, ctxOut, err
+}
+
+func testSetUpError(statusCode uint32) bool {
+	if SuiteResult_TestResult_TestStatus(statusCode) == SuiteResult_TestResult_ERROR {
+		return true
+	}
+
+	if SuiteResult_TestResult_TestStatus(statusCode) == SuiteResult_TestResult_FAIL {
+		return true
+	}
+
+	return false
 }

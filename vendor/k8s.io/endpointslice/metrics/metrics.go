@@ -34,7 +34,7 @@ var (
 			Subsystem:      EndpointSliceSubsystem,
 			Name:           "endpoints_added_per_sync",
 			Help:           "Number of endpoints added on each Service sync",
-			StabilityLevel: metrics.ALPHA,
+			StabilityLevel: metrics.BETA,
 			Buckets:        metrics.ExponentialBuckets(2, 2, 15),
 		},
 		[]string{},
@@ -46,7 +46,7 @@ var (
 			Subsystem:      EndpointSliceSubsystem,
 			Name:           "endpoints_removed_per_sync",
 			Help:           "Number of endpoints removed on each Service sync",
-			StabilityLevel: metrics.ALPHA,
+			StabilityLevel: metrics.BETA,
 			Buckets:        metrics.ExponentialBuckets(2, 2, 15),
 		},
 		[]string{},
@@ -57,7 +57,7 @@ var (
 			Subsystem:      EndpointSliceSubsystem,
 			Name:           "endpoints_desired",
 			Help:           "Number of endpoints desired",
-			StabilityLevel: metrics.ALPHA,
+			StabilityLevel: metrics.BETA,
 		},
 		[]string{},
 	)
@@ -67,7 +67,7 @@ var (
 			Subsystem:      EndpointSliceSubsystem,
 			Name:           "num_endpoint_slices",
 			Help:           "Number of EndpointSlices",
-			StabilityLevel: metrics.ALPHA,
+			StabilityLevel: metrics.BETA,
 		},
 		[]string{},
 	)
@@ -78,7 +78,7 @@ var (
 			Subsystem:      EndpointSliceSubsystem,
 			Name:           "desired_endpoint_slices",
 			Help:           "Number of EndpointSlices that would exist with perfect endpoint allocation",
-			StabilityLevel: metrics.ALPHA,
+			StabilityLevel: metrics.BETA,
 		},
 		[]string{},
 	)
@@ -104,7 +104,7 @@ var (
 		},
 		[]string{
 			"topology",             // either "Auto" or "Disabled"
-			"traffic_distribution", // "PreferClose" or <empty>
+			"traffic_distribution", // a trafficDistribution value or <empty>
 		},
 	)
 
@@ -127,9 +127,9 @@ var (
 			Subsystem:      EndpointSliceSubsystem,
 			Name:           "services_count_by_traffic_distribution",
 			Help:           "Number of Services using some specific trafficDistribution",
-			StabilityLevel: metrics.ALPHA,
+			StabilityLevel: metrics.BETA,
 		},
-		[]string{"traffic_distribution"}, // One of ["PreferClose", "ImplementationSpecific"]
+		[]string{"traffic_distribution"}, // A trafficDistribution value
 	)
 )
 

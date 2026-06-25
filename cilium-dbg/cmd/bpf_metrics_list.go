@@ -53,7 +53,14 @@ var bpfMetricsListCmd = &cobra.Command{
 	Short: "List BPF datapath traffic metrics",
 	Run: func(cmd *cobra.Command, args []string) {
 		common.RequireRootPrivilege("cilium bpf metrics list")
-		listMetrics(&metricsmap.Metrics)
+
+		mm, err := metricsmap.LoadMetricsMap(log)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error loading BPF metrics map: %v\n", err)
+			os.Exit(1)
+		}
+
+		listMetrics(mm)
 	},
 }
 
@@ -146,7 +153,7 @@ func listHumanReadableMetrics(bpfMetricsList []*metricsRow) {
 	}
 
 	sort.Slice(rows, func(i, j int) bool {
-		for k := 0; k < numColumns; k++ {
+		for k := range numColumns {
 			c := strings.Compare(rows[i][k], rows[j][k])
 
 			if c != 0 {

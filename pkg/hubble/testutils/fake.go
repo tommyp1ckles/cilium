@@ -220,7 +220,7 @@ func (r *FakePeerLister) List() []poolTypes.Peer {
 type FakeClientConn struct {
 	OnGetState  func() connectivity.State
 	OnClose     func() error
-	OnInvoke    func(ctx context.Context, method string, args interface{}, reply interface{}, opts ...grpc.CallOption) error
+	OnInvoke    func(ctx context.Context, method string, args any, reply any, opts ...grpc.CallOption) error
 	OnNewStream func(ctx context.Context, desc *grpc.StreamDesc, method string, opts ...grpc.CallOption) (grpc.ClientStream, error)
 }
 
@@ -241,7 +241,7 @@ func (c FakeClientConn) Close() error {
 }
 
 // Invoke implements poolTypes.ClientConn.Invoke.
-func (c FakeClientConn) Invoke(ctx context.Context, method string, args interface{}, reply interface{}, opts ...grpc.CallOption) error {
+func (c FakeClientConn) Invoke(ctx context.Context, method string, args any, reply any, opts ...grpc.CallOption) error {
 	if c.OnInvoke != nil {
 		return c.OnInvoke(ctx, method, args, reply, opts...)
 	}
@@ -425,7 +425,7 @@ type FakeEndpointInfo struct {
 	Labels       []string
 	Pod          *slim_corev1.Pod
 
-	PolicyMap      map[policyTypes.Key]labels.LabelArrayList
+	PolicyMap      map[policyTypes.Key]labels.LabelArrayListString
 	PolicyRevision uint64
 }
 
@@ -450,8 +450,8 @@ func (e *FakeEndpointInfo) GetK8sNamespace() string {
 }
 
 // GetLabels returns the labels of the endpoint.
-func (e *FakeEndpointInfo) GetLabels() []string {
-	return e.Labels
+func (e *FakeEndpointInfo) GetLabels() labels.Labels {
+	return labels.NewLabelsFromModel(e.Labels)
 }
 
 // GetPod return the pod object of the endpoint.
@@ -459,13 +459,36 @@ func (e *FakeEndpointInfo) GetPod() *slim_corev1.Pod {
 	return e.Pod
 }
 
-func (e *FakeEndpointInfo) GetRealizedPolicyRuleLabelsForKey(key policyTypes.Key) (
-	derivedFrom labels.LabelArrayList,
-	revision uint64,
+func (e *FakeEndpointInfo) GetPolicyCorrelationInfoForKey(key policyTypes.Key) (
+	info policyTypes.PolicyCorrelationInfo,
 	ok bool,
 ) {
-	derivedFrom, ok = e.PolicyMap[key]
-	return derivedFrom, e.PolicyRevision, ok
+	info.Revision = e.PolicyRevision
+	if rl, hit := e.PolicyMap[key]; hit {
+		info.RuleLabels = rl
+		return info, true
+	}
+
+	var bestKey policyTypes.Key
+	var bestRules labels.LabelArrayListString
+	found := false
+	for storedKey, rl := range e.PolicyMap {
+		if !storedKey.Covers(key) {
+			continue
+		}
+		if !found ||
+			storedKey.PrefixLength() > bestKey.PrefixLength() ||
+			(storedKey.PrefixLength() == bestKey.PrefixLength() && storedKey.Identity != 0 && bestKey.Identity == 0) {
+			bestKey = storedKey
+			bestRules = rl
+			found = true
+		}
+	}
+	if !found {
+		return info, false
+	}
+	info.RuleLabels = bestRules
+	return info, true
 }
 
 // FakePodMetadataGetter is used for unit tests that need a PodMetadataGetter.
@@ -486,4 +509,34 @@ var NoopPodMetadataGetter = FakePodMetadataGetter{
 	OnGetPodMetadataForContainer: func(cgroupId uint64) *cgroupManager.PodMetadata {
 		return nil
 	},
+}
+
+// FakeNamespaceManager is used for unit tests that need a namespace.Manager.
+type FakeNamespaceManager struct {
+	OnGetNamespaces func() []*observerpb.Namespace
+	OnAddNamespace  func(*observerpb.Namespace)
+}
+
+// GetNamespaces implements namespace.Manager.
+func (f *FakeNamespaceManager) GetNamespaces() []*observerpb.Namespace {
+	if f.OnGetNamespaces != nil {
+		return f.OnGetNamespaces()
+	}
+	panic("OnGetNamespaces not set")
+}
+
+// AddNamespace implements namespace.Manager.
+func (f *FakeNamespaceManager) AddNamespace(ns *observerpb.Namespace) {
+	if f.OnAddNamespace != nil {
+		f.OnAddNamespace(ns)
+	}
+	panic("OnAddNamespace not set")
+}
+
+// NoopNamespaceManager always return an empty namespace list.
+var NoopNamespaceManager = &FakeNamespaceManager{
+	OnGetNamespaces: func() []*observerpb.Namespace {
+		return nil
+	},
+	OnAddNamespace: func(_ *observerpb.Namespace) {},
 }

@@ -8,24 +8,27 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/require"
 )
 
 type EventQueueSuite struct{}
 
 func TestNewEventQueue(t *testing.T) {
-	q := NewEventQueue()
+	logger := hivetest.Logger(t)
+	q := NewEventQueue(logger)
 	require.NotNil(t, q.close)
 	require.NotNil(t, q.events)
 	require.NotNil(t, q.drain)
-	require.Equal(t, q.name, "")
-	require.Equal(t, cap(q.events), 1)
+	require.Empty(t, q.name)
+	require.Equal(t, 1, cap(q.events))
 }
 
 func TestNewEventQueueBuffered(t *testing.T) {
-	q := NewEventQueueBuffered("foo", 25)
-	require.Equal(t, q.name, "foo")
-	require.Equal(t, cap(q.events), 25)
+	logger := hivetest.Logger(t)
+	q := NewEventQueueBuffered(logger, "foo", 25)
+	require.Equal(t, "foo", q.name)
+	require.Equal(t, 25, cap(q.events))
 }
 
 func TestNilEventQueueOperations(t *testing.T) {
@@ -35,19 +38,22 @@ func TestNilEventQueueOperations(t *testing.T) {
 }
 
 func TestStopWithoutRun(t *testing.T) {
-	q := NewEventQueue()
+	logger := hivetest.Logger(t)
+	q := NewEventQueue(logger)
 	q.Stop()
 }
 
 func TestCloseEventQueueMultipleTimes(t *testing.T) {
-	q := NewEventQueue()
+	logger := hivetest.Logger(t)
+	q := NewEventQueue(logger)
 	q.Stop()
 	// Closing event queue twice should not cause panic.
 	q.Stop()
 }
 
 func TestDrained(t *testing.T) {
-	q := NewEventQueue()
+	logger := hivetest.Logger(t)
+	q := NewEventQueue(logger)
 	q.Run()
 
 	// Stopping queue should drain it as well.
@@ -65,10 +71,11 @@ func TestDrained(t *testing.T) {
 }
 
 func TestNilEvent(t *testing.T) {
-	q := NewEventQueue()
+	logger := hivetest.Logger(t)
+	q := NewEventQueue(logger)
 	res, err := q.Enqueue(nil)
 	require.Nil(t, res)
-	require.NotNil(t, err)
+	require.Error(t, err)
 }
 
 func TestNewEvent(t *testing.T) {
@@ -80,16 +87,17 @@ func TestNewEvent(t *testing.T) {
 
 type DummyEvent struct{}
 
-func (d *DummyEvent) Handle(ifc chan interface{}) {
+func (d *DummyEvent) Handle(ifc chan any) {
 	ifc <- struct{}{}
 }
 
 func TestEventCancelAfterQueueClosed(t *testing.T) {
-	q := NewEventQueue()
+	logger := hivetest.Logger(t)
+	q := NewEventQueue(logger)
 	q.Run()
 	ev := NewEvent(&DummyEvent{})
 	_, err := q.Enqueue(ev)
-	require.Nil(t, err)
+	require.NoError(t, err)
 
 	// Event should not have been cancelled since queue was not closed.
 	require.False(t, ev.WasCancelled())
@@ -97,7 +105,7 @@ func TestEventCancelAfterQueueClosed(t *testing.T) {
 
 	ev = NewEvent(&DummyEvent{})
 	_, err = q.Enqueue(ev)
-	require.Nil(t, err)
+	require.NoError(t, err)
 	require.True(t, ev.WasCancelled())
 }
 
@@ -106,7 +114,7 @@ type NewHangEvent struct {
 	processed bool
 }
 
-func (n *NewHangEvent) Handle(ifc chan interface{}) {
+func (n *NewHangEvent) Handle(ifc chan any) {
 	<-n.Channel
 	n.processed = true
 	ifc <- struct{}{}
@@ -119,7 +127,8 @@ func CreateHangEvent() *NewHangEvent {
 }
 
 func TestDrain(t *testing.T) {
-	q := NewEventQueue()
+	logger := hivetest.Logger(t)
+	q := NewEventQueue(logger)
 	q.Run()
 
 	nh1 := CreateHangEvent()
@@ -128,16 +137,16 @@ func TestDrain(t *testing.T) {
 
 	ev := NewEvent(nh1)
 	_, err := q.Enqueue(ev)
-	require.Nil(t, err)
+	require.NoError(t, err)
 
 	ev2 := NewEvent(nh2)
 	ev3 := NewEvent(nh3)
 
 	_, err = q.Enqueue(ev2)
-	require.Nil(t, err)
+	require.NoError(t, err)
 
 	var (
-		rcvChan <-chan interface{}
+		rcvChan <-chan any
 		err2    error
 	)
 
@@ -145,7 +154,7 @@ func TestDrain(t *testing.T) {
 
 	go func() {
 		rcvChan, err2 = q.Enqueue(ev3)
-		require.Nil(t, err2)
+		require.NoError(t, err2)
 		enq <- struct{}{}
 	}()
 
@@ -176,12 +185,13 @@ func TestDrain(t *testing.T) {
 }
 
 func TestEnqueueTwice(t *testing.T) {
-	q := NewEventQueue()
+	logger := hivetest.Logger(t)
+	q := NewEventQueue(logger)
 	q.Run()
 
 	ev := NewEvent(&DummyEvent{})
 	res, err := q.Enqueue(ev)
-	require.Nil(t, err)
+	require.NoError(t, err)
 	select {
 	case <-res:
 	case <-time.After(5 * time.Second):
@@ -190,7 +200,7 @@ func TestEnqueueTwice(t *testing.T) {
 
 	res, err = q.Enqueue(ev)
 	require.Nil(t, res)
-	require.NotNil(t, err)
+	require.Error(t, err)
 
 	q.Stop()
 	q.WaitToBeDrained()
@@ -203,12 +213,13 @@ func TestForcefulDraining(t *testing.T) {
 	// after the event is stopped and drained, the returned channel will
 	// unblock.
 
-	q := NewEventQueue()
+	logger := hivetest.Logger(t)
+	q := NewEventQueue(logger)
 
 	ev := NewEvent(&DummyEvent{})
 	res, err := q.Enqueue(ev)
 	require.NotNil(t, res)
-	require.Nil(t, err)
+	require.NoError(t, err)
 
 	q.Stop()
 	q.WaitToBeDrained()

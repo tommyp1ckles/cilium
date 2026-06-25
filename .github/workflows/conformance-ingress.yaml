@@ -13,6 +13,9 @@ on:
       SHA:
         description: "SHA under test (head of the PR branch)."
         required: true
+      base-SHA:
+        description: "SHA of the base branch (target branch of the PR)."
+        required: false
       extra-args:
         description: "[JSON object] Arbitrary arguments passed from the trigger comment via regex capture group. Parse with 'fromJson(inputs.extra-args).argName' in workflow."
         required: false
@@ -21,7 +24,6 @@ on:
     branches:
       - main
       - ft/main/**
-      - 'renovate/main-**'
     paths-ignore:
       - 'Documentation/**'
       - 'test/**'
@@ -29,7 +31,7 @@ on:
 # By specifying the access of one of the scopes, all of those that are not
 # specified are set to 'none'.
 permissions:
-  # To read actions state with catchpoint/workflow-telemetry-action
+  # To read actions state with cilium/workflow-telemetry-action
   actions: read
   # To be able to access the repository with actions/checkout
   contents: read
@@ -65,7 +67,7 @@ jobs:
   echo-inputs:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     name: Echo Workflow Dispatch Inputs
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - name: Echo Workflow Dispatch Inputs
         run: |
@@ -73,20 +75,20 @@ jobs:
 
   commit-status-start:
     name: Commit Status Start
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Set initial commit status
-        uses: myrotvorets/set-commit-status-action@3730c0a348a2ace3c110851bed53331bc6406e9f # v2.0.1
+        uses: cilium/cilium/.github/actions/set-commit-status@main # main
         with:
           sha: ${{ inputs.SHA || github.sha }}
 
   wait-for-images:
     name: Wait for images
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout context ref (trusted)
-        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.context-ref || github.sha }}
           persist-credentials: false
@@ -94,13 +96,18 @@ jobs:
       - name: Wait for images
         uses: ./.github/actions/wait-for-images
         with:
-          SHA: ${{ inputs.SHA }}
+          SHA: ${{ inputs.SHA || github.sha }}
           images: cilium-ci operator-generic-ci
+          login-host: ${{ vars.DOCKER_READ_HOST }}
+          login-username: ${{ vars.DOCKER_READ_USERNAME }}
+          login-password: ${{ secrets.DOCKER_READ_PASSWORD }}
 
   ingress-conformance-test:
     name: Ingress Conformance Test
+    env:
+      job_name: "Ingress Conformance Test"
     needs: [wait-for-images]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -108,43 +115,38 @@ jobs:
         include:
         - name: Without_XDP
           kube-proxy-replacement: true
-          enable-node-port: false
           bpf-lb-acceleration: disabled
           loadbalancer-mode: dedicated
           default-ingress-controller: false
         - name: With_XDP
           kube-proxy-replacement: true
-          enable-node-port: false
           bpf-lb-acceleration: native
           loadbalancer-mode: dedicated
           default-ingress-controller: false
         - name: With_Shared_LB
           kube-proxy-replacement: true
-          enable-node-port: false
           bpf-lb-acceleration: disabled
           loadbalancer-mode: shared
           default-ingress-controller: false
         - name: With_Default_Ingress_Controller
           kube-proxy-replacement: true
-          enable-node-port: false
           bpf-lb-acceleration: disabled
           loadbalancer-mode: dedicated
           default-ingress-controller: true
-        - name: Without_KPR
-          kube-proxy-replacement: false
-          enable-node-port: true
-          bpf-lb-acceleration: disabled
-          loadbalancer-mode: dedicated
-          default-ingress-controller: false
 
     steps:
+      - name: Set commit status to pending
+        uses: cilium/cilium/.github/actions/set-commit-status@main # main
+        with:
+          sha: ${{ inputs.SHA || github.sha }}
+
       - name: Collect Workflow Telemetry
-        uses: catchpoint/workflow-telemetry-action@94c3c3d9567a0205de6da68a76c428ce4e769af1 # v2.0.0
+        uses: cilium/workflow-telemetry-action@b1a318f80a08acede58027afe1455d037379966f # v2.2.0
         with:
           comment_on_pr: false
 
       - name: Checkout context ref (trusted)
-        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.context-ref || github.sha }}
           persist-credentials: false
@@ -156,8 +158,11 @@ jobs:
         id: default_vars
         uses: ./.github/actions/helm-default
         with:
-          image-tag: ${{ inputs.SHA }}
+          image-tag: ${{ inputs.SHA || github.sha }}
+          registry_host: ${{ vars.DOCKER_READ_HOST }}
+          registry_organization: ${{ vars.DOCKER_READ_ORG }}
           chart-dir: ./untrusted/install/kubernetes/cilium
+          image-pull-secret: "cilium-registry"
 
       - name: Set image tag
         id: vars
@@ -166,7 +171,6 @@ jobs:
 
           CILIUM_INSTALL_DEFAULTS="${{ steps.default_vars.outputs.cilium_install_defaults }} \
             --helm-set kubeProxyReplacement=${{ matrix.kube-proxy-replacement }} \
-            --helm-set nodePort.enabled=${{ matrix.enable-node-port }} \
             --helm-set=ingressController.enabled=true \
             --helm-set=ingressController.loadbalancerMode=${{ matrix.loadbalancer-mode }} \
             --helm-set=ingressController.default=${{ matrix.default-ingress-controller }} \
@@ -178,7 +182,7 @@ jobs:
       # Warning: since this is a privileged workflow, subsequent workflow job
       # steps must take care not to execute untrusted code.
       - name: Checkout pull request branch (NOT TRUSTED)
-        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ steps.vars.outputs.sha }}
           persist-credentials: false
@@ -188,7 +192,7 @@ jobs:
             examples
 
       - name: Create kind cluster
-        uses: helm/kind-action@0025e74a8c7512023d06dc019c617aa3cf561fde # v1.10.0
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
         with:
           version: ${{ env.KIND_VERSION }}
           node_image: ${{ env.KIND_K8S_IMAGE }}
@@ -196,21 +200,31 @@ jobs:
           config: ${{ env.kind_config }}
           wait: 0 # The control-plane never becomes ready, since no CNI is present
 
+      - name: Create imagePullSecret
+        run: |
+          kubectl create secret docker-registry cilium-registry \
+            --namespace kube-system \
+            --docker-server=${{ vars.DOCKER_READ_HOST }} \
+            --docker-username="${{ vars.DOCKER_READ_USERNAME }}" \
+            --docker-password="${{ secrets.DOCKER_READ_PASSWORD }}"
+
       - name: Install Cilium CLI
-        uses: cilium/cilium-cli@62bd4511031211b50a4623870955a5ad27b43e3b # v0.16.16
+        uses: cilium/cilium-cli@e391e739db83a8b888ecf18786af6853c51a0c58 # v0.19.5
         with:
           skip-build: ${{ env.CILIUM_CLI_SKIP_BUILD }}
           image-repo: ${{ env.CILIUM_CLI_IMAGE_REPO }}
           image-tag: ${{ steps.vars.outputs.sha }}
+          repository: ${{ env.CILIUM_CLI_RELEASE_REPO }}
+          release-version: ${{ env.CILIUM_CLI_VERSION }}
 
       - name: Checkout ingress-controller-conformance
-        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           # Use the forked repo with retry mechanism
           # Please refer to https://github.com/kubernetes-sigs/ingress-controller-conformance/pull/101 for more details.
           repository: cilium/ingress-controller-conformance
           path: ingress-controller-conformance
-          ref: 6a193b3f73d8b1201a818bb7c8f204059b064857
+          ref: d3c6887c5dd0f5243cd7d622bb5ed82906ee94f9
           persist-credentials: false
 
       - name: Install Ingress conformance test tool
@@ -226,7 +240,7 @@ jobs:
 
       - name: Wait for Cilium to be ready
         run: |
-          cilium status --wait
+          cilium status --wait --interactive=false
           kubectl get pods -n kube-system
 
       - name: Install Cilium LB IPPool and L2 Announcement Policy
@@ -238,7 +252,7 @@ jobs:
           echo "LB_CIDR: $LB_CIDR"
           echo "Deploying LB-IPAM Pool..."
           cat << EOF > pool.yaml
-          apiVersion: "cilium.io/v2alpha1"
+          apiVersion: "cilium.io/v2"
           kind: CiliumLoadBalancerIPPool
           metadata:
             name: "pool"
@@ -271,7 +285,7 @@ jobs:
         timeout-minutes: 5
         run: |
           kubectl apply -n default -f https://raw.githubusercontent.com/istio/istio/release-1.11/samples/bookinfo/platform/kube/bookinfo.yaml
-          if [ ${{ matrix.default-ingress-controller }} = "true" ]; then
+          if [ "${{ matrix.default-ingress-controller }}" = "true" ]; then
             # remove ingressClassName line from basic-ingress.yaml
             sed -i '/ingressClassName/d' untrusted/examples/kubernetes/servicemesh/basic-ingress.yaml
             kubectl apply -n default -f untrusted/examples/kubernetes/servicemesh/basic-ingress.yaml
@@ -291,10 +305,10 @@ jobs:
           curl -s -v --connect-timeout 5 --max-time 20 --retry 3 --fail -- http://"$lb"/details/1
 
       - name: Run Sanity check (internal to NodePort)
-        if: ${{ matrix.kube-proxy-replacement == 'true' }}
+        if: ${{ matrix.kube-proxy-replacement == true }}
         timeout-minutes: 5
         run: |
-          if [ ${{ matrix.loadbalancer-mode }} = "dedicated" ]; then
+          if [ "${{ matrix.loadbalancer-mode }}" = "dedicated" ]; then
             node_port=$(kubectl get svc cilium-ingress-basic-ingress -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}')
           else
             node_port=$(kubectl get -n kube-system svc cilium-ingress -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}')
@@ -417,30 +431,32 @@ jobs:
             -enable-http-debug \
             -stop-on-failure
 
-      - name: Post-test information gathering
-        if: ${{ !success() && steps.install-cilium.outcome != 'skipped' }}
+      - name: Run basic CLI tests
+        id: run-tests
+        shell: bash
         run: |
-          kubectl get pods --all-namespaces -o wide
-          cilium status
-          cilium sysdump --output-filename cilium-sysdump-out-${{ matrix.name }}
-        shell: bash {0} # Disable default fail-fast behaviour so that all commands run independently
+          cilium connectivity test --include-unsafe-tests --collect-sysdump-on-failure \
+            --log-code-owners --code-owners=${CILIUM_CLI_CODE_OWNERS_PATHS} \
+            --exclude-code-owners=${CILIUM_CLI_EXCLUDE_OWNERS} \
+            --sysdump-hubble-flows-count=1000000 --sysdump-hubble-flows-timeout=5m \
+            --sysdump-output-filename "cilium-sysdump-${{ matrix.name }}-<ts>" \
+            --test 'packet-drops'
 
-      - name: Upload artifacts
-        if: ${{ !success() }}
-        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+      - name: Run common post steps
+        if: ${{ always() && steps.install-cilium.outcome != 'skipped' }}
+        uses: ./.github/actions/post-logic
         with:
-          name: cilium-sysdump-out-${{ matrix.name }}
-          path: cilium-sysdump-out-*.zip
-          retention-days: 5
+          artifacts_suffix: "${{ env.job_name }} ${{ matrix.name }}"
+          job_status: "${{ job.status }}"
+          capture_features_tested: ${{ steps.run-tests.outcome != 'skipped' }}
 
-  commit-status-final:
+  merge-upload-and-status:
+    name: Merge Upload and Status
     if: ${{ always() }}
-    name: Commit Status Final
     needs: ingress-conformance-test
-    runs-on: ubuntu-latest
-    steps:
-      - name: Set final commit status
-        uses: myrotvorets/set-commit-status-action@3730c0a348a2ace3c110851bed53331bc6406e9f # v2.0.1
-        with:
-          sha: ${{ inputs.SHA || github.sha }}
-          status: ${{ needs.ingress-conformance-test.result }}
+    uses: ./.github/workflows/common-post-jobs.yaml
+    secrets: inherit
+    with:
+      context-ref: ${{ inputs.context-ref || github.sha }}
+      sha: ${{ inputs.SHA || github.sha }}
+      success: ${{ needs.ingress-conformance-test.result == 'success' }}

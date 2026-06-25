@@ -13,9 +13,15 @@ inputs:
   endpoint-routes:
     description: 'Enable endpoint routes'
     default: 'false'
+  ipv4:
+    description: 'Enable IPv4'
+    default: 'true'
   ipv6:
     description: 'Enable IPv6'
     default: 'true'
+  underlay:
+    description: 'Underlay protocol for the VXLAN or GENEVE tunnels'
+    default: 'auto'
   kpr:
     description: 'Enable kube-proxy replacement'
     default: 'false'
@@ -31,8 +37,11 @@ inputs:
   encryption-node:
     description: 'Enable node-to-node encryption (WireGuard only)'
     default: 'false'
-  encryption-overlay:
-    description: 'Encrypt the overlay itself (IPsec only)'
+  encryption-strict-egress:
+    description: 'Enable strict mode egress encryption'
+    default: ''
+  encryption-strict-ingress:
+    description: 'Enable strict mode ingress encryption (WireGuard only)'
     default: 'false'
   egress-gateway:
     description: 'Enable egress gateway'
@@ -61,10 +70,22 @@ inputs:
   bgp-control-plane:
     description: 'Enable BGP Control Plane'
     default: 'false'
+  image-pull-secret:
+    description: 'Image pull secret to access Cilium images'
+    default: ''
+  registry_host:
+    description: 'Registry host for Cilium images'
+    default: 'quay.io'
+  registry_organization:
+    description: 'Registry organization for Cilium images'
+    default: 'cilium'
 outputs:
   config:
     description: 'Cilium installation config'
     value: ${{ steps.derive-config.outputs.config }}
+  skip:
+    description: 'True when tests should be skipped based on the previously generated Cilium config'
+    value: ${{ steps.check-config-skip.outputs.skip }}
 runs:
   using: composite
   steps:
@@ -74,27 +95,51 @@ runs:
       run: |
         DEFAULTS="--wait \
             --chart-directory=${{ inputs.chart-dir }} \
-            --disable-check=minimum-version \
             --helm-set=debug.enabled=true \
             --helm-set=debug.verbose=envoy \
+            --helm-set=debug.metricsSamplingInterval=30s \
             --helm-set=hubble.eventBufferCapacity=65535 \
-            --helm-set=bpf.monitorAggregation=none \
             --helm-set=cluster.name=default \
             --helm-set=authentication.mutual.spire.enabled=${{ inputs.mutual-auth }} \
             --nodes-without-cilium \
             --helm-set-string=kubeProxyReplacement=${{ inputs.kpr }} \
-            --set='${{ inputs.misc }}'"
+            --helm-set=l2NeighDiscovery.enabled=true \
+            --set='${{ inputs.misc }}' \
+            --set-string=extraEnv[0].name=CILIUM_FEATURE_METRICS_WITH_DEFAULTS \
+            --set-string=extraEnv[0].value=true \
+            --set-string=extraEnv[1].name=CILIUM_INVALID_METRIC_VALUE_DETECTOR \
+            --set-string=extraEnv[1].value=true \
+            --set-string=extraEnv[2].name=CILIUM_SLOG_DUP_ATTR_DETECTOR \
+            --set-string=extraEnv[2].value=true \
+            --set-string=operator.extraEnv[0].name=CILIUM_FEATURE_METRICS_WITH_DEFAULTS \
+            --set-string=operator.extraEnv[0].value=true \
+            --set-string=operator.extraEnv[1].name=CILIUM_INVALID_METRIC_VALUE_DETECTOR \
+            --set-string=operator.extraEnv[1].value=true \
+            --set-string=operator.extraEnv[2].name=CILIUM_SLOG_DUP_ATTR_DETECTOR \
+            --set-string=operator.extraEnv[2].value=true \
+            --set-string=clustermesh.apiserver.extraEnv[0].name=CILIUM_FEATURE_METRICS_WITH_DEFAULTS \
+            --set-string=clustermesh.apiserver.extraEnv[0].value=true \
+            --set-string=clustermesh.apiserver.extraEnv[1].name=CILIUM_INVALID_METRIC_VALUE_DETECTOR \
+            --set-string=clustermesh.apiserver.extraEnv[1].value=true \
+            --set-string=clustermesh.apiserver.extraEnv[2].name=CILIUM_SLOG_DUP_ATTR_DETECTOR \
+            --set-string=clustermesh.apiserver.extraEnv[2].value=true \
+            --set-string=hubble.relay.extraEnv[0].name=CILIUM_FEATURE_METRICS_WITH_DEFAULTS \
+            --set-string=hubble.relay.extraEnv[0].value=true \
+            --set-string=hubble.relay.extraEnv[1].name=CILIUM_INVALID_METRIC_VALUE_DETECTOR \
+            --set-string=hubble.relay.extraEnv[1].value=true \
+            --set-string=hubble.relay.extraEnv[2].name=CILIUM_SLOG_DUP_ATTR_DETECTOR \
+            --set-string=hubble.relay.extraEnv[2].value=true"
 
           IMAGE=""
           if [ "${{ inputs.image-tag }}" != "" ]; then
-            IMAGE="--helm-set=image.repository=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-ci \
+            IMAGE="--helm-set=image.repository=${{ inputs.registry_host }}/${{ inputs.registry_organization }}/cilium-ci \
             --helm-set=image.useDigest=false \
             --helm-set=image.tag=${{ inputs.image-tag }} \
-            --helm-set=operator.image.repository=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/operator \
+            --helm-set=operator.image.repository=${{ inputs.registry_host }}/${{ inputs.registry_organization }}/operator \
             --helm-set=operator.image.suffix=-ci \
             --helm-set=operator.image.tag=${{ inputs.image-tag }} \
             --helm-set=operator.image.useDigest=false \
-            --helm-set=hubble.relay.image.repository=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/hubble-relay-ci \
+            --helm-set=hubble.relay.image.repository=${{ inputs.registry_host }}/${{ inputs.registry_organization }}/hubble-relay-ci \
             --helm-set=hubble.relay.image.tag=${{ inputs.image-tag }} \
             --helm-set=hubble.relay.image.useDigest=false"
           fi
@@ -120,9 +165,17 @@ runs:
             ENDPOINT_ROUTES="--helm-set-string=endpointRoutes.enabled=true"
           fi
 
+          IPV4=""
+          if [ "${{ inputs.ipv4 }}" == "false" ]; then
+            IPV4="--helm-set=ipv4.enabled=false"
+          fi
+
           IPV6=""
           if [ "${{ inputs.ipv6 }}" != "false" ]; then
             IPV6="--helm-set=ipv6.enabled=true"
+            if [ "${{ inputs.underlay }}" == "ipv6" ]; then
+              IPV6+=" --helm-set=underlayProtocol=ipv6"
+            fi
           fi
 
           MASQ=""
@@ -147,8 +200,12 @@ runs:
             if [ "${{ inputs.encryption-node }}" != "" ]; then
               ENCRYPT+=" --helm-set=encryption.nodeEncryption=${{ inputs.encryption-node }}"
             fi
-            if [ "${{ inputs.encryption-overlay }}" != "" ]; then
-              ENCRYPT+=" --helm-set=encryption.ipsec.encryptedOverlay=${{ inputs.encryption-overlay }}"
+            if [ "${{ inputs.encryption-strict-egress }}" != "" ]; then
+              ENCRYPT+=" --helm-set=encryption.strictMode.egress.enabled=${{ inputs.encryption-strict-egress }}"
+              ENCRYPT+=" --helm-set=encryption.strictMode.egress.cidr=10.244.0.0/16"
+            fi
+            if [ "${{ inputs.encryption-strict-ingress }}" != "" ]; then
+              ENCRYPT+=" --helm-set=encryption.strictMode.ingress.enabled=${{ inputs.encryption-strict-ingress }}"
             fi
           fi
 
@@ -170,7 +227,7 @@ runs:
 
           LOCAL_REDIRECT_POLICY=""
           if [ "${{ inputs.local-redirect-policy }}" == "true" ]; then
-            LOCAL_REDIRECT_POLICY="--helm-set=localRedirectPolicy=true"
+            LOCAL_REDIRECT_POLICY="--helm-set=localRedirectPolicies.enabled=true"
           fi
 
           BGP_CONTROL_PLANE=""
@@ -178,5 +235,17 @@ runs:
             BGP_CONTROL_PLANE="${{ env.BGP_CONTROL_PLANE_HELM_VALUES }}"
           fi
 
-          CONFIG="${DEFAULTS} ${IMAGE} ${TUNNEL} ${DEVICES} ${LB_MODE} ${ENDPOINT_ROUTES} ${IPV6} ${MASQ} ${EGRESS_GATEWAY} ${ENCRYPT} ${HOST_FW} ${LB_ACCELERATION} ${INGRESS_CONTROLLER} ${CILIUMENDPOINTSLICE} ${LOCAL_REDIRECT_POLICY} ${BGP_CONTROL_PLANE}"
+          PULL_SECRET=""
+          if [ "${{ inputs.image-pull-secret }}" != "" ]; then
+            PULL_SECRET=" --helm-set=imagePullSecrets[0].name=${{ inputs.image-pull-secret }}"
+          fi
+
+          CONFIG="${DEFAULTS} ${IMAGE} ${TUNNEL} ${DEVICES} ${LB_MODE} ${ENDPOINT_ROUTES} ${IPV4} ${IPV6} ${MASQ} ${EGRESS_GATEWAY} ${ENCRYPT} ${HOST_FW} ${LB_ACCELERATION} ${INGRESS_CONTROLLER} ${CILIUMENDPOINTSLICE} ${LOCAL_REDIRECT_POLICY} ${BGP_CONTROL_PLANE} ${PULL_SECRET}"
           echo "config=${CONFIG}" >> $GITHUB_OUTPUT
+
+    - shell: bash
+      id: check-config-skip
+      run: |
+        SKIP=false
+
+        echo "skip=${SKIP}" >> "$GITHUB_OUTPUT"

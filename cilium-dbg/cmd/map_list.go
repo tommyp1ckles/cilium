@@ -5,12 +5,15 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path"
+	"strconv"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
+	"github.com/cilium/cilium/api/v1/client/daemon"
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/command"
 )
@@ -21,7 +24,7 @@ var mapListCmd = &cobra.Command{
 	Short:   "List all open BPF maps",
 	Example: "cilium map list",
 	Run: func(cmd *cobra.Command, args []string) {
-		resp, err := client.Daemon.GetMap(nil)
+		resp, err := client.Daemon.GetMap(daemon.NewGetMapParams())
 		if err != nil {
 			Fatalf("%s", err)
 		}
@@ -39,7 +42,7 @@ var mapListCmd = &cobra.Command{
 			if verbose {
 				printMapListVerbose(mapList)
 			} else {
-				printMapList(mapList)
+				printMapList(os.Stdout, mapList)
 			}
 		}
 	},
@@ -53,23 +56,30 @@ func printMapListVerbose(mapList *models.BPFMapList) {
 	}
 }
 
-func printMapList(mapList *models.BPFMapList) {
-	w := tabwriter.NewWriter(os.Stdout, 5, 0, 3, ' ', 0)
+func printMapList(out io.Writer, mapList *models.BPFMapList) {
+	w := tabwriter.NewWriter(out, 5, 0, 3, ' ', 0)
 	fmt.Fprintf(w, "Name\tNum entries\tNum errors\tCache enabled\n")
 	for _, m := range mapList.Maps {
-		entries, errors := 0, 0
+		entries := "unknown"
+		var errorCount int
 		cacheEnabled := m.Cache != nil
 
-		for _, e := range m.Cache {
-			if e != nil {
-				if e.LastError != "" {
-					errors++
+		if cacheEnabled {
+			var entryCount int
+			for _, e := range m.Cache {
+				if e == nil {
+					continue
 				}
-				entries++
+				entryCount++
+				if e.LastError != "" {
+					errorCount++
+				}
 			}
+			entries = strconv.Itoa(entryCount)
 		}
-		fmt.Fprintf(w, "%s\t%d\t%d\t%t\n",
-			path.Base(m.Path), entries, errors, cacheEnabled)
+
+		fmt.Fprintf(w, "%s\t%s\t%d\t%t\n",
+			path.Base(m.Path), entries, errorCount, cacheEnabled)
 	}
 	w.Flush()
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/cilium/workerpool"
 	"github.com/spf13/pflag"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/util/workqueue"
 
 	"github.com/cilium/cilium/pkg/hive"
 	"github.com/cilium/cilium/pkg/k8s/client"
@@ -37,7 +38,8 @@ import (
 //  kubectl run -it --rm --image=nginx  --port=80 --expose nginx
 
 var (
-	log = logging.DefaultLogger.WithField(logfields.LogSubsys, "example")
+	// slogloggercheck: it's just an example, so we can use the default logger
+	log = logging.DefaultSlogLogger.With(logfields.LogSubsys, "example")
 )
 
 func main() {
@@ -58,19 +60,19 @@ var resourcesCell = cell.Module(
 	"Kubernetes Pod and Service resources",
 
 	cell.Provide(
-		func(lc cell.Lifecycle, c client.Clientset) resource.Resource[*corev1.Pod] {
+		func(lc cell.Lifecycle, c client.Clientset, mp workqueue.MetricsProvider) resource.Resource[*corev1.Pod] {
 			if !c.IsEnabled() {
 				return nil
 			}
 			lw := utils.ListerWatcherFromTyped[*corev1.PodList](c.CoreV1().Pods(""))
-			return resource.New[*corev1.Pod](lc, lw, resource.WithMetric("Pod"))
+			return resource.New[*corev1.Pod](lc, lw, mp, resource.WithMetric("Pod"))
 		},
-		func(lc cell.Lifecycle, c client.Clientset) resource.Resource[*corev1.Service] {
+		func(lc cell.Lifecycle, c client.Clientset, mp workqueue.MetricsProvider) resource.Resource[*corev1.Service] {
 			if !c.IsEnabled() {
 				return nil
 			}
 			lw := utils.ListerWatcherFromTyped[*corev1.ServiceList](c.CoreV1().Services(""))
-			return resource.New[*corev1.Service](lc, lw, resource.WithMetric("Service"))
+			return resource.New[*corev1.Service](lc, lw, mp, resource.WithMetric("Service"))
 		},
 	),
 )
@@ -133,14 +135,14 @@ func (ps *PrintServices) printServices(ctx context.Context) {
 	// Can fail if the context is cancelled (e.g. PrintServices is being stopped).
 	store, err := ps.services.Store(ctx)
 	if err != nil {
-		log.Errorf("Failed to retrieve store: %s, aborting", err)
+		log.Error("Failed to retrieve store, aborting", logfields.Error, err)
 		return
 	}
 
 	log.Info("Services:")
 	for _, svc := range store.List() {
 		labels := labels.Map2Labels(svc.Spec.Selector, labels.LabelSourceK8s)
-		log.Infof("  - %s/%s\ttype=%s\tselector=%s", svc.Namespace, svc.Name, svc.Spec.Type, labels)
+		log.Info(fmt.Sprintf("  - %s/%s\ttype=%s\tselector=%s", svc.Namespace, svc.Name, svc.Spec.Type, labels))
 	}
 
 }
@@ -167,18 +169,18 @@ func (ps *PrintServices) processLoop(ctx context.Context) error {
 		select {
 		case <-ticker.C:
 			for key, selectors := range serviceSelectors {
-				log.Infof("%s (%s)", key, selectors)
+				log.Info(fmt.Sprintf("%s (%s)", key, selectors))
 				for podName, lbls := range podLabels {
 					match := true
 					for _, sel := range selectors {
 						match = match && lbls.Has(sel)
 					}
 					if match {
-						log.Infof("  - %s", podName)
+						log.Info(fmt.Sprintf("  - %s", podName))
 					}
 				}
 			}
-			log.Println("----------------------------------------------------------")
+			log.Info("----------------------------------------------------------")
 
 		case ev, ok := <-pods:
 			if !ok {
@@ -195,10 +197,10 @@ func (ps *PrintServices) processLoop(ctx context.Context) error {
 				// existed at the api-server brief moment ago and can remove persisted
 				// data of pods that are not part of this set.
 			case resource.Upsert:
-				log.Infof("Pod %s updated", ev.Key)
+				log.Info("Pod updated", logfields.Pod, ev.Key)
 				podLabels[ev.Key] = labels.Map2Labels(ev.Object.Labels, labels.LabelSourceK8s)
 			case resource.Delete:
-				log.Infof("Pod %s deleted", ev.Key)
+				log.Info("Pod deleted", logfields.Pod, ev.Key)
 				delete(podLabels, ev.Key)
 			}
 
@@ -225,12 +227,12 @@ func (ps *PrintServices) processLoop(ctx context.Context) error {
 			case resource.Sync:
 				log.Info("Services synced")
 			case resource.Upsert:
-				log.Infof("Service %s updated", ev.Key)
+				log.Info("Service updated", logfields.Service, ev.Key)
 				if len(ev.Object.Spec.Selector) > 0 {
 					serviceSelectors[ev.Key] = labels.Map2Labels(ev.Object.Spec.Selector, labels.LabelSourceK8s)
 				}
 			case resource.Delete:
-				log.Infof("Service %s deleted", ev.Key)
+				log.Info("Service deleted", logfields.Service, ev.Key)
 				delete(serviceSelectors, ev.Key)
 			}
 			ev.Done(nil)

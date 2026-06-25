@@ -81,6 +81,8 @@ var (
 			Insert(features.SetsToNamesSet(
 				features.GatewayExtendedFeatures,
 				features.HTTPRouteExtendedFeatures,
+				features.BackendTLSPolicyCoreFeatures,
+				features.BackendTLSPolicyExtendedFeatures,
 			).UnsortedList()...),
 	}
 
@@ -93,7 +95,10 @@ var (
 			features.SupportReferenceGrant,
 			features.SupportTLSRoute,
 		),
-		ExtendedFeatures: features.SetsToNamesSet(features.GatewayExtendedFeatures),
+		ExtendedFeatures: features.SetsToNamesSet(
+			features.GatewayExtendedFeatures,
+			features.TLSRouteExtendedFeatures,
+		),
 	}
 
 	// GatewayGRPCConformanceProfile is a ConformanceProfile that covers testing GRPC
@@ -119,14 +124,13 @@ var (
 		ExtendedFeatures: sets.New[features.FeatureName]().
 			Insert(features.SetsToNamesSet(
 				features.MeshExtendedFeatures,
-				features.HTTPRouteExtendedFeatures,
 			).UnsortedList()...),
 	}
 
 	// MeshGRPCConformanceProfile is a ConformanceProfile that covers testing GRPC
 	// service mesh related functionality.
 	MeshGRPCConformanceProfile = ConformanceProfile{
-		Name: MeshHTTPConformanceProfileName,
+		Name: MeshGRPCConformanceProfileName,
 		CoreFeatures: sets.New(
 			features.SupportMesh,
 			features.SupportGRPCRoute,

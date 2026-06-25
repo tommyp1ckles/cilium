@@ -16,11 +16,16 @@ func (t clientEgressL7TlsDenyWithoutHeaders) build(ct *check.ConnectivityTest, t
 	// Fail to load site due to missing headers.
 	newTest("client-egress-l7-tls-deny-without-headers", ct).
 		WithFeatureRequirements(features.RequireEnabled(features.L7Proxy)).
-		WithFeatureRequirements(features.RequireEnabled(features.SecretBackendK8s)).
+		WithFeatureRequirements(features.RequireEnabled(features.PolicySecretsOnlyFromSecretsNamespace)).
 		WithCABundleSecret().
 		WithCertificate("externaltarget-tls", ct.Params().ExternalTarget).
-		WithCiliumPolicy(templates["clientEgressL7TLSPolicyYAML"]). // L7 allow policy with TLS interception
-		WithScenarios(tests.PodToWorldWithTLSIntercept()).
+		WithCiliumPolicy(templates["clientEgressL7TLSPolicyYAML"]).   // L7 allow policy with TLS interception
+		WithCiliumPolicy(templates["clientEgressOnlyDNSPolicyYAML"]). // DNS resolution only
+		WithScenarios(tests.PodToWorldWithTLSIntercept(
+			"--retry", "5",
+			"--retry-delay", "0",
+			"--retry-all-errors",
+		)).
 		WithExpectations(func(_ *check.Action) (egress, ingress check.Result) {
 			return check.ResultDropCurlHTTPError, check.ResultNone
 		})

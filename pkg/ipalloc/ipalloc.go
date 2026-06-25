@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"maps"
 	"math/big"
 	"net/netip"
 	"slices"
@@ -69,6 +70,7 @@ type HashAllocator[T any] struct {
 	start netip.Addr
 	stop  netip.Addr
 
+	peakAllocations int
 	allocations     map[netip.Addr]T
 	availableBlocks availableBlockList
 }
@@ -135,6 +137,9 @@ func (a *HashAllocator[T]) AllocAny(val T) (netip.Addr, error) {
 	}
 
 	a.allocations[ip] = val
+	if a.peakAllocations < len(a.allocations) {
+		a.peakAllocations = len(a.allocations)
+	}
 	return ip, nil
 }
 
@@ -162,6 +167,9 @@ func (a *HashAllocator[T]) Alloc(ip netip.Addr, val T) error {
 	}
 
 	a.allocations[ip] = val
+	if a.peakAllocations < len(a.allocations) {
+		a.peakAllocations = len(a.allocations)
+	}
 	return nil
 }
 
@@ -194,6 +202,17 @@ func (a *HashAllocator[T]) Free(ip netip.Addr) error {
 	}
 
 	delete(a.allocations, ip)
+
+	// If the current number of allocations is less then 1/3 of the peak, we can shrink the map
+	// to save memory.
+	if (len(a.allocations) * 3) < a.peakAllocations {
+		// Make a new map with half the size of the peak, this should leave some room for growth
+		// without needing to resize the map again, yet not waste too much memory.
+		newAllocations := make(map[netip.Addr]T, a.peakAllocations/2)
+		maps.Copy(newAllocations, a.allocations)
+		a.allocations = newAllocations
+		a.peakAllocations = len(a.allocations)
+	}
 
 	return nil
 }
@@ -373,7 +392,7 @@ func (abl *availableBlockList) put(ip netip.Addr) error {
 
 	curr := (*abl)[0]
 	var prev *linkedBlock
-	for i := 0; i < maxIter; i++ {
+	for i := range maxIter {
 		if ip.Compare(curr.from) < 0 {
 			// Is `ip` on the left current block
 
@@ -469,12 +488,12 @@ func (abl availableBlockList) Less(i, j int) bool {
 }
 
 // Push implements heap.Interface
-func (abl *availableBlockList) Push(x interface{}) {
+func (abl *availableBlockList) Push(x any) {
 	*abl = append(*abl, x.(*linkedBlock))
 }
 
 // Pop implements heap.Interface
-func (abl *availableBlockList) Pop() interface{} {
+func (abl *availableBlockList) Pop() any {
 	n := len(*abl) - 1
 	elem := (*abl)[n]
 	*abl = slices.Delete(*abl, n, n+1)

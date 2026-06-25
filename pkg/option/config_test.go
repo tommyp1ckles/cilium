@@ -5,13 +5,14 @@ package option
 
 import (
 	"fmt"
-	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
 	"time"
 
+	"github.com/cilium/ebpf"
+	"github.com/cilium/hive/hivetest"
 	"github.com/google/go-cmp/cmp"
 	flag "github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -21,6 +22,7 @@ import (
 	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/defaults"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
+	"github.com/cilium/cilium/pkg/util"
 )
 
 func TestValidateIPv6ClusterAllocCIDR(t *testing.T) {
@@ -28,32 +30,32 @@ func TestValidateIPv6ClusterAllocCIDR(t *testing.T) {
 		IPv6ClusterAllocCIDR: "fdfd::/64",
 	}
 
-	require.Nil(t, valid1.validateIPv6ClusterAllocCIDR())
+	require.NoError(t, valid1.validateIPv6ClusterAllocCIDR())
 	require.Equal(t, "fdfd::", valid1.IPv6ClusterAllocCIDRBase)
 
 	valid2 := &DaemonConfig{
 		IPv6ClusterAllocCIDR: "fdfd:fdfd:fdfd:fdfd:aaaa::/64",
 	}
-	require.Nil(t, valid2.validateIPv6ClusterAllocCIDR())
+	require.NoError(t, valid2.validateIPv6ClusterAllocCIDR())
 	require.Equal(t, "fdfd:fdfd:fdfd:fdfd::", valid2.IPv6ClusterAllocCIDRBase)
 
 	invalid1 := &DaemonConfig{
 		IPv6ClusterAllocCIDR: "foo",
 	}
-	require.NotNil(t, invalid1.validateIPv6ClusterAllocCIDR())
+	require.Error(t, invalid1.validateIPv6ClusterAllocCIDR())
 
 	invalid2 := &DaemonConfig{
 		IPv6ClusterAllocCIDR: "fdfd",
 	}
-	require.NotNil(t, invalid2.validateIPv6ClusterAllocCIDR())
+	require.Error(t, invalid2.validateIPv6ClusterAllocCIDR())
 
 	invalid3 := &DaemonConfig{
 		IPv6ClusterAllocCIDR: "fdfd::/32",
 	}
-	require.NotNil(t, invalid3.validateIPv6ClusterAllocCIDR())
+	require.Error(t, invalid3.validateIPv6ClusterAllocCIDR())
 
 	invalid4 := &DaemonConfig{}
-	require.NotNil(t, invalid4.validateIPv6ClusterAllocCIDR())
+	require.Error(t, invalid4.validateIPv6ClusterAllocCIDR())
 }
 
 func TestGetEnvName(t *testing.T) {
@@ -124,7 +126,7 @@ func TestReadDirConfig(t *testing.T) {
 		dirName string
 	}
 	type want struct {
-		allSettings map[string]interface{}
+		allSettings map[string]any
 		err         error
 	}
 	tests := []struct {
@@ -149,7 +151,7 @@ func TestReadDirConfig(t *testing.T) {
 			},
 			setupWant: func() want {
 				return want{
-					allSettings: map[string]interface{}{},
+					allSettings: map[string]any{},
 					err:         nil,
 				}
 			},
@@ -180,7 +182,7 @@ func TestReadDirConfig(t *testing.T) {
 			},
 			setupWant: func() want {
 				return want{
-					allSettings: map[string]interface{}{"test": `"1"`},
+					allSettings: map[string]any{"test": `"1"`},
 					err:         nil,
 				}
 			},
@@ -190,14 +192,15 @@ func TestReadDirConfig(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
+		logger := hivetest.Logger(t)
 		tt.preTestRun()
 		args := tt.setupArgs()
 		want := tt.setupWant()
-		m, err := ReadDirConfig(args.dirName)
-		require.Equal(t, want.err, err, fmt.Sprintf("Test Name: %s", tt.name))
+		m, err := ReadDirConfig(logger, args.dirName)
+		require.Equal(t, want.err, err, "Test Name: %s", tt.name)
 		err = MergeConfig(vp, m)
 		require.NoError(t, err)
-		assert.Equal(t, vp.AllSettings(), want.allSettings, fmt.Sprintf("Test Name: %s", tt.name))
+		assert.Equal(t, want.allSettings, vp.AllSettings(), "Test Name: %s", tt.name)
 		tt.postTestRun()
 	}
 }
@@ -246,16 +249,52 @@ func TestEnabledFunctions(t *testing.T) {
 	require.Equal(t, ipamOption.IPAMENI, d.IPAMMode())
 }
 
+func TestRoutingModeHelpers(t *testing.T) {
+	tests := []struct {
+		name           string
+		routingMode    string
+		expectedTunnel bool
+		expectedNative bool
+	}{
+		{
+			name:           "native mode - tunneling disabled and native routing required",
+			routingMode:    RoutingModeNative,
+			expectedTunnel: false,
+			expectedNative: true,
+		},
+		{
+			name:           "tunnel mode - tunneling enabled and native routing not required",
+			routingMode:    RoutingModeTunnel,
+			expectedTunnel: true,
+			expectedNative: false,
+		},
+		{
+			name:           "hybrid mode - tunneling enabled and native routing required",
+			routingMode:    RoutingModeHybrid,
+			expectedTunnel: true,
+			expectedNative: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := &DaemonConfig{RoutingMode: tt.routingMode}
+			assert.Equal(t, tt.expectedTunnel, d.TunnelingEnabled())
+			assert.Equal(t, tt.expectedNative, d.RequiresNativeRouting())
+		})
+	}
+}
+
 func TestLocalAddressExclusion(t *testing.T) {
 	d := &DaemonConfig{}
 	err := d.parseExcludedLocalAddresses([]string{"1.1.1.1/32", "3.3.3.0/24", "f00d::1/128"})
 	require.NoError(t, err)
 
-	require.True(t, d.IsExcludedLocalAddress(net.ParseIP("1.1.1.1")))
-	require.False(t, d.IsExcludedLocalAddress(net.ParseIP("1.1.1.2")))
-	require.True(t, d.IsExcludedLocalAddress(net.ParseIP("3.3.3.1")))
-	require.True(t, d.IsExcludedLocalAddress(net.ParseIP("f00d::1")))
-	require.False(t, d.IsExcludedLocalAddress(net.ParseIP("f00d::2")))
+	require.True(t, d.IsExcludedLocalAddress(netip.MustParseAddr("1.1.1.1")))
+	require.False(t, d.IsExcludedLocalAddress(netip.MustParseAddr("1.1.1.2")))
+	require.True(t, d.IsExcludedLocalAddress(netip.MustParseAddr("3.3.3.1")))
+	require.True(t, d.IsExcludedLocalAddress(netip.MustParseAddr("f00d::1")))
+	require.False(t, d.IsExcludedLocalAddress(netip.MustParseAddr("f00d::2")))
 }
 
 func TestCheckMapSizeLimits(t *testing.T) {
@@ -264,11 +303,8 @@ func TestCheckMapSizeLimits(t *testing.T) {
 		CTMapEntriesGlobalTCP int
 		CTMapEntriesGlobalAny int
 		NATMapEntriesGlobal   int
-		PolicyMapEntries      int
-		LBMapEntries          int
 		FragmentsMapEntries   int
 		NeighMapEntriesGlobal int
-		SockRevNatEntries     int
 		WantErr               bool
 	}
 	tests := []struct {
@@ -283,22 +319,16 @@ func TestCheckMapSizeLimits(t *testing.T) {
 				CTMapEntriesGlobalTCP: CTMapEntriesGlobalTCPDefault,
 				CTMapEntriesGlobalAny: CTMapEntriesGlobalAnyDefault,
 				NATMapEntriesGlobal:   NATMapEntriesGlobalDefault,
-				PolicyMapEntries:      16384,
-				LBMapEntries:          65536,
 				FragmentsMapEntries:   defaults.FragmentsMapEntries,
 				NeighMapEntriesGlobal: NATMapEntriesGlobalDefault,
-				SockRevNatEntries:     SockRevNATMapEntriesDefault,
 			},
 			want: sizes{
 				AuthMapEntries:        AuthMapEntriesDefault,
 				CTMapEntriesGlobalTCP: CTMapEntriesGlobalTCPDefault,
 				CTMapEntriesGlobalAny: CTMapEntriesGlobalAnyDefault,
 				NATMapEntriesGlobal:   NATMapEntriesGlobalDefault,
-				PolicyMapEntries:      16384,
-				LBMapEntries:          65536,
 				FragmentsMapEntries:   defaults.FragmentsMapEntries,
 				NeighMapEntriesGlobal: NATMapEntriesGlobalDefault,
-				SockRevNatEntries:     SockRevNATMapEntriesDefault,
 				WantErr:               false,
 			},
 		},
@@ -309,9 +339,6 @@ func TestCheckMapSizeLimits(t *testing.T) {
 				CTMapEntriesGlobalTCP: 20000,
 				CTMapEntriesGlobalAny: 18000,
 				NATMapEntriesGlobal:   2048,
-				PolicyMapEntries:      512,
-				LBMapEntries:          1 << 14,
-				SockRevNatEntries:     18000,
 				FragmentsMapEntries:   2 << 14,
 			},
 			want: sizes{
@@ -319,9 +346,6 @@ func TestCheckMapSizeLimits(t *testing.T) {
 				CTMapEntriesGlobalTCP: 20000,
 				CTMapEntriesGlobalAny: 18000,
 				NATMapEntriesGlobal:   2048,
-				PolicyMapEntries:      512,
-				LBMapEntries:          1 << 14,
-				SockRevNatEntries:     18000,
 				FragmentsMapEntries:   2 << 14,
 				WantErr:               false,
 			},
@@ -413,9 +437,6 @@ func TestCheckMapSizeLimits(t *testing.T) {
 				CTMapEntriesGlobalTCP: 2048,
 				CTMapEntriesGlobalAny: 4096,
 				NATMapEntriesGlobal:   NATMapEntriesGlobalDefault,
-				SockRevNatEntries:     4096,
-				PolicyMapEntries:      16384,
-				LBMapEntries:          65536,
 				FragmentsMapEntries:   defaults.FragmentsMapEntries,
 			},
 			want: sizes{
@@ -423,9 +444,6 @@ func TestCheckMapSizeLimits(t *testing.T) {
 				CTMapEntriesGlobalTCP: 2048,
 				CTMapEntriesGlobalAny: 4096,
 				NATMapEntriesGlobal:   (2048 + 4096) * 2 / 3,
-				SockRevNatEntries:     4096,
-				PolicyMapEntries:      16384,
-				LBMapEntries:          65536,
 				FragmentsMapEntries:   defaults.FragmentsMapEntries,
 				WantErr:               false,
 			},
@@ -442,26 +460,6 @@ func TestCheckMapSizeLimits(t *testing.T) {
 				CTMapEntriesGlobalAny: 4096,
 				NATMapEntriesGlobal:   8192,
 				WantErr:               true,
-			},
-		},
-		{
-			name: "Policy map size below range",
-			d: &DaemonConfig{
-				PolicyMapEntries: PolicyMapMin - 1,
-			},
-			want: sizes{
-				PolicyMapEntries: PolicyMapMin - 1,
-				WantErr:          true,
-			},
-		},
-		{
-			name: "Policy map size above range",
-			d: &DaemonConfig{
-				PolicyMapEntries: PolicyMapMax + 1,
-			},
-			want: sizes{
-				PolicyMapEntries: PolicyMapMax + 1,
-				WantErr:          true,
 			},
 		},
 		{
@@ -494,11 +492,8 @@ func TestCheckMapSizeLimits(t *testing.T) {
 				CTMapEntriesGlobalTCP: tt.d.CTMapEntriesGlobalTCP,
 				CTMapEntriesGlobalAny: tt.d.CTMapEntriesGlobalAny,
 				NATMapEntriesGlobal:   tt.d.NATMapEntriesGlobal,
-				PolicyMapEntries:      tt.d.PolicyMapEntries,
-				LBMapEntries:          tt.d.LBMapEntries,
 				FragmentsMapEntries:   tt.d.FragmentsMapEntries,
 				NeighMapEntriesGlobal: tt.d.NeighMapEntriesGlobal,
-				SockRevNatEntries:     tt.d.SockRevNatEntries,
 				WantErr:               err != nil,
 			}
 
@@ -587,6 +582,29 @@ func TestCheckIPv4NativeRoutingCIDR(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			name: "hybrid mode with native routing cidr",
+			d: &DaemonConfig{
+				EnableIPv4Masquerade:  true,
+				EnableIPv6Masquerade:  true,
+				RoutingMode:           RoutingModeHybrid,
+				IPAM:                  ipamOption.IPAMAzure,
+				IPv4NativeRoutingCIDR: cidr.MustParseCIDR("10.127.64.0/18"),
+				EnableIPv4:            true,
+			},
+			wantErr: false,
+		},
+		{
+			name: "hybrid mode without native routing cidr requires cidr",
+			d: &DaemonConfig{
+				EnableIPv4Masquerade: true,
+				EnableIPv6Masquerade: true,
+				RoutingMode:          RoutingModeHybrid,
+				IPAM:                 ipamOption.IPAMAzure,
+				EnableIPv4:           true,
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -659,6 +677,27 @@ func TestCheckIPv6NativeRoutingCIDR(t *testing.T) {
 				EnableIPMasqAgent:    true,
 			},
 			wantErr: false,
+		},
+		{
+			name: "hybrid mode with native routing cidr",
+			d: &DaemonConfig{
+				EnableIPv4Masquerade:  true,
+				EnableIPv6Masquerade:  true,
+				RoutingMode:           RoutingModeHybrid,
+				IPv6NativeRoutingCIDR: cidr.MustParseCIDR("fd00::/120"),
+				EnableIPv6:            true,
+			},
+			wantErr: false,
+		},
+		{
+			name: "hybrid mode without native routing cidr requires cidr",
+			d: &DaemonConfig{
+				EnableIPv4Masquerade: true,
+				EnableIPv6Masquerade: true,
+				RoutingMode:          RoutingModeHybrid,
+				EnableIPv6:           true,
+			},
+			wantErr: true,
 		},
 	}
 
@@ -749,172 +788,52 @@ func TestCheckIPAMDelegatedPlugin(t *testing.T) {
 }
 
 func Test_populateNodePortRange(t *testing.T) {
-	vp := viper.New()
-	reset := func() { vp = viper.New() }
-	type want struct {
-		wantMin int
-		wantMax int
-		wantErr bool
-	}
-	tests := []struct {
-		name       string
-		want       want
-		preTestRun func()
-	}{
-		{
-			name: "NodePortRange is valid",
-			want: want{
-				wantMin: 23,
-				wantMax: 24,
-				wantErr: false,
-			},
-			preTestRun: func() {
-				vp.Set(NodePortRange, []string{"23", "24"})
-			},
-		},
-		{
-			name: "NodePortRange not set in viper",
-			want: want{
-				wantMin: NodePortMinDefault,
-				wantMax: NodePortMaxDefault,
-				wantErr: false,
-			},
-			preTestRun: func() {
-				reset()
-
-				fs := flag.NewFlagSet(NodePortRange, flag.ContinueOnError)
-				fs.StringSlice(
-					NodePortRange,
-					[]string{
-						fmt.Sprintf("%d", NodePortMinDefault),
-						fmt.Sprintf("%d", NodePortMaxDefault),
-					},
-					"")
-
-				BindEnv(vp, NodePortRange)
-				vp.BindPFlags(fs)
-			},
-		},
-		{
-			name: "NodePortMin greater than NodePortMax",
-			want: want{
-				wantMin: 666,
-				wantMax: 555,
-				wantErr: true,
-			},
-			preTestRun: func() {
-				reset()
-				vp.Set(NodePortRange, []string{"666", "555"})
-			},
-		},
-		{
-			name: "NodePortMin equal NodePortMax",
-			want: want{
-				wantMin: 666,
-				wantMax: 666,
-				wantErr: true,
-			},
-			preTestRun: func() {
-				reset()
-				vp.Set(NodePortRange, []string{"666", "666"})
-			},
-		},
-		{
-			name: "NodePortMin not a number",
-			want: want{
-				wantMin: 0,
-				wantMax: 0,
-				wantErr: true,
-			},
-			preTestRun: func() {
-				reset()
-				vp.Set(NodePortRange, []string{"aaa", "0"})
-			},
-		},
-		{
-			name: "NodePortMax not a number",
-			want: want{
-				wantMin: 1024,
-				wantMax: 0,
-				wantErr: true,
-			},
-			preTestRun: func() {
-				reset()
-				vp.Set(NodePortRange, []string{"1024", "aaa"})
-			},
-		},
-		{
-			name: "NodePortRange slice length not equal 2",
-			want: want{
-				wantMin: 0,
-				wantMax: 0,
-				wantErr: true,
-			},
-			preTestRun: func() {
-				reset()
-
-				fs := flag.NewFlagSet(NodePortRange, flag.ContinueOnError)
-				fs.StringSlice(
-					NodePortRange,
-					[]string{
-						fmt.Sprintf("%d", NodePortMinDefault),
-						fmt.Sprintf("%d", NodePortMaxDefault),
-					},
-					"")
-
-				BindEnv(vp, NodePortRange)
-				vp.BindPFlags(fs)
-
-				vp.Set(NodePortRange, []string{"1024"})
-			},
-		},
-		{
-			// We simply just want to warn the user in this case.
-			name: "NodePortRange passed as empty",
-			want: want{
-				wantMin: 0,
-				wantMax: 0,
-				wantErr: false,
-			},
-			preTestRun: func() {
-				reset()
-
-				fs := flag.NewFlagSet(NodePortRange, flag.ContinueOnError)
-				fs.StringSlice(
-					NodePortRange,
-					[]string{}, // Explicitly has no defaults.
-					"")
-
-				BindEnv(vp, NodePortRange)
-				vp.BindPFlags(fs)
-
-				vp.Set(NodePortRange, []string{})
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tt.preTestRun()
-
-			d := &DaemonConfig{}
-			err := d.populateNodePortRange(vp)
-
-			got := want{
-				wantMin: d.NodePortMin,
-				wantMax: d.NodePortMax,
-				wantErr: err != nil,
-			}
-
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("DaemonConfig.populateNodePortRange = got %v, want %v", got, tt.want)
-			}
-		})
-	}
 }
 
-func TestGetDefaultMonitorQueueSize(t *testing.T) {
-	require.Equal(t, 4*defaults.MonitorQueueSizePerCPU, getDefaultMonitorQueueSize(4))
-	require.Equal(t, defaults.MonitorQueueSizePerCPUMaximum, getDefaultMonitorQueueSize(1000))
+func TestAlignDistributedLRUSize(t *testing.T) {
+	// Use a fixed CPU count for deterministic testing
+	const possibleCPUs = 36
+
+	t.Run("rounds up to possible CPUs", func(t *testing.T) {
+		// 131072 is not divisible by 36, should round up to 131076
+		got := alignDistributedLRUSize(131072, possibleCPUs)
+		require.Equal(t, 131076, got)
+		require.Equal(t, 0, got%possibleCPUs, "result should be multiple of possibleCPUs")
+	})
+
+	t.Run("already aligned stays same", func(t *testing.T) {
+		// 131076 is already divisible by 36
+		got := alignDistributedLRUSize(131076, possibleCPUs)
+		require.Equal(t, 131076, got)
+	})
+
+	t.Run("caps at limit table max and rounds down", func(t *testing.T) {
+		// LimitTableMax (16777216) + 1000 should cap at 16777188 (highest multiple of 36 <= LimitTableMax)
+		got := alignDistributedLRUSize(LimitTableMax+1000, possibleCPUs)
+		require.Equal(t, 16777188, got)
+		require.LessOrEqual(t, got, LimitTableMax)
+		require.Equal(t, 0, got%possibleCPUs, "result should be multiple of possibleCPUs")
+	})
+
+	t.Run("returns zero for zero value", func(t *testing.T) {
+		got := alignDistributedLRUSize(0, possibleCPUs)
+		require.Equal(t, 0, got)
+	})
+
+	t.Run("returns negative for negative value", func(t *testing.T) {
+		got := alignDistributedLRUSize(-1, possibleCPUs)
+		require.Equal(t, -1, got)
+	})
+
+	t.Run("works with different CPU counts", func(t *testing.T) {
+		// Test with 12 CPUs (common for smaller instances)
+		got := alignDistributedLRUSize(131072, 12)
+		require.Equal(t, 131076, got) // rounds up to next multiple of 12
+
+		// Test with 72 CPUs (common for larger instances)
+		got = alignDistributedLRUSize(131072, 72)
+		require.Equal(t, 131112, got) // rounds up to next multiple of 72
+	})
 }
 
 const (
@@ -926,12 +845,12 @@ const (
 
 func TestBPFMapSizeCalculation(t *testing.T) {
 	type sizes struct {
-		CTMapSizeTCP      int
-		CTMapSizeAny      int
-		NATMapSize        int
-		NeighMapSize      int
-		SockRevNatMapSize int
+		CTMapSizeTCP int
+		CTMapSizeAny int
+		NATMapSize   int
+		NeighMapSize int
 	}
+	cpus, _ := ebpf.PossibleCPU()
 	tests := []struct {
 		name        string
 		totalMemory uint64
@@ -943,11 +862,10 @@ func TestBPFMapSizeCalculation(t *testing.T) {
 			name: "static default sizes",
 			// zero memory and ratio: skip calculateDynamicBPFMapSizes
 			want: sizes{
-				CTMapSizeTCP:      CTMapEntriesGlobalTCPDefault,
-				CTMapSizeAny:      CTMapEntriesGlobalAnyDefault,
-				NATMapSize:        NATMapEntriesGlobalDefault,
-				NeighMapSize:      NATMapEntriesGlobalDefault,
-				SockRevNatMapSize: SockRevNATMapEntriesDefault,
+				CTMapSizeTCP: CTMapEntriesGlobalTCPDefault,
+				CTMapSizeAny: CTMapEntriesGlobalAnyDefault,
+				NATMapSize:   NATMapEntriesGlobalDefault,
+				NeighMapSize: NATMapEntriesGlobalDefault,
 			},
 			preTestRun: func(vp *viper.Viper) {
 				vp.Set(CTMapEntriesGlobalTCPName, CTMapEntriesGlobalTCPDefault)
@@ -955,18 +873,16 @@ func TestBPFMapSizeCalculation(t *testing.T) {
 				vp.Set(NATMapEntriesGlobalName, NATMapEntriesGlobalDefault)
 				// Neigh table has the same number of entries as NAT Map has.
 				vp.Set(NeighMapEntriesGlobalName, NATMapEntriesGlobalDefault)
-				vp.Set(SockRevNatEntriesName, SockRevNATMapEntriesDefault)
 			},
 		},
 		{
 			name: "static, non-default sizes inside range",
 			// zero memory and ratio: skip calculateDynamicBPFMapSizes
 			want: sizes{
-				CTMapSizeTCP:      CTMapEntriesGlobalTCPDefault + 128,
-				CTMapSizeAny:      CTMapEntriesGlobalAnyDefault - 64,
-				NATMapSize:        NATMapEntriesGlobalDefault + 256,
-				NeighMapSize:      NATMapEntriesGlobalDefault + 256,
-				SockRevNatMapSize: SockRevNATMapEntriesDefault + 256,
+				CTMapSizeTCP: CTMapEntriesGlobalTCPDefault + 128,
+				CTMapSizeAny: CTMapEntriesGlobalAnyDefault - 64,
+				NATMapSize:   NATMapEntriesGlobalDefault + 256,
+				NeighMapSize: NATMapEntriesGlobalDefault + 256,
 			},
 			preTestRun: func(vp *viper.Viper) {
 				vp.Set(CTMapEntriesGlobalTCPName, CTMapEntriesGlobalTCPDefault+128)
@@ -974,7 +890,6 @@ func TestBPFMapSizeCalculation(t *testing.T) {
 				vp.Set(NATMapEntriesGlobalName, NATMapEntriesGlobalDefault+256)
 				// Neigh table has the same number of entries as NAT Map has.
 				vp.Set(NeighMapEntriesGlobalName, NATMapEntriesGlobalDefault+256)
-				vp.Set(SockRevNatEntriesName, SockRevNATMapEntriesDefault+256)
 			},
 		},
 		{
@@ -982,11 +897,10 @@ func TestBPFMapSizeCalculation(t *testing.T) {
 			totalMemory: 512 * MiB,
 			ratio:       0.0025,
 			want: sizes{
-				CTMapSizeTCP:      LimitTableAutoGlobalTCPMin,
-				CTMapSizeAny:      LimitTableAutoGlobalAnyMin,
-				NATMapSize:        LimitTableAutoNatGlobalMin,
-				NeighMapSize:      LimitTableAutoNatGlobalMin,
-				SockRevNatMapSize: LimitTableAutoSockRevNatMin,
+				CTMapSizeTCP: LimitTableAutoGlobalTCPMin,
+				CTMapSizeAny: LimitTableAutoGlobalAnyMin,
+				NATMapSize:   LimitTableAutoNatGlobalMin,
+				NeighMapSize: LimitTableAutoNatGlobalMin,
 			},
 		},
 		{
@@ -994,11 +908,10 @@ func TestBPFMapSizeCalculation(t *testing.T) {
 			totalMemory: 1 * GiB,
 			ratio:       0.0025,
 			want: sizes{
-				CTMapSizeTCP:      LimitTableAutoGlobalTCPMin,
-				CTMapSizeAny:      LimitTableAutoGlobalAnyMin,
-				NATMapSize:        LimitTableAutoNatGlobalMin,
-				NeighMapSize:      LimitTableAutoNatGlobalMin,
-				SockRevNatMapSize: LimitTableAutoSockRevNatMin,
+				CTMapSizeTCP: LimitTableAutoGlobalTCPMin,
+				CTMapSizeAny: LimitTableAutoGlobalAnyMin,
+				NATMapSize:   LimitTableAutoNatGlobalMin,
+				NeighMapSize: LimitTableAutoNatGlobalMin,
 			},
 		},
 		{
@@ -1006,11 +919,10 @@ func TestBPFMapSizeCalculation(t *testing.T) {
 			totalMemory: 2 * GiB,
 			ratio:       0.0025,
 			want: sizes{
-				CTMapSizeTCP:      LimitTableAutoGlobalTCPMin,
-				CTMapSizeAny:      LimitTableAutoGlobalAnyMin,
-				NATMapSize:        LimitTableAutoNatGlobalMin,
-				NeighMapSize:      LimitTableAutoNatGlobalMin,
-				SockRevNatMapSize: LimitTableAutoSockRevNatMin,
+				CTMapSizeTCP: LimitTableAutoGlobalTCPMin,
+				CTMapSizeAny: LimitTableAutoGlobalAnyMin,
+				NATMapSize:   LimitTableAutoNatGlobalMin,
+				NeighMapSize: LimitTableAutoNatGlobalMin,
 			},
 		},
 		{
@@ -1018,11 +930,10 @@ func TestBPFMapSizeCalculation(t *testing.T) {
 			totalMemory: 7.5 * GiB,
 			ratio:       0.0025,
 			want: sizes{
-				CTMapSizeTCP:      LimitTableAutoGlobalTCPMin,
-				CTMapSizeAny:      LimitTableAutoGlobalAnyMin,
-				NATMapSize:        LimitTableAutoNatGlobalMin,
-				NeighMapSize:      LimitTableAutoNatGlobalMin,
-				SockRevNatMapSize: LimitTableAutoSockRevNatMin,
+				CTMapSizeTCP: LimitTableAutoGlobalTCPMin,
+				CTMapSizeAny: LimitTableAutoGlobalAnyMin,
+				NATMapSize:   LimitTableAutoNatGlobalMin,
+				NeighMapSize: LimitTableAutoNatGlobalMin,
 			},
 		},
 		{
@@ -1030,11 +941,10 @@ func TestBPFMapSizeCalculation(t *testing.T) {
 			totalMemory: 16 * GiB,
 			ratio:       0.0025,
 			want: sizes{
-				CTMapSizeTCP:      151765,
-				CTMapSizeAny:      75882,
-				NATMapSize:        151765,
-				NeighMapSize:      151765,
-				SockRevNatMapSize: 75882,
+				CTMapSizeTCP: 151765,
+				CTMapSizeAny: 75882,
+				NATMapSize:   151765,
+				NeighMapSize: 151765,
 			},
 		},
 		{
@@ -1042,11 +952,10 @@ func TestBPFMapSizeCalculation(t *testing.T) {
 			totalMemory: 30 * GiB,
 			ratio:       0.0025,
 			want: sizes{
-				CTMapSizeTCP:      284560,
-				CTMapSizeAny:      142280,
-				NATMapSize:        284560,
-				NeighMapSize:      284560,
-				SockRevNatMapSize: 142280,
+				CTMapSizeTCP: 284560,
+				CTMapSizeAny: 142280,
+				NATMapSize:   284560,
+				NeighMapSize: 284560,
 			},
 		},
 		{
@@ -1054,11 +963,10 @@ func TestBPFMapSizeCalculation(t *testing.T) {
 			totalMemory: 240 * GiB,
 			ratio:       0.0025,
 			want: sizes{
-				CTMapSizeTCP:      2276484,
-				CTMapSizeAny:      1138242,
-				NATMapSize:        2276484,
-				NeighMapSize:      2276484,
-				SockRevNatMapSize: 1138242,
+				CTMapSizeTCP: 2276484,
+				CTMapSizeAny: 1138242,
+				NATMapSize:   2276484,
+				NeighMapSize: 2276484,
 			},
 		},
 		{
@@ -1066,11 +974,10 @@ func TestBPFMapSizeCalculation(t *testing.T) {
 			totalMemory: 360 * GiB,
 			ratio:       0.0025,
 			want: sizes{
-				CTMapSizeTCP:      3414726,
-				CTMapSizeAny:      1707363,
-				NATMapSize:        3414726,
-				NeighMapSize:      3414726,
-				SockRevNatMapSize: 1707363,
+				CTMapSizeTCP: 3414726,
+				CTMapSizeAny: 1707363,
+				NATMapSize:   3414726,
+				NeighMapSize: 3414726,
 			},
 		},
 		{
@@ -1078,11 +985,10 @@ func TestBPFMapSizeCalculation(t *testing.T) {
 			totalMemory: 4 * GiB,
 			ratio:       0.0025,
 			want: sizes{
-				CTMapSizeTCP:      CTMapEntriesGlobalTCPDefault + 1024,
-				CTMapSizeAny:      65536,
-				NATMapSize:        131072,
-				NeighMapSize:      131072,
-				SockRevNatMapSize: 65536,
+				CTMapSizeTCP: CTMapEntriesGlobalTCPDefault + 1024,
+				CTMapSizeAny: 65536,
+				NATMapSize:   131072,
+				NeighMapSize: 131072,
 			},
 			preTestRun: func(vp *viper.Viper) {
 				vp.Set(CTMapEntriesGlobalTCPName, CTMapEntriesGlobalTCPDefault+1024)
@@ -1093,11 +999,10 @@ func TestBPFMapSizeCalculation(t *testing.T) {
 			totalMemory: 16 * GiB,
 			ratio:       0.98,
 			want: sizes{
-				CTMapSizeTCP:      LimitTableMax,
-				CTMapSizeAny:      LimitTableMax,
-				NATMapSize:        LimitTableMax,
-				NeighMapSize:      LimitTableMax,
-				SockRevNatMapSize: LimitTableMax,
+				CTMapSizeTCP: LimitTableMax,
+				CTMapSizeAny: LimitTableMax,
+				NATMapSize:   LimitTableMax,
+				NeighMapSize: LimitTableMax,
 			},
 		},
 		{
@@ -1105,15 +1010,28 @@ func TestBPFMapSizeCalculation(t *testing.T) {
 			totalMemory: 128 * GiB,
 			ratio:       0.0025,
 			want: sizes{
-				CTMapSizeTCP:      524288,
-				CTMapSizeAny:      262144,
-				NATMapSize:        (524288 + 262144) * 2 / 3,
-				NeighMapSize:      524288,
-				SockRevNatMapSize: 607062,
+				CTMapSizeTCP: 524288,
+				CTMapSizeAny: 262144,
+				NATMapSize:   (524288 + 262144) * 2 / 3,
+				NeighMapSize: 524288,
 			},
 			preTestRun: func(vp *viper.Viper) {
 				vp.Set(CTMapEntriesGlobalTCPName, 524288)
 				vp.Set(CTMapEntriesGlobalAnyName, 262144)
+			},
+		},
+		{
+			name:        "dynamic size NAT size with distributed LRU",
+			totalMemory: 3 * GiB,
+			ratio:       0.051,
+			want: sizes{
+				CTMapSizeTCP: util.RoundUp(580503, cpus),
+				CTMapSizeAny: util.RoundUp(290251, cpus),
+				NATMapSize:   util.RoundUp(580503, cpus),
+				NeighMapSize: util.RoundUp(580503, cpus),
+			},
+			preTestRun: func(vp *viper.Viper) {
+				vp.Set(BPFDistributedLRU, true)
 			},
 		},
 	}
@@ -1121,6 +1039,7 @@ func TestBPFMapSizeCalculation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			vp := viper.New()
+			logger := hivetest.Logger(t)
 			if tt.preTestRun != nil {
 				tt.preTestRun(vp)
 			}
@@ -1130,7 +1049,7 @@ func TestBPFMapSizeCalculation(t *testing.T) {
 				CTMapEntriesGlobalAny: vp.GetInt(CTMapEntriesGlobalAnyName),
 				NATMapEntriesGlobal:   vp.GetInt(NATMapEntriesGlobalName),
 				NeighMapEntriesGlobal: vp.GetInt(NeighMapEntriesGlobalName),
-				SockRevNatEntries:     vp.GetInt(SockRevNatEntriesName),
+				BPFDistributedLRU:     vp.GetBool(BPFDistributedLRU),
 			}
 
 			// cannot set these from the Sizeof* consts from
@@ -1143,15 +1062,16 @@ func TestBPFMapSizeCalculation(t *testing.T) {
 			)
 
 			if tt.totalMemory > 0 && tt.ratio > 0.0 {
-				d.calculateDynamicBPFMapSizes(vp, tt.totalMemory, tt.ratio)
+				d.calculateDynamicBPFMapSizes(logger, vp, tt.totalMemory, tt.ratio)
 			}
+
+			d.normalizeLRUBackedMapSizes(logger)
 
 			got := sizes{
 				d.CTMapEntriesGlobalTCP,
 				d.CTMapEntriesGlobalAny,
 				d.NATMapEntriesGlobal,
 				d.NeighMapEntriesGlobal,
-				d.SockRevNatEntries,
 			}
 
 			if diff := cmp.Diff(tt.want, got); diff != "" {
@@ -1163,24 +1083,25 @@ func TestBPFMapSizeCalculation(t *testing.T) {
 
 func Test_backupFiles(t *testing.T) {
 	tempDir := t.TempDir()
+	logger := hivetest.Logger(t)
 	fileNames := []string{"test.json", "test-1.json", "test-2.json"}
 
-	backupFiles(tempDir, fileNames)
+	backupFiles(logger, tempDir, fileNames)
 	files, err := os.ReadDir(tempDir)
 	require.NoError(t, err)
 	// No files should have been created
-	require.Len(t, files, 0)
+	require.Empty(t, files)
 
 	_, err = os.Create(filepath.Join(tempDir, "test.json"))
 	require.NoError(t, err)
 
-	backupFiles(tempDir, fileNames)
+	backupFiles(logger, tempDir, fileNames)
 	files, err = os.ReadDir(tempDir)
 	require.NoError(t, err)
 	require.Len(t, files, 1)
 	require.Equal(t, "test-1.json", files[0].Name())
 
-	backupFiles(tempDir, fileNames)
+	backupFiles(logger, tempDir, fileNames)
 	files, err = os.ReadDir(tempDir)
 	require.NoError(t, err)
 	require.Len(t, files, 1)
@@ -1189,7 +1110,7 @@ func Test_backupFiles(t *testing.T) {
 	_, err = os.Create(filepath.Join(tempDir, "test.json"))
 	require.NoError(t, err)
 
-	backupFiles(tempDir, fileNames)
+	backupFiles(logger, tempDir, fileNames)
 	files, err = os.ReadDir(tempDir)
 	require.NoError(t, err)
 	require.Len(t, files, 2)
@@ -1199,25 +1120,25 @@ func Test_backupFiles(t *testing.T) {
 
 func Test_parseEventBufferTupleString(t *testing.T) {
 	assert := assert.New(t)
-	c, err := ParseEventBufferTupleString("enabled,123,1h")
+	c, err := ParseEventBufferTupleString("enabled_123_1h")
 	assert.NoError(err)
 	assert.True(c.Enabled)
 	assert.Equal(123, c.MaxSize)
 	assert.Equal(time.Hour, c.TTL)
 
-	c, err = ParseEventBufferTupleString("disabled,123,1h")
+	c, err = ParseEventBufferTupleString("disabled_123_1h")
 	assert.NoError(err)
 	assert.False(c.Enabled)
 	assert.Equal(123, c.MaxSize)
 	assert.Equal(time.Hour, c.TTL)
 
-	c, err = ParseEventBufferTupleString("cat,123,1h")
+	c, err = ParseEventBufferTupleString("cat_123_1h")
 	assert.Error(err)
 
-	c, err = ParseEventBufferTupleString("enabled,xxx,1h")
+	c, err = ParseEventBufferTupleString("enabled_xxx_1h")
 	assert.Error(err)
 
-	c, err = ParseEventBufferTupleString("enabled,123,x")
+	c, err = ParseEventBufferTupleString("enabled_123_x")
 	assert.Error(err)
 }
 
@@ -1312,11 +1233,12 @@ func TestDaemonConfig_validateContainerIPLocalReservedPorts(t *testing.T) {
 }
 
 func TestDaemonConfig_StoreInFile(t *testing.T) {
+	logger := hivetest.Logger(t)
 	// Set an IntOption so that they are also stored in file
 	assert.False(t, Config.Opts.IsEnabled("unit-test-key-only")) // make sure not used
 	Config.Opts.SetBool("unit-test-key-only", true)
 
-	err := Config.StoreInFile(".")
+	err := Config.StoreInFile(logger, ".")
 	assert.NoError(t, err)
 
 	err = Config.ValidateUnchanged()
@@ -1342,7 +1264,7 @@ func stringToStringFlag(t *testing.T, name string) *flag.Flag {
 	fs.StringToString(name, value, "")
 	flag := fs.Lookup(name)
 	assert.NotNil(t, flag)
-	assert.Equal(t, flag.Value.Type(), "stringToString")
+	assert.Equal(t, "stringToString", flag.Value.Type())
 	return flag
 }
 

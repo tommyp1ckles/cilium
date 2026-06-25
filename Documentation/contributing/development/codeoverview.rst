@@ -82,9 +82,6 @@ daemon
 plugins/cilium-cni
   The CNI plugin to integrate with Kubernetes
 
-plugins/cilium-docker
-  The Docker integration plugin
-
 Hubble
 ------
 
@@ -216,9 +213,6 @@ pkg/policy
 
 pkg/proxy
   Layer 7 proxy abstraction
-
-pkg/service
-  Representation of a load-balancing service
 
 pkg/trigger
   Implementation of trigger functionality to implement event-driven

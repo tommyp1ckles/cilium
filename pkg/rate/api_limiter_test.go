@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/semaphore"
@@ -67,7 +68,7 @@ func (m *mockMetrics) ProcessedRequest(name string, v MetricsValues) {
 }
 
 func TestNewAPILimiter(t *testing.T) {
-	a := NewAPILimiter("foo", APILimiterParameters{}, nil)
+	a := NewAPILimiter(hivetest.Logger(t), "foo", APILimiterParameters{}, nil)
 
 	req, err := a.Wait(context.Background())
 	require.NoError(t, err)
@@ -78,7 +79,7 @@ func TestNewAPILimiter(t *testing.T) {
 func TestCancelContext(t *testing.T) {
 	// Validate that error is returned when context is cancelled while
 	// request is in flight
-	a := NewAPILimiter("foo", APILimiterParameters{Log: true}, nil)
+	a := NewAPILimiter(hivetest.Logger(t), "foo", APILimiterParameters{Log: true}, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -94,7 +95,7 @@ func TestAutoAdjust(t *testing.T) {
 	initialRateLimit := rate.Limit(4.0)
 	initialRateBurst := 2
 
-	a := NewAPILimiter("foo", APILimiterParameters{
+	a := NewAPILimiter(hivetest.Logger(t), "foo", APILimiterParameters{
 		AutoAdjust:                  true,
 		ParallelRequests:            initialParallelRequests,
 		EstimatedProcessingDuration: 10 * time.Millisecond,
@@ -130,13 +131,13 @@ func TestMeanProcessingDuration(t *testing.T) {
 	// Simulate several requests and calculate the mean processing duration
 	// over fewer requests. Verify calculation of mean processing duration
 	iterations := int64(10)
-	a := NewAPILimiter("foo", APILimiterParameters{
+	a := NewAPILimiter(hivetest.Logger(t), "foo", APILimiterParameters{
 		MeanOver:                    int(iterations) - 1,
 		EstimatedProcessingDuration: 10 * time.Millisecond,
 		ParallelRequests:            2,
 	}, nil)
 
-	for i := int64(0); i < iterations; i++ {
+	for range iterations {
 		req, err := a.Wait(context.Background())
 		require.NoError(t, err)
 		require.NotNil(t, req)
@@ -162,7 +163,7 @@ func TestMinParallelRequests(t *testing.T) {
 	// The max parallel window should shrink to the minimum
 	maxParallelReqs := 10
 	minParallelReqs := 2
-	a := NewAPILimiter("foo", APILimiterParameters{
+	a := NewAPILimiter(hivetest.Logger(t), "foo", APILimiterParameters{
 		EstimatedProcessingDuration: time.Nanosecond,
 		AutoAdjust:                  true,
 		ParallelRequests:            maxParallelReqs,
@@ -171,7 +172,7 @@ func TestMinParallelRequests(t *testing.T) {
 		Log:                         true,
 	}, nil)
 
-	for i := 0; i < maxParallelReqs; i++ {
+	for range maxParallelReqs {
 		req, err := a.Wait(context.Background())
 		require.NoError(t, err)
 		require.NotNil(t, req)
@@ -193,7 +194,7 @@ func TestMinParallelRequests(t *testing.T) {
 func TestMaxWaitDurationExceeded(t *testing.T) {
 	// Test parallel request limiting when the maximum waiting duration is
 	// exceeded. A set of requests must fail.
-	a := NewAPILimiter("foo", APILimiterParameters{
+	a := NewAPILimiter(hivetest.Logger(t), "foo", APILimiterParameters{
 		EstimatedProcessingDuration: 5 * time.Millisecond,
 		AutoAdjust:                  true,
 		ParallelRequests:            2,
@@ -205,7 +206,7 @@ func TestMaxWaitDurationExceeded(t *testing.T) {
 	var mutex lock.Mutex
 	failedRequests := 0
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		go func() {
 			req, err := a.Wait(context.Background())
 			if err != nil {
@@ -232,7 +233,7 @@ func TestMaxWaitDurationExceeded(t *testing.T) {
 }
 
 func TestLimitCancelContext(t *testing.T) {
-	a := NewAPILimiter("foo", APILimiterParameters{
+	a := NewAPILimiter(hivetest.Logger(t), "foo", APILimiterParameters{
 		MinWaitDuration: time.Minute,
 		RateLimit:       1.0 / 60.0, // 1 request/minute
 		RateBurst:       1,
@@ -252,7 +253,7 @@ func TestLimitCancelContext(t *testing.T) {
 func TestLimitWaitDurationExceeded(t *testing.T) {
 	// Test when rate limiting waiting duration exceeded the maximum wait
 	// duration. A set of requests must fail.
-	a := NewAPILimiter("foo", APILimiterParameters{
+	a := NewAPILimiter(hivetest.Logger(t), "foo", APILimiterParameters{
 		RateLimit:       1.0 / 60.0, // 1 request/minute
 		RateBurst:       2,
 		MaxWaitDuration: time.Millisecond,
@@ -262,7 +263,7 @@ func TestLimitWaitDurationExceeded(t *testing.T) {
 	var mutex lock.Mutex
 	failedRequests := 0
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		go func() {
 			req, err := a.Wait(context.Background())
 			if err != nil {
@@ -292,7 +293,7 @@ func TestMaxParallelRequests(t *testing.T) {
 	// Test blocking of max-parallel-requests by allowing two parallel
 	// requests and having a third request fail due to a very short
 	// MaxWaitDuration
-	a := NewAPILimiter("foo", APILimiterParameters{
+	a := NewAPILimiter(hivetest.Logger(t), "foo", APILimiterParameters{
 		ParallelRequests: 2,
 		MaxWaitDuration:  time.Millisecond,
 		AutoAdjust:       true,
@@ -360,60 +361,62 @@ func TestParseRate(t *testing.T) {
 }
 
 func TestNewAPILimiterFromConfig(t *testing.T) {
-	l, err := NewAPILimiterFromConfig("foo", "foo", nil)
+	logger := hivetest.Logger(t)
+	l, err := NewAPILimiterFromConfig(logger, "foo", "foo", nil)
 	require.Error(t, err)
 	require.Nil(t, l)
 
-	l, err = NewAPILimiterFromConfig("foo", "rate-limit:5/m", nil)
+	l, err = NewAPILimiterFromConfig(logger, "foo", "rate-limit:5/m", nil)
 	require.NoError(t, err)
 	require.NotNil(t, l)
 	require.Equal(t, rate.Limit(5.0/60.0), l.params.RateLimit)
 
-	l, err = NewAPILimiterFromConfig("foo", "estimated-processing-duration:100ms", nil)
+	l, err = NewAPILimiterFromConfig(logger, "foo", "estimated-processing-duration:100ms", nil)
 	require.NoError(t, err)
 	require.NotNil(t, l)
 	require.Equal(t, time.Millisecond*100, l.params.EstimatedProcessingDuration)
 
-	l, err = NewAPILimiterFromConfig("foo", "rate-limit:5/m,rate-burst:2", nil)
+	l, err = NewAPILimiterFromConfig(logger, "foo", "rate-limit:5/m,rate-burst:2", nil)
 	require.NoError(t, err)
 	require.NotNil(t, l)
 	require.Equal(t, rate.Limit(5.0/60.0), l.params.RateLimit)
 	require.Equal(t, 2, l.params.RateBurst)
 
-	l, err = NewAPILimiterFromConfig("foo", "auto-adjust:true,parallel-requests:2,max-parallel-requests:3,min-parallel-requests:2,skip-initial:5", nil)
+	l, err = NewAPILimiterFromConfig(logger, "foo", "auto-adjust:true,parallel-requests:2,max-parallel-requests:3,min-parallel-requests:2,skip-initial:5", nil)
 	require.NoError(t, err)
 	require.NotNil(t, l)
-	require.Equal(t, true, l.params.AutoAdjust)
+	require.True(t, l.params.AutoAdjust)
 	require.Equal(t, 2, l.params.ParallelRequests)
 	require.Equal(t, 3, l.params.MaxParallelRequests)
 	require.Equal(t, 2, l.params.MinParallelRequests)
 	require.Equal(t, 5, l.params.SkipInitial)
 
-	l, err = NewAPILimiterFromConfig("foo", "delayed-adjustment-factor:0.5,log:true,max-wait-duration:2s,min-wait-duration:100ms,max-adjustment-factor:50.0", nil)
+	l, err = NewAPILimiterFromConfig(logger, "foo", "delayed-adjustment-factor:0.5,log:true,max-wait-duration:2s,min-wait-duration:100ms,max-adjustment-factor:50.0", nil)
 	require.NoError(t, err)
 	require.NotNil(t, l)
 	require.Equal(t, 0.5, l.params.DelayedAdjustmentFactor)
-	require.Equal(t, true, l.params.Log)
+	require.True(t, l.params.Log)
 	require.Equal(t, 2*time.Second, l.params.MaxWaitDuration)
 	require.Equal(t, 100*time.Millisecond, l.params.MinWaitDuration)
 	require.Equal(t, 50.0, l.params.MaxAdjustmentFactor)
 }
 
 func TestNewAPILimiterSet(t *testing.T) {
+	logger := hivetest.Logger(t)
 	// Empty configuration
-	l, err := NewAPILimiterSet(nil, nil, nil)
+	l, err := NewAPILimiterSet(logger, nil, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, l)
 
 	// Invalid user config
-	l, err = NewAPILimiterSet(map[string]string{
+	l, err = NewAPILimiterSet(logger, map[string]string{
 		"foo": "foo",
 	}, nil, nil)
 	require.Error(t, err)
 	require.Nil(t, l)
 
 	// Default value only
-	l, err = NewAPILimiterSet(nil, map[string]APILimiterParameters{
+	l, err = NewAPILimiterSet(logger, nil, map[string]APILimiterParameters{
 		"foo": {
 			RateLimit: rate.Limit(1.0 / 60.0),
 		},
@@ -424,7 +427,7 @@ func TestNewAPILimiterSet(t *testing.T) {
 	require.Nil(t, l.Limiter("foo2"))
 
 	// User config only
-	l, err = NewAPILimiterSet(map[string]string{
+	l, err = NewAPILimiterSet(logger, map[string]string{
 		"foo": "rate-limit:2/m,rate-burst:2",
 	}, nil, nil)
 	require.NoError(t, err)
@@ -434,7 +437,7 @@ func TestNewAPILimiterSet(t *testing.T) {
 
 	// Overwrite default and combine with new user config while also
 	// preserving some default values
-	l, err = NewAPILimiterSet(map[string]string{
+	l, err = NewAPILimiterSet(logger, map[string]string{
 		"foo": "rate-limit:2/m,rate-burst:2",
 	}, map[string]APILimiterParameters{
 		"foo": {
@@ -446,10 +449,10 @@ func TestNewAPILimiterSet(t *testing.T) {
 	require.NotNil(t, l)
 	require.Equal(t, rate.Limit(1.0/30.0), l.Limiter("foo").params.RateLimit)
 	require.Equal(t, 2, l.Limiter("foo").params.RateBurst)
-	require.Equal(t, true, l.Limiter("foo").params.AutoAdjust)
+	require.True(t, l.Limiter("foo").params.AutoAdjust)
 
 	// Overwrite default with an invalid value
-	l, err = NewAPILimiterSet(map[string]string{
+	l, err = NewAPILimiterSet(logger, map[string]string{
 		"foo": "rate-limit:foo,rate-burst:2",
 	}, map[string]APILimiterParameters{
 		"foo": {
@@ -463,8 +466,9 @@ func TestNewAPILimiterSet(t *testing.T) {
 func TestAPILimiterMetrics(t *testing.T) {
 	// Validate setting of metrics via interface
 	metrics := newMockMetrics()
+	logger := hivetest.Logger(t)
 
-	l, err := NewAPILimiterSet(nil, map[string]APILimiterParameters{
+	l, err := NewAPILimiterSet(logger, nil, map[string]APILimiterParameters{
 		"foo": {
 			EstimatedProcessingDuration: 10 * time.Millisecond,
 			MaxWaitDuration:             200 * time.Millisecond,
@@ -521,7 +525,7 @@ func TestAPILimiterMergeUserConfig(t *testing.T) {
 	o := APILimiterParameters{}
 	n, err := o.MergeUserConfig("")
 	require.NoError(t, err)
-	require.EqualValues(t, o, n, "Expected no changes when merging empty configs")
+	require.Equal(t, o, n, "Expected no changes when merging empty configs")
 
 	// Overwrite defaults with user configuration, check updated values
 	o = APILimiterParameters{
@@ -543,7 +547,7 @@ func TestAPILimiterMergeUserConfig(t *testing.T) {
 	require.Equal(t, o.Log, n.Log, expectSame)
 
 	// these values should be updated
-	require.Equal(t, true, n.AutoAdjust, expectedChange)
+	require.True(t, n.AutoAdjust, expectedChange)
 	require.Equal(t, 3, n.MaxParallelRequests, expectedChange)
 	require.Equal(t, 2, n.MinParallelRequests, expectedChange)
 
@@ -603,9 +607,9 @@ func TestParseUserConfig(t *testing.T) {
 	p := &APILimiterParameters{}
 
 	require.NoError(t, p.mergeUserConfig("auto-adjust:true,"))
-	require.Equal(t, true, p.AutoAdjust)
+	require.True(t, p.AutoAdjust)
 	require.NoError(t, p.mergeUserConfig("auto-adjust:false,rate-limit:10/s,"))
-	require.Equal(t, false, p.AutoAdjust)
+	require.False(t, p.AutoAdjust)
 	require.Equal(t, rate.Limit(10.0), p.RateLimit)
 	require.Error(t, p.mergeUserConfig("auto-adjust"))
 	require.Error(t, p.mergeUserConfig("1:2:3"))
@@ -618,6 +622,7 @@ func TestCalcMeanDuration(t *testing.T) {
 
 func TestDelayedAdjustment(t *testing.T) {
 	l := APILimiter{
+		logger:           hivetest.Logger(t),
 		adjustmentFactor: 1.5,
 		params:           APILimiterParameters{DelayedAdjustmentFactor: 0.5},
 	}
@@ -629,13 +634,13 @@ func TestDelayedAdjustment(t *testing.T) {
 func TestSkipInitial(t *testing.T) {
 	// Validate that SkipInitial skips all waiting duration
 	iterations := 10
-	a := NewAPILimiter("foo", APILimiterParameters{
+	a := NewAPILimiter(hivetest.Logger(t), "foo", APILimiterParameters{
 		SkipInitial:      iterations,
 		RateLimit:        1.0,
 		ParallelRequests: 2,
 	}, nil)
 
-	for i := 0; i < iterations; i++ {
+	for range iterations {
 		req, err := a.Wait(context.Background())
 		require.NoError(t, err)
 		require.NotNil(t, req)
@@ -657,7 +662,7 @@ func TestSkipInitial(t *testing.T) {
 func TestCalculateAdjustmentFactor(t *testing.T) {
 	estimatedProcessingDuration := time.Second
 	maxAdjustmentFactor := 20.0
-	a := NewAPILimiter("foo", APILimiterParameters{
+	a := NewAPILimiter(hivetest.Logger(t), "foo", APILimiterParameters{
 		EstimatedProcessingDuration: estimatedProcessingDuration,
 		MaxAdjustmentFactor:         maxAdjustmentFactor,
 	}, nil)
@@ -676,14 +681,14 @@ func TestCalculateAdjustmentFactor(t *testing.T) {
 }
 
 func TestAdjustmentLimit(t *testing.T) {
-	a := NewAPILimiter("foo", APILimiterParameters{MaxAdjustmentFactor: 2.0}, nil)
+	a := NewAPILimiter(hivetest.Logger(t), "foo", APILimiterParameters{MaxAdjustmentFactor: 2.0}, nil)
 	require.Equal(t, 4.0, a.adjustmentLimit(10.0, 2.0))
 	require.Equal(t, 1.5, a.adjustmentLimit(1.5, 2.0))
 	require.Equal(t, 1.0, a.adjustmentLimit(0.9, 2.0))
 }
 
 func TestAdjustedBurst(t *testing.T) {
-	a := NewAPILimiter("foo", APILimiterParameters{
+	a := NewAPILimiter(hivetest.Logger(t), "foo", APILimiterParameters{
 		RateLimit:               1.0,
 		RateBurst:               1,
 		DelayedAdjustmentFactor: 0.5,
@@ -694,7 +699,7 @@ func TestAdjustedBurst(t *testing.T) {
 }
 
 func TestAdjustedLimit(t *testing.T) {
-	a := NewAPILimiter("foo", APILimiterParameters{
+	a := NewAPILimiter(hivetest.Logger(t), "foo", APILimiterParameters{
 		RateLimit:           1.0,
 		MaxAdjustmentFactor: 2.0,
 	}, nil)
@@ -707,7 +712,7 @@ func TestAdjustedLimit(t *testing.T) {
 }
 
 func TestAdjustedParallelRequests(t *testing.T) {
-	a := NewAPILimiter("foo", APILimiterParameters{
+	a := NewAPILimiter(hivetest.Logger(t), "foo", APILimiterParameters{
 		ParallelRequests:        2,
 		DelayedAdjustmentFactor: 0.5,
 		MaxAdjustmentFactor:     2.0,
@@ -721,7 +726,8 @@ func TestAdjustedParallelRequests(t *testing.T) {
 }
 
 func testStressRateLimiter(t *testing.T, nGoRoutines int) {
-	a := NewAPILimiter("foo", APILimiterParameters{
+	logger := hivetest.Logger(t)
+	a := NewAPILimiter(logger, "foo", APILimiterParameters{
 		EstimatedProcessingDuration: 5 * time.Millisecond,
 		RateLimit:                   1000.0,
 		ParallelRequests:            50,
@@ -736,7 +742,7 @@ func testStressRateLimiter(t *testing.T, nGoRoutines int) {
 	)
 
 	go func() {
-		for i := 0; i < nGoRoutines; i++ {
+		for range nGoRoutines {
 			sem.Acquire(context.Background(), 1)
 			go func() {
 				var (
@@ -758,16 +764,20 @@ func testStressRateLimiter(t *testing.T, nGoRoutines int) {
 		}
 	}()
 
+	// The timeout for this test case is set longer than the default
+	// timeout (5s). This is because the test itself makes a stress
+	// to the CI environment and it can take longer to complete. Please
+	// see https://github.com/cilium/cilium/issues/37385 for the context.
 	require.EventuallyWithT(t, func(c *assert.CollectT) {
 		assert.Equal(c, uint32(nGoRoutines), completed.Load())
-	}, timeout, tick, "Expected all requests to complete")
+	}, time.Second*60, tick, "Expected all requests to complete")
 
-	log.Infof("%+v", a)
-	log.Infof("Total retries: %v", retries.Load())
+	logger.Info(fmt.Sprintf("%+v", a))
+	logger.Info(fmt.Sprintf("Total retries: %v", retries.Load()))
 }
 
 func TestReservationCancel(t *testing.T) {
-	a := NewAPILimiter("foo", APILimiterParameters{
+	a := NewAPILimiter(hivetest.Logger(t), "foo", APILimiterParameters{
 		RateLimit:           50.0,
 		RateBurst:           10,
 		ParallelRequests:    1,
@@ -787,7 +797,7 @@ func TestReservationCancel(t *testing.T) {
 	// All of these requests must fail due to having to wait too long as
 	// the only parallel request slot is occupied. The rate limiter should
 	// not get occupied with these requests though.
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		go func() {
 			_, err := a.Wait(context.Background())
 			require.Error(t, err)
@@ -801,7 +811,7 @@ func TestReservationCancel(t *testing.T) {
 	req.Done()
 
 	// All of these requests should now succeed
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		req2, err := a.Wait(context.Background())
 		require.NoError(t, err)
 		req2.Done()
@@ -809,7 +819,7 @@ func TestReservationCancel(t *testing.T) {
 }
 
 func TestSetRateLimit(t *testing.T) {
-	a := NewAPILimiter("foo", APILimiterParameters{
+	a := NewAPILimiter(hivetest.Logger(t), "foo", APILimiterParameters{
 		RateLimit: 50.0,
 	}, nil)
 	require.Equal(t, rate.Limit(50.0), a.limiter.Limit())
@@ -819,7 +829,7 @@ func TestSetRateLimit(t *testing.T) {
 }
 
 func TestSetRateBurst(t *testing.T) {
-	a := NewAPILimiter("foo", APILimiterParameters{
+	a := NewAPILimiter(hivetest.Logger(t), "foo", APILimiterParameters{
 		RateLimit: 50.0,
 		RateBurst: 50,
 	}, nil)

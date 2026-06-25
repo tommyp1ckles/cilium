@@ -4,7 +4,6 @@
 package portdistribution
 
 import (
-	"context"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -19,7 +18,18 @@ import (
 
 func TestPortDistributionHandler(t *testing.T) {
 	registry := prometheus.NewRegistry()
-	opts := api.Options{"sourceContext": "namespace", "destinationContext": "namespace"}
+	opts := &api.MetricConfig{
+		ContextOptionConfigs: []*api.ContextOptionConfig{
+			{
+				Name:   "sourceContext",
+				Values: []string{"namespace"},
+			},
+			{
+				Name:   "destinationContext",
+				Values: []string{"namespace"},
+			},
+		},
+	}
 
 	portHandler := &portDistributionHandler{}
 
@@ -33,7 +43,7 @@ func TestPortDistributionHandler(t *testing.T) {
 
 	t.Run("ProcessFlow_SkipReply", func(t *testing.T) {
 		flow := buildFlow(8080, pb.Verdict_FORWARDED, true)
-		portHandler.ProcessFlow(context.TODO(), flow)
+		portHandler.ProcessFlow(t.Context(), flow)
 
 		metricFamilies, err := registry.Gather()
 		require.NoError(t, err)
@@ -43,7 +53,7 @@ func TestPortDistributionHandler(t *testing.T) {
 
 	t.Run("ProcessFlow_SkipDropped", func(t *testing.T) {
 		flow := buildFlow(8080, pb.Verdict_DROPPED, false)
-		portHandler.ProcessFlow(context.TODO(), flow)
+		portHandler.ProcessFlow(t.Context(), flow)
 
 		metricFamilies, err := registry.Gather()
 		require.NoError(t, err)
@@ -53,7 +63,7 @@ func TestPortDistributionHandler(t *testing.T) {
 
 	t.Run("ProcessFlow", func(t *testing.T) {
 		flow := buildFlow(8080, pb.Verdict_FORWARDED, false)
-		portHandler.ProcessFlow(context.TODO(), flow)
+		portHandler.ProcessFlow(t.Context(), flow)
 
 		metricFamilies, err := registry.Gather()
 		require.NoError(t, err)
@@ -77,7 +87,7 @@ func TestPortDistributionHandler(t *testing.T) {
 		assert.Equal(t, 1., *metric.Counter.Value)
 
 		//send another flow with same labels
-		portHandler.ProcessFlow(context.TODO(), flow)
+		portHandler.ProcessFlow(t.Context(), flow)
 		metricFamilies, _ = registry.Gather()
 		metric = metricFamilies[0].Metric[0]
 		assert.Equal(t, 2., *metric.Counter.Value)
@@ -85,17 +95,28 @@ func TestPortDistributionHandler(t *testing.T) {
 
 	t.Run("ProcessFlow_MultiplePorts", func(t *testing.T) {
 		registry := prometheus.NewRegistry()
-		opts := api.Options{"sourceContext": "namespace", "destinationContext": "namespace"}
+		opts := &api.MetricConfig{
+			ContextOptionConfigs: []*api.ContextOptionConfig{
+				{
+					Name:   "sourceContext",
+					Values: []string{"namespace"},
+				},
+				{
+					Name:   "destinationContext",
+					Values: []string{"namespace"},
+				},
+			},
+		}
 
 		portHandler := &portDistributionHandler{}
 		require.NoError(t, portHandler.Init(registry, opts))
 
 		flow1 := buildFlow(8081, pb.Verdict_FORWARDED, false)
-		portHandler.ProcessFlow(context.TODO(), flow1)
+		portHandler.ProcessFlow(t.Context(), flow1)
 
 		flow2 := buildFlow(8082, pb.Verdict_FORWARDED, false)
-		portHandler.ProcessFlow(context.TODO(), flow2)
-		portHandler.ProcessFlow(context.TODO(), flow2)
+		portHandler.ProcessFlow(t.Context(), flow2)
+		portHandler.ProcessFlow(t.Context(), flow2)
 
 		metricFamilies, err := registry.Gather()
 		require.NoError(t, err)

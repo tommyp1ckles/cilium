@@ -4,6 +4,7 @@
 package counter
 
 import (
+	"maps"
 	"net"
 	"net/netip"
 	"testing"
@@ -101,9 +102,7 @@ func TestReferenceTracker(t *testing.T) {
 	expectedPrefixLengths = make(IntCounter, len(v6PrefixesLengths))
 
 	// Add the v6 prefixes (changed: true)
-	for k, v := range v6PrefixesLengths {
-		expectedPrefixLengths[k] = v
-	}
+	maps.Copy(expectedPrefixLengths, v6PrefixesLengths)
 	changed, err = result.Add(v6Prefixes)
 	require.NoError(t, err)
 	require.True(t, changed)
@@ -139,10 +138,10 @@ func TestReferenceTracker(t *testing.T) {
 
 func TestCheckLimits(t *testing.T) {
 	result := NewPrefixLengthCounter(4, 4)
-	require.Nil(t, checkLimits(0, 4, result.maxUniquePrefixes4))
-	require.NotNil(t, checkLimits(0, 5, result.maxUniquePrefixes4))
-	require.Nil(t, checkLimits(0, 4, result.maxUniquePrefixes6))
-	require.NotNil(t, checkLimits(0, 5, result.maxUniquePrefixes6))
+	require.NoError(t, checkLimits(0, 4, result.maxUniquePrefixes4))
+	require.Error(t, checkLimits(0, 5, result.maxUniquePrefixes4))
+	require.NoError(t, checkLimits(0, 4, result.maxUniquePrefixes6))
+	require.Error(t, checkLimits(0, 5, result.maxUniquePrefixes6))
 
 	prefixes := []netip.Prefix{
 		netip.MustParsePrefix("0.0.0.0/0"),

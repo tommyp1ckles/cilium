@@ -6,11 +6,11 @@ package endpointslicesync
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"maps"
 	"strings"
 	"sync/atomic"
 
-	"github.com/sirupsen/logrus"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -19,14 +19,15 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	listersv1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
-	mcsapiv1alpha1 "sigs.k8s.io/mcs-api/pkg/apis/v1alpha1"
+	mcsapiv1beta1 "sigs.k8s.io/mcs-api/pkg/apis/v1beta1"
 
 	"github.com/cilium/cilium/pkg/annotation"
 	"github.com/cilium/cilium/pkg/clustermesh/common"
+	mcsapitypes "github.com/cilium/cilium/pkg/clustermesh/mcsapi/types"
+	"github.com/cilium/cilium/pkg/clustermesh/store"
 	"github.com/cilium/cilium/pkg/k8s"
 	"github.com/cilium/cilium/pkg/k8s/resource"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
-	"github.com/cilium/cilium/pkg/service/store"
 )
 
 const (
@@ -45,7 +46,7 @@ const (
 type meshServiceInformer struct {
 	dummyInformer
 
-	logger             logrus.FieldLogger
+	logger             *slog.Logger
 	globalServiceCache *common.GlobalServiceCache
 	services           resource.Resource[*slim_corev1.Service]
 	serviceStore       resource.Store[*slim_corev1.Service]
@@ -77,11 +78,11 @@ func doesServiceSyncEndpointSlice(svc *slim_corev1.Service) bool {
 	return strings.ToLower(value) == "true"
 }
 
-func (i *meshServiceInformer) refreshAllCluster(svc *slim_corev1.Service) error {
+func (i *meshServiceInformer) refreshAllCluster(svc *slim_corev1.Service) {
 	if i.handler == nil {
 		// We don't really need to return an error here as this means that the EndpointSlice controller
 		// has not started yet and the controller will resync the initial state anyway
-		return nil
+		return
 	}
 
 	if globalSvc := i.globalServiceCache.GetGlobalService(types.NamespacedName{Name: svc.Name, Namespace: svc.Namespace}); globalSvc != nil {
@@ -93,12 +94,10 @@ func (i *meshServiceInformer) refreshAllCluster(svc *slim_corev1.Service) error 
 			}
 		}
 	}
-
-	return nil
 }
 
 func newMeshServiceInformer(
-	logger logrus.FieldLogger,
+	logger *slog.Logger,
 	globalServiceCache *common.GlobalServiceCache,
 	services resource.Resource[*slim_corev1.Service],
 	meshNodeInformer *meshNodeInformer,
@@ -113,15 +112,15 @@ func newMeshServiceInformer(
 }
 
 // toKubeServicePort use the clusterSvc to get a list of ServicePort to build
-// the kubernetes (non slim) Service. Note that we cannot use the slim Service to get this
-// as the slim Service trims the TargetPort which we needs inside the EndpointSliceReconciler
+// the kubernetes (non slim) Service. Note that we intentionally not use the local
+// Service to build the port list so that we don't change the remote Cluster Service port
+// list. Also targetPort might be targeting a named port and we currently don't
+// sync the container ports names.
 func toKubeServicePort(clusterSvc *store.ClusterService) []v1.ServicePort {
 	// Merge all the port config into one to get all the possible ports
 	globalPortConfig := store.PortConfiguration{}
 	for _, portConfig := range clusterSvc.Backends {
-		for name, l4Addr := range portConfig {
-			globalPortConfig[name] = l4Addr
-		}
+		maps.Copy(globalPortConfig, portConfig)
 	}
 
 	// Get the ServicePort from the PortConfig
@@ -169,9 +168,16 @@ func (i *meshServiceInformer) clusterSvcToSvc(clusterSvc *store.ClusterService, 
 		labels = map[string]string{}
 	}
 	maps.Copy(labels, map[string]string{
-		meshRealServiceNameLabel:          clusterSvc.Name,
-		mcsapiv1alpha1.LabelSourceCluster: clusterSvc.Cluster,
+		meshRealServiceNameLabel:         clusterSvc.Name,
+		mcsapiv1beta1.LabelSourceCluster: clusterSvc.Cluster,
 	})
+
+	// Use the internal supported IP families annotation from our MCS-API implementation if present
+	valIPFamilies, ok := svc.Annotations[annotation.SupportedIPFamilies]
+	ipFamilies, err := mcsapitypes.IPFamiliesFromString(valIPFamilies)
+	if !ok || err != nil {
+		ipFamilies = toKubeIpFamilies(svc.Spec.IPFamilies)
+	}
 
 	return &v1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -189,7 +195,7 @@ func (i *meshServiceInformer) clusterSvcToSvc(clusterSvc *store.ClusterService, 
 			ClusterIP:  svc.Spec.ClusterIP,
 			ClusterIPs: svc.Spec.ClusterIPs,
 			Type:       v1.ServiceType(svc.Spec.Type),
-			IPFamilies: toKubeIpFamilies(svc.Spec.IPFamilies),
+			IPFamilies: ipFamilies,
 		},
 	}, nil
 }
@@ -278,17 +284,16 @@ func (i *meshServiceInformer) Start(ctx context.Context) error {
 
 	go func() {
 		for event := range i.services.Events(ctx) {
-			var err error
 			switch event.Kind {
 			case resource.Sync:
 				i.logger.Debug("Local services are synced")
 				i.servicesSynced.Store(true)
 			case resource.Upsert:
-				err = i.refreshAllCluster(event.Object)
+				i.refreshAllCluster(event.Object)
 			case resource.Delete:
-				err = i.refreshAllCluster(event.Object)
+				i.refreshAllCluster(event.Object)
 			}
-			event.Done(err)
+			event.Done(nil)
 		}
 	}()
 	return nil
@@ -297,9 +302,11 @@ func (i *meshServiceInformer) Start(ctx context.Context) error {
 func (i *meshServiceInformer) Services(namespace string) listersv1.ServiceNamespaceLister {
 	return &meshServiceLister{informer: i, namespace: namespace}
 }
+
 func (i *meshServiceInformer) Informer() cache.SharedIndexInformer {
 	return i
 }
+
 func (i *meshServiceInformer) Lister() listersv1.ServiceLister {
 	return i
 }

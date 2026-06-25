@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 /* Copyright Authors of Cilium */
 
-#include "common.h"
-
 #include <bpf/ctx/skb.h>
-#include "linux/if_ether.h"
+#include "common.h"
 #include "pktgen.h"
 #include "mock_skb_metadata.h"
 
@@ -30,22 +28,11 @@
 /* Inter-cluster SNAT is mandatory for overlapping PodCIDR support for now */
 #define ENABLE_INTER_CLUSTER_SNAT
 
-/* Import map definitions and some default values */
-#include "node_config.h"
-
-/* Overwrite the default port range defined in node_config.h
- * to have deterministic source port selection.
+/* Import map definitions and some default values and set port ranges to have
+ * deterministic source port selection
  */
-#undef NODEPORT_PORT_MAX
-#undef NODEPORT_PORT_MIN_NAT
-#undef NODEPORT_PORT_MAX_NAT
-#define NODEPORT_PORT_MAX 32767
-#define NODEPORT_PORT_MIN_NAT (NODEPORT_PORT_MAX + 1)
-#define NODEPORT_PORT_MAX_NAT (NODEPORT_PORT_MIN_NAT)
-
-/* Overwrite (local) CLUSTER_ID defined in node_config.h */
-#undef CLUSTER_ID
-#define CLUSTER_ID 1
+#define NODEPORT_PORT_MAX_NAT 32768
+#include "nodeport_defaults.h"
 
 /*
  * Test configurations
@@ -99,28 +86,16 @@ int mock_send_drop_notify(__u8 file __maybe_unused, __u16 line __maybe_unused,
 }
 
 /* Include an actual datapath code */
-#include <bpf_overlay.c>
+#include "lib/bpf_overlay.h"
+
+/* Overwrite (local) cluster_id defined in clustermesh.h */
+ASSIGN_CONFIG(__u32, cluster_id, 1)
 
 #include "lib/endpoint.h"
 
 /*
  * Tests
  */
-
-#define TO_OVERLAY 0
-#define FROM_OVERLAY 1
-
-struct {
-	__uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-	__uint(key_size, sizeof(__u32));
-	__uint(max_entries, 2);
-	__array(values, int());
-} entry_call_map __section(".maps") = {
-	.values = {
-		[TO_OVERLAY] = &cil_to_overlay,
-		[FROM_OVERLAY] = &cil_from_overlay,
-	},
-};
 
 static __always_inline int
 pktgen_to_overlay(struct __ctx_buff *ctx, bool syn, bool ack)
@@ -192,10 +167,10 @@ int from_overlay_syn_pktgen(struct __ctx_buff *ctx)
 SETUP("tc", "01_from_overlay_syn")
 int from_overlay_syn_setup(struct __ctx_buff *ctx)
 {
-	endpoint_v4_add_entry(BACKEND_IP, BACKEND_IFINDEX, 0, 0, 0,
+	endpoint_v4_add_entry(BACKEND_IP, BACKEND_IFINDEX, 0, 0, 0, 0,
 			      (__u8 *)BACKEND_MAC, (__u8 *)BACKEND_ROUTER_MAC);
 
-	tail_call_static(ctx, entry_call_map, FROM_OVERLAY);
+	return overlay_receive_packet(ctx);
 	return TEST_ERROR;
 }
 
@@ -210,6 +185,8 @@ int from_overlay_syn_check(struct __ctx_buff *ctx)
 	__u32 meta;
 
 	test_init();
+
+	endpoint_v4_del_entry(BACKEND_IP);
 
 	data = (void *)(long)ctx_data(ctx);
 	data_end = (void *)(long)ctx->data_end;
@@ -250,7 +227,7 @@ int from_overlay_syn_check(struct __ctx_buff *ctx)
 		test_fatal("dst IP has changed");
 
 	if (l3->check != bpf_htons(0x4212))
-		test_fatal("L3 checksum is invalid: %d", bpf_htons(l3->check));
+		test_fatal("L3 checksum is invalid: %x", bpf_htons(l3->check));
 
 	if (l4->source != CLIENT_INTER_CLUSTER_SNAT_PORT)
 		test_fatal("src port has changed");
@@ -258,9 +235,16 @@ int from_overlay_syn_check(struct __ctx_buff *ctx)
 	if (l4->dest != BACKEND_PORT)
 		test_fatal("dst port has changed");
 
-	meta = ctx_load_meta(ctx, CB_IFINDEX);
-	if (meta != BACKEND_IFINDEX)
-		test_fatal("skb->cb[CB_IFINDEX] should be %d, got %d", BACKEND_IFINDEX, meta);
+	if (l4->check != bpf_htons(0xd71f))
+		test_fatal("L4 checksum is invalid: %x != %x", l4->check, bpf_htons(0xd71f));
+
+	meta = ctx_load_meta(ctx, CB_DELIVERY_FLAGS);
+	if (!(meta & CB_DELIVERY_FLAGS_REDIRECT))
+		test_fatal("skb->cb[CB_DELIVERY_FLAGS] should have CB_DELIVERY_FLAGS_REDIRECT");
+	if (meta & CB_DELIVERY_FLAGS_FROM_HOST)
+		test_fatal("skb->cb[CB_DELIVERY_FLAGS] has CB_DELIVERY_FLAGS_FROM_HOST");
+	if (!(meta & CB_DELIVERY_FLAGS_FROM_TUNNEL))
+		test_fatal("skb->cb[CB_DELIVERY_FLAGS] should have CB_DELIVERY_FLAGS_FROM_TUNNEL");
 
 	meta = ctx_load_meta(ctx, CB_SRC_LABEL);
 	if (meta != CLIENT_IDENTITY)
@@ -290,8 +274,7 @@ int to_overlay_synack_pktgen(struct __ctx_buff *ctx)
 SETUP("tc", "02_to_overlay_synack")
 int to_overlay_synack_setup(struct __ctx_buff *ctx)
 {
-	tail_call_static(ctx, entry_call_map, TO_OVERLAY);
-	return TEST_ERROR;
+	return overlay_send_packet(ctx);
 }
 
 CHECK("tc", "02_to_overlay_synack")
@@ -341,13 +324,16 @@ int to_overlay_synack_check(struct __ctx_buff *ctx)
 		test_fatal("dst IP has changed");
 
 	if (l3->check != bpf_htons(0x4112))
-		test_fatal("L3 checksum is invalid: %d", bpf_htons(l3->check));
+		test_fatal("L3 checksum is invalid: %x", bpf_htons(l3->check));
 
 	if (l4->source != BACKEND_PORT)
 		test_fatal("src port has changed");
 
 	if (l4->dest != CLIENT_INTER_CLUSTER_SNAT_PORT)
 		test_fatal("dst port has changed");
+
+	if (l4->check != bpf_htons(0xd70f))
+		test_fatal("L4 checksum is invalid: %x != %x", l4->check, bpf_htons(0xd70f));
 
 	test_finish();
 }
@@ -361,8 +347,10 @@ int from_overlay_ack_pktgen(struct __ctx_buff *ctx)
 SETUP("tc", "03_from_overlay_ack")
 int from_overlay_ack_setup(struct __ctx_buff *ctx)
 {
-	tail_call_static(ctx, entry_call_map, FROM_OVERLAY);
-	return TEST_ERROR;
+	endpoint_v4_add_entry(BACKEND_IP, BACKEND_IFINDEX, 0, 0, 0, 0,
+			      (__u8 *)BACKEND_MAC, (__u8 *)BACKEND_ROUTER_MAC);
+
+	return overlay_receive_packet(ctx);
 }
 
 CHECK("tc", "03_from_overlay_ack")
@@ -376,6 +364,8 @@ int from_overlay_ack_check(struct __ctx_buff *ctx)
 	__u32 meta;
 
 	test_init();
+
+	endpoint_v4_del_entry(BACKEND_IP);
 
 	data = (void *)(long)ctx_data(ctx);
 	data_end = (void *)(long)ctx->data_end;
@@ -413,7 +403,7 @@ int from_overlay_ack_check(struct __ctx_buff *ctx)
 		test_fatal("dst IP has changed");
 
 	if (l3->check != bpf_htons(0x4212))
-		test_fatal("L3 checksum is invalid: %d", bpf_htons(l3->check));
+		test_fatal("L3 checksum is invalid: %x", bpf_htons(l3->check));
 
 	if (l4->source != CLIENT_INTER_CLUSTER_SNAT_PORT)
 		test_fatal("src port has changed");
@@ -421,9 +411,16 @@ int from_overlay_ack_check(struct __ctx_buff *ctx)
 	if (l4->dest != BACKEND_PORT)
 		test_fatal("dst port has changed");
 
-	meta = ctx_load_meta(ctx, CB_IFINDEX);
-	if (meta != BACKEND_IFINDEX)
-		test_fatal("skb->cb[CB_IFINDEX] should be %d, got %d", BACKEND_IFINDEX, meta);
+	if (l4->check != bpf_htons(0xd711))
+		test_fatal("L4 checksum is invalid: %x != %x", l4->check, bpf_htons(0xd711));
+
+	meta = ctx_load_meta(ctx, CB_DELIVERY_FLAGS);
+	if (!(meta & CB_DELIVERY_FLAGS_REDIRECT))
+		test_fatal("skb->cb[CB_DELIVERY_FLAGS] should have CB_DELIVERY_FLAGS_REDIRECT");
+	if (meta & CB_DELIVERY_FLAGS_FROM_HOST)
+		test_fatal("skb->cb[CB_DELIVERY_FLAGS] has CB_DELIVERY_FLAGS_FROM_HOST");
+	if (!(meta & CB_DELIVERY_FLAGS_FROM_TUNNEL))
+		test_fatal("skb->cb[CB_DELIVERY_FLAGS] should have CB_DELIVERY_FLAGS_FROM_TUNNEL");
 
 	meta = ctx_load_meta(ctx, CB_SRC_LABEL);
 	if (meta != CLIENT_IDENTITY)

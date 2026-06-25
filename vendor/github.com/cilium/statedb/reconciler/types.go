@@ -7,6 +7,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"iter"
 	"log/slog"
@@ -19,6 +20,8 @@ import (
 	"github.com/cilium/hive/job"
 	"github.com/cilium/statedb"
 	"github.com/cilium/statedb/index"
+	"github.com/cilium/statedb/internal"
+	"go.yaml.in/yaml/v3"
 )
 
 type Reconciler[Obj any] interface {
@@ -31,6 +34,17 @@ type Reconciler[Obj any] interface {
 	// that something has gone wrong in the reconciliation target and full
 	// reconciliation is needed to recover.
 	Prune()
+
+	// WaitUntilReconciled blocks until the reconciler has processed all
+	// table changes up to untilRevision. Returns the revision to which
+	// objects have been attempted to be reconciled at least once, the lowest
+	// revision of an object that failed to reconcile and ctx.Err() if the context
+	// is cancelled.
+	//
+	// If you want to wait until objects have been successfully reconciled up to
+	// a specific revision then this method should be called repeatedly until
+	// both [revision] and [retryLowWatermark] are past the desired [untilRevision].
+	WaitUntilReconciled(ctx context.Context, untilRevision statedb.Revision) (revision statedb.Revision, retryLowWatermark statedb.Revision, err error)
 }
 
 // Params are the reconciler dependencies that are independent of the
@@ -38,12 +52,10 @@ type Reconciler[Obj any] interface {
 type Params struct {
 	cell.In
 
-	Lifecycle      cell.Lifecycle
 	Log            *slog.Logger
 	DB             *statedb.DB
-	Jobs           job.Registry
+	JobGroup       job.Group
 	ModuleID       cell.FullModuleID
-	Health         cell.Health
 	DefaultMetrics Metrics `optional:"true"`
 }
 
@@ -64,11 +76,11 @@ type Operations[Obj any] interface {
 	// The object handed to Update is a clone produced by Config.CloneObject
 	// and thus Update can mutate the object. The mutations are only guaranteed
 	// to be retained if the object has a single reconciler (one Status).
-	Update(ctx context.Context, txn statedb.ReadTxn, obj Obj) error
+	Update(ctx context.Context, txn statedb.ReadTxn, revision statedb.Revision, obj Obj) error
 
 	// Delete the object in the target. Same semantics as with Update.
 	// Deleting a non-existing object is not an error and returns nil.
-	Delete(context.Context, statedb.ReadTxn, Obj) error
+	Delete(context.Context, statedb.ReadTxn, statedb.Revision, Obj) error
 
 	// Prune undesired state. It is given an iterator for the full set of
 	// desired objects. The implementation should diff the desired state against
@@ -93,14 +105,64 @@ type BatchOperations[Obj any] interface {
 	DeleteBatch(context.Context, statedb.ReadTxn, []BatchEntry[Obj])
 }
 
-type StatusKind string
+// StatusKind marks the state of status.
+//
+// This is a struct for legacy reasons. This used to string, but to save on space
+// this is now a uint8. By wrapping it into a struct we force the use-sites to
+// use StatusKind.String() and makes it impossible to do string(foo.Status.Kind).
+type StatusKind struct {
+	kind uint8
+}
 
-const (
-	StatusKindPending    StatusKind = "Pending"
-	StatusKindRefreshing StatusKind = "Refreshing"
-	StatusKindDone       StatusKind = "Done"
-	StatusKindError      StatusKind = "Error"
+var (
+	StatusKindUnset      = StatusKind{0}
+	StatusKindPending    = StatusKind{1}
+	StatusKindRefreshing = StatusKind{2}
+	StatusKindDone       = StatusKind{3}
+	StatusKindError      = StatusKind{4}
 )
+
+var stringToStatusKind = map[string]StatusKind{
+	"":           StatusKindUnset,
+	"Done":       StatusKindDone,
+	"Pending":    StatusKindPending,
+	"Refreshing": StatusKindRefreshing,
+	"Error":      StatusKindError,
+}
+
+var statusKindToString = map[StatusKind]string{
+	StatusKindUnset:      "",
+	StatusKindPending:    "Pending",
+	StatusKindRefreshing: "Refreshing",
+	StatusKindDone:       "Done",
+	StatusKindError:      "Error",
+}
+
+func (s StatusKind) String() string {
+	return statusKindToString[s]
+}
+
+func (s *StatusKind) UnmarshalJSON(b []byte) error {
+	if len(b) < 2 && b[0] != '"' && b[len(b)-1] != '"' {
+		return errors.New("expected quoted string")
+	}
+	b = b[1 : len(b)-1]
+	*s = stringToStatusKind[string(b)]
+	return nil
+}
+
+func (s StatusKind) MarshalJSON() ([]byte, error) {
+	return []byte(`"` + s.String() + `"`), nil
+}
+
+func (s *StatusKind) UnmarshalYAML(value *yaml.Node) error {
+	*s = stringToStatusKind[value.Value]
+	return nil
+}
+
+func (s StatusKind) MarshalYAML() (any, error) {
+	return s.String(), nil
+}
 
 var (
 	pendingKey    = index.Key("P")
@@ -121,8 +183,9 @@ func (s StatusKind) Key() index.Key {
 		return doneKey
 	case StatusKindError:
 		return errorKey
+	default:
+		return index.Key("?")
 	}
-	panic("BUG: unmatched StatusKind")
 }
 
 // Status is embedded into the reconcilable object. It allows
@@ -130,16 +193,16 @@ func (s StatusKind) Key() index.Key {
 // the reconciler. Object may have multiple reconcilers and
 // multiple reconciliation statuses.
 type Status struct {
-	Kind      StatusKind
-	UpdatedAt time.Time
-	Error     string
+	UpdatedAt time.Time `json:"updated-at" yaml:"updated-at"`
+	Error     *string   `json:"error,omitempty" yaml:"error,omitempty"`
 
 	// id is a unique identifier for a pending object.
 	// The reconciler uses this to compare whether the object
 	// has really changed when committing the resulting status.
 	// This allows multiple reconcilers to exist for a single
 	// object without repeating work when status is updated.
-	id uint64
+	ID   uint64     `json:"id,omitempty" yaml:"id,omitempty"`
+	Kind StatusKind `json:"kind" yaml:"kind"`
 }
 
 func (s Status) IsPendingOrRefreshing() bool {
@@ -148,30 +211,16 @@ func (s Status) IsPendingOrRefreshing() bool {
 
 func (s Status) String() string {
 	if s.Kind == StatusKindError {
-		return fmt.Sprintf("Error: %s (%s ago)", s.Error, prettySince(s.UpdatedAt))
+		return fmt.Sprintf("Error: %s (%s ago)", s.GetError(), internal.PrettySince(s.UpdatedAt))
 	}
-	return fmt.Sprintf("%s (%s ago)", s.Kind, prettySince(s.UpdatedAt))
+	return fmt.Sprintf("%s (%s ago)", s.Kind, internal.PrettySince(s.UpdatedAt))
 }
 
-func prettySince(t time.Time) string {
-	ago := float64(time.Now().Sub(t)) / float64(time.Millisecond)
-	// millis
-	if ago < 1000.0 {
-		return fmt.Sprintf("%.1fms", ago)
+func (s Status) GetError() string {
+	if s.Error == nil {
+		return ""
 	}
-	// secs
-	ago /= 1000.0
-	if ago < 60.0 {
-		return fmt.Sprintf("%.1fs", ago)
-	}
-	// mins
-	ago /= 60.0
-	if ago < 60.0 {
-		return fmt.Sprintf("%.1fm", ago)
-	}
-	// hours
-	ago /= 60.0
-	return fmt.Sprintf("%.1fh", ago)
+	return *s.Error
 }
 
 var idGen atomic.Uint64
@@ -188,8 +237,8 @@ func StatusPending() Status {
 	return Status{
 		Kind:      StatusKindPending,
 		UpdatedAt: time.Now(),
-		Error:     "",
-		id:        nextID(),
+		Error:     nil,
+		ID:        nextID(),
 	}
 }
 
@@ -205,7 +254,8 @@ func StatusRefreshing() Status {
 	return Status{
 		Kind:      StatusKindRefreshing,
 		UpdatedAt: time.Now(),
-		Error:     "",
+		Error:     nil,
+		ID:        nextID(),
 	}
 }
 
@@ -215,17 +265,23 @@ func StatusDone() Status {
 	return Status{
 		Kind:      StatusKindDone,
 		UpdatedAt: time.Now(),
-		Error:     "",
+		Error:     nil,
+		ID:        nextID(),
 	}
 }
 
 // statusError constructs the status that marks the object
 // as failed to be reconciled.
 func StatusError(err error) Status {
+	errStr := "<nil>"
+	if err != nil {
+		errStr = err.Error()
+	}
 	return Status{
 		Kind:      StatusKindError,
 		UpdatedAt: time.Now(),
-		Error:     err.Error(),
+		Error:     &errStr,
+		ID:        nextID(),
 	}
 }
 
@@ -266,7 +322,7 @@ func (s StatusSet) Pending() StatusSet {
 	s.statuses = slices.Clone(s.statuses)
 	for i := range s.statuses {
 		s.statuses[i].Kind = StatusKindPending
-		s.statuses[i].id = s.id
+		s.statuses[i].ID = s.id
 	}
 	return s
 }
@@ -289,7 +345,7 @@ func (s StatusSet) String() string {
 		case StatusKindDone:
 			done = append(done, status.name)
 		case StatusKindError:
-			errored = append(errored, status.name+" ("+status.Error+")")
+			errored = append(errored, status.name+" ("+status.GetError()+")")
 		default:
 			pending = append(pending, status.name)
 		}
@@ -314,7 +370,7 @@ func (s StatusSet) String() string {
 		b.WriteString(strings.Join(done, " "))
 	}
 	b.WriteString(" (")
-	b.WriteString(prettySince(updatedAt))
+	b.WriteString(internal.PrettySince(updatedAt))
 	b.WriteString(" ago)")
 	return b.String()
 }
@@ -348,7 +404,7 @@ func (s StatusSet) Get(name string) Status {
 		return Status{
 			Kind:      StatusKindPending,
 			UpdatedAt: s.createdAt,
-			id:        s.id,
+			ID:        s.id,
 		}
 	}
 	return s.statuses[idx].Status

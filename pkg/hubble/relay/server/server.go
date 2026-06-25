@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -15,7 +16,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -28,6 +28,7 @@ import (
 	"github.com/cilium/cilium/pkg/hubble/relay/defaults"
 	"github.com/cilium/cilium/pkg/hubble/relay/observer"
 	"github.com/cilium/cilium/pkg/hubble/relay/pool"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 )
 
 var (
@@ -73,12 +74,9 @@ func New(options ...Option) (*Server, error) {
 		return nil, ErrNoServerTLSConfig
 	}
 
-	var peerClientBuilder peerTypes.ClientBuilder = &peerTypes.LocalClientBuilder{
-		DialTimeout: opts.dialTimeout,
-	}
+	var peerClientBuilder peerTypes.ClientBuilder = &peerTypes.LocalClientBuilder{}
 	if !strings.HasPrefix(opts.peerTarget, "unix://") {
 		peerClientBuilder = &peerTypes.RemoteClientBuilder{
-			DialTimeout:   opts.dialTimeout,
 			TLSConfig:     opts.clientTLSConfig,
 			TLSServerName: peer.TLSServerName(defaults.PeerServiceName, opts.clusterName),
 		}
@@ -89,12 +87,6 @@ func New(options ...Option) (*Server, error) {
 		pool.WithPeerServiceAddress(opts.peerTarget),
 		pool.WithPeerClientBuilder(peerClientBuilder),
 		pool.WithClientConnBuilder(pool.GRPCClientConnBuilder{
-			DialTimeout: opts.dialTimeout,
-			Options: []grpc.DialOption{
-				grpc.WithBlock(),
-				grpc.FailOnNonTempDialError(true),
-				grpc.WithReturnConnectionError(),
-			},
 			TLSConfig: opts.clientTLSConfig,
 		}),
 		pool.WithRetryTimeout(opts.retryTimeout),
@@ -106,11 +98,11 @@ func New(options ...Option) (*Server, error) {
 
 	var serverOpts []grpc.ServerOption
 
-	for _, interceptor := range opts.grpcUnaryInterceptors {
-		serverOpts = append(serverOpts, grpc.UnaryInterceptor(interceptor))
+	if len(opts.grpcUnaryInterceptors) > 0 {
+		serverOpts = append(serverOpts, grpc.ChainUnaryInterceptor(opts.grpcUnaryInterceptors...))
 	}
-	for _, interceptor := range opts.grpcStreamInterceptors {
-		serverOpts = append(serverOpts, grpc.StreamInterceptor(interceptor))
+	if len(opts.grpcStreamInterceptors) > 0 {
+		serverOpts = append(serverOpts, grpc.ChainStreamInterceptor(opts.grpcStreamInterceptors...))
 	}
 
 	if opts.serverTLSConfig != nil {
@@ -166,13 +158,13 @@ func (s *Server) Serve() error {
 	var eg errgroup.Group
 	if s.metricsServer != nil {
 		eg.Go(func() error {
-			s.opts.log.WithField("address", s.opts.metricsListenAddress).Info("Starting metrics server...")
+			s.opts.log.Info("Starting metrics server...", logfields.Address, s.opts.metricsListenAddress)
 			return s.metricsServer.ListenAndServe()
 		})
 	}
 
 	eg.Go(func() error {
-		s.opts.log.WithField("options", fmt.Sprintf("%+v", s.opts)).Info("Starting gRPC server...")
+		s.opts.log.Info("Starting gRPC server...", logfields.Options, s.opts)
 		s.pm.Start()
 		s.healthServer.start()
 		socket, err := net.Listen("tcp", s.opts.listenAddress)
@@ -183,7 +175,7 @@ func (s *Server) Serve() error {
 	})
 
 	eg.Go(func() error {
-		s.opts.log.WithField("addr", s.opts.healthListenAddress).Info("Starting gRPC health server...")
+		s.opts.log.Info("Starting gRPC health server...", logfields.Address, s.opts.healthListenAddress)
 		socket, err := net.Listen("tcp", s.opts.healthListenAddress)
 		if err != nil {
 			return fmt.Errorf("failed to listen on %s: %w", s.opts.healthListenAddress, err)
@@ -200,7 +192,7 @@ func (s *Server) Stop() {
 	s.server.Stop()
 	if s.metricsServer != nil {
 		if err := s.metricsServer.Shutdown(context.Background()); err != nil {
-			s.opts.log.WithError(err).Info("Failed to gracefully stop metrics server")
+			s.opts.log.Info("Failed to gracefully stop metrics server", logfields.Error, err)
 		}
 	}
 	s.pm.Stop()
@@ -210,7 +202,7 @@ func (s *Server) Stop() {
 
 // observerOptions returns the configured hubble-relay observer options along
 // with the hubble-relay logger.
-func copyObserverOptionsWithLogger(log logrus.FieldLogger, options []observer.Option) []observer.Option {
+func copyObserverOptionsWithLogger(log *slog.Logger, options []observer.Option) []observer.Option {
 	newOptions := make([]observer.Option, len(options), len(options)+1)
 	copy(newOptions, options)
 	newOptions = append(newOptions, observer.WithLogger(log))

@@ -4,6 +4,7 @@
 package maps
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,13 +24,12 @@ type fakeMap struct {
 	err error
 }
 
-func (m *fakeMap) DumpAndSubscribe(cb bpf.EventCallbackFunc, follow bool) (*bpf.Handle, error) {
+func (m *fakeMap) DumpAndSubscribe(ctx context.Context, cb bpf.EventCallbackFunc, follow bool) {
 	s, err := time.Parse(time.RFC3339, "2006-01-02T15:04:05Z")
 	if err != nil {
 		panic(err)
 	}
-	cb(&bpf.Event{Timestamp: s})
-	return nil, nil
+	cb(bpf.Event{Timestamp: s})
 }
 
 func (m *fakeMap) IsEventsEnabled() bool { return true }
@@ -78,7 +78,7 @@ func Test_getMapNameEvents(t *testing.T) {
 	resp.WriteResponse(mw, fp)
 	d, err := safeio.ReadAllLimit(w.Body, safeio.MB)
 	assert.NoError(err)
-	assert.Equal(`{"action":"update","desired-action":"sync","key":"\u003cnil\u003e","last-error":"\u003cnil\u003e","timestamp":"2006-01-02T15:04:05.000Z","value":"\u003cnil\u003e"}`+"\n", string(d))
+	assert.JSONEq(`{"action":"update","desired-action":"sync","key":"\u003cnil\u003e","last-error":"\u003cnil\u003e","timestamp":"2006-01-02T15:04:05.000Z","value":"\u003cnil\u003e"}`+"\n", string(d))
 }
 
 func Test_getMapNameEventsMapErrors(t *testing.T) {

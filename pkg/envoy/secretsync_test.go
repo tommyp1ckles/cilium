@@ -6,11 +6,9 @@ package envoy
 import (
 	"context"
 	"errors"
-	"io"
 	"testing"
 
-	cilium "github.com/cilium/proxy/go/cilium/api"
-	"github.com/sirupsen/logrus"
+	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -21,10 +19,11 @@ import (
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/proxy/endpoint"
+	"github.com/cilium/cilium/pkg/revert"
 )
 
 func Test_k8sSecretToEnvoySecretTlsCertificate(t *testing.T) {
-	envoySecret := k8sToEnvoySecret(&slim_corev1.Secret{
+	envoySecret := testSecretSyncer(t).k8sToEnvoySecret(&slim_corev1.Secret{
 		ObjectMeta: slim_metav1.ObjectMeta{
 			Name:      "dummy-secret",
 			Namespace: "dummy-namespace",
@@ -42,7 +41,7 @@ func Test_k8sSecretToEnvoySecretTlsCertificate(t *testing.T) {
 }
 
 func Test_k8sSecretToEnvoySecretValidationContext(t *testing.T) {
-	envoySecret := k8sToEnvoySecret(&slim_corev1.Secret{
+	envoySecret := testSecretSyncer(t).k8sToEnvoySecret(&slim_corev1.Secret{
 		ObjectMeta: slim_metav1.ObjectMeta{
 			Name:      "dummy-secret",
 			Namespace: "dummy-namespace",
@@ -65,7 +64,7 @@ func testSessionKey(i byte) []byte {
 }
 
 func Test_k8sSecretToEnvoySecretTlsSessionKeys(t *testing.T) {
-	envoySecret := k8sToEnvoySecret(&slim_corev1.Secret{
+	envoySecret := testSecretSyncer(t).k8sToEnvoySecret(&slim_corev1.Secret{
 		ObjectMeta: slim_metav1.ObjectMeta{
 			Name:      "dummy-secret",
 			Namespace: "dummy-namespace",
@@ -94,7 +93,7 @@ func Test_k8sSecretToEnvoySecretTlsSessionKeys(t *testing.T) {
 }
 
 func Test_k8sSecretToEnvoySecretTlsSessionKeys_FirstKeyMandatory(t *testing.T) {
-	envoySecret := k8sToEnvoySecret(&slim_corev1.Secret{
+	envoySecret := testSecretSyncer(t).k8sToEnvoySecret(&slim_corev1.Secret{
 		ObjectMeta: slim_metav1.ObjectMeta{
 			Name:      "dummy-secret",
 			Namespace: "dummy-namespace",
@@ -108,15 +107,11 @@ func Test_k8sSecretToEnvoySecretTlsSessionKeys_FirstKeyMandatory(t *testing.T) {
 		Type: slim_corev1.SecretTypeOpaque,
 	})
 
-	require.Equal(t, "dummy-namespace/dummy-secret", envoySecret.Name)
-
-	require.Nil(t, envoySecret.GetSessionTicketKeys())
-	require.Nil(t, envoySecret.GetTlsCertificate())
-	require.Nil(t, envoySecret.GetValidationContext())
+	require.Nil(t, envoySecret)
 }
 
 func Test_k8sSecretToEnvoySecretTlsSessionKeys_Max10Keys(t *testing.T) {
-	envoySecret := k8sToEnvoySecret(&slim_corev1.Secret{
+	envoySecret := testSecretSyncer(t).k8sToEnvoySecret(&slim_corev1.Secret{
 		ObjectMeta: slim_metav1.ObjectMeta{
 			Name:      "dummy-secret",
 			Namespace: "dummy-namespace",
@@ -157,13 +152,13 @@ func Test_k8sSecretToEnvoySecretTlsSessionKeys_Max10Keys(t *testing.T) {
 }
 
 func Test_k8sSecretToEnvoySecretTlsSessionKeys_SkipAdditionalKeysOnMainKeySizeIssue(t *testing.T) {
-	envoySecret := k8sToEnvoySecret(&slim_corev1.Secret{
+	envoySecret := testSecretSyncer(t).k8sToEnvoySecret(&slim_corev1.Secret{
 		ObjectMeta: slim_metav1.ObjectMeta{
 			Name:      "dummy-secret",
 			Namespace: "dummy-namespace",
 		},
 		Data: map[string]slim_corev1.Bytes{
-			"tls.sessionticket.key":   []byte{}, // not 80 bytes
+			"tls.sessionticket.key":   make([]byte, 70), // not 80 bytes
 			"tls.sessionticket.key.1": testSessionKey(1),
 			"tls.sessionticket.key.2": testSessionKey(2),
 			"tls.sessionticket.key.3": testSessionKey(3),
@@ -174,13 +169,14 @@ func Test_k8sSecretToEnvoySecretTlsSessionKeys_SkipAdditionalKeysOnMainKeySizeIs
 
 	require.Equal(t, "dummy-namespace/dummy-secret", envoySecret.Name)
 
-	require.Nil(t, envoySecret.GetSessionTicketKeys())
+	require.NotNil(t, envoySecret.GetSessionTicketKeys())
+	require.Nil(t, envoySecret.GetSessionTicketKeys().Keys)
 	require.Nil(t, envoySecret.GetTlsCertificate())
 	require.Nil(t, envoySecret.GetValidationContext())
 }
 
 func Test_k8sSecretToEnvoySecretTlsSessionKeys_SkipAdditionalKeyOnSizeIssue(t *testing.T) {
-	envoySecret := k8sToEnvoySecret(&slim_corev1.Secret{
+	envoySecret := testSecretSyncer(t).k8sToEnvoySecret(&slim_corev1.Secret{
 		ObjectMeta: slim_metav1.ObjectMeta{
 			Name:      "dummy-secret",
 			Namespace: "dummy-namespace",
@@ -219,7 +215,7 @@ func Test_k8sSecretToEnvoySecretTlsSessionKeys_SkipAdditionalKeyOnSizeIssue(t *t
 }
 
 func Test_k8sSecretToEnvoySecretGeneric(t *testing.T) {
-	envoySecret := k8sToEnvoySecret(&slim_corev1.Secret{
+	envoySecret := testSecretSyncer(t).k8sToEnvoySecret(&slim_corev1.Secret{
 		ObjectMeta: slim_metav1.ObjectMeta{
 			Name:      "dummy-secret",
 			Namespace: "dummy-namespace",
@@ -235,6 +231,41 @@ func Test_k8sSecretToEnvoySecretGeneric(t *testing.T) {
 	require.Nil(t, envoySecret.GetValidationContext())
 	require.Nil(t, envoySecret.GetTlsCertificate())
 	require.Nil(t, envoySecret.GetSessionTicketKeys())
+}
+
+func Test_k8sSecretToEnvoySecretOtherValue(t *testing.T) {
+	envoySecret := testSecretSyncer(t).k8sToEnvoySecret(&slim_corev1.Secret{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "dummy-secret",
+			Namespace: "dummy-namespace",
+		},
+		Data: map[string]slim_corev1.Bytes{
+			"value": []byte{1, 2, 3},
+		},
+		Type: slim_corev1.SecretTypeOpaque,
+	})
+
+	require.Equal(t, "dummy-namespace/dummy-secret", envoySecret.Name)
+	require.Equal(t, []byte{1, 2, 3}, envoySecret.GetGenericSecret().Secret.GetInlineBytes())
+	require.Nil(t, envoySecret.GetValidationContext())
+	require.Nil(t, envoySecret.GetTlsCertificate())
+	require.Nil(t, envoySecret.GetSessionTicketKeys())
+}
+
+func Test_k8sSecretToEnvoySecretOtherMultiValues(t *testing.T) {
+	envoySecret := testSecretSyncer(t).k8sToEnvoySecret(&slim_corev1.Secret{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "dummy-secret",
+			Namespace: "dummy-namespace",
+		},
+		Data: map[string]slim_corev1.Bytes{
+			"value":      []byte{1, 2, 3},
+			"othervalue": []byte{1, 2, 3},
+		},
+		Type: slim_corev1.SecretTypeOpaque,
+	})
+
+	require.Nil(t, envoySecret)
 }
 
 func TestHandleSecretEvent(t *testing.T) {
@@ -310,14 +341,11 @@ func TestHandleSecretEvent(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			logger := logrus.New()
-			logger.SetOutput(io.Discard)
-
 			xdsServer := &fakeXdsServer{
 				returnError: tc.xdsShouldReturnError,
 			}
 
-			syncer := newSecretSyncer(logger, xdsServer)
+			syncer := newSecretSyncer(hivetest.Logger(t), xdsServer)
 
 			doneCalled := false
 			var doneError error
@@ -407,7 +435,7 @@ func (r *fakeXdsServer) UpsertEnvoyResources(ctx context.Context, resources Reso
 	return nil
 }
 
-func (*fakeXdsServer) AddListener(name string, kind policy.L7ParserType, port uint16, isIngress bool, mayUseOriginalSourceAddr bool, wg *completion.WaitGroup) {
+func (*fakeXdsServer) AddListener(name string, kind policy.L7ParserType, port uint16, isIngress bool, mayUseOriginalSourceAddr bool, wg *completion.WaitGroup, cb func(err error)) error {
 	panic("unimplemented")
 }
 
@@ -416,10 +444,6 @@ func (*fakeXdsServer) AddAdminListener(port uint16, wg *completion.WaitGroup) {
 }
 
 func (*fakeXdsServer) AddMetricsListener(port uint16, wg *completion.WaitGroup) {
-	panic("unimplemented")
-}
-
-func (*fakeXdsServer) GetNetworkPolicies(resourceNames []string) (map[string]*cilium.NetworkPolicy, error) {
 	panic("unimplemented")
 }
 
@@ -435,6 +459,18 @@ func (*fakeXdsServer) RemoveNetworkPolicy(ep endpoint.EndpointInfoSource) {
 	panic("unimplemented")
 }
 
-func (*fakeXdsServer) UpdateNetworkPolicy(ep endpoint.EndpointUpdater, vis *policy.VisibilityPolicy, policy *policy.L4Policy, ingressPolicyEnforced bool, egressPolicyEnforced bool, wg *completion.WaitGroup) (error, func() error) {
+func (*fakeXdsServer) UpdateNetworkPolicy(ep endpoint.EndpointUpdater, policy *policy.EndpointPolicy, wg *completion.WaitGroup) (error, revert.RevertFunc, revert.FinalizeFunc) {
 	panic("unimplemented")
+}
+
+func (*fakeXdsServer) GetPolicySecretSyncNamespace() string {
+	panic("unimplemented")
+}
+
+func (*fakeXdsServer) SetPolicySecretSyncNamespace(string) {
+	panic("unimplemented")
+}
+
+func testSecretSyncer(t *testing.T) *secretSyncer {
+	return &secretSyncer{logger: hivetest.Logger(t)}
 }

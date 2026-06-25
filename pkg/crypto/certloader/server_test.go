@@ -9,15 +9,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sirupsen/logrus/hooks/test"
+	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/cilium/cilium/pkg/testutils"
 )
 
 func TestNewWatchedServerConfigErrors(t *testing.T) {
 	dir, hubble, relay := directories(t)
 	setup(t, hubble, relay)
 	defer cleanup(dir)
-	logger, _ := test.NewNullLogger()
+	logger := hivetest.Logger(t)
 
 	_, err := NewWatchedServerConfig(logger, relay.caFiles, "", hubble.privkeyFile)
 	assert.Equal(t, ErrMissingCertFile, err)
@@ -27,10 +29,14 @@ func TestNewWatchedServerConfigErrors(t *testing.T) {
 }
 
 func TestWatchedServerConfigIsMutualTLS(t *testing.T) {
+	t.Cleanup(func() {
+		testutils.GoleakVerifyNone(t)
+	})
+
 	dir, hubble, relay := directories(t)
 	setup(t, hubble, relay)
 	defer cleanup(dir)
-	logger, _ := test.NewNullLogger()
+	logger := hivetest.Logger(t)
 
 	tests := []struct {
 		name        string
@@ -71,14 +77,18 @@ func TestWatchedServerConfigIsMutualTLS(t *testing.T) {
 }
 
 func TestFutureWatchedServerConfig(t *testing.T) {
+	t.Cleanup(func() {
+		testutils.GoleakVerifyNone(t)
+	})
+
 	dir, hubble, relay := directories(t)
 	// don't call setup() yet, we only want the directories created without the
 	// TLS files.
 	defer cleanup(dir)
-	logger, _ := test.NewNullLogger()
+	logger := hivetest.Logger(t)
 
-	ch, err := FutureWatchedServerConfig(logger, relay.caFiles, hubble.certFile, hubble.privkeyFile)
-	assert.Nil(t, err)
+	ch, err := FutureWatchedServerConfig(t.Context(), logger, relay.caFiles, hubble.certFile, hubble.privkeyFile)
+	assert.NoError(t, err)
 
 	// the files don't exists, expect the config to not be ready yet.
 	select {
@@ -91,14 +101,20 @@ func TestFutureWatchedServerConfig(t *testing.T) {
 
 	// the files exists now, expect the watcher to become ready.
 	s := <-ch
-	s.Stop()
+	if assert.NotNil(t, s) {
+		s.Stop()
+	}
 }
 
 func TestNewWatchedServerConfig(t *testing.T) {
+	t.Cleanup(func() {
+		testutils.GoleakVerifyNone(t)
+	})
+
 	dir, hubble, relay := directories(t)
 	setup(t, hubble, relay)
 	defer cleanup(dir)
-	logger, _ := test.NewNullLogger()
+	logger := hivetest.Logger(t)
 
 	expectedCaCertPool := x509.NewCertPool()
 	if ok := expectedCaCertPool.AppendCertsFromPEM(initialRelayClientCA); !ok {
@@ -110,7 +126,7 @@ func TestNewWatchedServerConfig(t *testing.T) {
 	}
 
 	s, err := NewWatchedServerConfig(logger, relay.caFiles, hubble.certFile, hubble.privkeyFile)
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 	assert.NotNil(t, s)
 	defer s.Stop()
 
@@ -119,7 +135,7 @@ func TestNewWatchedServerConfig(t *testing.T) {
 	})
 	assert.NotNil(t, generator)
 	tlsConfig, err := generator.GetConfigForClient(nil)
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 	assert.NotNil(t, tlsConfig)
 	assert.Equal(t, []tls.Certificate{expectedKeypair}, tlsConfig.Certificates)
 	assert.Equal(t, expectedCaCertPool.Subjects(), tlsConfig.ClientCAs.Subjects())
@@ -131,10 +147,14 @@ func TestNewWatchedServerConfig(t *testing.T) {
 }
 
 func TestWatchedServerConfigRotation(t *testing.T) {
+	t.Cleanup(func() {
+		testutils.GoleakVerifyNone(t)
+	})
+
 	dir, hubble, relay := directories(t)
 	setup(t, hubble, relay)
 	defer cleanup(dir)
-	logger, _ := test.NewNullLogger()
+	logger := hivetest.Logger(t)
 
 	expectedCaCertPool := x509.NewCertPool()
 	if ok := expectedCaCertPool.AppendCertsFromPEM(rotatedRelayClientCA); !ok {
@@ -146,7 +166,7 @@ func TestWatchedServerConfigRotation(t *testing.T) {
 	}
 
 	s, err := NewWatchedServerConfig(logger, relay.caFiles, hubble.certFile, hubble.privkeyFile)
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 	assert.NotNil(t, s)
 	defer s.Stop()
 
@@ -170,7 +190,7 @@ func TestWatchedServerConfigRotation(t *testing.T) {
 	})
 	assert.NotNil(t, generator)
 	tlsConfig, err := generator.GetConfigForClient(nil)
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 	assert.NotNil(t, tlsConfig)
 	assert.Equal(t, []tls.Certificate{expectedKeypair}, tlsConfig.Certificates)
 	assert.Equal(t, expectedCaCertPool.Subjects(), tlsConfig.ClientCAs.Subjects())

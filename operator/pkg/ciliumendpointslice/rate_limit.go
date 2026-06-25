@@ -6,13 +6,12 @@ package ciliumendpointslice
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/sirupsen/logrus"
 	"golang.org/x/time/rate"
-	"k8s.io/client-go/util/workqueue"
 
 	"github.com/cilium/cilium/pkg/logging/logfields"
 )
@@ -27,9 +26,9 @@ type rateLimitConfig struct {
 	current          rateLimit
 	dynamicRateLimit dynamicRateLimit
 
-	rateLimiter *workqueue.BucketRateLimiter
+	rateLimiter *rate.Limiter
 
-	logger logrus.FieldLogger
+	logger *slog.Logger
 }
 
 type dynamicRateLimit []rateLimit
@@ -44,7 +43,7 @@ func getRateLimitConfig(p params) (rateLimitConfig, error) {
 	}
 	rlc.dynamicRateLimit = parsed
 	rlc.updateRateLimitWithNodes(0, true)
-	rlc.rateLimiter = &workqueue.BucketRateLimiter{Limiter: rate.NewLimiter(rate.Limit(rlc.current.Limit), rlc.current.Burst)}
+	rlc.rateLimiter = rate.NewLimiter(rate.Limit(rlc.current.Limit), rlc.current.Burst)
 	return rlc, nil
 }
 
@@ -73,11 +72,10 @@ func (rlc *rateLimitConfig) getDelay() time.Duration {
 func (rlc *rateLimitConfig) updateRateLimiterWithNodes(nodes int) bool {
 	changed := rlc.updateRateLimitWithNodes(nodes, false)
 	if changed {
-		rlc.logger.WithFields(logrus.Fields{
-			"nodes":                       nodes,
-			logfields.WorkQueueQPSLimit:   rlc.current.Limit,
-			logfields.WorkQueueBurstLimit: rlc.current.Burst,
-		}).Info("Updating rate limit")
+		rlc.logger.Info("Updating rate limit",
+			logfields.Nodes, nodes,
+			logfields.WorkQueueQPSLimit, rlc.current.Limit,
+			logfields.WorkQueueBurstLimit, rlc.current.Burst)
 
 		rlc.rateLimiter.SetBurst(rlc.current.Burst)
 		rlc.rateLimiter.SetLimit(rate.Limit(rlc.current.Limit))
@@ -99,12 +97,6 @@ func (rlc *rateLimitConfig) updateRateLimitWithNodes(nodes int, force bool) bool
 			Nodes: rlc.dynamicRateLimit[index].Nodes,
 			Limit: rlc.dynamicRateLimit[index].Limit,
 			Burst: rlc.dynamicRateLimit[index].Burst,
-		}
-		if rlc.current.Limit > CESWriteQPSLimitMax {
-			rlc.current.Limit = CESWriteQPSLimitMax
-		}
-		if rlc.current.Burst > CESWriteQPSBurstMax {
-			rlc.current.Burst = CESWriteQPSBurstMax
 		}
 		return true
 	}

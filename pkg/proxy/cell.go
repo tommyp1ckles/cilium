@@ -4,17 +4,29 @@
 package proxy
 
 import (
+	"context"
+	"fmt"
+	"log/slog"
+
 	"github.com/cilium/hive/cell"
+	"github.com/cilium/hive/job"
+	"github.com/cilium/statedb"
 	"github.com/spf13/pflag"
 
-	datapath "github.com/cilium/cilium/pkg/datapath/types"
+	"github.com/cilium/cilium/pkg/datapath/iptables"
+	linuxdatapath "github.com/cilium/cilium/pkg/datapath/linux"
+	"github.com/cilium/cilium/pkg/datapath/linux/route/reconciler"
+	"github.com/cilium/cilium/pkg/datapath/tables"
 	"github.com/cilium/cilium/pkg/envoy"
-	monitoragent "github.com/cilium/cilium/pkg/monitor/agent"
+	fqdnproxy "github.com/cilium/cilium/pkg/fqdn/proxy"
+	"github.com/cilium/cilium/pkg/fqdn/service"
+	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
-	"github.com/cilium/cilium/pkg/proxy/logger"
-	"github.com/cilium/cilium/pkg/proxy/logger/endpoint"
+	"github.com/cilium/cilium/pkg/proxy/accesslog"
+	"github.com/cilium/cilium/pkg/proxy/accesslog/endpoint"
+	"github.com/cilium/cilium/pkg/proxy/proxyports"
 	"github.com/cilium/cilium/pkg/time"
-	"github.com/cilium/cilium/pkg/trigger"
 )
 
 // Cell provides the L7 Proxy which provides support for L7 network policies.
@@ -26,100 +38,120 @@ var Cell = cell.Module(
 
 	cell.Provide(newProxy),
 	cell.Provide(newEnvoyProxyIntegration),
+	cell.Config(defaultEnvoyProxyIntegrationConfig),
 	cell.Provide(newDNSProxyIntegration),
 	cell.ProvidePrivate(endpoint.NewEndpointInfoRegistry),
-	cell.Config(ProxyConfig{}),
+	cell.Provide(proxyports.NewProxyPorts),
+	cell.Config(proxyports.ProxyPortsConfig{}),
+	accesslog.Cell,
 )
-
-type ProxyConfig struct {
-	ProxyPortrangeMin uint16
-	ProxyPortrangeMax uint16
-}
-
-func (r ProxyConfig) Flags(flags *pflag.FlagSet) {
-	flags.Uint16("proxy-portrange-min", 10000, "Start of port range that is used to allocate ports for L7 proxies.")
-	flags.Uint16("proxy-portrange-max", 20000, "End of port range that is used to allocate ports for L7 proxies.")
-}
 
 type proxyParams struct {
 	cell.In
 
 	Lifecycle             cell.Lifecycle
-	Config                ProxyConfig
-	IPTablesManager       datapath.IptablesManager
-	EndpointInfoRegistry  logger.EndpointInfoRegistry
-	MonitorAgent          monitoragent.Agent
+	JobGroup              job.Group
+	Logger                *slog.Logger
+	DaemonConfig          *option.DaemonConfig
+	LocalNodeStore        *node.LocalNodeStore
+	ProxyPorts            *proxyports.ProxyPorts
 	EnvoyProxyIntegration *envoyProxyIntegration
 	DNSProxyIntegration   *dnsProxyIntegration
+
+	DB           *statedb.DB
+	Devices      statedb.Table[*tables.Device]
+	RouteManager *reconciler.DesiredRouteManager
 }
 
-func newProxy(params proxyParams) *Proxy {
-	if !option.Config.EnableL7Proxy {
-		log.Info("L7 proxies are disabled")
-		if option.Config.EnableEnvoyConfig {
-			log.Warningf("%s is not functional when L7 proxies are disabled", option.EnableEnvoyConfig)
-		}
-		return nil
+type EnvoyProxyIntegrationConfig struct {
+	ProxyUseOriginalSourceAddress bool
+}
+
+var defaultEnvoyProxyIntegrationConfig = EnvoyProxyIntegrationConfig{
+	ProxyUseOriginalSourceAddress: true,
+}
+
+func (def EnvoyProxyIntegrationConfig) Flags(flags *pflag.FlagSet) {
+	flags.Bool("proxy-use-original-source-address", def.ProxyUseOriginalSourceAddress, "Controls if Cilium's Envoy BPF metadata listener filter for L7 policy enforcement redirects should be configured to use original source address when extracting the metadata (doesn't affect Ingress/Gateway API).")
+}
+
+func newProxy(params proxyParams) (*Proxy, error) {
+	p, err := createProxy(option.Config.EnableL7Proxy, params.Logger, params.LocalNodeStore, params.ProxyPorts, params.EnvoyProxyIntegration, params.DNSProxyIntegration, params.DB, params.Devices, params.RouteManager)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create proxy: %w", err)
 	}
 
-	configureProxyLogger(params.EndpointInfoRegistry, params.MonitorAgent, option.Config.AgentLabels)
+	if !option.Config.EnableL7Proxy {
+		params.Logger.Info("L7 proxies are disabled")
+		if option.Config.EnableEnvoyConfig {
+			params.Logger.Warn("CiliumEnvoyConfig functionality isn't enabled when L7 proxies are disabled", logfields.Flag, option.EnableEnvoyConfig)
+		}
 
-	p := createProxy(params.Config.ProxyPortrangeMin, params.Config.ProxyPortrangeMax, params.IPTablesManager, params.EnvoyProxyIntegration, params.DNSProxyIntegration)
+		return p, nil
+	}
 
-	triggerDone := make(chan struct{})
+	if !params.DaemonConfig.DryMode {
+		params.Lifecycle.Append(cell.Hook{
+			OnStart: func(cell.HookContext) error {
+				if err := linuxdatapath.NodeEnsureLocalRoutingRule(); err != nil {
+					return fmt.Errorf("failed to ensure local routing rule: %w", err)
+				}
+				return nil
+			},
+		})
+	}
 
+	p.proxyPorts.Trigger = job.NewTrigger(job.WithDebounce(10 * time.Second))
+
+	params.JobGroup.Add(job.OneShot("proxy-ports-restore", func(ctx context.Context, health cell.Health) error {
+		if err := p.proxyPorts.RestoreProxyPorts(ctx, health); err != nil {
+			// report error to health but proceed to start the checkpoint job
+			health.Degraded("restore from file failed", err)
+		}
+
+		// Restore all proxy ports before we register the job to overwrite the file below
+		params.JobGroup.Add(job.Timer("proxy-ports-checkpoint",
+			p.proxyPorts.StoreProxyPorts,
+			time.Minute, /* periodic save in case of I/O errors */
+			job.WithTrigger(p.proxyPorts.Trigger),
+		))
+
+		return nil
+	}))
+
+	// Register final save at shutdown
 	params.Lifecycle.Append(cell.Hook{
-		OnStart: func(cell.HookContext) (err error) {
-			p.proxyPortsTrigger, err = trigger.NewTrigger(trigger.Parameters{
-				MinInterval:  10 * time.Second,
-				TriggerFunc:  p.storeProxyPorts,
-				ShutdownFunc: func() { close(triggerDone) },
-			})
-			return err
-		},
-		OnStop: func(cell.HookContext) error {
-			p.proxyPortsTrigger.Shutdown()
-			<-triggerDone
+		OnStop: func(ctx cell.HookContext) error {
+			// ignore errors at shutdown
+			_ = p.proxyPorts.StoreProxyPorts(ctx)
 			return nil
 		},
 	})
 
-	return p
+	return p, nil
 }
 
 type envoyProxyIntegrationParams struct {
 	cell.In
 
-	IptablesManager datapath.IptablesManager
+	IptablesManager iptables.Manager
 	XdsServer       envoy.XDSServer
 	AdminClient     *envoy.EnvoyAdminClient
+	Cfg             EnvoyProxyIntegrationConfig
 }
 
 func newEnvoyProxyIntegration(params envoyProxyIntegrationParams) *envoyProxyIntegration {
-	if !option.Config.EnableL7Proxy {
-		return nil
-	}
-
 	return &envoyProxyIntegration{
-		xdsServer:       params.XdsServer,
-		iptablesManager: params.IptablesManager,
-		adminClient:     params.AdminClient,
+		xdsServer:                     params.XdsServer,
+		iptablesManager:               params.IptablesManager,
+		adminClient:                   params.AdminClient,
+		proxyUseOriginalSourceAddress: params.Cfg.ProxyUseOriginalSourceAddress,
 	}
 }
 
-func newDNSProxyIntegration() *dnsProxyIntegration {
-	if !option.Config.EnableL7Proxy {
-		return nil
-	}
-
-	return &dnsProxyIntegration{}
-}
-
-func configureProxyLogger(eir logger.EndpointInfoRegistry, monitorAgent monitoragent.Agent, agentLabels []string) {
-	logger.SetEndpointInfoRegistry(eir)
-	logger.SetNotifier(logger.NewMonitorAgentLogRecordNotifier(monitorAgent))
-
-	if len(agentLabels) > 0 {
-		logger.SetMetadata(agentLabels)
+func newDNSProxyIntegration(dnsProxy fqdnproxy.DNSProxier, sdpPolicyUpdater *service.FQDNDataServer) *dnsProxyIntegration {
+	return &dnsProxyIntegration{
+		dnsProxy:         dnsProxy,
+		sdpPolicyUpdater: sdpPolicyUpdater,
 	}
 }

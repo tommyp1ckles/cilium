@@ -10,14 +10,13 @@ import (
 	"sync/atomic"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc/connectivity"
 
 	peerpb "github.com/cilium/cilium/api/v1/peer"
 	peerTypes "github.com/cilium/cilium/pkg/hubble/peer/types"
 	poolTypes "github.com/cilium/cilium/pkg/hubble/relay/pool/types"
-	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/time"
 )
 
@@ -51,6 +50,7 @@ type Status struct {
 // manage peers and a connection to every peer's gRPC API.
 func NewPeerManager(registry prometheus.Registerer, options ...Option) (*PeerManager, error) {
 	opts := defaultOptions
+	opts.backoff = defaultBackoff(opts.log)
 	for _, opt := range options {
 		if err := opt(&opts); err != nil {
 			return nil, fmt.Errorf("failed to apply option: %w", err)
@@ -91,34 +91,34 @@ func (m *PeerManager) watchNotifications() {
 		<-m.stop
 		cancel()
 	}()
-	retryTimer, retryTimerDone := inctimer.New()
-	defer retryTimerDone()
 connect:
 	for {
 		cl, err := m.opts.peerClientBuilder.Client(m.opts.peerServiceAddress)
 		if err != nil {
-			m.opts.log.WithFields(logrus.Fields{
-				"error":  err,
-				"target": m.opts.peerServiceAddress,
-			}).Warning("Failed to create peer client for peers synchronization; will try again after the timeout has expired")
+			m.opts.log.Info(
+				"Failed to create peer client for peers synchronization; will try again after the timeout has expired",
+				logfields.Error, err,
+				logfields.Target, m.opts.peerServiceAddress,
+			)
 			select {
 			case <-m.stop:
 				return
-			case <-retryTimer.After(m.opts.retryTimeout):
+			case <-time.After(m.opts.retryTimeout):
 				continue
 			}
 		}
 		client, err := cl.Notify(ctx, &peerpb.NotifyRequest{})
 		if err != nil {
 			cl.Close()
-			m.opts.log.WithFields(logrus.Fields{
-				"error":              err,
-				"connection timeout": m.opts.retryTimeout,
-			}).Warning("Failed to create peer notify client for peers change notification; will try again after the timeout has expired")
+			m.opts.log.Info(
+				"Failed to create peer notify client for peers change notification; will try again after the timeout has expired",
+				logfields.Error, err,
+				logfields.ConnectionTimeout, m.opts.retryTimeout,
+			)
 			select {
 			case <-m.stop:
 				return
-			case <-retryTimer.After(m.opts.retryTimeout):
+			case <-time.After(m.opts.retryTimeout):
 				continue
 			}
 		}
@@ -133,19 +133,23 @@ connect:
 			cn, err := client.Recv()
 			if err != nil {
 				cl.Close()
-				m.opts.log.WithFields(logrus.Fields{
-					"error":              err,
-					"connection timeout": m.opts.retryTimeout,
-				}).Warning("Error while receiving peer change notification; will try again after the timeout has expired")
+				m.opts.log.Info(
+					"Error while receiving peer change notification; will try again after the timeout has expired",
+					logfields.Error, err,
+					logfields.ConnectionTimeout, m.opts.retryTimeout,
+				)
 				m.peerServiceConnected.Store(false)
 				select {
 				case <-m.stop:
 					return
-				case <-retryTimer.After(m.opts.retryTimeout):
+				case <-time.After(m.opts.retryTimeout):
 					continue connect
 				}
 			}
-			m.opts.log.WithField("change notification", cn).Info("Received peer change notification")
+			m.opts.log.Info(
+				"Received peer change notification",
+				logfields.ChangeNotification, cn,
+			)
 			p := peerTypes.FromChangeNotification(cn)
 			switch cn.GetType() {
 			case peerpb.ChangeNotificationType_PEER_ADDED:
@@ -160,8 +164,6 @@ connect:
 }
 
 func (m *PeerManager) manageConnections() {
-	connTimer, connTimerDone := inctimer.New()
-	defer connTimerDone()
 	for {
 		select {
 		case <-m.stop:
@@ -176,7 +178,7 @@ func (m *PeerManager) manageConnections() {
 				// a connection request has been made, make sure to attempt a connection
 				m.connect(p, true)
 			}(p)
-		case <-connTimer.After(m.opts.connCheckInterval):
+		case <-time.After(m.opts.connCheckInterval):
 			m.mu.RLock()
 			for _, p := range m.peers {
 				m.wg.Add(1)
@@ -191,13 +193,11 @@ func (m *PeerManager) manageConnections() {
 }
 
 func (m *PeerManager) reportConnectionStatus() {
-	connTimer, connTimerDone := inctimer.New()
-	defer connTimerDone()
 	for {
 		select {
 		case <-m.stop:
 			return
-		case <-connTimer.After(m.opts.connStatusInterval):
+		case <-time.After(m.opts.connStatusInterval):
 			m.mu.RLock()
 			connStates := make(map[connectivity.State]uint32)
 			var nilConnPeersNum uint32 = 0
@@ -323,11 +323,11 @@ func (m *PeerManager) connect(p *peer, ignoreBackoff bool) {
 		return
 	}
 
-	scopedLog := m.opts.log.WithFields(logrus.Fields{
-		"address":    p.Address,
-		"hubble-tls": p.TLSEnabled,
-		"peer":       p.Name,
-	})
+	scopedLog := m.opts.log.With(
+		logfields.Address, p.Address,
+		logfields.TLS, p.TLSEnabled,
+		logfields.Peer, p.Name,
+	)
 
 	scopedLog.Info("Connecting")
 	conn, err := m.opts.clientConnBuilder.ClientConn(p.Address.String(), p.TLSServerName)
@@ -335,10 +335,11 @@ func (m *PeerManager) connect(p *peer, ignoreBackoff bool) {
 		duration := m.opts.backoff.Duration(p.connAttempts)
 		p.nextConnAttempt = now.Add(duration)
 		p.connAttempts++
-		scopedLog.WithFields(logrus.Fields{
-			"error":       err,
-			"next-try-in": duration,
-		}).Warning("Failed to create gRPC client")
+		scopedLog.Warn(
+			"Failed to create gRPC client",
+			logfields.Error, err,
+			logfields.NextTryIn, duration,
+		)
 		return
 	}
 	p.nextConnAttempt = time.Time{}
@@ -357,15 +358,15 @@ func (m *PeerManager) disconnect(p *peer) {
 		return
 	}
 
-	scopedLog := m.opts.log.WithFields(logrus.Fields{
-		"address":    p.Address,
-		"hubble-tls": p.TLSEnabled,
-		"peer":       p.Name,
-	})
+	scopedLog := m.opts.log.With(
+		logfields.Address, p.Address,
+		logfields.TLS, p.TLSEnabled,
+		logfields.Peer, p.Name,
+	)
 
 	scopedLog.Info("Disconnecting")
 	if err := p.conn.Close(); err != nil {
-		scopedLog.WithField("error", err).Warning("Failed to properly close gRPC client connection")
+		scopedLog.Warn("Failed to properly close gRPC client connection", logfields.Error, err)
 	}
 	p.conn = nil
 	scopedLog.Info("Disconnected")

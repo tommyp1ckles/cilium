@@ -1,16 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Authors of Cilium
 
-//go:build 386 || amd64 || arm || arm64 || mips64le || ppc64le || riscv64 || wasm
+//go:build 386 || amd64 || arm || arm64 || mips64le || ppc64le || riscv64 || wasm || loong64
 
 package byteorder
 
-import (
-	"encoding/binary"
-	"math/bits"
-)
-
-var Native binary.ByteOrder = binary.LittleEndian
+import "math/bits"
 
 func HostToNetwork16(u uint16) uint16 { return bits.ReverseBytes16(u) }
 func HostToNetwork32(u uint32) uint32 { return bits.ReverseBytes32(u) }

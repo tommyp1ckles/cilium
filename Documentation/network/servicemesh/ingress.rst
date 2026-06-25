@@ -48,8 +48,7 @@ an existing K8s cluster with Cilium installed.
 Prerequisites
 #############
 
-* Cilium must be configured with NodePort enabled, using
-  ``nodePort.enabled=true`` or by enabling the kube-proxy replacement with
+* Cilium must be configured with the kube-proxy replacement, using
   ``kubeProxyReplacement=true``. For more information, see :ref:`kube-proxy
   replacement <kubeproxy-free>`.
 * Cilium must be configured with the L7 proxy enabled using ``l7Proxy=true``
@@ -58,8 +57,6 @@ Prerequisites
   so your environment will need to support this. Alternatively, you can change
   this to NodePort or, since Cilium 1.16+, directly expose the Cilium L7 proxy
   on the :ref:`host network<gs_ingress_host_network_mode>`.
-
-.. include:: ingress-known-issues.rst
 
 .. include:: installation.rst
 
@@ -186,11 +183,18 @@ Supported Ingress Annotations
        | ``enforce-ingress-https`` configuration
        | file setting (or ``ingressController.enforceHttps``
        | in Helm).
-       | 
+       |
        | Any host with TLS config will have redirects to
        | HTTPS configured for each match specified in the
        | Ingress.
      - unspecified
+   * - ``ingress.cilium.io/request-timeout``
+     - | Request timeout in seconds for Ingress backend HTTP requests.
+       |
+       | Note that if the annotation is present, it will override
+       | any value set by the ``ingress-default-request-timeout`` operator flag.
+       | If neither is set, defaults to ``0`` (no limit)
+     - ``0``
 
 Additionally, cloud-provider specific annotations for the LoadBalancer Service
 are supported.
@@ -242,6 +246,9 @@ Once enabled, host network ports can be specified with the following methods:
 
 * Shared Ingress: Globally via Helm flags
     * ``ingressController.hostNetwork.sharedListenerPort``: Host network port to expose the Cilium ingress controller Envoy listener. The default port is ``8080``. If you change it, you should choose a port number higher than ``1023`` (see `Bind to privileged port`_).
+    * ``ingressController.hostNetwork.httpPort``: Host network port to expose the shared HTTP listener. If unset or ``0``, ``sharedListenerPort`` is used.
+    * ``ingressController.hostNetwork.httpsPort``: Host network port to expose the shared HTTPS listener. If unset or ``0``, ``sharedListenerPort`` is used.
+    * ``ingressController.hostNetwork.tlsPassthroughPort``: Host network port to expose the shared TLS passthrough listener. If unset or ``0``, ``sharedListenerPort`` is used.
 * Dedicated Ingress: Per ``Ingress`` resource via annotations
     * ``ingress.cilium.io/host-listener-port``:  Host network port to expose the Cilium ingress controller Envoy listener. The default port is ``8080`` but it can only be used for a single ``Ingress`` resource as it needs to be unique per ``Ingress`` resource. You should choose a port higher than ``1023`` (see `Bind to privileged port`_). This annotation is mandatory if the global Cilium ingress controller mode is configured to ``dedicated`` (``ingressController.loadbalancerMode``) or the ingress resource sets the ``ingress.cilium.io/loadbalancer-mode`` annotation to ``dedicated`` and multiple ``Ingress`` resources are deployed.
 
@@ -304,8 +311,8 @@ network mode:
               # Add NET_BIND_SERVICE to the list (keep the others!)
               - NET_BIND_SERVICE
 
-Deploy Gateway API listeners on subset of nodes
-***********************************************
+Deploy Cilium Ingress listeners on subset of nodes
+**************************************************
 The Cilium ingress controller Envoy listener can be exposed on a specific subset
 of nodes. This only works in combination with the host network mode and can be
 configured via a node label selector in the Helm values:
@@ -337,7 +344,7 @@ Cilium's Ingress features:
 
    http
    ingress-and-network-policy
-   path-types   
+   path-types
    grpc
    tls-termination
    tls-default-certificate

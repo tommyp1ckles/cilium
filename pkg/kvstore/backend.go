@@ -5,9 +5,13 @@ package kvstore
 
 import (
 	"context"
+	"log/slog"
 
 	"google.golang.org/grpc"
 
+	"github.com/cilium/cilium/api/v1/models"
+	"github.com/cilium/cilium/pkg/logging"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/time"
 )
 
@@ -49,6 +53,13 @@ type ExtraOptions struct {
 
 	// NoEndpointStatusChecks disables the status checks for the endpoints
 	NoEndpointStatusChecks bool
+
+	// LeaseTTL is the TTL of the leases.
+	LeaseTTL time.Duration
+
+	// MaxConsecutiveQuorumErrors represents the maximum number of consecutive
+	// quorum errors before recreating the etcd connection.
+	MaxConsecutiveQuorumErrors uint
 }
 
 // StatusCheckInterval returns the interval of status checks depending on the
@@ -79,27 +90,13 @@ func (e *ExtraOptions) StatusCheckInterval(allConnected bool) time.Duration {
 
 // backendModule is the interface that each kvstore backend has to implement.
 type backendModule interface {
-	// getName must return the name of the backend
-	getName() string
-
 	// setConfig must configure the backend with the specified options.
 	// This function is called once before newClient().
-	setConfig(opts map[string]string) error
-
-	// setExtraConfig sets more options in the kvstore that are not able to
-	// be set by strings.
-	setExtraConfig(opts *ExtraOptions) error
-
-	// setConfigDummy must configure the backend with dummy configuration
-	// for testing purposes. This is a replacement for setConfig().
-	setConfigDummy()
-
-	// getConfig must return the backend configuration.
-	getConfig() map[string]string
+	setConfig(logger *slog.Logger, opts map[string]string) error
 
 	// newClient must initializes the backend and create a new kvstore
 	// client which implements the BackendOperations interface
-	newClient(ctx context.Context, opts *ExtraOptions) (BackendOperations, chan error)
+	newClient(ctx context.Context, logger *slog.Logger, opts ExtraOptions) (BackendOperations, chan error)
 
 	// createInstance creates a new instance of the module
 	createInstance() backendModule
@@ -114,7 +111,8 @@ var (
 // registerBackend must be called by kvstore backends to register themselves
 func registerBackend(name string, module backendModule) {
 	if _, ok := registeredBackends[name]; ok {
-		log.Panicf("backend with name '%s' already registered", name)
+		// slogloggercheck: it's safe to use the default logger here since it's just to print a panic.
+		logging.Panic(logging.DefaultSlogLogger, "backend already registered", logfields.Name, name)
 	}
 
 	registeredBackends[name] = module
@@ -133,17 +131,8 @@ func getBackend(name string) backendModule {
 // must implement. Direct use of this interface is possible but will bypass the
 // tracing layer.
 type BackendOperations interface {
-	// Connected returns a channel which is closed whenever the kvstore client
-	// is connected to the kvstore server.
-	Connected(ctx context.Context) <-chan error
-
-	// Disconnected returns a channel which is closed whenever the kvstore
-	// client is not connected to the kvstore server. (Only implemented for etcd)
-	Disconnected() <-chan struct{}
-
-	// Status returns the status of the kvstore client including an
-	// eventual error
-	Status() (string, error)
+	// Status returns the status of the kvstore client
+	Status() *models.Status
 
 	// StatusCheckErrors returns a channel which receives status check
 	// errors
@@ -193,24 +182,22 @@ type BackendOperations interface {
 	// Close closes the kvstore client
 	Close()
 
-	// Encodes a binary slice into a character set that the backend
-	// supports
-	Encode(in []byte) string
-
-	// Decodes a key previously encoded back into the original binary slice
-	Decode(in string) ([]byte, error)
-
 	// ListAndWatch creates a new watcher which will watch the specified
 	// prefix for changes. Before doing this, it will list the current keys
 	// matching the prefix and report them as new keys. The Events channel is
-	// created with the specified sizes. Upon every change observed, a
-	// KeyValueEvent will be sent to the Events channel
-	ListAndWatch(ctx context.Context, prefix string, chanSize int) *Watcher
+	// unbuffered. Upon every change observed, a KeyValueEvent will be sent
+	// to the Events channel
+	ListAndWatch(ctx context.Context, prefix string) EventChan
 
 	// RegisterLeaseExpiredObserver registers a function which is executed when
 	// the lease associated with a key having the given prefix is detected as expired.
 	// If the function is nil, the previous observer (if any) is unregistered.
 	RegisterLeaseExpiredObserver(prefix string, fn func(key string))
+
+	// RegisterLockLeaseExpiredObserver registers a function which is executed when
+	// the lease associated with a locked key having the given prefix is detected as expired.
+	// If the function is nil, the previous observer (if any) is unregistered.
+	RegisterLockLeaseExpiredObserver(prefix string, fn func(key string))
 
 	BackendOperationsUserMgmt
 }

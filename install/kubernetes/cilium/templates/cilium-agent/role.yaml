@@ -1,16 +1,22 @@
+{{- $readSecretsOnlyFromSecretsNamespace := eq (include "readSecretsOnlyFromSecretsNamespace" .) "true" -}}
+
 {{- if and .Values.agent (not .Values.preflight.enabled) }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: cilium-config-agent
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "cilium.namespace" . }}
   {{- with .Values.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
   labels:
     app.kubernetes.io/part-of: cilium
+    helm.sh/chart: {{ include "cilium.chart" . }}
+    {{- with .Values.commonLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 rules:
 - apiGroups:
   - ""
@@ -36,6 +42,7 @@ metadata:
   {{- end }}
   labels:
     app.kubernetes.io/part-of: cilium
+    helm.sh/chart: {{ include "cilium.chart" . }}
 rules:
 - apiGroups:
   - ""
@@ -60,6 +67,7 @@ metadata:
   {{- end }}
   labels:
     app.kubernetes.io/part-of: cilium
+    helm.sh/chart: {{ include "cilium.chart" . }}
 rules:
 - apiGroups:
   - ""
@@ -84,6 +92,7 @@ metadata:
   {{- end }}
   labels:
     app.kubernetes.io/part-of: cilium
+    helm.sh/chart: {{ include "cilium.chart" . }}
 rules:
 - apiGroups:
   - ""
@@ -104,6 +113,7 @@ metadata:
   namespace: {{ .Values.bgpControlPlane.secretsNamespace.name | quote }}
   labels:
     app.kubernetes.io/part-of: cilium
+    helm.sh/chart: {{ include "cilium.chart" . }}
 rules:
 - apiGroups:
   - ""
@@ -114,3 +124,28 @@ rules:
   - list
   - watch
 {{- end}}
+
+{{- if and .Values.agent (not .Values.preflight.enabled) .Values.serviceAccounts.cilium.create $readSecretsOnlyFromSecretsNamespace .Values.tls.secretsNamespace.name }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cilium-tlsinterception-secrets
+  namespace: {{ .Values.tls.secretsNamespace.name | quote }}
+  {{- with .Values.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  labels:
+    app.kubernetes.io/part-of: cilium
+    helm.sh/chart: {{ include "cilium.chart" . }}
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+{{- end }}

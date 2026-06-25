@@ -8,8 +8,11 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/cilium/cilium/pkg/datapath/iptables/ipset"
+	ipsec "github.com/cilium/cilium/pkg/datapath/linux/ipsec/types"
+	"github.com/cilium/cilium/pkg/datapath/tunnel"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/time"
+	wgTypes "github.com/cilium/cilium/pkg/wireguard/types"
 )
 
 var Cell = cell.Module(
@@ -24,28 +27,32 @@ var Cell = cell.Module(
 	cell.Config(defaultConfig),
 	cell.ProvidePrivate(func(
 		cfg *option.DaemonConfig,
+		tunnelCfg tunnel.Config,
+		ipsecCfg ipsec.Config,
+		wgConfig wgTypes.Config,
 	) SharedConfig {
 		return SharedConfig{
 			TunnelingEnabled:                cfg.TunnelingEnabled(),
+			TunnelPort:                      tunnelCfg.Port(),
 			NodeIpsetNeeded:                 cfg.NodeIpsetNeeded(),
 			IptablesMasqueradingIPv4Enabled: cfg.IptablesMasqueradingIPv4Enabled(),
 			IptablesMasqueradingIPv6Enabled: cfg.IptablesMasqueradingIPv6Enabled(),
 
 			EnableIPv4:                  cfg.EnableIPv4,
 			EnableIPv6:                  cfg.EnableIPv6,
-			EnableXTSocketFallback:      cfg.EnableXTSocketFallback,
 			EnableBPFTProxy:             cfg.EnableBPFTProxy,
 			InstallNoConntrackIptRules:  cfg.InstallNoConntrackIptRules,
 			EnableEndpointRoutes:        cfg.EnableEndpointRoutes,
 			IPAM:                        cfg.IPAM,
-			EnableIPSec:                 cfg.EnableIPSec,
+			EnableIPSec:                 ipsecCfg.Enabled(),
 			MasqueradeInterfaces:        cfg.MasqueradeInterfaces,
 			EnableMasqueradeRouteSource: cfg.EnableMasqueradeRouteSource,
 			EnableL7Proxy:               cfg.EnableL7Proxy,
 			InstallIptRules:             cfg.InstallIptRules,
+			EnableWireguard:             wgConfig.Enabled(),
 		}
 	}),
-	cell.Provide(newIptablesManager),
+	cell.Provide(newManager),
 )
 
 type Config struct {
@@ -63,6 +70,10 @@ type Config struct {
 
 	// PrependIptablesChains, when enabled, prepends custom iptables chains instead of appending.
 	PrependIptablesChains bool
+
+	// EnableXTSocketFallback allows disabling of kernel's ip_early_demux
+	// sysctl option if `xt_socket` kernel module is not available.
+	EnableXTSocketFallback bool
 }
 
 var defaultConfig = Config{
@@ -70,6 +81,7 @@ var defaultConfig = Config{
 	PrependIptablesChains:      true,
 	DisableIptablesFeederRules: []string{},
 	IPTablesRandomFully:        false,
+	EnableXTSocketFallback:     true,
 }
 
 func (def Config) Flags(flags *pflag.FlagSet) {
@@ -77,10 +89,12 @@ func (def Config) Flags(flags *pflag.FlagSet) {
 	flags.StringSlice("disable-iptables-feeder-rules", def.DisableIptablesFeederRules, "Chains to ignore when installing feeder rules.")
 	flags.Bool("iptables-random-fully", def.IPTablesRandomFully, "Set iptables flag random-fully on masquerading rules")
 	flags.Bool("prepend-iptables-chains", def.PrependIptablesChains, "Prepend custom iptables chains instead of appending")
+	flags.Bool("enable-xt-socket-fallback", def.EnableXTSocketFallback, "Enable fallback for missing xt_socket module")
 }
 
 type SharedConfig struct {
 	TunnelingEnabled                bool
+	TunnelPort                      uint16
 	NodeIpsetNeeded                 bool
 	IptablesMasqueradingIPv4Enabled bool
 	IptablesMasqueradingIPv6Enabled bool
@@ -97,4 +111,5 @@ type SharedConfig struct {
 	EnableMasqueradeRouteSource bool
 	EnableL7Proxy               bool
 	InstallIptRules             bool
+	EnableWireguard             bool
 }

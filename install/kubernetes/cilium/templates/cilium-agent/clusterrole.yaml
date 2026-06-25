@@ -1,3 +1,5 @@
+{{- $readSecretsOnlyFromSecretsNamespace := eq (include "readSecretsOnlyFromSecretsNamespace" .) "true" -}}
+
 {{- if and .Values.agent (not .Values.preflight.enabled) .Values.rbac.create }}
 {{- /*
 Keep file in sync with cilium-preflight/clusterrole.yaml
@@ -12,6 +14,10 @@ metadata:
   {{- end }}
   labels:
     app.kubernetes.io/part-of: cilium
+    helm.sh/chart: {{ include "cilium.chart" . }}
+    {{- with .Values.commonLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 rules:
 - apiGroups:
   - networking.k8s.io
@@ -35,8 +41,10 @@ rules:
   - namespaces
   - services
   - pods
-  - endpoints
   - nodes
+{{- if not $readSecretsOnlyFromSecretsNamespace }}
+  - secrets
+{{- end }}
   verbs:
   - get
   - list
@@ -82,19 +90,10 @@ rules:
   # until we figure out how to avoid "get" inside the preflight, and then
   # should be removed ideally.
   - get
-{{- if eq "k8s" .Values.tls.secretsBackend }}
-- apiGroups:
-  - ""
-  resources:
-  - secrets
-  verbs:
-  - get
-{{- end }}
 - apiGroups:
   - cilium.io
   resources:
   - ciliumloadbalancerippools
-  - ciliumbgppeeringpolicies
   - ciliumbgpnodeconfigs
   - ciliumbgpadvertisements
   - ciliumbgppeerconfigs
@@ -112,6 +111,7 @@ rules:
   - ciliumcidrgroups
   - ciliuml2announcementpolicies
   - ciliumpodippools
+  - ciliumdatapathplugins
   verbs:
   - list
   - watch
@@ -154,4 +154,14 @@ rules:
   - ciliumbgpnodeconfigs/status
   verbs:
   - patch
+{{- if .Values.k8sClusterNetworkPolicy.enabled }}
+- apiGroups:
+  - policy.networking.k8s.io
+  resources:
+  - clusternetworkpolicies
+  verbs:
+  - get
+  - list
+  - watch
+{{- end }}
 {{- end }}

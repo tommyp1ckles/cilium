@@ -19,8 +19,7 @@ import (
 
 // Describes the specified key pairs or all of your key pairs.
 //
-// For more information about key pairs, see [Amazon EC2 key pairs] in the Amazon Elastic Compute Cloud
-// User Guide.
+// For more information about key pairs, see [Amazon EC2 key pairs] in the Amazon EC2 User Guide.
 //
 // [Amazon EC2 key pairs]: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-key-pairs.html
 func (c *Client) DescribeKeyPairs(ctx context.Context, params *DescribeKeyPairsInput, optFns ...func(*Options)) (*DescribeKeyPairsOutput, error) {
@@ -124,13 +123,16 @@ func (c *Client) addOperationDescribeKeyPairsMiddlewares(stack *middleware.Stack
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
+	if err = addRetry(stack, options, c); err != nil {
 		return err
 	}
 	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
 	if err = addRecordResponseTiming(stack); err != nil {
+		return err
+	}
+	if err = addSpanRetryLoop(stack, options); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -145,10 +147,10 @@ func (c *Client) addOperationDescribeKeyPairsMiddlewares(stack *middleware.Stack
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
-	if err = addTimeOffsetBuild(stack, c); err != nil {
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
-	if err = addUserAgentRetryMode(stack, options); err != nil {
+	if err = addCredentialSource(stack, options); err != nil {
 		return err
 	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opDescribeKeyPairs(options.Region), middleware.Before); err != nil {
@@ -167,6 +169,15 @@ func (c *Client) addOperationDescribeKeyPairsMiddlewares(stack *middleware.Stack
 		return err
 	}
 	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptBeforeRetryLoop(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptAttempt(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil
@@ -365,6 +376,9 @@ func keyPairExistsStateRetryable(ctx context.Context, input *DescribeKeyPairsInp
 		}
 	}
 
+	if err != nil {
+		return false, err
+	}
 	return true, nil
 }
 

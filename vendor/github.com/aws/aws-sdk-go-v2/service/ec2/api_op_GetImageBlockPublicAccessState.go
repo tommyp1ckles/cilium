@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	awsmiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
+	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/smithy-go/middleware"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
@@ -15,7 +16,7 @@ import (
 //
 // For more information, see [Block public access to your AMIs] in the Amazon EC2 User Guide.
 //
-// [Block public access to your AMIs]: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/sharingamis-intro.html#block-public-access-to-amis
+// [Block public access to your AMIs]: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/block-public-access-to-amis.html
 func (c *Client) GetImageBlockPublicAccessState(ctx context.Context, params *GetImageBlockPublicAccessStateInput, optFns ...func(*Options)) (*GetImageBlockPublicAccessStateOutput, error) {
 	if params == nil {
 		params = &GetImageBlockPublicAccessStateInput{}
@@ -54,6 +55,15 @@ type GetImageBlockPublicAccessStateOutput struct {
 	//
 	//   - unblocked - Your AMIs in the specified Region can be publicly shared.
 	ImageBlockPublicAccessState *string
+
+	// The entity that manages the state for block public access for AMIs. Possible
+	// values include:
+	//
+	//   - account - The state is managed by the account.
+	//
+	//   - declarative-policy - The state is managed by a declarative policy and can't
+	//   be modified by the account.
+	ManagedBy types.ManagedBy
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
@@ -95,13 +105,16 @@ func (c *Client) addOperationGetImageBlockPublicAccessStateMiddlewares(stack *mi
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
+	if err = addRetry(stack, options, c); err != nil {
 		return err
 	}
 	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
 	if err = addRecordResponseTiming(stack); err != nil {
+		return err
+	}
+	if err = addSpanRetryLoop(stack, options); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -116,10 +129,10 @@ func (c *Client) addOperationGetImageBlockPublicAccessStateMiddlewares(stack *mi
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
-	if err = addTimeOffsetBuild(stack, c); err != nil {
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
-	if err = addUserAgentRetryMode(stack, options); err != nil {
+	if err = addCredentialSource(stack, options); err != nil {
 		return err
 	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opGetImageBlockPublicAccessState(options.Region), middleware.Before); err != nil {
@@ -138,6 +151,15 @@ func (c *Client) addOperationGetImageBlockPublicAccessStateMiddlewares(stack *mi
 		return err
 	}
 	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptBeforeRetryLoop(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptAttempt(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil

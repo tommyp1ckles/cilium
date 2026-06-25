@@ -44,20 +44,11 @@ of the Cilium organization.
 
 Depending on the PR target branch, a specific set of jobs is marked as required,
 as per the `Cilium CI matrix`_. They will be automatically featured in PR checks
-directly on the PR page. The following trigger phrases may be used to trigger
-them all at once:
+directly on the PR page. The ``/test`` trigger phrase may be used to trigger
+the full testsuite at once. Additional trigger phrases (such as ``/ci-e2e-upgrade``)
+can be used to run individual or optional jobs where supported.
 
-+------------------+--------------------------+
-| PR target branch | Trigger required PR jobs |
-+==================+==========================+
-| main             | /test                    |
-+------------------+--------------------------+
-| v1.16            | /test-backport-1.16      |
-+------------------+--------------------------+
-| v1.15            | /test-backport-1.15      |
-+------------------+--------------------------+
-| v1.14            | /test-backport-1.14      |
-+------------------+--------------------------+
+More triggers can be found in `ariane-config.yaml <https://github.com/cilium/cilium/blob/main/.github/ariane-config.yaml>`_
 
 For a full list of GHA, see `GitHub Actions Page <https://github.com/cilium/cilium/actions>`_
 
@@ -119,7 +110,7 @@ Workflow interactions:
       for GitHub Actions workflows, ensuring appropriate testing and validation
       of the defined k8s versions.
 
-For example, to only run the test under ``f09-datapath-misc-2`` with Kubernetes
+For example, to only run the test under ``f10-agent-hubble-bandwidth`` with Kubernetes
 version 1.26, the following files can be modified to have the following content:
 
 ``main-focus.yaml``:
@@ -128,10 +119,10 @@ version 1.26, the following files can be modified to have the following content:
 
         ---
         focus:
-        - "f09-datapath-misc-2"
+        - "f10-agent-hubble-bandwidth"
         include:
-          - focus: "f09-datapath-misc-2"
-            cliFocus: "K8sDatapathConfig Check|K8sDatapathConfig IPv4Only|K8sDatapathConfig High-scale|K8sDatapathConfig Iptables|K8sDatapathConfig IPv4Only|K8sDatapathConfig IPv6|K8sDatapathConfig Transparent"
+          - focus: "f10-agent-hubble-bandwidth"
+            cliFocus: "K8sAgentHubbleTest"
 
 ``main-prs.yaml``:
 
@@ -143,7 +134,7 @@ version 1.26, the following files can be modified to have the following content:
 
 The ``main-k8s-versions.yaml`` and ``main-scheduled.yaml`` files can be left
 unmodified and this will result in the execution on the tests under
-``f09-datapath-misc-2`` for the ``k8s-version`` "``1.26``".
+``f10-agent-hubble-bandwidth`` for the ``k8s-version`` "``1.26``".
 
 
 Bisect process
@@ -157,7 +148,7 @@ form of comments inside that file under the ``on`` section and enable the
 event type of ``pull_request``. Additionally, the following section also needs
 to be modified:
 
-   .. code-block:: yaml
+   .. code-block:: text
 
         jobs:
           check_changes:
@@ -223,7 +214,7 @@ summary of the test on the GitHub Workflow Run's page:
     :align: center
 
 
-On this example, the test ``K8sDatapathConfig Transparent encryption DirectRouting Check connectivity with transparent encryption and direct routing with bpf_host``
+On this example, the test ``K8sAgentHubbleTest Hubble Observe Test L7 Flow``
 failed. With the ``cilium-sysdumps`` artifact available for download we can
 retrieve it and perform further inspection to identify the cause for the
 failure. To investigate CI failures, see :ref:`ci_failure_triage`.

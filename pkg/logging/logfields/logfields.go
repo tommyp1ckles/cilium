@@ -11,8 +11,20 @@ const (
 	// LogSubsys is the field denoting the subsystem when logging
 	LogSubsys = "subsys"
 
+	// Version is a field for a generic version number
+	Version = "version"
+
+	// NewVersion is a field for a new version number
+	NewVersion = "newVersion"
+
+	// OldVersion is a field for a old version number
+	OldVersion = "oldVersion"
+
 	// Stacktrace is a field for a stacktrace
 	Stacktrace = "stacktrace"
+
+	// Changes is a generic field for any relevant changes
+	Changes = "changes"
 
 	// Signal is the field to print os signals on exit etc.
 	Signal = "signal"
@@ -31,6 +43,12 @@ const (
 
 	// EndpointID is the numeric endpoint identifier
 	EndpointID = "endpointID"
+
+	// EndpointAddressing is the endpoint addressing
+	EndpointAddressing = "addressing"
+
+	// EndpointAddressing defines whether to build an endpoint synchronously or not
+	EndpointSyncBuild = "sync-build"
 
 	// EndpointState is the current endpoint state
 	EndpointState = "endpointState"
@@ -62,6 +80,10 @@ const (
 	// Label is a singular label, where relevant
 	Label = "label"
 
+	// ConflictingLabels is the set of labels that conflict
+	// with an existing label set.
+	ConflictingLabels = "conflictingLabels"
+
 	// SourceFilter is the label or node information source
 	SourceFilter = "sourceFilter"
 
@@ -81,14 +103,22 @@ const (
 	// IngressClass is the identifier of an ingress class object
 	IngressClass = "ingressClass"
 
-	// OldIdentity is a previously used security identity
-	OldIdentity = "oldIdentity"
+	// IdentityOld is a previously used security identity
+	IdentityOld = "old-" + Identity
+
+	IdentityNew = "new-" + Identity
 
 	// PolicyKey is a policy map key
 	PolicyKey = "policyKey"
 
 	// PolicyEntry is a policy map value
 	PolicyEntry = "policyEntry"
+
+	// PolicyPrecedence is the datapath precedence for a policy Entry
+	PolicyPrecedence = "policyPrecedence"
+
+	// PolicyPassPrecedence is the precedence for a pass policy Entry
+	PolicyPassPrecedence = "policyPassPrecedence"
 
 	// PolicyRevision is the revision of the policy in the repository or of
 	// the object in question
@@ -103,6 +133,12 @@ const (
 	// PolicyEntriesOld is a set of old policy map keys and values
 	PolicyEntriesOld = "policyEntriesOld"
 
+	// PolicyLogCookie is a policy log cookie.
+	PolicyLogCookie = "policyLogCookie"
+
+	// PolicyLogString is a policy log string.
+	PolicyLogString = "policyLogString"
+
 	// DatapathPolicyRevision is the policy revision currently running in
 	// the datapath
 	DatapathPolicyRevision = "datapathPolicyRevision"
@@ -114,6 +150,9 @@ const (
 
 	// PolicyID is the identifier of a L3, L4 or L7 Policy. Ideally the .NumericIdentity
 	PolicyID = "policyID"
+
+	// IsDeny is 'true' for a deny rule
+	IsDeny = "isDeny"
 
 	// AddedPolicyID is the .NumericIdentity, or set or them
 	AddedPolicyID = "policyID.Added"
@@ -208,6 +247,9 @@ const (
 	// Port is a L4 port
 	Port = "port"
 
+	// EndPort is the last L4 port in a range of ports
+	EndPort = "endPort"
+
 	// Ports is a list of L4 ports
 	Ports = "ports"
 
@@ -238,8 +280,8 @@ const (
 	// CIDR is a IPv4/IPv6 subnet/CIDR
 	CIDR = "cidr"
 
-	// CIDRS is a list of IPv4/IPv6 CIDRs
-	CIDRS = "cidrs"
+	// CIDRs is a list of IPv4/IPv6 CIDRs
+	CIDRs = "cidrs"
 
 	// OldCIDR is the previous subnet/CIDR
 	OldCIDR = "oldCIDR"
@@ -252,6 +294,9 @@ const (
 
 	// MTU is the maximum transmission unit of one interface
 	MTU = "mtu"
+
+	// MinMTU is the minimum MTU allowed for an interface
+	MinMTU = "minMTU"
 
 	// Interface is an interface id/name on the system
 	Interface = "interface"
@@ -293,6 +338,12 @@ const (
 	// SessionAffinityTimeout is a timeout for the session affinity
 	SessionAffinityTimeout = "sessionAffinityTimeout"
 
+	// LoadBalancerAlgorithm is algorithm for backend selection
+	LoadBalancerAlgorithm = "LoadBalancerAlgorithm"
+
+	// LoadBalancerSourceRangesPolicy is the LB SVC source ranges policy
+	LoadBalancerSourceRangesPolicy = "loadBalancerSourceRangesPolicy"
+
 	// LoadBalancerSourceRanges is the LB SVC source ranges
 	LoadBalancerSourceRanges = "loadBalancerSourceRanges"
 
@@ -319,6 +370,9 @@ const (
 
 	// ServiceType is the type of the service
 	ServiceType = "svcType"
+
+	// ServiceForwardingMode is the mode of the service (SNAT, DSR)
+	ServiceForwardingMode = "svcForwardingMode"
 
 	// ServiceHealthCheckNodePort is the port on which we serve health checks
 	ServiceHealthCheckNodePort = "svcHealthCheckNodePort"
@@ -349,6 +403,9 @@ const (
 
 	// ProxyName is the name of a proxy (e.g., "Envoy")
 	ProxyName = "proxyName"
+
+	// ProxyPort is the port number of an L7 proxy listener.
+	ProxyPort = "proxyPort"
 
 	// L7LBProxyPort is the port number of the Envoy listener a L7 LB service redirects traffic to for load balancing.
 	L7LBProxyPort = "l7LBProxyPort"
@@ -389,6 +446,45 @@ const (
 	// Listener is the name of an Envoy Listener defined in CEC or CCEC
 	Listener = "listener"
 
+	// L7 parser type
+	L7ParserType = "l7-parser-type"
+
+	// Whether original source address can be used or not
+	MayUseOriginalSourceAddr = "mayUseOriginalSourceAddr"
+
+	// Name of a resource
+	ResourceName = "name"
+
+	// Old value before an operation
+	ValueBefore = "before"
+
+	// New value after an operation
+	ValueAfter = "after"
+
+	// Number of upserted resources
+	ResourcesUpserted = "upserted"
+
+	// Number of deleted resources
+	ResourcesDeleted = "deleted"
+
+	// Envoy listeners
+	ResourceListeners = "listeners"
+
+	// Envoy routes
+	ResourceRoutes = "routes"
+
+	// Envoy clusters
+	ResourceClusters = "clusters"
+
+	// Envoy endpoints
+	ResourceEndpoints = "endpoints"
+
+	// Envoy secrets
+	ResourceSecrets = "secrets"
+
+	// Size of the buffer
+	BufferSize = "buffer-size"
+
 	// ListenerPriority is the priority of an Envoy Listener defined in CEC or CCEC
 	ListenerPriority = "listenerPriority"
 
@@ -398,8 +494,17 @@ const (
 	// BPFMapValue is a value from a BPF map
 	BPFMapValue = "bpfMapValue"
 
+	// Qdisc is the qdisc name
+	Qdisc = "qdisc"
+
 	// Device is the device name
 	Device = "device"
+
+	// DeviceHeadroom is the head buffer margin of a network device
+	DeviceHeadroom = "deviceHeadroom"
+
+	// DeviceHeadroom is the tail buffer margin of a network device
+	DeviceTailroom = "deviceTailroom"
 
 	// Devices is the devices name
 	Devices = "devices"
@@ -409,6 +514,9 @@ const (
 
 	// DatapathMode is the datapath mode name
 	DatapathMode = "datapathMode"
+
+	// DatapathConfiguration is the datapath configuration
+	DatapathConfiguration = "datapathConfiguration"
 
 	// Tunnel is the tunnel name
 	Tunnel = "tunnel"
@@ -420,17 +528,33 @@ const (
 	// with TunnelPeer
 	ConflictingTunnelPeer = "conflictingTunnelPeer"
 
+	// EndpointFlags is the encoded set of flags for an endpoint
+	EndpointFlags = "endpointFlags"
+
+	// ConflictingEndpointFlags is the encoded set of flags that conflicts
+	// with 'EndpointFlags'
+	ConflictingEndpointFlags = "conflictingEndpointFlags"
+
 	// Type is the address type
 	Type = "type"
 
 	// Selector is a selector of any sort: endpoint, CIDR, toFQDNs
 	Selector = "Selector"
 
+	// SelectorCacgeVersion is the version of the SelectorCache.
+	SelectorCacheVersion = "selectorCacheVersion"
+
 	// EndpointLabelSelector is a selector for Endpoints by label
 	EndpointLabelSelector = "EndpointLabelSelector"
 
 	// EndpointSelector is a selector for Endpoints
 	EndpointSelector = "EndpointSelector"
+
+	// PodSelector is a selector for Pods
+	PodSelector = "PodSelector"
+
+	// NamespaceSelector is a selector for Namespaces
+	NamespaceSelector = "NamespaceSelector"
 
 	// Path is a filesystem path. It can be a file or directory.
 	// Note: pkg/proxy/accesslog points to this variable so be careful when
@@ -528,6 +652,8 @@ const (
 	// K8sNamespace is the namespace something belongs to
 	K8sNamespace = "k8sNamespace"
 
+	K8sNamespaceIllegal = "k8sNamespace.illegal"
+
 	// K8sIdentityAnnotation is a k8s non-identifying annotations on k8s objects
 	K8sIdentityAnnotation = "k8sIdentityAnnotation"
 
@@ -536,6 +662,12 @@ const (
 
 	// K8sNetworkPolicyName is the name of a K8sPolicyObject
 	K8sNetworkPolicyName = "k8sNetworkPolicyName"
+
+	// K8sClusterNetworkPolicy is a k8s ClusterNetworkPolicy object.
+	K8sClusterNetworkPolicy = "k8sClusterNetworkPolicy"
+
+	// K8sClusterNetworkPolicyName is the name of a K8sPolicyObject
+	K8sClusterNetworkPolicyName = "k8sClusterNetworkPolicyName"
 
 	// K8sIngress is a k8s Ingress service object
 	K8sIngress = "k8sIngress"
@@ -551,6 +683,9 @@ const (
 
 	// K8sUID is the UID of a K8s object
 	K8sUID = "k8sUID"
+
+	// K8sServiceAccount is the name of a K8s ServiceAccount
+	K8sServiceAccount = "k8sServiceAccount"
 
 	// Attempt is the attempt number if an operation is attempted multiple times
 	Attempt = "attempt"
@@ -588,6 +723,17 @@ const (
 	// Count is a measure being compared to the Limit
 	Count = "count"
 
+	Total = "total"
+
+	// ErrorCount is the number of errors encountered
+	ErrorCount = "errorCount"
+
+	// Requested is the number of resources requested
+	Requested = "requested"
+
+	// Found is the number of resources found
+	Found = "found"
+
 	// Debug is a boolean value for whether debug is set or not.
 	Debug = "debug"
 
@@ -616,6 +762,9 @@ const (
 	// SysParamValue is the value of the kernel parameter (sysctl)
 	SysParamValue = "sysParamValue"
 
+	// SysParamBaselineValue is the value of the base kernel parameter (sysctl)
+	SysParamBaselineValue = "baselineValue"
+
 	// HashSeed is the seed value for the hashing algorithm
 	HashSeed = "hashSeed"
 
@@ -643,6 +792,10 @@ const (
 
 	// ENPName is the name of the egress nat policy
 	ENPName = "enpName"
+
+	// AccelarationMode
+
+	AccelarationMode = "accelarationMode"
 
 	// Mode describes an operations mode
 	Mode = "mode"
@@ -800,9 +953,963 @@ const (
 	// NetnsCookie is the Linux kernel netns cookie.
 	NetnsCookie = "netnsCookie"
 
+	// SocketCookie is the Linux kernel socket cookie.
+	SocketCookie = "socketCookie"
+
+	// Source identifies a source value
+	Source = "source"
+
 	// Target identifies a target value
 	Target = "target"
 
-	// StaleIPs represents a set of stale IPs.
-	StaleIPs = "staleIPs"
+	// Minimum specifies a minimum allowed value
+	Minimum = "minimum"
+
+	// Maximum specifies a maximum allowed value
+	Maximum = "maximum"
+
+	// Size identifies the size of a list
+	Size = "size"
+
+	// Directory identifies a directory
+	Directory = "directory"
+	// PacketsDropped are the number of packets dropped
+	PacketsDropped = "packetsDropped"
+
+	// From represents the source
+	From = "from"
+
+	// To represents the destination
+	To = "to"
+
+	// GsoMaxSize is the GSO Max Size
+	GsoMaxSize = "gso_max_size"
+
+	// GroMaxSize is the GRO Max Size
+	GroMaxSize = "gro_max_size"
+
+	// Flag is the program flag
+	Flag = "flag"
+
+	// NewRules refers to the new rules after the update
+	NewRules = "newRules"
+
+	// L7Parser is the L7 parser used for L7 network traffic
+	L7Parser = "l7parser"
+
+	// ProxyType is the proxy type
+	ProxyType = "proxyType"
+
+	// RetryDelay the delay used for a retry
+	RetryDelay = "retryDelay"
+
+	// LastLevel is the last level for the health status
+	LastLevel = "lastLevel"
+
+	// ReporterID the reporter's ID
+	ReporterID = "reporter-id"
+
+	// Status is the status
+	Status = "status"
+
+	// DeletedRules is the length of rules deleted
+	DeletedRules = "deletedRules"
+
+	// Deleted is the length of structs deleted
+	Deleted = "deleted"
+
+	Upserted = "upserted"
+
+	Updated = "updated"
+
+	New = "new"
+
+	Old = "old"
+
+	Name = "name"
+
+	ProxyRedirect = "proxyRedirect"
+
+	Message = "message"
+
+	Zone = "zone"
+
+	Got = "got"
+
+	Want = "want"
+
+	Removed = "removed"
+
+	NetNSDir = "netns-dir"
+
+	Index = "index"
+
+	RemoteNodeID = "remoteNodeID"
+
+	RemoteNodeIP = "remoteNodeIP"
+
+	NodeIDs = "NodeIDs"
+
+	LocalIdentity = "localIdentity"
+
+	RemoteIdentity = "remoteIdentity"
+
+	Expiration = "expiration"
+
+	GCTime = "gcTime"
+
+	Backoff = "backOff"
+
+	SortedAt = "sortedAt"
+
+	SNI = "SNI"
+
+	SNIID = "SNIID"
+
+	URISan = "URISan"
+
+	SPIFEEID = "SPIFEEID"
+
+	TrustDomain = "TrustDomain"
+
+	LenSVIDs = "lenSVIDs"
+
+	LenBundles = "lenBundles"
+
+	EnvoyID = "ID"
+
+	EnvoyCluster = "cluster"
+
+	UserAgent = "userAgent"
+
+	Neighbor = "neighbor"
+
+	AllocCIDR = "allocCIDR"
+
+	Feature = "feature"
+
+	Enabled = "enabled"
+
+	QuietMode = "quietMode"
+
+	NodeIP = "nodeIP"
+
+	Actual = "actual"
+
+	ExpectedValue = "expectedValue"
+
+	ExpectedSource = "expectedSource"
+
+	NewIP = "newIP"
+
+	OldIP = "oldIP"
+
+	AddedCIDRs = "addedCIDRs"
+
+	RemovedCIDRs = "removedCIDRs"
+
+	ID = "ID"
+
+	Link = "link"
+
+	LinkConfig = "linkConfig"
+
+	Hook = "hook"
+
+	DNSRedirect = "dnsRedirect"
+
+	EnvoyRedirect = "envoyRedirect"
+
+	Slot = "slot"
+
+	First = "first"
+
+	Second = "second"
+
+	Backend = "backend"
+
+	FrontendID = "frontendID"
+
+	ListenerID = "listenerID"
+
+	Frontend = "frontend"
+
+	HostPort = "hostPort"
+
+	NodePortMin = "nodePortMin"
+
+	NodePortMax = "nodePortMax"
+
+	Active = "active"
+
+	Previous = "previous"
+
+	HostIP = "hostIP"
+
+	PoolSpec = "poolSpec"
+
+	PoolOldSpec = "poolOldSpec"
+
+	PoolNewSpec = "poolNewSpec"
+
+	PoolName = "poolName"
+
+	AllowFirstIP = "allowFirstIP"
+
+	AllowLastIP = "allowLastIP"
+
+	MaxRetries = "maxRetries"
+
+	Retries = "retries"
+
+	Gateway = "gateway"
+
+	GammaService = "gammaService"
+
+	GatewayClass = "GatewayClass"
+
+	Kind = "kind"
+
+	RequiredGVK = "requiredGVK"
+
+	OptionalGVK = "optionalGVK"
+
+	ClusterConfig = "clusterConfig"
+
+	NodeConfig = "nodeConfig"
+
+	Server = "server"
+
+	PoolName1 = "poolName1"
+
+	PoolName2 = "poolName2"
+
+	PoolRange1 = "poolRange1"
+
+	PoolRange2 = "poolRange2"
+
+	Min = "min"
+
+	Max = "max"
+
+	IdentitiesToDelete = "identitiesToDelete"
+
+	CRDIdentityCount = "crdIdentityCount"
+
+	KVStoreIdentityCount = "kvstoreIdentityCount"
+
+	OnlyInCRDCount = "onlyInCrdCount"
+
+	OnlyInKVStoreCount = "onlyInKvstoreCount"
+
+	OnlyInCRDSample = "onlyInCrdSample"
+
+	OnlyInKVStoreSample = "onlyInKvstoreSample"
+
+	Service = "service"
+
+	ConfigFile = "configFile"
+
+	Registrations = "registrations"
+
+	HTTPRoute = "httpRoute"
+
+	TLSRoute = "tlsRoute"
+
+	GRPCRoute = "grpcRoute"
+
+	TCPRoute = "tcpRoute"
+
+	UDPRoute = "udpRoute"
+
+	Secret = "secret"
+
+	Nodes = "nodes"
+
+	Endpoints = "endpoints"
+
+	Shared = "shared"
+
+	Taint = "taint"
+
+	Pod = "pod"
+
+	Allocated = "allocated"
+
+	IPv4Limit = "ipv4Limit"
+
+	AvailableOnENI = "availableOnENI"
+
+	VSwitchID = "vSwitchID"
+
+	AvailableAddresses = "availableAddresses"
+
+	NumAddresses = "numAddresses"
+
+	NumVPCs = "numVPCs"
+
+	NumVSwitches = "numVSwitches"
+
+	NumSecurityGroups = "numSecurityGroups"
+
+	NumInstances = "numInstances"
+
+	ExcessIPs = "excessIPs"
+
+	FreeOnENICount = "freeOnENICount"
+
+	InstanceID = "instanceID"
+
+	VPCID = "vpcID"
+
+	Tags = "tags"
+
+	SecurityGroupIDs = "securityGroupIDs"
+
+	ToAllocate = "toAllocate"
+
+	SubscriptionID = "subscriptionID"
+
+	IPv4MaskSize = "ipv4MaskSize"
+
+	IPv6MaskSize = "ipv6MaskSize"
+
+	TargetNode = "targetNode"
+
+	SourcePool = "sourcePool"
+
+	Owner = "owner"
+
+	UUID = "uuid"
+
+	Available = "available"
+
+	Required = "required"
+
+	VPCCIDR = "vpcCIDR"
+
+	Capacity = "capacity"
+
+	Used = "used"
+
+	ToRelease = "toRelease"
+
+	WaitingForPoolMaintenance = "waitingForPoolMaintenance"
+
+	ResyncNeeded = "resyncNeeded"
+
+	RemainingInterfaces = "remainingInterfaces"
+
+	SelectedInterface = "selectedInterface"
+
+	SelectedPoolID = "selectedPoolID"
+
+	MaxIPsToAllocate = "maxIPsToAllocate"
+
+	AvailableForAllocation = "availableForAllocation"
+
+	EmptyInterfaceSlots = "emptyInterfaceSlots"
+
+	NeededIPs = "neededIPs"
+
+	NeededIPv6Prefixes = "neededIPv6Prefixes"
+
+	AvailableIPv6Prefixes = "availableIPv6Prefixes"
+
+	Releasing = "releasing"
+
+	Excess = "excess"
+
+	ReleasingAddresses = "releasingAddresses"
+
+	IPsToAllocate = "ipsToAllocate"
+
+	PoolSize = "poolSize"
+
+	ENI = "eni"
+
+	PrefixCount = "prefixCount"
+
+	MaxResults = "maxResults"
+
+	LenEIPS = "lenEIPS"
+
+	EIP = "eip"
+
+	AssociationID = "associationID"
+
+	NumInterfaces = "numInterfaces"
+
+	NumSubnets = "numSubnets"
+
+	TargetedSubnets = "targetedSubnets"
+
+	NumRouteTables = "numRouteTables"
+
+	NeedIndex = "needIndex"
+
+	AddressLimit = "addressLimit"
+
+	SubnetID = "subnetID"
+
+	Addresses = "addresses"
+
+	IsPrefixDelegated = "isPrefixDelegated"
+
+	AttachmentID = "attachmentID"
+
+	FirstInterfaceIndex = "firstInterfaceIndex"
+
+	AdaptersLimit = "adaptersLimit"
+
+	PreAllocate = "preAllocate"
+
+	InstanceType = "instanceType"
+
+	NumVirtualNetworks = "numVirtualNetworks"
+
+	CanAllocatePodCIDRs = "canAllocatePodCIDRs"
+
+	Group = "group"
+
+	Method = "method"
+
+	Client = "client"
+
+	PanicMessage = "panicMessage"
+
+	Reasons = "reasons"
+
+	Config = "config"
+
+	MetricConfig = "metricConfig"
+
+	TLS = "tls"
+
+	FlowLogName = "flowLogName"
+
+	Options = "options"
+
+	RelatedMetric = "related-metric"
+
+	Filters = "filters"
+
+	MaxFlows = "maxFlows"
+
+	EventQueueSize = "eventQueueSize"
+
+	NumberOfFlows = "numberOfFlows"
+
+	Whitelist = "whiltelist"
+
+	Blacklist = "blackList"
+
+	Took = "took"
+
+	NumberOfAgentEvents = "numberOfAgentEvents"
+
+	NumberOfDebugEvents = "numberOfDebugEvents"
+
+	DatapathIdentity = "datapathIdentity"
+
+	UserspaceIdentity = "userspaceIdentity"
+
+	Context = "context"
+
+	NumEvents = "numEvents"
+
+	CPU = "cpu"
+
+	RuleID = "ruleID"
+
+	FilePath = "filePath"
+
+	Peer = "peer"
+
+	ConnectionTimeout = "connectionTimeout"
+
+	ChangeNotification = "changeNotification"
+
+	NextTryIn = "nextTryIn"
+
+	NextRunIn = "nextRunIn"
+
+	Operation = "operation"
+
+	KeyPairSN = "keyPairSN"
+
+	AnnotationsOld = "annotationsOld"
+
+	LabelsNew = "labelsNew"
+
+	File = "file"
+
+	Timeout = "timeout"
+
+	EtcdDataDir = "etcdDataDir"
+
+	EtcdClusterName = "etcdClusterName"
+
+	EtcdInitialClusterToken = "etcdInitialClusterToken"
+
+	EtcdListenClientUrl = "loopbackEndpoint"
+
+	EtcdBinary = "etcdBinaryLocation"
+
+	EtcdFlags = "etcdCmd"
+
+	EtcdExitCode = "etcdExitCode"
+
+	EtcdClientConfig = "etcdClientConfig"
+
+	EtcdUsername = "etcdUsername"
+
+	EtcdRoleName = "etcdRoleName"
+
+	EtcdPermission = "etcdPermission"
+
+	EtcdRangeStart = "etcdRangeStart"
+
+	EtcdRangeEnd = "etcdRangeEnd"
+
+	K8sExportName = "K8sExportName"
+
+	ReliablyMissing = "reliablyMissing"
+
+	KVStoreBackendConfigurationSuffix = "kvStoreBackendConfiguration.Suffix"
+
+	KVStoreBackendConfigurationTyp = "kvStoreBackendConfiguration.Typ"
+
+	KVStoreBackendConfigurationBasePath = "kvStoreBackendConfiguration.BasePath"
+
+	ReadFromKVStore = "readFromKVStore"
+
+	TTL = "ttl"
+
+	ConfigPath = "configPath"
+
+	KeepAliveHeartbeat = "keepAliveHeartbeat"
+
+	KeepAliveTimeout = "keepAliveTimeout"
+
+	RateLimit = "rateLimit"
+
+	MaxInflight = "maxInflight"
+
+	ListLimit = "listLimit"
+
+	TimeWindow = "timeWindow"
+
+	Entry = "entry"
+
+	LastEventReceived = "lastEventReceived"
+
+	PodIP = "podIP"
+
+	PodIPs = "podIPs"
+
+	NewPodIP = "newPodIP"
+
+	NewPodIPs = "newPodIPs"
+
+	NewHostIP = "newHostIP"
+
+	OldPodIP = "oldPodIP"
+
+	OldPodIPs = "oldPodIPs"
+
+	OldHostIP = "oldHostIP"
+
+	OldLabels = "oldLabels"
+
+	OldAnnotations = "oldAnnotations"
+
+	NewLabels = "newLabels"
+
+	NewAnnotations = "newAnnotations"
+
+	OldService = "oldService"
+
+	OldEndpoints = "oldEndpoints"
+
+	LenEndpoints = "lenEndpoints"
+
+	LenBackends = "lenBackends"
+
+	CRDs = "CRDs"
+
+	CRDName = "crdName"
+
+	PodCIDRs = "podCIDRs"
+
+	LenIPs = "lenIPs"
+
+	Alias = "alias"
+
+	GlobalConfiguration = "globalConfiguration"
+
+	Annotation = "annotation"
+
+	LPM = "LPM"
+
+	IngressDeleted = "ingressDeleted"
+
+	EgressDeleted = "egressDeleted"
+
+	IngressAlive = "ingressAlive"
+
+	EgressAlive = "egressAlive"
+
+	ExpectedPrevInterval = "expectedPrevInterval"
+
+	ActualPrevInterval = "actualPrevInterval"
+
+	NewInterval = "newInterval"
+
+	DeleteRatio = "deleteRatio"
+
+	AdjustedDeleteRatio = "adjustedDeleteRatio"
+
+	Interrupted = "interrupted"
+
+	Errors = "errors"
+
+	IPSet = "ipset"
+
+	Cmd = "cmd"
+
+	Maps = "maps"
+
+	Prog = "prog"
+
+	Programs = "programs"
+
+	Table = "table"
+
+	OptionalParameter = "optionalParameter"
+
+	Param = "param"
+
+	Module = "module"
+
+	NeedFor = "needFor"
+
+	ProgType = "progType"
+
+	Helper = "helper"
+
+	Routes = "routes"
+
+	RevertError = "revertError"
+
+	BootTime = "bootTime"
+
+	Socket = "socket"
+
+	Filter = "filter"
+
+	Success = "success"
+
+	Failed = "failed"
+
+	BPFFSEndpointLinksDir = "bpffsEndpointLinksDir"
+
+	BPFFSEndpointDir = "bpffsEndpointDir"
+
+	CompilerPID = "compilerPID"
+
+	Output = "output"
+
+	RssBytes = "rssBytes"
+
+	BPFFSPath = "bpffsPath"
+
+	ProgName = "progName"
+
+	Range = "range"
+
+	Pin = "pin"
+
+	Tier = "tier"
+
+	TierBasePriority = "tierBasePriority"
+
+	TierLastPriority = "tierLastPriority"
+
+	Priority = "priority"
+
+	Args = "args"
+
+	Candidates = "candidates"
+
+	Location = "location"
+
+	Skipped = "skipped"
+
+	AliveEntries = "aliveEntries"
+
+	Scope = "scope"
+
+	NewLocally = "newLocally"
+
+	Released = "released"
+
+	BPFHeaderfileHashOld = "old-" + "bpfHeaderfileHash"
+
+	DumpedPolicyMap = "dumpedPolicyMap"
+
+	DumpedDiffs = "dumpedDiffs"
+
+	NewDirectory = "newDirectory"
+
+	TmpDirectory = "tmpDirectory"
+
+	Code = "code"
+
+	EndpointStateFrom = "endpointStateFrom"
+
+	EndpointStateTo = "endpointStateTo"
+
+	BandwidthLimit = "bandwidthLimit"
+
+	PolicyRevisionNext = "policyRevisionNext"
+
+	PolicyRevisionRepo = "policyRevisionRepo"
+
+	PolicyChanged = "policyChanged"
+
+	CEPUIDOld = "old-" + CEPUID
+
+	HubbleCLIVersion = "hubble-cli-version"
+
+	HubbleRelayVersion = "hubble-relay-version"
+
+	HubbleServerVersion = "hubble-server-version"
+
+	Handler = "handler"
+
+	NodeOwner = "nodeOwner"
+
+	LenStaleNodes = "lenStaleNodes"
+
+	StaleNodes = "staleNodes"
+
+	SyncInterval = "syncInterval"
+
+	BootID = "bootID"
+
+	LeaseDuration = "leaseDuration"
+
+	RenewDeadline = "renewDeadline"
+
+	RetryPeriod = "retryPeriod"
+
+	Resources = "resources"
+
+	LastModifiedVersion = "lastModifiedVersion"
+
+	ReturningResources = "returningResources"
+
+	RequestedResources = "requestedResources"
+
+	ResponseNonce = "responseNonce"
+
+	ResourceWatcherVersion = "resourceWatcherVersion"
+
+	WaitVersion = "waitVersion"
+
+	CurrentVersion = "currentVersion"
+
+	PendingCompletions = "pendingCompletions"
+
+	Root = "root"
+
+	LenConfigPairs = "lenConfigPairs"
+
+	Exists = "exists"
+
+	MulticastAddr = "multicastAddr"
+
+	IPMask4 = "ipMask4"
+
+	IPMask6 = "ipMask6"
+
+	IPRules = "ipRules"
+
+	Rules = "rules"
+
+	SecID = "secID"
+
+	WrittenBytes = "writtenBytes"
+
+	TotalBytes = "totalBytes"
+
+	Destination = "destination"
+
+	LenEntries = "lenEntries"
+
+	FQDNSelector = "fqdnSelector"
+
+	MatchName = "matchName"
+
+	LenPrefixes = "lenPrefixes"
+
+	LookupIPAddrs = "lookupIPAddrs"
+
+	MatchPattern = "matchPattern"
+
+	BPFFSRoot = "bpffsRoot"
+
+	Section = "section"
+
+	Reference = "reference"
+
+	MapRenames = "mapRenames"
+
+	Constants = "constants"
+
+	Remaining = "remaining"
+
+	Resolved = "resolved"
+
+	Scanned = "scanned"
+
+	KeySize = "keySize"
+
+	Subnets = "subnets"
+
+	Ratio = "ratio"
+
+	OldName = "oldName"
+
+	NewName = "newName"
+
+	ValueSize = "valueSize"
+
+	MaxEntries = "maxEntries"
+
+	Flags = "flags"
+
+	ExitCode = "exitCode"
+
+	NetLink = "netLink"
+
+	NetConf = "netConf"
+
+	Result = "result"
+
+	NetNamespace = "netNamespace"
+
+	DockerHostPath = "dockerHostPath"
+
+	ImageID = "imageID"
+
+	NumBufferedEvents = "numBufferedEvents"
+
+	EventHandlingDuration = "eventHandlingDuration"
+
+	EventEnqueueWaitTime = "eventEnqueueWaitTime"
+
+	CalculatedInterval = "calculatedInterval"
+
+	MaxAllowedInterval = "maxAllowedInterval"
+
+	EventConsumeOffQueueWaitTime = "eventConsumeOffQueueWaitTime"
+
+	CachedSource = "cachedSource"
+
+	Info = "info"
+
+	OperatorID = "operatorID"
+
+	NewLeader = "newLeader"
+
+	KVStore = "kvstore"
+
+	LabelSelectorFlagOption = "label-selector"
+
+	RemoveCiliumNodeTaintsFlagOption = "remove-cilium-node-taints"
+
+	SetCiliumNodeTaintsFlagOption = "set-cilium-node-taints"
+
+	SetCiliumIsUpConditionFlagOption = "set-cilium-is-up-condition"
+
+	TimeSinceRestart = "timeSinceRestart"
+
+	TimeSincePodStarted = "timeSincePodStarted"
+
+	DNSRules = "dnsRules"
+
+	PortProtocol = "portProtocol"
+
+	Option = "option"
+
+	RunDirectory = "runDirectory"
+
+	LibDirectory = "libDirectory"
+
+	BPFDirectory = "BPFDirectory"
+
+	StateDirectory = "StateDirectory"
+
+	Restored = "restored"
+
+	Detected = "detected"
+
+	NodeLabels = "nodeLabels"
+
+	UID = "UID"
+
+	ProviderID = "providerID"
+
+	EndpointLXCID = "endpointLXCID"
+
+	Regenerated = "regenerated"
+
+	Primary = "primary"
+
+	RTT = "rtt"
+
+	URI = "uri"
+
+	Goroutine = "goroutine"
+
+	Matcher = "matcher"
+
+	ParentResource = "parentResource"
+
+	Fraction = "fraction"
+
+	Rate = "rate"
+
+	KPRConfiguration = "kprConfiguration"
+
+	// CESFeatureEnabled indicates whether CiliumEndpointSlice feature is enabled.
+	CESFeatureEnabled = "cesEnabled"
+
+	// Matches is a list of pools that match a pod.
+	Matches = "matches"
+
+	// CompiledPools is a map of pools that use podSelectors
+	CompiledPools = "compiledPools"
+
+	ReloadKeypairError = "reloadKeypairError"
+
+	ReloadCAError = "reloadCAError"
+
+	ExtendedMessage = "extendedMessage"
+
+	BackendTLSPolicyName = "backendTLSPolicyName"
+
+	ConfigMapName = "configMapName"
+
+	AttachType = "attachType"
+
+	WithFrags = "withFrags"
+
+	CiliumDatapathPluginName = "datapathPluginName"
+
+	CiliumDatapathPluginAttachmentPolicy = "datapathPluginAttachmentPolicy"
+
+	CiliumDatapathPluginVersion = "datapathPluginVersion"
 )

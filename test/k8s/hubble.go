@@ -8,13 +8,11 @@ import (
 	"fmt"
 	"net"
 	"strconv"
-	"strings"
 
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	observerpb "github.com/cilium/cilium/api/v1/observer"
-	"github.com/cilium/cilium/pkg/annotation"
 	"github.com/cilium/cilium/pkg/hubble/defaults"
 	"github.com/cilium/cilium/pkg/identity"
 	. "github.com/cilium/cilium/test/ginkgo-ext"
@@ -26,7 +24,7 @@ var _ = Describe("K8sAgentHubbleTest", func() {
 	// replacement, as the trace events depend on it. We thus run the tests
 	// on GKE and our 4.19 pipeline.
 	SkipContextIf(func() bool {
-		return helpers.RunsOnNetNextKernel() || helpers.RunsOnAKS()
+		return helpers.RunsOnNetNextKernel()
 	}, "Hubble Observe", func() {
 		var (
 			kubectl        *helpers.Kubectl
@@ -38,7 +36,8 @@ var _ = Describe("K8sAgentHubbleTest", func() {
 			hubbleRelayService   = "hubble-relay"
 			hubbleRelayAddress   string
 
-			demoPath string
+			demoPath             string
+			visibilityPolicyPath string
 
 			app1Service    = "app1-service"
 			app1Labels     = "id=app1,zgroup=testapp"
@@ -51,37 +50,15 @@ var _ = Describe("K8sAgentHubbleTest", func() {
 			app1Port         int
 		)
 
-		addVisibilityAnnotation := func(ns, podLabels, direction, port, l4proto, l7proto string) {
-			visibilityAnnotation := fmt.Sprintf("<%s/%s/%s/%s>", direction, port, l4proto, l7proto)
-			By("Adding visibility annotation %s on pod with labels %s", visibilityAnnotation, podLabels)
-
-			// Prints <node>=<ns>/<podname> for each pod the annotation was applied to
-			res := kubectl.Exec(fmt.Sprintf("%s annotate pod -n %s -l %s %s=%q"+
-				" -o 'jsonpath={.spec.nodeName}={.metadata.namespace}/{.metadata.name}{\"\\n\"}'",
-				helpers.KubectlCmd,
-				ns, app1Labels,
-				annotation.ProxyVisibility, visibilityAnnotation))
-			res.ExpectSuccess("adding proxy visibility annotation failed")
-
-			// For each pod, check that the Cilium proxy-statistics contain the new annotation
-			expectedProxyState := strings.ToLower(visibilityAnnotation)
-			for node, podName := range res.KVOutput() {
-				ciliumPod, err := kubectl.GetCiliumPodOnNodeByName(node)
-				Expect(err).To(BeNil())
-
-				// Extract annotation from endpoint model of pod. It does not have the l4proto, so we insert it manually.
-				cmd := fmt.Sprintf("cilium-dbg endpoint get pod-name:%s"+
-					" -o jsonpath='{range [*].status.policy.proxy-statistics[*]}<{.location}/{.port}/%s/{.protocol}>{\"\\n\"}{end}'",
-					podName, strings.ToLower(l4proto))
-				err = kubectl.CiliumExecUntilMatch(ciliumPod, cmd, expectedProxyState)
-				Expect(err).To(BeNil(), "timed out waiting for endpoint to regenerate for visibility annotation")
-			}
+		addVisibilityPolicy := func(ns string) {
+			By("Applying L7 visibility policy")
+			res := kubectl.Apply(helpers.ApplyOptions{FilePath: visibilityPolicyPath, Namespace: ns})
+			res.ExpectSuccess("could not create L7 visibility policy")
 		}
 
-		removeVisibilityAnnotation := func(ns, podLabels string) {
-			By("Removing visibility annotation on pod with labels %s", app1Labels)
-			res := kubectl.Exec(fmt.Sprintf("%s annotate pod -n %s -l %s %s-", helpers.KubectlCmd, ns, podLabels, annotation.ProxyVisibility))
-			res.ExpectSuccess("removing proxy visibility annotation failed")
+		removeVisibilityPolicy := func(ns string) {
+			By("Removing L7 visibility policy")
+			kubectl.DeleteInNamespace(ns, visibilityPolicyPath)
 		}
 
 		getFlowsFromRelay := func(args string) []*observerpb.GetFlowsResponse {
@@ -123,6 +100,7 @@ var _ = Describe("K8sAgentHubbleTest", func() {
 			k8s1NodeName, _ = kubectl.GetNodeInfo(helpers.K8s1)
 
 			demoPath = helpers.ManifestGet(kubectl.BasePath(), "demo.yaml")
+			visibilityPolicyPath = helpers.ManifestGet(kubectl.BasePath(), "l7-policy-visibility.yaml")
 
 			ciliumFilename = helpers.TimestampFilename("cilium.yaml")
 			DeployCiliumOptionsAndDNS(kubectl, ciliumFilename, map[string]string{
@@ -163,6 +141,7 @@ var _ = Describe("K8sAgentHubbleTest", func() {
 
 		JustAfterEach(func() {
 			kubectl.ValidateNoErrorsInLogs(CurrentGinkgoTestDescription().Duration)
+			kubectl.CollectFeatures()
 		})
 
 		AfterAll(func() {
@@ -225,8 +204,8 @@ var _ = Describe("K8sAgentHubbleTest", func() {
 		})
 
 		It("Test L7 Flow", func() {
-			defer removeVisibilityAnnotation(namespaceForTest, app1Labels)
-			addVisibilityAnnotation(namespaceForTest, app1Labels, "Ingress", "80", "TCP", "HTTP")
+			defer removeVisibilityPolicy(namespaceForTest)
+			addVisibilityPolicy(namespaceForTest)
 
 			ctx, cancel := context.WithTimeout(context.Background(), helpers.MidCommandTimeout)
 			defer cancel()
@@ -251,8 +230,8 @@ var _ = Describe("K8sAgentHubbleTest", func() {
 		})
 
 		It("Test L7 Flow with hubble-relay", func() {
-			defer removeVisibilityAnnotation(namespaceForTest, app1Labels)
-			addVisibilityAnnotation(namespaceForTest, app1Labels, "Ingress", "80", "TCP", "HTTP")
+			defer removeVisibilityPolicy(namespaceForTest)
+			addVisibilityPolicy(namespaceForTest)
 
 			res := kubectl.ExecPodCmd(namespaceForTest, appPods[helpers.App2],
 				helpers.CurlFail(fmt.Sprintf("http://%s/public", app1ClusterIP)))
@@ -266,7 +245,7 @@ var _ = Describe("K8sAgentHubbleTest", func() {
 
 		It("Test FQDN Policy with Relay", func() {
 			fqdnProxyPolicy := helpers.ManifestGet(kubectl.BasePath(), "fqdn-proxy-policy.yaml")
-			fqdnTarget := "vagrant-cache.ci.cilium.io"
+			fqdnTarget := "nginx-ci.cilium.rocks"
 
 			_, err := kubectl.CiliumPolicyAction(
 				namespaceForTest, fqdnProxyPolicy,
@@ -282,6 +261,15 @@ var _ = Describe("K8sAgentHubbleTest", func() {
 			flows := getFlowsFromRelay(fmt.Sprintf(
 				"--last 1 --type trace:from-endpoint --from-pod %s/%s --to-fqdn %s",
 				namespaceForTest, appPods[helpers.App2], fqdnTarget))
+			var newFlows []*observerpb.GetFlowsResponse
+			for i := range flows {
+				// Ignore lost events, as they are not relevant to this test.
+				if flows[i].GetLostEvents() != nil {
+					continue
+				}
+				newFlows = append(newFlows, flows[i])
+			}
+			flows = newFlows
 			Expect(flows).To(HaveLen(1))
 			Expect(flows[0].GetFlow().Destination.Identity).To(BeNumerically(">=", identity.MinimalNumericIdentity))
 		})

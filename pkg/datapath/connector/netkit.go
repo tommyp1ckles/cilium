@@ -5,159 +5,151 @@ package connector
 
 import (
 	"fmt"
+	"log/slog"
+	"net"
 
 	"github.com/vishvananda/netlink"
 
-	"github.com/cilium/cilium/api/v1/models"
-	"github.com/cilium/cilium/pkg/datapath/link"
+	"github.com/cilium/cilium/pkg/datapath/linux/safenetlink"
 	"github.com/cilium/cilium/pkg/datapath/linux/sysctl"
 	"github.com/cilium/cilium/pkg/logging/logfields"
-	"github.com/cilium/cilium/pkg/netns"
+	"github.com/cilium/cilium/pkg/mac"
 )
 
-// SetupNetkitRemoteNs renames the netdevice in the target namespace to the
-// provided dstIfName.
-func SetupNetkitRemoteNs(ns *netns.NetNS, srcIfName, dstIfName string) error {
-	return ns.Do(func() error {
-		err := link.Rename(srcIfName, dstIfName)
-		if err != nil {
-			return fmt.Errorf("failed to rename netkit from %q to %q: %w", srcIfName, dstIfName, err)
-		}
-		return nil
-	})
-}
+// setupNetkitPair sets up the host-facing interface, the peer interface and fills
+// up some endpoint fields such as mac, NodeMac, ifIndex and ifName. Returns a pointer
+// for the created netkit, a pointer for the peer link and error if something fails.
+func setupNetkitPair(defaultLogger *slog.Logger, cfg LinkConfig, l2Mode bool, sysctl sysctl.Sysctl) (*netlink.Netkit, netlink.Link, error) {
+	logger := defaultLogger.With(logfields.LogSubsys, "endpoint-connector")
+	var epHostMAC, epLXCMAC mac.MAC
+	var err error
 
-// SetupNetkit sets up the net interface, the temporary interface and fills up some
-// endpoint fields such as mac, NodeMac, ifIndex and ifName. Returns a pointer for the
-// created netkit, a pointer for the temporary link, the name of the temporary link
-// and error if something fails.
-func SetupNetkit(id string, mtu, groIPv6MaxSize, gsoIPv6MaxSize, groIPv4MaxSize, gsoIPv4MaxSize int, l2Mode bool, ep *models.EndpointChangeRequest, sysctl sysctl.Sysctl) (*netlink.Netkit, netlink.Link, string, error) {
-	if id == "" {
-		return nil, nil, "", fmt.Errorf("invalid: empty ID")
-	}
-
-	lxcIfName := Endpoint2IfName(id)
-	tmpIfName := Endpoint2TempIfName(id)
-
-	netkit, link, err := SetupNetkitWithNames(lxcIfName, tmpIfName, mtu,
-		groIPv6MaxSize, gsoIPv6MaxSize, groIPv4MaxSize, gsoIPv4MaxSize, l2Mode, ep, sysctl)
-	return netkit, link, tmpIfName, err
-}
-
-// SetupNetkitWithNames sets up the net interface, the peer interface and fills up some
-// endpoint fields such as mac, NodeMac, ifIndex and ifName. Returns a pointer for the
-// created netkit, a pointer for the peer link and error if something fails.
-func SetupNetkitWithNames(lxcIfName, peerIfName string, mtu, groIPv6MaxSize, gsoIPv6MaxSize, groIPv4MaxSize, gsoIPv4MaxSize int, l2Mode bool, ep *models.EndpointChangeRequest, sysctl sysctl.Sysctl) (*netlink.Netkit, netlink.Link, error) {
 	mode := netlink.NETKIT_MODE_L3
 	if l2Mode {
 		mode = netlink.NETKIT_MODE_L2
+		// This is similar to the workaround used for veth.
+		//
+		// systemd 242+ tries to set a "persistent" MAC addr for any virtual
+		// device by default (controlled by MACAddressPolicy). As setting
+		// happens asynchronously after a device has been created, ep.Mac and
+		// ep.HostMac can become stale which has a serious consequence - the
+		// kernel will drop any packet sent to/from the endpoint. However, we
+		// can trick systemd by explicitly setting MAC addrs for both veth ends.
+		// This sets addr_assign_type for NET_ADDR_SET which prevents systemd
+		// from changing the addrs.
+		epHostMAC, err = mac.GenerateRandMAC()
+		if err != nil {
+			return nil, nil, fmt.Errorf("unable to generate host mac addr: %w", err)
+		}
+		epLXCMAC, err = mac.GenerateRandMAC()
+		if err != nil {
+			return nil, nil, fmt.Errorf("unable to generate peer mac addr: %w", err)
+		}
 	}
 	netkit := &netlink.Netkit{
 		LinkAttrs: netlink.LinkAttrs{
-			Name:   lxcIfName,
-			TxQLen: 1000,
+			Name:         cfg.HostIfName,
+			TxQLen:       1000,
+			HardwareAddr: net.HardwareAddr(epHostMAC),
 		},
 		Mode:       mode,
 		Policy:     netlink.NETKIT_POLICY_FORWARD,
 		PeerPolicy: netlink.NETKIT_POLICY_BLACKHOLE,
+		// Disable scrubbing on the primary device to ensure that the mark is
+		// preserved for cil_to_container when using endpoint routes.
+		Scrub: netlink.NETKIT_SCRUB_NONE,
+		// Ensure that packets leaving the pod's networking namespace are
+		// scrubbed.
+		PeerScrub: netlink.NETKIT_SCRUB_DEFAULT,
+		// Configure the headroom and tailroom, which should be calculated to
+		// appropriate values by the agent, taking into account things like
+		// tunneling and encryption.
+		DesiredHeadroom: uint16(cfg.DeviceHeadroom),
+		DesiredTailroom: uint16(cfg.DeviceTailroom),
 	}
 	peerAttr := &netlink.LinkAttrs{
-		Name: peerIfName,
+		Name:         cfg.PeerIfName,
+		HardwareAddr: net.HardwareAddr(epLXCMAC),
 	}
 	netkit.SetPeerAttrs(peerAttr)
 
-	err := netlink.LinkAdd(netkit)
+	err = netlink.LinkAdd(netkit)
 	if err != nil {
 		return nil, nil, fmt.Errorf("unable to create netkit pair: %w", err)
 	}
 	defer func() {
 		if err != nil {
 			if err = netlink.LinkDel(netkit); err != nil {
-				log.WithError(err).WithField(logfields.Netkit, netkit.Name).Warn("failed to clean up netkit")
+				logger.Warn("failed to clean up netkit",
+					logfields.Error, err,
+					logfields.Netkit, netkit.Name,
+				)
 			}
 		}
 	}()
 
-	log.WithField(logfields.NetkitPair, []string{peerIfName, lxcIfName}).Debug("Created netkit pair")
+	logger.Debug("Created netkit pair",
+		logfields.NetkitPair, []string{cfg.HostIfName, cfg.PeerIfName},
+		logfields.DeviceHeadroom, netkit.DesiredHeadroom,
+		logfields.DeviceTailroom, netkit.DesiredTailroom,
+	)
 
 	// Disable reverse path filter on the host side netkit peer to allow
 	// container addresses to be used as source address when the linux
 	// stack performs routing.
-	err = DisableRpFilter(sysctl, lxcIfName)
+	err = DisableRpFilter(sysctl, cfg.HostIfName)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	peer, err := netlink.LinkByName(peerIfName)
+	peer, err := validateNetkitPair(logger, cfg)
 	if err != nil {
-		return nil, nil, fmt.Errorf("unable to lookup netkit peer just created: %w", err)
+		return nil, nil, fmt.Errorf("netkit validation failed: %w", err)
 	}
-
-	if err = netlink.LinkSetMTU(peer, mtu); err != nil {
-		return nil, nil, fmt.Errorf("unable to set MTU to %q: %w", peerIfName, err)
-	}
-
-	hostNetkit, err := netlink.LinkByName(lxcIfName)
-	if err != nil {
-		return nil, nil, fmt.Errorf("unable to lookup netkit just created: %w", err)
-	}
-
-	if err = netlink.LinkSetMTU(hostNetkit, mtu); err != nil {
-		return nil, nil, fmt.Errorf("unable to set MTU to %q: %w", lxcIfName, err)
-	}
-
-	if err = netlink.LinkSetUp(netkit); err != nil {
-		return nil, nil, fmt.Errorf("unable to bring up netkit pair: %w", err)
-	}
-
-	if groIPv6MaxSize > 0 {
-		if err = netlink.LinkSetGROMaxSize(hostNetkit, groIPv6MaxSize); err != nil {
-			return nil, nil, fmt.Errorf("unable to set GRO max size to %q: %w",
-				lxcIfName, err)
-		}
-		if err = netlink.LinkSetGROMaxSize(peer, groIPv6MaxSize); err != nil {
-			return nil, nil, fmt.Errorf("unable to set GRO max size to %q: %w",
-				peerIfName, err)
-		}
-	}
-
-	if gsoIPv6MaxSize > 0 {
-		if err = netlink.LinkSetGSOMaxSize(hostNetkit, gsoIPv6MaxSize); err != nil {
-			return nil, nil, fmt.Errorf("unable to set GSO max size to %q: %w",
-				lxcIfName, err)
-		}
-		if err = netlink.LinkSetGSOMaxSize(peer, gsoIPv6MaxSize); err != nil {
-			return nil, nil, fmt.Errorf("unable to set GSO max size to %q: %w",
-				peerIfName, err)
-		}
-	}
-
-	if groIPv4MaxSize > 0 {
-		if err = netlink.LinkSetGROIPv4MaxSize(hostNetkit, groIPv4MaxSize); err != nil {
-			return nil, nil, fmt.Errorf("unable to set GRO max size to %q: %w",
-				lxcIfName, err)
-		}
-		if err = netlink.LinkSetGROIPv4MaxSize(peer, groIPv4MaxSize); err != nil {
-			return nil, nil, fmt.Errorf("unable to set GRO max size to %q: %w",
-				peerIfName, err)
-		}
-	}
-
-	if gsoIPv4MaxSize > 0 {
-		if err = netlink.LinkSetGSOIPv4MaxSize(hostNetkit, gsoIPv4MaxSize); err != nil {
-			return nil, nil, fmt.Errorf("unable to set GSO max size to %q: %w",
-				lxcIfName, err)
-		}
-		if err = netlink.LinkSetGSOIPv4MaxSize(peer, gsoIPv4MaxSize); err != nil {
-			return nil, nil, fmt.Errorf("unable to set GSO max size to %q: %w",
-				peerIfName, err)
-		}
-	}
-
-	ep.Mac = peer.Attrs().HardwareAddr.String()
-	ep.HostMac = hostNetkit.Attrs().HardwareAddr.String()
-	ep.InterfaceIndex = int64(hostNetkit.Attrs().Index)
-	ep.InterfaceName = lxcIfName
 
 	return netkit, peer, nil
+}
+
+// validateNetkitPair queries the kernel for a copy of the underlying device attributes
+// for both the lxc host interface and the peer interface.
+func validateNetkitPair(logger *slog.Logger, cfg LinkConfig) (netlink.Link, error) {
+	// Query the kernel for the host link attributes, so we can verify the kernel
+	// has applied the configuration we expected.
+	hostLink, err := safenetlink.LinkByName(cfg.HostIfName)
+	if err != nil {
+		return nil, fmt.Errorf("unable to lookup netkit host link: %w", err)
+	}
+
+	hostDevice, ok := hostLink.(*netlink.Netkit)
+	if !ok {
+		return nil, fmt.Errorf("host link does not appear to be a Netkit device")
+	}
+
+	peerLink, err := safenetlink.LinkByName(cfg.PeerIfName)
+	if err != nil {
+		return nil, fmt.Errorf("unable to lookup netkit peer link: %w", err)
+	}
+
+	peerDevice, ok := peerLink.(*netlink.Netkit)
+	if !ok {
+		return nil, fmt.Errorf("peer link does not appear to be a Netkit device")
+	}
+
+	// Verify we have the correct buffer margins configured. We accept a margin that
+	// is greater than what we requested, just in case it's ever rounded or aligned
+	// within the kernel.
+	if hostDevice.Headroom < cfg.DeviceHeadroom || hostDevice.Tailroom < cfg.DeviceTailroom {
+		logger.Warn("unexpected buffer margins on host link",
+			logfields.Device, cfg.HostIfName,
+			logfields.DeviceHeadroom, hostDevice.Headroom,
+			logfields.DeviceTailroom, hostDevice.Tailroom)
+	}
+	if peerDevice.Headroom != hostDevice.Headroom || peerDevice.Tailroom != hostDevice.Tailroom {
+		return nil, fmt.Errorf("mismatched buffer margins on peer link %s (%s:%d %s:%d)",
+			cfg.PeerIfName,
+			logfields.DeviceHeadroom, peerDevice.Headroom,
+			logfields.DeviceTailroom, peerDevice.Tailroom)
+	}
+
+	return peerLink, nil
 }

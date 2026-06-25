@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cilium/dns"
 
@@ -152,6 +153,8 @@ type SharedClient struct {
 	requests chan request
 	// wg is waited on for the client finish exiting
 	wg sync.WaitGroup
+	// size of receive buffers to allocate, must only grow
+	udpSize atomic.Uint32
 
 	lock.Mutex // protects the fields below
 	refcount   int
@@ -175,7 +178,7 @@ func (c *SharedClient) ExchangeShared(m *dns.Msg) (r *dns.Msg, rtt time.Duration
 }
 
 // handler is started when the connection is dialed
-func handler(wg *sync.WaitGroup, client *dns.Client, conn *dns.Conn, requests chan request) {
+func handler(wg *sync.WaitGroup, client *dns.Client, conn *dns.Conn, requests chan request, size *atomic.Uint32) {
 	defer wg.Done()
 
 	responses := make(chan sharedClientResponse)
@@ -193,10 +196,14 @@ func handler(wg *sync.WaitGroup, client *dns.Client, conn *dns.Conn, requests ch
 	}
 
 	// Receive loop
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		defer close(responses)
+
+		// Synthesize a dns.Conn for this reading goroutine, so that it is not
+		// shared with the writing goroutines to placate the race detector.
+		syntheticConn := dns.Conn{
+			Conn: conn.Conn,
+		}
 
 		// No point trying to receive until the first request has been successfully sent, so
 		// wait for a trigger first. receiverTrigger is buffered, so this is safe
@@ -204,9 +211,10 @@ func handler(wg *sync.WaitGroup, client *dns.Client, conn *dns.Conn, requests ch
 		<-receiverTrigger
 
 		for {
+			syntheticConn.UDPSize = uint16(size.Load())
 			// This will block but eventually return an i/o timeout, as we always set
 			// the timeouts before sending anything
-			r, err := conn.ReadMsg()
+			r, err := syntheticConn.ReadMsg()
 			if err == nil {
 				responses <- sharedClientResponse{r, 0, nil}
 				continue // receive immediately again
@@ -231,7 +239,7 @@ func handler(wg *sync.WaitGroup, client *dns.Client, conn *dns.Conn, requests ch
 				return // exit immediately when the trigger channel is closed
 			}
 		}
-	}()
+	})
 
 	type waiter struct {
 		ch    chan sharedClientResponse
@@ -269,7 +277,7 @@ func handler(wg *sync.WaitGroup, client *dns.Client, conn *dns.Conn, requests ch
 			// it's likely to happen with small number (~200) of concurrent requests
 			// which would result in goroutine leak as we would never close req.ch
 			if _, duplicate := waitingResponses[req.msg.Id]; duplicate {
-				for n := 0; n < 5; n++ {
+				for range 5 {
 					// Try a new ID
 					id := dns.Id()
 					if _, duplicate = waitingResponses[id]; !duplicate {
@@ -290,6 +298,19 @@ func handler(wg *sync.WaitGroup, client *dns.Client, conn *dns.Conn, requests ch
 				close(req.ch)
 			} else {
 				waitingResponses[req.msg.Id] = waiter{req.ch, start}
+
+				// If this message requires a larger receive buffer, ensure we allocate larger
+				// buffers for this conn. It's theoretically possible that we're already blocking on
+				// read with a receive buffer that's too small for responses for this query.
+				// However, we only hit an issue if the large response in addition overtakes the
+				// smaller response we're expecting. In this unlikely case, we'll error out for all
+				// concurrent transactions of this endpoint - since this can only occur on UDP, the
+				// client must be prepared to retry anyway.
+				if edns := req.msg.IsEdns0(); edns != nil {
+					if es := edns.UDPSize(); es > uint16(size.Load()) {
+						size.Store(uint32(es))
+					}
+				}
 
 				// Wake up the receiver that may be waiting to receive again
 				triggerReceiver()
@@ -331,7 +352,7 @@ func (c *SharedClient) ExchangeSharedContext(ctx context.Context, m *dns.Msg) (r
 		}
 		// Start handler for sending and receiving.
 		c.wg.Add(1)
-		go handler(&c.wg, c.Client, c.conn, c.requests)
+		go handler(&c.wg, c.Client, c.conn, c.requests, &c.udpSize)
 	}
 	c.Unlock()
 
@@ -340,7 +361,9 @@ func (c *SharedClient) ExchangeSharedContext(ctx context.Context, m *dns.Msg) (r
 	timeout := getTimeoutForRequest(c.Client)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	respCh := make(chan sharedClientResponse)
+	// The handler loop writes our response or an error to this channel. If we fall into the timeout
+	// below, the handling loop would block indefinitely on writing if this channel is not buffered.
+	respCh := make(chan sharedClientResponse, 1)
 	select {
 	case c.requests <- request{ctx: ctx, msg: m, ch: respCh}:
 	case <-ctx.Done():
@@ -351,7 +374,8 @@ func (c *SharedClient) ExchangeSharedContext(ctx context.Context, m *dns.Msg) (r
 	select {
 	case resp := <-respCh:
 		return resp.msg, resp.rtt, resp.err
-	// This is just fail-safe mechanism in case there is another similar issue
+	// This is a fail-safe mechanism which prevents leaking this goroutine if the handling loop
+	// fails to write a response on our channel.
 	case <-time.After(time.Minute):
 		return nil, 0, fmt.Errorf("timeout waiting for response")
 	}

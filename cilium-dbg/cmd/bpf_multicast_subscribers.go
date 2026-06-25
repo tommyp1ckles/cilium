@@ -11,10 +11,10 @@ import (
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
-	"github.com/vishvananda/netlink"
 
 	"github.com/cilium/cilium/pkg/command"
 	"github.com/cilium/cilium/pkg/common"
+	"github.com/cilium/cilium/pkg/datapath/linux/safenetlink"
 	"github.com/cilium/cilium/pkg/defaults"
 	maps_multicast "github.com/cilium/cilium/pkg/maps/multicast"
 )
@@ -52,7 +52,7 @@ var MulticastGroupSubscriberListCmd = &cobra.Command{
 			Fatalf("invalid argument: %s", err)
 		}
 
-		groupV4Map, err := getMulticastGroupMap()
+		groupV4Map, err := getMulticastGroupMap(log)
 		if err != nil {
 			Fatalf("Failed to get multicast bpf map: %s", err)
 		}
@@ -90,7 +90,7 @@ cilium-dbg bpf multicast subscriber add 229.0.0.1 10.100.0.1
 	Run: func(cmd *cobra.Command, args []string) {
 		common.RequireRootPrivilege("cilium bpf multicast subscriber add")
 
-		link, err := netlink.LinkByName(defaults.VxlanDevice)
+		link, err := safenetlink.LinkByName(defaults.VxlanDevice)
 		if err != nil {
 			Fatalf("Failed to get cilium_vxlan device %q: %s", defaults.VxlanDevice, err)
 		}
@@ -220,7 +220,7 @@ func printSubscriberList(subscribers []SubscriberData) {
 }
 
 func getMulticastSubscriberMap(groupAddr netip.Addr) (maps_multicast.SubscriberV4Map, error) {
-	groupV4Map, err := getMulticastGroupMap()
+	groupV4Map, err := getMulticastGroupMap(log)
 	if err != nil {
 		return nil, err
 	}

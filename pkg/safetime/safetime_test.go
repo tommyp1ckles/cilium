@@ -6,23 +6,31 @@ package safetime
 import (
 	"bytes"
 	"fmt"
+	"log/slog"
 	"testing"
 	"time"
 
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
+
+	"github.com/cilium/cilium/pkg/logging"
 )
 
 type SafetimeSuite struct {
 	out    *bytes.Buffer // stores log output
-	logger *logrus.Entry
+	logger *slog.Logger
 }
 
 func (s *SafetimeSuite) SetUpTest(t *testing.T) {
-	s.out = &bytes.Buffer{}
-	logger := logrus.New()
-	logger.Out = s.out
-	s.logger = logrus.NewEntry(logger)
+	var buf bytes.Buffer
+	logger := slog.New(
+		slog.NewTextHandler(&buf,
+			&slog.HandlerOptions{
+				ReplaceAttr: logging.ReplaceAttrFnWithoutTimestamp,
+			},
+		),
+	)
+	s.logger = logger
+	s.out = &buf
 }
 
 func TestNegativeDuration(t *testing.T) {
@@ -49,5 +57,5 @@ func TestNonNegativeDuration(t *testing.T) {
 
 	require.True(t, ok)
 	require.Greater(t, int64(d), int64(time.Duration(0)))
-	require.Equal(t, 0, len(s.out.String()))
+	require.Empty(t, s.out.String())
 }

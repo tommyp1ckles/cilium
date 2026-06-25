@@ -25,26 +25,26 @@ func TestMatches(t *testing.T) {
 	}
 	empty := LabelArray{}
 
-	require.Equal(t, true, a.Contains(b))      // b is in a
-	require.Equal(t, false, b.Contains(a))     // a is NOT in b
-	require.Equal(t, true, a.Contains(empty))  // empty is in a
-	require.Equal(t, true, b.Contains(empty))  // empty is in b
-	require.Equal(t, false, empty.Contains(a)) // a is NOT in empty
+	require.True(t, a.Contains(b))      // b is in a
+	require.False(t, b.Contains(a))     // a is NOT in b
+	require.True(t, a.Contains(empty))  // empty is in a
+	require.True(t, b.Contains(empty))  // empty is in b
+	require.False(t, empty.Contains(a)) // a is NOT in empty
 }
 
-func TestParse(t *testing.T) {
-	require.EqualValues(t, LabelArray{}, ParseLabelArray())
-	require.EqualValues(t, LabelArray{ParseLabel("magic")}, ParseLabelArray("magic"))
+func TestPrivilegedParse(t *testing.T) {
+	require.Equal(t, LabelArray{}, ParseLabelArray())
+	require.Equal(t, LabelArray{ParseLabel("magic")}, ParseLabelArray("magic"))
 	// LabelArray is sorted
-	require.EqualValues(t, LabelArray{ParseLabel("a"), ParseLabel("b"), ParseLabel("c")}, ParseLabelArray("c", "a", "b"))
+	require.Equal(t, LabelArray{ParseLabel("a"), ParseLabel("b"), ParseLabel("c")}, ParseLabelArray("c", "a", "b"))
 	// NewLabelArrayFromSortedList
-	require.EqualValues(t, LabelArray{ParseLabel("a"), ParseLabel("b"), ParseLabel("c=d")}, NewLabelArrayFromSortedList("unspec:a=;unspec:b;unspec:c=d"))
+	require.Equal(t, LabelArray{ParseLabel("a"), ParseLabel("b"), ParseLabel("c=d")}, NewLabelArrayFromSortedList("unspec:a=;unspec:b;unspec:c=d"))
 }
 
 func TestHas(t *testing.T) {
 	lbls := LabelArray{
 		NewLabel("env", "devel", LabelSourceAny),
-		NewLabel("user", "bob", LabelSourceContainer),
+		NewLabel("user", "bob", LabelSourceK8s),
 	}
 	var hasTests = []struct {
 		input    string // input
@@ -53,15 +53,16 @@ func TestHas(t *testing.T) {
 		{"", false},
 		{"any", false},
 		{"env", true},
-		{"container.env", false},
-		{"container:env", false},
-		{"any:env", false},
-		{"any.env", true},
-		{"any:user", false},
-		{"any.user", true},
+		{"k8s.env", false},
+		{"k8s:env", false},
+		{"any:env", true},
+		{"any.env", false},
+		{"any:user", true},
+		{"any.user", false},
 		{"user", true},
-		{"container.user", true},
-		{"container:bob", false},
+		{"k8s.user", false},
+		{"k8s:user", true},
+		{"k8s:bob", false},
 	}
 	for _, tt := range hasTests {
 		t.Logf("has %q?", tt.input)
@@ -72,14 +73,14 @@ func TestHas(t *testing.T) {
 func TestEquals(t *testing.T) {
 	lbls1 := LabelArray{
 		NewLabel("env", "devel", LabelSourceAny),
-		NewLabel("user", "bob", LabelSourceContainer),
+		NewLabel("user", "bob", LabelSourceK8s),
 	}
 	lbls2 := LabelArray{
 		NewLabel("env", "devel", LabelSourceAny),
-		NewLabel("user", "bob", LabelSourceContainer),
+		NewLabel("user", "bob", LabelSourceK8s),
 	}
 	lbls3 := LabelArray{
-		NewLabel("user", "bob", LabelSourceContainer),
+		NewLabel("user", "bob", LabelSourceK8s),
 		NewLabel("env", "devel", LabelSourceAny),
 	}
 	lbls4 := LabelArray{
@@ -90,47 +91,47 @@ func TestEquals(t *testing.T) {
 	}
 	lbls6 := LabelArray{}
 
-	require.Equal(t, true, lbls1.Equals(lbls1))
-	require.Equal(t, true, lbls1.Equals(lbls2))
-	require.Equal(t, false, lbls1.Equals(lbls3)) // inverted order
-	require.Equal(t, false, lbls1.Equals(lbls4)) // different count
-	require.Equal(t, false, lbls1.Equals(lbls5))
-	require.Equal(t, false, lbls1.Equals(lbls6))
+	require.True(t, lbls1.Equals(lbls1))
+	require.True(t, lbls1.Equals(lbls2))
+	require.False(t, lbls1.Equals(lbls3)) // inverted order
+	require.False(t, lbls1.Equals(lbls4)) // different count
+	require.False(t, lbls1.Equals(lbls5))
+	require.False(t, lbls1.Equals(lbls6))
 
-	require.Equal(t, true, lbls2.Equals(lbls1))
-	require.Equal(t, true, lbls2.Equals(lbls2))
-	require.Equal(t, false, lbls2.Equals(lbls3)) // inverted order
-	require.Equal(t, false, lbls2.Equals(lbls4)) // different count
-	require.Equal(t, false, lbls2.Equals(lbls5))
-	require.Equal(t, false, lbls2.Equals(lbls6))
+	require.True(t, lbls2.Equals(lbls1))
+	require.True(t, lbls2.Equals(lbls2))
+	require.False(t, lbls2.Equals(lbls3)) // inverted order
+	require.False(t, lbls2.Equals(lbls4)) // different count
+	require.False(t, lbls2.Equals(lbls5))
+	require.False(t, lbls2.Equals(lbls6))
 
-	require.Equal(t, false, lbls3.Equals(lbls1))
-	require.Equal(t, false, lbls3.Equals(lbls2))
-	require.Equal(t, true, lbls3.Equals(lbls3))
-	require.Equal(t, false, lbls3.Equals(lbls4))
-	require.Equal(t, false, lbls3.Equals(lbls5))
-	require.Equal(t, false, lbls3.Equals(lbls6))
+	require.False(t, lbls3.Equals(lbls1))
+	require.False(t, lbls3.Equals(lbls2))
+	require.True(t, lbls3.Equals(lbls3))
+	require.False(t, lbls3.Equals(lbls4))
+	require.False(t, lbls3.Equals(lbls5))
+	require.False(t, lbls3.Equals(lbls6))
 
-	require.Equal(t, false, lbls4.Equals(lbls1))
-	require.Equal(t, false, lbls4.Equals(lbls2))
-	require.Equal(t, false, lbls4.Equals(lbls3))
-	require.Equal(t, true, lbls4.Equals(lbls4))
-	require.Equal(t, false, lbls4.Equals(lbls5))
-	require.Equal(t, false, lbls4.Equals(lbls6))
+	require.False(t, lbls4.Equals(lbls1))
+	require.False(t, lbls4.Equals(lbls2))
+	require.False(t, lbls4.Equals(lbls3))
+	require.True(t, lbls4.Equals(lbls4))
+	require.False(t, lbls4.Equals(lbls5))
+	require.False(t, lbls4.Equals(lbls6))
 
-	require.Equal(t, false, lbls5.Equals(lbls1))
-	require.Equal(t, false, lbls5.Equals(lbls2))
-	require.Equal(t, false, lbls5.Equals(lbls3))
-	require.Equal(t, false, lbls5.Equals(lbls4))
-	require.Equal(t, true, lbls5.Equals(lbls5))
-	require.Equal(t, false, lbls5.Equals(lbls6))
+	require.False(t, lbls5.Equals(lbls1))
+	require.False(t, lbls5.Equals(lbls2))
+	require.False(t, lbls5.Equals(lbls3))
+	require.False(t, lbls5.Equals(lbls4))
+	require.True(t, lbls5.Equals(lbls5))
+	require.False(t, lbls5.Equals(lbls6))
 
-	require.Equal(t, false, lbls6.Equals(lbls1))
-	require.Equal(t, false, lbls6.Equals(lbls2))
-	require.Equal(t, false, lbls6.Equals(lbls3))
-	require.Equal(t, false, lbls6.Equals(lbls4))
-	require.Equal(t, false, lbls6.Equals(lbls5))
-	require.Equal(t, true, lbls6.Equals(lbls6))
+	require.False(t, lbls6.Equals(lbls1))
+	require.False(t, lbls6.Equals(lbls2))
+	require.False(t, lbls6.Equals(lbls3))
+	require.False(t, lbls6.Equals(lbls4))
+	require.False(t, lbls6.Equals(lbls5))
+	require.True(t, lbls6.Equals(lbls6))
 }
 
 func TestLess(t *testing.T) {
@@ -147,92 +148,92 @@ func TestLess(t *testing.T) {
 	}
 	lbls5 := LabelArray{
 		NewLabel("env", "prod", LabelSourceAny),
-		NewLabel("user", "bob", LabelSourceContainer),
+		NewLabel("user", "bob", LabelSourceK8s),
 	}
 	lbls6 := LabelArray{
 		NewLabel("env", "prod", LabelSourceAny),
-		NewLabel("user", "bob", LabelSourceContainer),
+		NewLabel("user", "bob", LabelSourceK8s),
 	}
 	lbls7 := LabelArray{
 		NewLabel("env", "prod", LabelSourceAny),
-		NewLabel("user", "bob", LabelSourceContainer),
+		NewLabel("user", "bob", LabelSourceK8s),
 		NewLabel("xyz", "", LabelSourceAny),
 	}
 	lbls8 := LabelArray{
 		NewLabel("foo", "bar", LabelSourceAny),
 	}
 
-	require.Equal(t, false, lbls1.Less(lbls1))
-	require.Equal(t, true, lbls1.Less(lbls2))
-	require.Equal(t, true, lbls1.Less(lbls3))
-	require.Equal(t, true, lbls1.Less(lbls4))
-	require.Equal(t, true, lbls1.Less(lbls5))
-	require.Equal(t, true, lbls1.Less(lbls6))
-	require.Equal(t, true, lbls1.Less(lbls7))
-	require.Equal(t, true, lbls1.Less(lbls8))
+	require.False(t, lbls1.Less(lbls1))
+	require.True(t, lbls1.Less(lbls2))
+	require.True(t, lbls1.Less(lbls3))
+	require.True(t, lbls1.Less(lbls4))
+	require.True(t, lbls1.Less(lbls5))
+	require.True(t, lbls1.Less(lbls6))
+	require.True(t, lbls1.Less(lbls7))
+	require.True(t, lbls1.Less(lbls8))
 
-	require.Equal(t, false, lbls2.Less(lbls1))
-	require.Equal(t, false, lbls2.Less(lbls2))
-	require.Equal(t, true, lbls2.Less(lbls3))
-	require.Equal(t, true, lbls2.Less(lbls4))
-	require.Equal(t, true, lbls2.Less(lbls5))
-	require.Equal(t, true, lbls2.Less(lbls6))
-	require.Equal(t, true, lbls2.Less(lbls7))
-	require.Equal(t, true, lbls2.Less(lbls8))
+	require.False(t, lbls2.Less(lbls1))
+	require.False(t, lbls2.Less(lbls2))
+	require.True(t, lbls2.Less(lbls3))
+	require.True(t, lbls2.Less(lbls4))
+	require.True(t, lbls2.Less(lbls5))
+	require.True(t, lbls2.Less(lbls6))
+	require.True(t, lbls2.Less(lbls7))
+	require.True(t, lbls2.Less(lbls8))
 
-	require.Equal(t, false, lbls3.Less(lbls1))
-	require.Equal(t, false, lbls3.Less(lbls2))
-	require.Equal(t, false, lbls3.Less(lbls3))
-	require.Equal(t, true, lbls3.Less(lbls4))
-	require.Equal(t, true, lbls3.Less(lbls5))
-	require.Equal(t, true, lbls3.Less(lbls6))
-	require.Equal(t, true, lbls3.Less(lbls7))
-	require.Equal(t, true, lbls3.Less(lbls8))
+	require.False(t, lbls3.Less(lbls1))
+	require.False(t, lbls3.Less(lbls2))
+	require.False(t, lbls3.Less(lbls3))
+	require.True(t, lbls3.Less(lbls4))
+	require.True(t, lbls3.Less(lbls5))
+	require.True(t, lbls3.Less(lbls6))
+	require.True(t, lbls3.Less(lbls7))
+	require.True(t, lbls3.Less(lbls8))
 
-	require.Equal(t, false, lbls4.Less(lbls1))
-	require.Equal(t, false, lbls4.Less(lbls2))
-	require.Equal(t, false, lbls4.Less(lbls3))
-	require.Equal(t, false, lbls4.Less(lbls4))
-	require.Equal(t, true, lbls4.Less(lbls5))
-	require.Equal(t, true, lbls4.Less(lbls6))
-	require.Equal(t, true, lbls4.Less(lbls7))
-	require.Equal(t, true, lbls4.Less(lbls8))
+	require.False(t, lbls4.Less(lbls1))
+	require.False(t, lbls4.Less(lbls2))
+	require.False(t, lbls4.Less(lbls3))
+	require.False(t, lbls4.Less(lbls4))
+	require.True(t, lbls4.Less(lbls5))
+	require.True(t, lbls4.Less(lbls6))
+	require.True(t, lbls4.Less(lbls7))
+	require.True(t, lbls4.Less(lbls8))
 
-	require.Equal(t, false, lbls5.Less(lbls1))
-	require.Equal(t, false, lbls5.Less(lbls2))
-	require.Equal(t, false, lbls5.Less(lbls3))
-	require.Equal(t, false, lbls5.Less(lbls4))
-	require.Equal(t, false, lbls5.Less(lbls5))
-	require.Equal(t, false, lbls5.Less(lbls6))
-	require.Equal(t, true, lbls5.Less(lbls7))
-	require.Equal(t, true, lbls5.Less(lbls8))
+	require.False(t, lbls5.Less(lbls1))
+	require.False(t, lbls5.Less(lbls2))
+	require.False(t, lbls5.Less(lbls3))
+	require.False(t, lbls5.Less(lbls4))
+	require.False(t, lbls5.Less(lbls5))
+	require.False(t, lbls5.Less(lbls6))
+	require.True(t, lbls5.Less(lbls7))
+	require.True(t, lbls5.Less(lbls8))
 
-	require.Equal(t, false, lbls6.Less(lbls1))
-	require.Equal(t, false, lbls6.Less(lbls2))
-	require.Equal(t, false, lbls6.Less(lbls3))
-	require.Equal(t, false, lbls6.Less(lbls4))
-	require.Equal(t, false, lbls6.Less(lbls5))
-	require.Equal(t, false, lbls6.Less(lbls6))
-	require.Equal(t, true, lbls6.Less(lbls7))
-	require.Equal(t, true, lbls6.Less(lbls8))
+	require.False(t, lbls6.Less(lbls1))
+	require.False(t, lbls6.Less(lbls2))
+	require.False(t, lbls6.Less(lbls3))
+	require.False(t, lbls6.Less(lbls4))
+	require.False(t, lbls6.Less(lbls5))
+	require.False(t, lbls6.Less(lbls6))
+	require.True(t, lbls6.Less(lbls7))
+	require.True(t, lbls6.Less(lbls8))
 
-	require.Equal(t, false, lbls7.Less(lbls1))
-	require.Equal(t, false, lbls7.Less(lbls2))
-	require.Equal(t, false, lbls7.Less(lbls3))
-	require.Equal(t, false, lbls7.Less(lbls4))
-	require.Equal(t, false, lbls7.Less(lbls5))
-	require.Equal(t, false, lbls7.Less(lbls6))
-	require.Equal(t, false, lbls7.Less(lbls7))
-	require.Equal(t, true, lbls7.Less(lbls8))
+	require.False(t, lbls7.Less(lbls1))
+	require.False(t, lbls7.Less(lbls2))
+	require.False(t, lbls7.Less(lbls3))
+	require.False(t, lbls7.Less(lbls4))
+	require.False(t, lbls7.Less(lbls5))
+	require.False(t, lbls7.Less(lbls6))
+	require.False(t, lbls7.Less(lbls7))
+	require.True(t, lbls7.Less(lbls8))
 
-	require.Equal(t, false, lbls8.Less(lbls1))
-	require.Equal(t, false, lbls8.Less(lbls2))
-	require.Equal(t, false, lbls8.Less(lbls3))
-	require.Equal(t, false, lbls8.Less(lbls4))
-	require.Equal(t, false, lbls8.Less(lbls5))
-	require.Equal(t, false, lbls8.Less(lbls6))
-	require.Equal(t, false, lbls8.Less(lbls7))
-	require.Equal(t, false, lbls8.Less(lbls8))
+	require.False(t, lbls8.Less(lbls1))
+	require.False(t, lbls8.Less(lbls2))
+	require.False(t, lbls8.Less(lbls3))
+	require.False(t, lbls8.Less(lbls4))
+	require.False(t, lbls8.Less(lbls5))
+	require.False(t, lbls8.Less(lbls6))
+	require.False(t, lbls8.Less(lbls7))
+	require.False(t, lbls8.Less(lbls8))
 }
 
 // TestOutputConversions tests the various ways a LabelArray can be converted
@@ -240,34 +241,34 @@ func TestLess(t *testing.T) {
 func TestOutputConversions(t *testing.T) {
 	lbls := LabelArray{
 		NewLabel("env", "devel", LabelSourceAny),
-		NewLabel("user", "bob", LabelSourceContainer),
+		NewLabel("user", "bob", LabelSourceCNI),
 		NewLabel("something", "somethingelse", LabelSourceK8s),
 		NewLabel("nosource", "value", ""),
 		NewLabel("nosource", "value", "actuallyASource"),
 	}
 
-	expectMdl := []string{"any:env=devel", "container:user=bob", "k8s:something=somethingelse", "unspec:nosource=value", "actuallyASource:nosource=value"}
+	expectMdl := []string{"any:env=devel", "cni:user=bob", "k8s:something=somethingelse", "unspec:nosource=value", "actuallyASource:nosource=value"}
 	sort.StringSlice(expectMdl).Sort()
 	mdl := lbls.GetModel()
 	sort.StringSlice(mdl).Sort()
-	require.Equal(t, len(expectMdl), len(mdl))
+	require.Len(t, mdl, len(expectMdl))
 	for i := range mdl {
 		require.Equal(t, expectMdl[i], mdl[i])
 	}
 
-	expectString := "[any:env=devel container:user=bob k8s:something=somethingelse unspec:nosource=value actuallyASource:nosource=value]"
+	expectString := "[any:env=devel cni:user=bob k8s:something=somethingelse unspec:nosource=value actuallyASource:nosource=value]"
 	require.Equal(t, expectString, lbls.String())
 
 	// Note: the two nosource entries do not alias when rendered into the StringMap
 	// format, because they have different sources.
 	expectMap := map[string]string{
 		"any:env":                       "devel",
-		"container:user":                "bob",
+		"cni:user":                      "bob",
 		"k8s:something":                 "somethingelse",
 		LabelSourceUnspec + ":nosource": "value",
 		"actuallyASource:nosource":      "value"}
 	mp := lbls.StringMap()
-	require.Equal(t, len(expectMap), len(mp))
+	require.Len(t, mp, len(expectMap))
 	for k, v := range mp {
 		require.Equal(t, expectMap[k], v)
 	}
@@ -276,8 +277,8 @@ func TestOutputConversions(t *testing.T) {
 func BenchmarkLabelArray_GetModel(b *testing.B) {
 	l := NewLabelArrayFromSortedList("a;b;c;d;e;f;g;h;i;j;k;l;m;n;o;p;q;r;s;t;u;v;w;x;y;z")
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		_ = l.GetModel()
 	}
 }
@@ -285,8 +286,8 @@ func BenchmarkLabelArray_GetModel(b *testing.B) {
 func BenchmarkLabelArray_String(b *testing.B) {
 	l := NewLabelArrayFromSortedList("a;b;c;d;e;f;g;h;i;j;k;l;m;n;o;p;q;r;s;t;u;v;w;x;y;z")
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		_ = l.String()
 	}
 }
@@ -299,23 +300,23 @@ func TestLabelArray_Has(t *testing.T) {
 		NewLabel("foo1", "bar1", "any"), // not valid, but good to capture
 		NewLabel("kube-apiserver", "", "reserved"),
 	}
-	lbls = append(lbls, GetCIDRLabels(netip.MustParsePrefix("10.1.2.0/24")).LabelArray()...)
-	lbls = append(lbls, GetCIDRLabels(netip.MustParsePrefix("2001:db8:cafe::/54")).LabelArray()...)
+	lbls = append(lbls, GetCIDRLabelArray(netip.MustParsePrefix("10.1.2.0/24"))...)
+	lbls = append(lbls, GetCIDRLabelArray(netip.MustParsePrefix("2001:db8:cafe::/54"))...)
 	lbls.Sort()
 
 	for key, expected := range map[string]bool{
-		"any.foo":                 true,
-		"k8s.foo":                 true,
-		"k8s.foo1":                false,
-		"reserved.kube-apiserver": true,
+		"any:foo":                 true,
+		"k8s:foo":                 true,
+		"k8s:foo1":                false,
+		"reserved:kube-apiserver": true,
 
-		"cidr.10.1.2.0/24": true,  // exact match
-		"cidr.10.1.0.0/22": true,  // larger cidr: OK
-		"cidr.10.1.2.0/25": false, // smaller cidr: no
+		"cidr:10.1.2.0/24": true,  // exact match
+		"cidr:10.1.0.0/22": true,  // larger cidr: OK
+		"cidr:10.1.2.0/25": false, // smaller cidr: no
 
-		"cidr.2001-db8-cafe--0/54": true,  // exact
-		"cidr.2001-db8-cafe--0/53": true,  // larger
-		"cidr.2001-db8-cafe--0/55": false, // smaller
+		"cidr:2001-db8-cafe--0/54": true,  // exact
+		"cidr:2001-db8-cafe--0/53": true,  // larger
+		"cidr:2001-db8-cafe--0/55": false, // smaller
 	} {
 		assert.Equal(t, expected, lbls.Has(key), key)
 	}
@@ -375,7 +376,7 @@ func TestLabelArray_Intersects(t *testing.T) {
 	}
 
 	// Test a careful CIDR case that catches naive sorting
-	la := GetCIDRLabels(netip.MustParsePrefix("11.11.11.11/32")).LabelArray()
+	la := GetCIDRLabelArray(netip.MustParsePrefix("11.11.11.11/32"))
 	lb := ParseLabelArray("cidr:110.0.0.0/8", "cidr:8.0.0.0/5")
 	assert.True(t, la.Intersects(lb))
 

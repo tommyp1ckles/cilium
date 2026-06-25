@@ -17,13 +17,14 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/util/sets"
 
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/cilium-cli/defaults"
 	"github.com/cilium/cilium/cilium-cli/k8s"
 	"github.com/cilium/cilium/cilium-cli/utils/features"
 	"github.com/cilium/cilium/cilium-cli/utils/wait"
-	"github.com/cilium/cilium/pkg/inctimer"
 )
 
 const (
@@ -48,7 +49,7 @@ func WaitForDeployment(ctx context.Context, log Logger, client *k8s.Client, name
 		log.Debugf("[%s] Deployment %s/%s is not yet ready: %s", client.ClusterName(), namespace, name, err)
 
 		select {
-		case <-inctimer.After(PollInterval):
+		case <-time.After(PollInterval):
 		case <-ctx.Done():
 			return fmt.Errorf("timeout reached waiting for deployment %s/%s to become ready (last error: %w)",
 				namespace, name, err)
@@ -71,7 +72,7 @@ func WaitForDaemonSet(ctx context.Context, log Logger, client *k8s.Client, names
 		log.Debugf("[%s] DaemonSet %s/%s is not yet ready: %s", client.ClusterName(), namespace, name, err)
 
 		select {
-		case <-inctimer.After(PollInterval):
+		case <-time.After(PollInterval):
 		case <-ctx.Done():
 			return fmt.Errorf("timeout reached waiting for DaemonSet %s/%s to become ready (last error: %w)",
 				namespace, name, err)
@@ -93,7 +94,7 @@ func WaitForPodDNS(ctx context.Context, log Logger, src, dst Pod) error {
 		// See https://coredns.io/plugins/local/ for more info.
 		target := "localhost"
 		stdout, err := src.K8sClient.ExecInPod(ctx, src.Namespace(), src.NameWithoutNamespace(),
-			"", []string{"nslookup", target, dst.Address(features.IPFamilyAny)})
+			src.Pod.Spec.Containers[0].Name, []string{"nslookup", target, dst.Address(features.IPFamilyAny)})
 
 		if err == nil {
 			return nil
@@ -103,7 +104,7 @@ func WaitForPodDNS(ctx context.Context, log Logger, src, dst Pod) error {
 			src.K8sClient.ClusterName(), target, src.Name(), dst.Name(), err, stdout.String())
 
 		select {
-		case <-inctimer.After(PollInterval):
+		case <-time.After(PollInterval):
 		case <-ctx.Done():
 			return fmt.Errorf("timeout reached waiting for lookup for %s from pod %s to server on pod %s to succeed (last error: %w)",
 				target, src.Name(), dst.Name(), err,
@@ -122,7 +123,7 @@ func WaitForCoreDNS(ctx context.Context, log Logger, client Pod) error {
 	for {
 		target := "kubernetes.default"
 		stdout, err := client.K8sClient.ExecInPod(ctx, client.Namespace(), client.NameWithoutNamespace(),
-			"", []string{"nslookup", target})
+			client.Pod.Spec.Containers[0].Name, []string{"nslookup", target})
 		if err == nil {
 			return nil
 		}
@@ -131,7 +132,7 @@ func WaitForCoreDNS(ctx context.Context, log Logger, client Pod) error {
 			client.K8sClient.ClusterName(), target, client.Name(), err, stdout.String())
 
 		select {
-		case <-inctimer.After(PollInterval):
+		case <-time.After(PollInterval):
 		case <-ctx.Done():
 			return fmt.Errorf("timeout reached waiting for lookup for %s from pod %s to succeed (last error: %w)",
 				target, client.Name(), err)
@@ -154,7 +155,7 @@ func WaitForServiceRetrieval(ctx context.Context, log Logger, client *k8s.Client
 		log.Debugf("[%s] Failed to retrieve Service %s/%s: %s", client.ClusterName(), namespace, name, err)
 
 		select {
-		case <-inctimer.After(PollInterval):
+		case <-time.After(PollInterval):
 		case <-ctx.Done():
 			return Service{}, fmt.Errorf("timeout reached waiting for service %s/%s to be retrieved (last error: %w)",
 				namespace, name, err)
@@ -166,7 +167,7 @@ func WaitForServiceRetrieval(ctx context.Context, log Logger, client *k8s.Client
 func WaitForService(ctx context.Context, log Logger, client Pod, service Service) error {
 	log.Logf("⌛ [%s] Waiting for Service %s to become ready...", client.K8sClient.ClusterName(), service.Name())
 
-	ctx, cancel := context.WithTimeout(ctx, ShortTimeout)
+	ctx, cancel := context.WithTimeout(ctx, 2*ShortTimeout)
 	defer cancel()
 
 	if service.Service.Spec.ClusterIP == corev1.ClusterIPNone {
@@ -176,7 +177,7 @@ func WaitForService(ctx context.Context, log Logger, client Pod, service Service
 
 	for {
 		stdout, err := client.K8sClient.ExecInPod(ctx,
-			client.Namespace(), client.NameWithoutNamespace(), "",
+			client.Namespace(), client.NameWithoutNamespace(), client.Pod.Spec.Containers[0].Name,
 			[]string{"nslookup", service.Service.Name}) // BusyBox nslookup doesn't support any arguments.
 
 		// Lookup successful.
@@ -197,7 +198,7 @@ func WaitForService(ctx context.Context, log Logger, client Pod, service Service
 			client.K8sClient.ClusterName(), service.Name(), err, stdout.String())
 
 		select {
-		case <-inctimer.After(PollInterval):
+		case <-time.After(PollInterval):
 		case <-ctx.Done():
 			return fmt.Errorf("timeout reached waiting for service %s (last error: %w)", service.Name(), err)
 		}
@@ -228,7 +229,7 @@ func WaitForServiceEndpoints(ctx context.Context, log Logger, agent Pod, service
 			agent.K8sClient.ClusterName(), service.Name(), agent.Name(), err)
 
 		select {
-		case <-inctimer.After(PollInterval):
+		case <-time.After(PollInterval):
 		case <-ctx.Done():
 			return fmt.Errorf("timeout reached waiting for service %s to appear in Cilium pod %s (last error: %w)",
 				service.Name(), agent.Name(), err)
@@ -298,7 +299,7 @@ func WaitForNodePorts(ctx context.Context, log Logger, client Pod, nodeIP string
 			client.K8sClient.ClusterName(), nodeIP, nodePort, service.Name())
 		for {
 			stdout, err := client.K8sClient.ExecInPod(ctx,
-				client.Namespace(), client.NameWithoutNamespace(), "",
+				client.Namespace(), client.NameWithoutNamespace(), client.Pod.Spec.Containers[0].Name,
 				[]string{"nc", "-w", "3", "-z", nodeIP, strconv.Itoa(int(nodePort))})
 			if err == nil {
 				break
@@ -308,7 +309,7 @@ func WaitForNodePorts(ctx context.Context, log Logger, client Pod, nodeIP string
 				client.K8sClient.ClusterName(), nodeIP, nodePort, service.Name(), err, stdout.String())
 
 			select {
-			case <-inctimer.After(PollInterval):
+			case <-time.After(PollInterval):
 			case <-ctx.Done():
 				return fmt.Errorf("timeout reached waiting for NodePort %s:%d (%s) (last error: %w)",
 					nodeIP, nodePort, service.Name(), err)
@@ -319,50 +320,101 @@ func WaitForNodePorts(ctx context.Context, log Logger, client Pod, nodeIP string
 	return nil
 }
 
-// WaitForIPCache waits until all the specified pods are present in the IPCache of the given agent.
-func WaitForIPCache(ctx context.Context, log Logger, agent Pod, pods []Pod) error {
-	log.Logf("⌛ [%s] Waiting for Cilium pod %s to have all the pod IPs in eBPF IPCache...",
-		agent.K8sClient.ClusterName(), agent.Name())
-
-	ctx, cancel := context.WithTimeout(ctx, ShortTimeout)
-	defer cancel()
-
-	for {
-		err := validateIPCache(ctx, agent, pods)
-		if err == nil {
-			return nil
-		}
-
-		log.Debugf("[%s] Error checking pod IPs in IPCache: %s", agent.K8sClient.ClusterName(), err)
-
-		select {
-		case <-inctimer.After(PollInterval):
-		case <-ctx.Done():
-			return fmt.Errorf("timeout reached waiting for pod IPs to be in IPCache of Cilium pod %s (last error: %w)",
-				agent.Name(), err)
-		}
-	}
+// BPFEgressGatewayPolicyEntry represents an entry in the BPF egress gateway policy map
+type BPFEgressGatewayPolicyEntry struct {
+	SourceIP  string `json:"sourceIP"`
+	DestCIDR  string `json:"destCIDR"`
+	EgressIP  string `json:"egressIP"`
+	GatewayIP string `json:"gatewayIP"`
 }
 
-func validateIPCache(ctx context.Context, agent Pod, pods []Pod) error {
-	stdout, err := agent.K8sClient.ExecInPod(ctx, agent.Namespace(), agent.NameWithoutNamespace(),
-		defaults.AgentContainerName, []string{"cilium", "bpf", "ipcache", "list", "-o", "json"})
-	if err != nil {
-		return fmt.Errorf("failed to list ipcache bpf map: %w", err)
-	}
+// matches is an helper used to compare the receiver bpfEgressGatewayPolicyEntry with another entry
+func (e *BPFEgressGatewayPolicyEntry) matches(t BPFEgressGatewayPolicyEntry) bool {
+	return t.SourceIP == e.SourceIP &&
+		t.DestCIDR == e.DestCIDR &&
+		t.EgressIP == e.EgressIP &&
+		t.GatewayIP == e.GatewayIP
+}
 
-	var ic ipCache
-	if err := json.Unmarshal(stdout.Bytes(), &ic); err != nil {
-		return fmt.Errorf("failed to unmarshal Cilium ipcache stdout json: %w", err)
-	}
+// WaitForEgressGatewayBpfPolicyEntries waits for the egress gateway policy maps on each node to WaitForEgressGatewayBpfPolicyEntries
+// with the entries returned by the targetEntriesCallback
+func WaitForEgressGatewayBpfPolicyEntries(ctx context.Context,
+	ciliumPods map[string]Pod,
+	testPods []Pod,
+	targetEntriesCallback func(ciliumPod Pod) ([]BPFEgressGatewayPolicyEntry, error),
+	excludeEntries func(ciliumPod Pod) ([]BPFEgressGatewayPolicyEntry, error),
+) error {
+	w := wait.NewObserver(ctx, wait.Parameters{Timeout: 10 * time.Second})
+	defer w.Cancel()
 
-	for _, pod := range pods {
-		if _, err := ic.findPodID(pod); err != nil {
-			return fmt.Errorf("couldn't find pod %s in ipcache: %w", pod.Name(), err)
+	localPodIPs := sets.New[string]()
+	for _, pod := range testPods {
+		if ip := pod.Address(features.IPFamilyV4); ip != "" {
+			localPodIPs.Insert(ip)
+		}
+		if ip := pod.Address(features.IPFamilyV6); ip != "" {
+			localPodIPs.Insert(ip)
 		}
 	}
 
-	return nil
+	ensureBpfPolicyEntries := func() error {
+		for _, ciliumPod := range ciliumPods {
+			targetEntries, err := targetEntriesCallback(ciliumPod)
+			if err != nil {
+				return fmt.Errorf("failed to get target entries: %w", err)
+			}
+
+			cmd := strings.Split("cilium bpf egress list -o json", " ")
+			stdout, err := ciliumPod.K8sClient.ExecInPod(ctx, ciliumPod.Pod.Namespace, ciliumPod.Pod.Name, defaults.AgentContainerName, cmd)
+			if err != nil {
+				return fmt.Errorf("failed to run cilium bpf egress list command: %w", err)
+			}
+
+			var entries []BPFEgressGatewayPolicyEntry
+			json.Unmarshal(stdout.Bytes(), &entries)
+
+			excludes, err := excludeEntries(ciliumPod)
+			if err != nil {
+				return fmt.Errorf("failed to get exclude entries: %w", err)
+			}
+			for _, exclude := range excludes {
+				entries = slices.DeleteFunc(entries, func(entry BPFEgressGatewayPolicyEntry) bool {
+					return entry.matches(exclude)
+				})
+			}
+
+			for _, targetEntry := range targetEntries {
+				if !slices.ContainsFunc(entries, targetEntry.matches) {
+					return fmt.Errorf("could not find egress gateway policy entry matching %+v", targetEntry)
+				}
+			}
+
+			for _, entry := range entries {
+				// We only check for untracked entries for Pods in this test namespace that
+				// are untracked.
+				if !localPodIPs.Has(entry.SourceIP) {
+					continue
+				}
+				if !slices.ContainsFunc(targetEntries, entry.matches) {
+					return fmt.Errorf("untracked entry %+v in the egress gateway policy maps", entry)
+				}
+			}
+		}
+
+		return nil
+	}
+
+	for {
+		if err := ensureBpfPolicyEntries(); err != nil {
+			if err := w.Retry(err); err != nil {
+				return fmt.Errorf("failed to ensure egress gateway policy maps are properly populated: %w", err)
+			}
+
+			continue
+		}
+
+		return nil
+	}
 }
 
 // DeleteK8sResourceWithWait deletes the provided k8s resource and waits until it is deleted.
@@ -381,6 +433,25 @@ func DeleteK8sResourceWithWait[T any](ctx context.Context, t *Test, k8sClient k8
 		}
 		if err = w.Retry(err); err != nil {
 			t.Fatalf("Failed to ensure k8s resorce %s is deleted: %v", resourceName, err)
+		}
+	}
+}
+
+// DeleteK8sObjectWithWait deletes the provided unstructured k8s object and waits until it is deleted.
+func DeleteK8sObjectWithWait(ctx context.Context, t *Test, obj *unstructured.Unstructured) {
+	err := t.Context().K8sClient().DeleteGeneric(ctx, obj)
+	if err != nil && !k8serrors.IsNotFound(err) {
+		t.Fatalf("Failed to delete k8s object %s: %v", obj.GetName(), err)
+	}
+	w := wait.NewObserver(ctx, wait.Parameters{Timeout: ShortTimeout})
+	defer w.Cancel()
+	for {
+		_, err := t.Context().K8sClient().GetGeneric(ctx, obj.GetNamespace(), obj.GetName(), obj)
+		if err != nil && k8serrors.IsNotFound(err) {
+			break // got expected not found
+		}
+		if err = w.Retry(err); err != nil {
+			t.Fatalf("Failed to ensure k8s object %s is deleted: %v", obj.GetName(), err)
 		}
 	}
 }

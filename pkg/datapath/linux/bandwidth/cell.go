@@ -15,19 +15,26 @@ import (
 	"github.com/cilium/statedb"
 	"github.com/cilium/statedb/reconciler"
 
+	"github.com/cilium/cilium/pkg/datapath/linux/bandwidth/types"
 	"github.com/cilium/cilium/pkg/datapath/linux/config/defines"
+	ipsec "github.com/cilium/cilium/pkg/datapath/linux/ipsec/types"
 	"github.com/cilium/cilium/pkg/datapath/linux/sysctl"
 	"github.com/cilium/cilium/pkg/datapath/tables"
-	"github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/maps/bwmap"
 	"github.com/cilium/cilium/pkg/option"
 )
+
+var defaultConfig = types.Config{
+	EnableBandwidthManager: false,
+	EnableBBR:              false,
+	EnableBBRHostnsOnly:    false,
+}
 
 var Cell = cell.Module(
 	"bandwidth-manager",
 	"Linux Bandwidth Manager for EDT-based pacing",
 
-	cell.Config(types.DefaultBandwidthConfig),
+	cell.Config(defaultConfig),
 	cell.Provide(newBandwidthManager),
 
 	cell.ProvidePrivate(
@@ -41,8 +48,9 @@ type registerParams struct {
 
 	Log              *slog.Logger
 	Table            statedb.RWTable[*tables.BandwidthQDisc]
-	BWM              types.BandwidthManager
-	Config           types.BandwidthConfig
+	Devices          statedb.Table[*tables.Device]
+	BWM              Manager
+	Config           types.Config
 	DeriveParams     statedb.DeriveParams[*tables.Device, *tables.BandwidthQDisc]
 	ReconcilerParams reconciler.Params
 }
@@ -64,13 +72,13 @@ func registerReconciler(p registerParams) error {
 		(*tables.BandwidthQDisc).Clone,
 		(*tables.BandwidthQDisc).SetStatus,
 		(*tables.BandwidthQDisc).GetStatus,
-		newOps(p.Log, p.BWM),
+		newOps(p.Log, p.BWM, p.Devices),
 		nil,
 	)
 	return err
 }
 
-func newBandwidthManager(lc cell.Lifecycle, p bandwidthManagerParams) (types.BandwidthManager, defines.NodeFnOut) {
+func newBandwidthManager(lc cell.Lifecycle, p bandwidthManagerParams) (Manager, defines.NodeFnOut) {
 	m := &manager{params: p}
 
 	if !option.Config.DryMode {
@@ -99,11 +107,12 @@ type bandwidthManagerParams struct {
 	cell.In
 
 	Log          *slog.Logger
-	Config       types.BandwidthConfig
+	Config       types.Config
 	DaemonConfig *option.DaemonConfig
 	Sysctl       sysctl.Sysctl
 	DB           *statedb.DB
 	EdtTable     statedb.RWTable[bwmap.Edt]
+	IPsecConfig  ipsec.Config
 }
 
 func deviceToBandwidthQDisc(device *tables.Device, deleted bool) (*tables.BandwidthQDisc, statedb.DeriveResult) {

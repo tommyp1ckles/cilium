@@ -6,14 +6,8 @@ package spanstat
 import (
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging"
-	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/safetime"
 	"github.com/cilium/cilium/pkg/time"
-)
-
-var (
-	subSystem = "spanstat"
-	log       = logging.DefaultLogger.WithField(logfields.LogSubsys, subSystem)
 )
 
 // SpanStat measures the total duration of all time spent in between Start()
@@ -58,7 +52,8 @@ func (s *SpanStat) End(success bool) *SpanStat {
 // must be called with Lock() held
 func (s *SpanStat) end(success bool) *SpanStat {
 	if !s.spanStart.IsZero() {
-		d, _ := safetime.TimeSinceSafe(s.spanStart, log)
+		// slogloggercheck: it's safe to use the default logger here as it has been initialized by the program up to this point.
+		d, _ := safetime.TimeSinceSafe(s.spanStart, logging.DefaultSlogLogger)
 		if success {
 			s.successDuration += d
 		} else {
@@ -110,4 +105,13 @@ func (s *SpanStat) Seconds() float64 {
 
 	total := s.successDuration + s.failureDuration
 	return total.Seconds()
+}
+
+// SetSuccessDuration sets the success duration of the SpanStat directly.
+// This is useful for reconstructing timing data received from an external source
+// (e.g., the standalone DNS proxy sending timing data via gRPC).
+func (s *SpanStat) SetSuccessDuration(d time.Duration) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.successDuration = d
 }

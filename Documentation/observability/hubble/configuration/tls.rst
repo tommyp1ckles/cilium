@@ -170,6 +170,7 @@ restart Hubble server or Hubble Relay.
         - ``hubble.metrics.tls.server.existingSecret`` only needs to be provided when ``hubble.metrics.tls.enabled`` (default ``false``).
           For more details on configuring the Hubble metrics API with TLS, see :ref:`hubble_configure_metrics_tls`.
 
+.. _hubble_enable_tls_troubleshooting:
 
 Troubleshooting
 ---------------
@@ -240,31 +241,6 @@ If you encounter issues after enabling TLS, you can use the following instructio
                             --set webhook.tolerations='["operator": "Exists"]'
 
                 Then configure an issuer and install Cilium.
-
-    .. group-tab:: CronJob (certgen)
-
-        If you are using ArgoCD, you may encounter issues on the initial
-        installation because of how ArgoCD handles Helm hooks specified in the
-        ``helm.sh/hook`` annotation.
-
-        The ``hubble-generate-certs`` Job specifies a ``post-install`` Helm
-        hook in order to generate the required Certificates at initial install time, since
-        the CronJob will only run on the configured schedule which could be
-        hours or days after the initial installation.
-
-        Since ArgoCD will only run ``post-install`` hooks after all pods are
-        ready and running, you may encounter a situation where the
-        ``hubble-generate-certs`` Job is never run.
-
-        It cannot be configured as a ``pre-install`` hook because it requires Cilium
-        to be running first, and Hubble Relay cannot become ready until
-        certificates are provisioned.
-
-        To work around this, you can manually run the ``certgen`` CronJob:
-
-        .. code-block:: shell-session
-
-            $ kubectl -n kube-system create job hubble-generate-certs-initial --from cronjob/hubble-generate-certs
 
     .. group-tab:: Helm
 
@@ -345,7 +321,7 @@ correct certificate:
 .. code-block:: shell-session
 
     $ kubectl exec -it -n kube-system deployment/hubble-cli -- \
-    hubble observe --server ${IP?}:4244 \
+    hubble observe --server tls://${IP?}:4244 \
         --tls-server-name ${SERVERNAME?} \
         --tls-ca-cert-files /var/lib/hubble-relay/tls/hubble-server-ca.crt \
         --tls-client-cert-file /var/lib/hubble-relay/tls/client.crt \
@@ -362,11 +338,11 @@ Now try to query the Hubble server without providing any client certificate:
 .. code-block:: shell-session
 
     $ kubectl exec -it -n kube-system deployment/hubble-cli -- \
-    hubble observe --server ${IP?}:4244 \
+    hubble observe --server tls://${IP?}:4244 \
         --tls-server-name ${SERVERNAME?} \
         --tls-ca-cert-files /var/lib/hubble-relay/tls/hubble-server-ca.crt
 
-    failed to connect to '172.18.0.2:4244': context deadline exceeded: connection error: desc = "transport: authentication handshake failed: mTLS client certificate requested, but not provided"
+    failed to connect to '172.18.0.2:4244': context deadline exceeded: connection error: desc = "error reading server preface: remote error: tls: certificate requiredd"
     command terminated with exit code 1
 
 You can also try to connect without TLS:

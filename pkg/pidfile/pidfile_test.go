@@ -23,7 +23,7 @@ func TestWrite(t *testing.T) {
 
 	content, err := os.ReadFile(path)
 	require.NoError(t, err)
-	require.Equal(t, content, []byte(fmt.Sprintf("%d\n", os.Getpid())))
+	require.Equal(t, content, fmt.Appendf(nil, "%d\n", os.Getpid()))
 }
 
 func TestKill(t *testing.T) {
@@ -37,7 +37,7 @@ func TestKill(t *testing.T) {
 
 	pid, err := Kill(path)
 	require.NoError(t, err)
-	require.NotEqual(t, pid, 0)
+	require.NotEqual(t, 0, pid)
 
 	err = cmd.Wait()
 	require.Error(t, err)
@@ -58,7 +58,7 @@ func TestKillAlreadyFinished(t *testing.T) {
 
 	pid, err := Kill(path)
 	require.NoError(t, err)
-	require.Equal(t, pid, 0)
+	require.Equal(t, 0, pid)
 }
 
 func TestKillPidfileNotExist(t *testing.T) {

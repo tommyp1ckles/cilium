@@ -8,31 +8,29 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
+	"log/slog"
 	"strconv"
-
-	"github.com/cilium/cilium/pkg/datapath/linux/config"
-	"github.com/cilium/cilium/pkg/datapath/linux/probes"
-	"github.com/cilium/cilium/pkg/inctimer"
-	"github.com/cilium/cilium/pkg/logging"
-	"github.com/cilium/cilium/pkg/logging/logfields"
-	"github.com/cilium/cilium/pkg/maps/nat"
-	"github.com/cilium/cilium/pkg/option"
-	"github.com/cilium/cilium/pkg/promise"
-	"github.com/cilium/cilium/pkg/time"
-	"github.com/cilium/cilium/pkg/tuple"
-	"github.com/cilium/cilium/pkg/u8proto"
 
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/job"
 	"github.com/cilium/statedb"
 	"github.com/cilium/statedb/index"
-)
+	"github.com/cilium/stream"
 
-var log = logging.DefaultLogger.WithField(logfields.LogSubsys, "nat-stats")
+	"github.com/cilium/cilium/pkg/loadbalancer"
+	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/maps/nat"
+	"github.com/cilium/cilium/pkg/time"
+	"github.com/cilium/cilium/pkg/tuple"
+	"github.com/cilium/cilium/pkg/u8proto"
+)
 
 // Stats provides a implementation of performing nat map stats
 // counting.
 type Stats struct {
+	logger *slog.Logger
+
 	metrics natMetrics
 
 	db    *statedb.DB
@@ -42,7 +40,32 @@ type Stats struct {
 	config   Config
 	natMap4  nat.NatMap4
 	natMap6  nat.NatMap6
+
+	observable4 stream.Observable[TupleCountIterator]
+	next4       func(TupleCountIterator)
+	complete4   func(error)
+
+	observable6 stream.Observable[TupleCountIterator]
+	next6       func(TupleCountIterator)
+	complete6   func(error)
 }
+
+// Observable4 returns the state iteration observable for ipv4 nat.
+func (s *Stats) Observable4() stream.Observable[TupleCountIterator] {
+	return s.observable4
+}
+
+// Observable6 returns the state iteration observable for ipv6 nat.
+func (s *Stats) Observable6() stream.Observable[TupleCountIterator] {
+	return s.observable6
+}
+
+// TupleCountIterator is a k/v iterator type that allows for opaquely
+// accessing a set of snat tuple source port counts.
+// This is used by the exported Observable{4,6} streams to allow for
+// external consumers to iterate over the current set of nat map stats
+// following a countNat operation.
+type TupleCountIterator iter.Seq2[SNATTupleAccessor, uint16]
 
 // NatMapStats is a nat-map table entry key/value. This
 // contains a count of connection 3-tuple utilization.
@@ -53,7 +76,6 @@ type NatMapStats struct {
 	RemotePort uint16
 	Proto      string
 	Count      int
-	Nth        int
 }
 
 func (s NatMapStats) Key() index.Key {
@@ -88,26 +110,23 @@ func (s NatMapStats) TableRow() []string {
 type params struct {
 	cell.In
 
+	Logger *slog.Logger
+
 	Lifecycle cell.Lifecycle
 	DB        *statedb.DB
 	Table     statedb.RWTable[NatMapStats]
-	NatMap4   promise.Promise[nat.NatMap4]
-	NatMap6   promise.Promise[nat.NatMap6]
+	NatMap4   nat.NatMap4
+	NatMap6   nat.NatMap6
 	Jobs      job.Group
 	Metrics   natMetrics
 	Config    Config
+	LBConfig  loadbalancer.Config
 	Health    cell.Health
 }
 
-func newStats(params params) (*Stats, error) {
-	if err := probes.HaveBatchAPI(); err != nil {
-		if errors.Is(err, probes.ErrNotSupported) {
-			log.WithError(err).Info("nat-stats is not supported")
-			return nil, nil
-		}
-		log.WithError(err).Error("could not probe for nat-stats feature")
-	}
+const nodePortMaxNAT = 65535
 
+func newStats(params params) (*Stats, error) {
 	if params.Config.NATMapStatInterval == 0 {
 		return nil, nil
 	}
@@ -120,32 +139,25 @@ func newStats(params params) (*Stats, error) {
 
 	// number of available source-ports is ephemeral range subtracting those
 	// used by node-ports.
-	maxAvailPorts := config.NodePortMaxNAT - (option.Config.NodePortMax + 1)
+	maxAvailPorts := nodePortMaxNAT - (params.LBConfig.NodePortMax + 1)
 	m := &Stats{
+		logger:   params.Logger,
 		metrics:  params.Metrics,
 		config:   params.Config,
-		maxPorts: maxAvailPorts,
+		maxPorts: int(maxAvailPorts),
 		db:       params.DB,
 		table:    params.Table,
 	}
+
+	m.observable4, m.next4, m.complete4 =
+		stream.Multicast[TupleCountIterator]()
+	m.observable6, m.next6, m.complete6 =
+		stream.Multicast[TupleCountIterator]()
+
 	params.Lifecycle.Append(cell.Hook{
 		OnStart: func(hc cell.HookContext) error {
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second*120)
-			defer cancel()
-			nmap4, err := params.NatMap4.Await(ctx)
-			if err != nil {
-				if !errors.Is(err, nat.MapDisabled) {
-					return err
-				}
-			}
-			nmap6, err := params.NatMap6.Await(ctx)
-			if err != nil {
-				if !errors.Is(err, nat.MapDisabled) {
-					return err
-				}
-			}
-			m.natMap4 = nmap4
-			m.natMap6 = nmap6
+			m.natMap4 = params.NatMap4
+			m.natMap6 = params.NatMap6
 			if m.natMap4 == nil && m.natMap6 == nil {
 				return nil
 			}
@@ -157,16 +169,21 @@ func newStats(params params) (*Stats, error) {
 			// This is to give time for init time CT/NAT gc scanning to complete
 			// to avoid NAT map GC timeouts at startup.
 			go func() {
-				<-inctimer.After(time.Second * 5)
+				<-time.After(5 * time.Second)
 				tr.Trigger()
 			}()
-			return params.Jobs.Start(hc)
+			return nil
+		},
+		OnStop: func(hc cell.HookContext) error {
+			m.complete4(nil)
+			m.complete6(nil)
+			return nil
 		},
 	})
 	return m, nil
 }
 
-func upsertStat[KT tupleKey](m *Stats, topk *topk[KT], family nat.IPFamily) error {
+func upsertStat(m *Stats, topk *topk, family nat.IPFamily) error {
 	tx := m.db.WriteTxn(m.table)
 	defer tx.Abort()
 
@@ -178,19 +195,20 @@ func upsertStat[KT tupleKey](m *Stats, topk *topk[KT], family nat.IPFamily) erro
 		}
 	}
 
-	topk.popForEach(func(key KT, count, ith int) {
+	topk.popForEach(func(key SNATTupleAccessor, count, ith int) {
 		if ith == 1 {
 			m.metrics.updateLocalPorts(family, count, m.maxPorts)
 		}
-		extip, eip, proto, rport := key.tuple()
+		endpointIP, rport := key.GetEndpointAddr()
+		egressIP, _ := key.GetEgressAddr()
+		proto := key.GetProto()
 		_, _, err := m.table.Insert(tx, NatMapStats{
 			Type:       family.String(),
-			EgressIP:   eip,
-			EndpointIP: extip,
+			EgressIP:   egressIP.String(),
+			EndpointIP: endpointIP.String(),
 			RemotePort: rport,
-			Proto:      proto,
+			Proto:      proto.String(),
 			Count:      count,
-			Nth:        ith,
 		})
 		if err != nil {
 			errs = errors.Join(errs, err)
@@ -203,60 +221,67 @@ func upsertStat[KT tupleKey](m *Stats, topk *topk[KT], family nat.IPFamily) erro
 	return nil
 }
 
+func flagsIsIn(flags uint8) bool {
+	return flags&tuple.TUPLE_F_IN == tuple.TUPLE_F_IN
+}
+
 func (m *Stats) countNat(ctx context.Context) error {
 	var errs error
 	if m.natMap4 != nil {
-		tupleToPortCount := make(map[tuple.TupleKey4]uint16, 128)
-		_, err := m.natMap4.ApplyBatch4(func(keys []tuple.TupleKey4, vals []nat.NatEntry4, size int) {
-			for i := 0; i < size; i++ {
-				key := *keys[i].ToHost().(*tuple.TupleKey4)
-				if key.Flags == tuple.TUPLE_F_IN &&
-					(key.NextHeader == u8proto.TCP || key.NextHeader == u8proto.ICMP ||
-						key.NextHeader == u8proto.UDP) {
-					key.DestPort = 0
-					ports := tupleToPortCount[key]
-					ports++
-					tupleToPortCount[key] = ports
-				}
+		tupleToPortCount := make(map[SNATTuple4]uint16, 128)
+		_, err := m.natMap4.DumpBatch4(func(k *tuple.TupleKey4, _ *nat.NatEntry4) {
+			key := *k.ToHost().(*tuple.TupleKey4)
+			if flagsIsIn(key.Flags) &&
+				(key.NextHeader == u8proto.TCP || key.NextHeader == u8proto.ICMP ||
+					key.NextHeader == u8proto.UDP) {
+				key.DestPort = 0
+				ports := tupleToPortCount[SNATTuple4(key)]
+				ports++
+				tupleToPortCount[SNATTuple4(key)] = ports
 			}
 		})
+
 		if err != nil {
-			log.WithError(err).
-				Error("failed to count ipv4 nat map entries, " +
-					"this may result in out of date nat-stats data and nat_endpoint_ metrics")
+			m.logger.Error("failed to count ipv4 nat map entries, "+
+				"this may result in out of date nat-stats data and nat_endpoint_ metrics",
+				logfields.Error, err,
+			)
 			errs = errors.Join(errs, err)
 		} else {
-			topk := newTopK[key4](m.config.NatMapStatKStoredEntries)
+			m.next4(toIter(tupleToPortCount))
+			topk := newTopK(m.config.NatMapStatKStoredEntries)
 			for tupleKey, bucket := range tupleToPortCount {
-				topk.Push(key4(tupleKey), int(bucket))
+				topk.Push(tupleKey, int(bucket))
 			}
 			errors.Join(errs, upsertStat(m, topk, nat.IPv4))
 		}
+
 	}
 	if m.natMap6 != nil {
-		tupleToPortCount := make(map[tuple.TupleKey6]uint16, 128)
-		_, err := m.natMap6.ApplyBatch6(func(keys []tuple.TupleKey6, vals []nat.NatEntry6, size int) {
-			for i := 0; i < size; i++ {
-				key := *keys[i].ToHost().(*tuple.TupleKey6)
-				if key.Flags == tuple.TUPLE_F_IN &&
-					(key.NextHeader == u8proto.TCP || key.NextHeader == u8proto.ICMPv6 ||
-						key.NextHeader == u8proto.UDP) {
-					key.DestPort = 0
-					ports := tupleToPortCount[key]
-					ports++
-					tupleToPortCount[key] = ports
-				}
+		tupleToPortCount := make(map[SNATTuple6]uint16, 128)
+		_, err := m.natMap6.DumpBatch6(func(k *tuple.TupleKey6, _ *nat.NatEntry6) {
+			key := *k.ToHost().(*tuple.TupleKey6)
+			if flagsIsIn(key.Flags) &&
+				(key.NextHeader == u8proto.TCP || key.NextHeader == u8proto.ICMPv6 ||
+					key.NextHeader == u8proto.UDP) {
+				key.DestPort = 0
+				ports := tupleToPortCount[SNATTuple6(key)]
+				ports++
+				tupleToPortCount[SNATTuple6(key)] = ports
 			}
 		})
+
 		if err != nil {
-			log.WithError(err).
-				Error("failed to count ipv6 nat map entries, " +
-					"this may result in out of date nat-stats data and nat_endpoint_ metrics")
+			m.logger.Error("failed to count ipv6 nat map entries, "+
+				"this may result in out of date nat-stats data and nat_endpoint_ metrics",
+				logfields.Error, err,
+			)
 			errs = errors.Join(errs, err)
 		} else {
-			topk := newTopK[key6](m.config.NatMapStatKStoredEntries)
+			m.next6(toIter(tupleToPortCount))
+			topk := newTopK(m.config.NatMapStatKStoredEntries)
 			for tupleKey, bucket := range tupleToPortCount {
-				topk.Push(key6(tupleKey), int(bucket))
+				topk.Push(tupleKey, int(bucket))
 			}
 			errors.Join(errs, upsertStat(m, topk, nat.IPv6))
 		}
@@ -264,39 +289,24 @@ func (m *Stats) countNat(ctx context.Context) error {
 	return errs
 }
 
-type tupleKey interface {
-	tuple() (extIP string, egressIP string, proto string, remotePort uint16)
-}
-
-type key4 tuple.TupleKey4
-type key6 tuple.TupleKey6
-
-func (k key4) tuple() (extIP string, egressIP string, proto string, remotePort uint16) {
-	return k.SourceAddr.String(), k.DestAddr.String(), k.NextHeader.String(), k.SourcePort
-}
-
-func (k key6) tuple() (extIP string, egressIP string, proto string, remotePort uint16) {
-	return k.SourceAddr.String(), k.DestAddr.String(), k.NextHeader.String(), k.SourcePort
-}
-
-type tupleBucket[KT tupleKey] struct {
-	key   KT
+type tupleBucket struct {
+	key   SNATTupleAccessor
 	count int
 }
 
-type topk[KT tupleKey] struct {
-	mq      *minQueue[KT]
+type topk struct {
+	mq      *minQueue
 	k, size int
 }
 
-func newTopK[KT tupleKey](k int) *topk[KT] {
-	mq := make(minQueue[KT], 0, k)
+func newTopK(k int) *topk {
+	mq := make(minQueue, 0, k)
 	heap.Init(&mq)
-	return &topk[KT]{mq: &mq, k: k}
+	return &topk{mq: &mq, k: k}
 }
 
-func (t *topk[KT]) Push(key KT, count int) {
-	heap.Push(t.mq, tupleBucket[KT]{key: key, count: count})
+func (t *topk) Push(key SNATTupleAccessor, count int) {
+	heap.Push(t.mq, tupleBucket{key: key, count: count})
 	t.size++
 	if t.size > t.k {
 		heap.Pop(t.mq)
@@ -304,31 +314,31 @@ func (t *topk[KT]) Push(key KT, count int) {
 	}
 }
 
-func (t *topk[KT]) popForEach(fn func(key KT, count, ith int)) {
-	for i := 0; i < t.size; i++ {
-		tuple := heap.Pop(t.mq).(tupleBucket[KT])
+func (t *topk) popForEach(fn func(key SNATTupleAccessor, count, ith int)) {
+	for i := range t.size {
+		tuple := heap.Pop(t.mq).(tupleBucket)
 		fn(tuple.key, tuple.count, t.size-i)
 	}
 	t.size = 0
 }
 
-type minQueue[KT tupleKey] []tupleBucket[KT]
+type minQueue []tupleBucket
 
-func (pq minQueue[KT]) Len() int { return len(pq) }
+func (pq minQueue) Len() int { return len(pq) }
 
-func (pq minQueue[KT]) Less(i, j int) bool {
+func (pq minQueue) Less(i, j int) bool {
 	return pq[i].count < pq[j].count
 }
 
-func (pq minQueue[KT]) Swap(i, j int) {
+func (pq minQueue) Swap(i, j int) {
 	pq[i], pq[j] = pq[j], pq[i]
 }
 
-func (pq *minQueue[KT]) Push(x any) {
-	*pq = append(*pq, x.(tupleBucket[KT]))
+func (pq *minQueue) Push(x any) {
+	*pq = append(*pq, x.(tupleBucket))
 }
 
-func (pq *minQueue[KT]) Pop() any {
+func (pq *minQueue) Pop() any {
 	old := *pq
 	n := len(old)
 	item := old[n-1]

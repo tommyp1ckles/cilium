@@ -5,7 +5,7 @@ package api
 
 import "fmt"
 
-// Keep in sync with __source_file_name_to_id in bpf/source_names_to_ids.h.
+// Keep in sync with __id_for_file in bpf/lib/source_info.h.
 var files = map[uint8]string{
 	// @@ source files list begin
 
@@ -15,24 +15,25 @@ var files = map[uint8]string{
 	3: "bpf_overlay.c",
 	4: "bpf_xdp.c",
 	5: "bpf_sock.c",
-	6: "bpf_network.c",
+	// 6: "available",
 	7: "bpf_wireguard.c",
 
 	// header files from bpf/lib/
-	101: "arp.h",
-	102: "drop.h",
-	103: "srv6.h",
-	104: "icmp6.h",
-	105: "nodeport.h",
-	106: "lb.h",
-	107: "mcast.h",
-	108: "ipv4.h",
-	109: "conntrack.h",
-	110: "l3.h",
-	111: "trace.h",
-	112: "encap.h",
-	113: "encrypt.h",
-	114: "host_firewall.h",
+	101: "drop.h",
+	102: "srv6.h",
+	103: "icmp6.h",
+	104: "nodeport.h",
+	105: "lb.h",
+	106: "mcast.h",
+	107: "ipv4.h",
+	108: "conntrack.h",
+	109: "local_delivery.h",
+	110: "trace.h",
+	111: "encap.h",
+	112: "host_firewall.h",
+	113: "nodeport_egress.h",
+	114: "ipv6.h",
+	115: "classifiers.h",
 
 	// @@ source files list end
 }

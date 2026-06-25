@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 /* Copyright Authors of Cilium */
-#include "common.h"
+
 #include <bpf/ctx/skb.h>
+#include "common.h"
 #include "pktgen.h"
 
 /*
@@ -17,13 +18,6 @@
 #define ENABLE_MASQUERADE_IPV6 1
 
 /*
- * Now include testing defaults
- */
-#define ROUTER_IP
-#undef ROUTER_IP
-#include "node_config.h"
-
-/*
  * Simulate sending traffic from pod_one on node_one directly to
  * node_two. Tests are written from the perspective of node_one,
  * allowing us access to nodeport_snat_fwd_ipv{4,6}.
@@ -37,30 +31,22 @@
 #define DST_IPV6 v6_node_two
 #define DST_PORT tcp_svc_one
 
+/* Set port ranges to have deterministic source port selection */
+#include "nodeport_defaults.h"
+
 /*
  * Include entrypoint into host stack
  */
-#include "bpf_host.c"
+#include "lib/bpf_host.h"
+
+ASSIGN_CONFIG(union v6addr, nat_ipv6_masquerade, {.addr = v6_node_one_addr})
 
 /*
  * Include test helpers
  */
 #include "lib/endpoint.h"
 #include "lib/ipcache.h"
-#include "lib/policy.h"
 #include "lib/clear.h"
-
-#define TO_NETDEV 0
-struct {
-	__uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-	__uint(key_size, sizeof(__u32));
-	__uint(max_entries, 1);
-	__array(values, int());
-} entry_call_map __section(".maps") = {
-	.values = {
-		[TO_NETDEV] = &cil_to_netdev,
-	},
-};
 
 static __always_inline int
 pktgen(struct __ctx_buff *ctx, bool v4)
@@ -108,13 +94,11 @@ setup(struct __ctx_buff *ctx, bool v4, bool flag_skip_tunnel)
 	 * Otherwise, leftover state from previous tests will have an impact,
 	 * as the tests and checks assume we have a fresh state every time.
 	 */
-	clear_map(&METRICS_MAP);
-	clear_map(&CT_MAP_TCP4);
-	clear_map(&CT_MAP_TCP6);
+	clear_map(&cilium_metrics);
+	clear_map(&cilium_ct4_global);
+	clear_map(&cilium_ct6_global);
 	clear_map(get_cluster_snat_map_v4(0));
 	clear_map(get_cluster_snat_map_v6(0));
-
-	policy_add_egress_allow_all_entry();
 
 	/*
 	 * For this scenario, an endpoint for the source addresses needs
@@ -124,7 +108,7 @@ setup(struct __ctx_buff *ctx, bool v4, bool flag_skip_tunnel)
 	 */
 
 	if (v4) {
-		endpoint_v4_add_entry(SRC_IPV4, 0, 0, 0, 0, (__u8 *)SRC_MAC, (__u8 *)SRC_MAC);
+		endpoint_v4_add_entry(SRC_IPV4, 0, 0, 0, 0, 0, (__u8 *)SRC_MAC, (__u8 *)SRC_MAC);
 		ipcache_v4_add_entry_with_flags(DST_IPV4,
 						0, REMOTE_NODE_ID, 0,
 						0, flag_skip_tunnel);
@@ -136,8 +120,7 @@ setup(struct __ctx_buff *ctx, bool v4, bool flag_skip_tunnel)
 						0, flag_skip_tunnel);
 	}
 
-	tail_call_static(ctx, entry_call_map, TO_NETDEV);
-	return TEST_ERROR;
+	return netdev_send_packet(ctx);
 }
 
 static __always_inline int
@@ -155,6 +138,11 @@ check_ctx(const struct __ctx_buff *ctx, bool v4, bool snat)
 
 	test_init();
 
+	if (v4)
+		endpoint_v4_del_entry(SRC_IPV4);
+	else
+		endpoint_v6_del_entry((union v6addr *)SRC_IPV6);
+
 	data = (void *)(long)ctx->data;
 	data_end = (void *)(long)ctx->data_end;
 
@@ -167,7 +155,7 @@ check_ctx(const struct __ctx_buff *ctx, bool v4, bool snat)
 	key.reason = REASON_FORWARDED;
 	key.dir = METRIC_EGRESS;
 
-	entry = map_lookup_elem(&METRICS_MAP, &key);
+	entry = map_lookup_elem(&cilium_metrics, &key);
 	if (!entry)
 		test_fatal("metrics entry not found")
 
@@ -201,7 +189,7 @@ check_ctx(const struct __ctx_buff *ctx, bool v4, bool snat)
 			test_fatal("l3 out of bounds");
 
 		if (snat) {
-			if (l3->saddr != IPV4_MASQUERADE)
+			if (l3->saddr != CONFIG(nat_ipv4_masquerade).be32)
 				test_fatal("src IP was not snatted");
 		} else {
 			if (l3->saddr != SRC_IPV4)
@@ -214,9 +202,7 @@ check_ctx(const struct __ctx_buff *ctx, bool v4, bool snat)
 		l4 = (void *)l3 + sizeof(struct iphdr);
 	} else {
 		struct ipv6hdr *l3;
-		union v6addr masq_addr;
-
-		BPF_V6(masq_addr, IPV6_MASQUERADE);
+		union v6addr masq_addr = CONFIG(nat_ipv6_masquerade);
 
 		l3 = (void *)l2 + sizeof(struct ethhdr);
 

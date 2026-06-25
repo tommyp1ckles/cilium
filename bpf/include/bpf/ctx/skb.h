@@ -3,7 +3,7 @@
 
 #pragma once
 
-#define __section_entry __section("tc")
+#define PROG_TYPE		"tc"
 
 #define __ctx_buff		__sk_buff
 #define __ctx_is		__ctx_skb
@@ -57,9 +57,10 @@
 /* Avoid expensive calls into the kernel flow dissector if it's not an L4
  * hash. We currently only use the hash for debugging. If needed later, we
  * can map it to BPF_FUNC(get_hash_recalc) to get the L4 hash.
+ *
+ * bpf function get_hash_recalc from ../helpers_skb.h
  */
 #define get_hash(ctx)		ctx->hash
-#define get_hash_recalc(ctx)	get_hash(ctx)
 
 #define DEFINE_FUNC_CTX_POINTER(FIELD)						\
 static __always_inline void *							\
@@ -135,10 +136,10 @@ ctx_load_and_clear_meta(struct __sk_buff *ctx, const __u32 off)
 	return val;
 }
 
-static __always_inline __maybe_unused __u16
+static __always_inline __maybe_unused __be16
 ctx_get_protocol(const struct __sk_buff *ctx)
 {
-	return (__u16)ctx->protocol;
+	return (__be16)ctx->protocol;
 }
 
 static __always_inline __maybe_unused __u32

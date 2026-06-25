@@ -5,7 +5,10 @@ package restapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
+	"net/http"
 	"reflect"
 	"strconv"
 	"strings"
@@ -13,20 +16,23 @@ import (
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/statedb"
 	"github.com/go-openapi/runtime/middleware"
-	"github.com/sirupsen/logrus"
 
 	"github.com/cilium/cilium/api/v1/models"
 	daemonapi "github.com/cilium/cilium/api/v1/server/restapi/daemon"
+	"github.com/cilium/cilium/daemon/cmd/legacy"
 	"github.com/cilium/cilium/pkg/api"
+	"github.com/cilium/cilium/pkg/datapath/connector"
+	bandwidth "github.com/cilium/cilium/pkg/datapath/linux/bandwidth/types"
 	"github.com/cilium/cilium/pkg/datapath/linux/bigtcp"
 	datapathTables "github.com/cilium/cilium/pkg/datapath/tables"
 	"github.com/cilium/cilium/pkg/datapath/tunnel"
-	datapath "github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/endpoint/regeneration"
+	endpoint "github.com/cilium/cilium/pkg/endpoint/types"
 	"github.com/cilium/cilium/pkg/endpointmanager"
 	"github.com/cilium/cilium/pkg/eventqueue"
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
+	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	monitorAgent "github.com/cilium/cilium/pkg/monitor/agent"
@@ -34,6 +40,7 @@ import (
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
+	"github.com/cilium/cilium/pkg/policy/compute"
 	"github.com/cilium/cilium/pkg/proxy"
 	"github.com/cilium/cilium/pkg/trigger"
 	wgTypes "github.com/cilium/cilium/pkg/wireguard/types"
@@ -56,15 +63,26 @@ var configModificationCell = cell.Module(
 type configModifyApiHandlerParams struct {
 	cell.In
 
-	Logger logrus.FieldLogger
+	Logger *slog.Logger
 
-	DB           *statedb.DB
-	Devices      statedb.Table[*datapathTables.Device]
-	Clientset    k8sClient.Clientset
-	MonitorAgent monitorAgent.Agent
-	MTUConfig    mtu.MTU
-	BigTCPConfig *bigtcp.Configuration
-	TunnelConfig tunnel.Config
+	// Depend on DaemonInitialization to wait until legacy daemon initialization is finished. This blocks the
+	// API server from starting and is required to prevent panics when accessing node globals that are
+	// initialized in that phase.
+	legacy.DaemonInitialization
+
+	DaemonConfig    *option.DaemonConfig
+	DB              *statedb.DB
+	Devices         statedb.Table[*datapathTables.Device]
+	Clientset       k8sClient.Clientset
+	KVStoreConfig   kvstore.Config
+	MonitorAgent    monitorAgent.Agent
+	MTUConfig       mtu.MTU
+	BigTCPConfig    bigtcp.Config
+	TunnelConfig    tunnel.Config
+	BandwidthConfig bandwidth.Config
+	WgConfig        wgTypes.Config
+	ConnectorConfig connector.Config
+	LocalNodeStore  *node.LocalNodeStore
 
 	EventHandler *ConfigModifyEventHandler
 }
@@ -79,14 +97,20 @@ type configModifyApiHandlerOut struct {
 func newConfigModifyApiHandler(params configModifyApiHandlerParams) configModifyApiHandlerOut {
 	return configModifyApiHandlerOut{
 		GetConfigHandler: &getConfigHandler{
-			logger:       params.Logger,
-			db:           params.DB,
-			devices:      params.Devices,
-			clientset:    params.Clientset,
-			monitorAgent: params.MonitorAgent,
-			mtuConfig:    params.MTUConfig,
-			bigTCPConfig: params.BigTCPConfig,
-			tunnelConfig: params.TunnelConfig,
+			logger:          params.Logger,
+			daemonConfig:    params.DaemonConfig,
+			db:              params.DB,
+			devices:         params.Devices,
+			clientset:       params.Clientset,
+			kvstoreConfig:   params.KVStoreConfig,
+			monitorAgent:    params.MonitorAgent,
+			mtuConfig:       params.MTUConfig,
+			bigTCPConfig:    params.BigTCPConfig,
+			tunnelConfig:    params.TunnelConfig,
+			bandwidthConfig: params.BandwidthConfig,
+			wgConfig:        params.WgConfig,
+			connectorConfig: params.ConnectorConfig,
+			localNodeStore:  params.LocalNodeStore,
 		},
 		PatchConfigHandler: &patchConfigHandler{
 			logger:       params.Logger,
@@ -99,10 +123,11 @@ type configModifyEventHandlerParams struct {
 	cell.In
 
 	Lifecycle cell.Lifecycle
-	Logger    logrus.FieldLogger
+	Logger    *slog.Logger
 
-	Orchestrator    datapath.Orchestrator
-	Policy          *policy.Repository
+	Orchestrator    endpoint.Orchestrator
+	Policy          policy.PolicyRepository
+	PolicyComputer  compute.PolicyRecomputer
 	EndpointManager endpointmanager.EndpointManager
 	L7Proxy         *proxy.Proxy
 }
@@ -115,27 +140,24 @@ func newConfigModifyEventHandler(params configModifyEventHandlerParams) *ConfigM
 		logger:          params.Logger,
 		orchestrator:    params.Orchestrator,
 		policy:          params.Policy,
+		computer:        params.PolicyComputer,
 		endpointManager: params.EndpointManager,
 		l7Proxy:         params.L7Proxy,
 	}
 
 	params.Lifecycle.Append(cell.Hook{
 		OnStart: func(hookContext cell.HookContext) error {
-			// Reuse policy.TriggerMetrics and PolicyTriggerInterval here since
-			// this is only triggered by agent configuration changes for now and
-			// should be counted in pol.TriggerMetrics.
 			rt, err := trigger.NewTrigger(trigger.Parameters{
-				Name:            "datapath-regeneration",
-				MetricsObserver: &policy.TriggerMetrics{},
-				MinInterval:     option.Config.PolicyTriggerInterval,
-				TriggerFunc:     eventHandler.datapathRegen,
+				Name:        "datapath-regeneration",
+				MinInterval: option.Config.PolicyTriggerInterval,
+				TriggerFunc: eventHandler.datapathRegen,
 			})
 			if err != nil {
 				return fmt.Errorf("failed to create datapath regeneration trigger: %w", err)
 			}
 			eventHandler.datapathRegenTrigger = rt
 
-			eventHandler.configModifyQueue = eventqueue.NewEventQueueBuffered("config-modify-queue", ConfigModifyQueueSize)
+			eventHandler.configModifyQueue = eventqueue.NewEventQueueBuffered(params.Logger, "config-modify-queue", ConfigModifyQueueSize)
 			eventHandler.configModifyQueue.Run()
 
 			return nil
@@ -154,14 +176,15 @@ func newConfigModifyEventHandler(params configModifyEventHandlerParams) *ConfigM
 
 type ConfigModifyEventHandler struct {
 	ctx    context.Context
-	logger logrus.FieldLogger
+	logger *slog.Logger
 
 	datapathRegenTrigger *trigger.Trigger
 	// event queue for serializing configuration updates to the daemon.
 	configModifyQueue *eventqueue.EventQueue
 
-	orchestrator    datapath.Orchestrator
-	policy          *policy.Repository
+	orchestrator    endpoint.Orchestrator
+	policy          policy.PolicyRepository
+	computer        compute.PolicyRecomputer
 	endpointManager endpointmanager.EndpointManager
 	l7Proxy         *proxy.Proxy
 }
@@ -169,16 +192,24 @@ type ConfigModifyEventHandler struct {
 func (h *ConfigModifyEventHandler) datapathRegen(reasons []string) {
 	reason := strings.Join(reasons, ", ")
 
+	// We expect the policy revision to have been bumped prior to this call
+	// here. All endpoints are about to be regenerated so recompute policy
+	// for all endpoints and then trigger regeneration.
+
 	regenerationMetadata := &regeneration.ExternalRegenerationMetadata{
-		Reason:            reason,
+		Reason:            regeneration.ReasonDaemonConfigUpdate,
+		Message:           reason,
 		RegenerationLevel: regeneration.RegenerateWithDatapath,
+
+		PolicyRevisionToWaitFor: h.policy.GetRevision(),
 	}
+	h.computer.RecomputeIdentityPolicyForAllIdentities(regenerationMetadata.PolicyRevisionToWaitFor)
 	h.endpointManager.RegenerateAllEndpoints(regenerationMetadata)
 }
 
 // ConfigModifyEvents are serialized by the event queue, no need for additional locking for
 // changing 'Opts'
-func (h *ConfigModifyEventHandler) configModify(params daemonapi.PatchConfigParams, resChan chan interface{}) {
+func (h *ConfigModifyEventHandler) configModify(params daemonapi.PatchConfigParams, resChan chan any) {
 	cfgSpec := params.Configuration
 
 	om, err := option.Config.Opts.ValidateConfigurationMap(cfgSpec.Options)
@@ -212,9 +243,9 @@ func (h *ConfigModifyEventHandler) configModify(params daemonapi.PatchConfigPara
 			}
 
 		default:
-			msg := fmt.Errorf("invalid option for PolicyEnforcement %s", enforcement)
+			msg := fmt.Sprintf("invalid option for PolicyEnforcement %s", enforcement)
 			h.logger.Warn(msg)
-			resChan <- api.Error(daemonapi.PatchConfigBadRequestCode, msg)
+			resChan <- api.Error(daemonapi.PatchConfigBadRequestCode, errors.New(msg))
 			return
 		}
 		h.logger.Debug("finished configuring PolicyEnforcement for daemon")
@@ -223,7 +254,10 @@ func (h *ConfigModifyEventHandler) configModify(params daemonapi.PatchConfigPara
 	changes += option.Config.Opts.ApplyValidated(om, h.changedOption, nil)
 	h.endpointManager.OverrideEndpointOpts(om)
 
-	h.logger.WithField("count", changes).Debug("Applied changes to daemon's configuration")
+	h.logger.Debug(
+		"Applied changes to daemon's configuration",
+		logfields.Count, changes,
+	)
 
 	if changes > 0 {
 		// Only recompile if configuration has changed.
@@ -234,7 +268,7 @@ func (h *ConfigModifyEventHandler) configModify(params daemonapi.PatchConfigPara
 			if policyEnforcementChanged {
 				policy.SetPolicyEnabled(oldEnforcementValue)
 			}
-			option.Config.Opts.ApplyValidated(oldConfigOpts, func(string, option.OptionSetting, interface{}) {}, h)
+			option.Config.Opts.ApplyValidated(oldConfigOpts, func(string, option.OptionSetting, any) {}, h)
 			h.endpointManager.OverrideEndpointOpts(oldConfigOpts)
 			h.logger.Debug("finished reverting agent configuration changes")
 			resChan <- api.Error(daemonapi.PatchConfigFailureCode, msg)
@@ -249,11 +283,11 @@ func (h *ConfigModifyEventHandler) configModify(params daemonapi.PatchConfigPara
 	resChan <- daemonapi.NewPatchConfigOK()
 }
 
-func (h *ConfigModifyEventHandler) changedOption(key string, value option.OptionSetting, _ interface{}) {
+func (h *ConfigModifyEventHandler) changedOption(key string, value option.OptionSetting, _ any) {
 	if key == option.Debug {
 		// Set the log level of the agent (this can be a no-op)
 		if option.Config.Opts.IsEnabled(option.Debug) {
-			logging.SetLogLevelToDebug()
+			logging.SetLogLevel(slog.LevelDebug)
 		} else {
 			logging.SetDefaultLogLevel()
 		}
@@ -261,7 +295,7 @@ func (h *ConfigModifyEventHandler) changedOption(key string, value option.Option
 		// Reflect log level change to proxies
 		// Might not be initialized yet
 		if option.Config.EnableL7Proxy {
-			h.l7Proxy.ChangeLogLevel(logging.GetLevel(logging.DefaultLogger))
+			h.l7Proxy.ChangeLogLevel(logging.GetSlogLevel(h.logger))
 		}
 	}
 	h.policy.BumpRevision() // force policy recalculation
@@ -285,17 +319,20 @@ type ConfigModifyEvent struct {
 }
 
 // Handle implements pkg/eventqueue/EventHandler interface.
-func (e *ConfigModifyEvent) Handle(res chan interface{}) {
+func (e *ConfigModifyEvent) Handle(res chan any) {
 	e.eventHandler.configModify(e.params, res)
 }
 
 type patchConfigHandler struct {
-	logger       logrus.FieldLogger
+	logger       *slog.Logger
 	eventHandler *ConfigModifyEventHandler
 }
 
 func (h *patchConfigHandler) Handle(params daemonapi.PatchConfigParams) middleware.Responder {
-	h.logger.WithField(logfields.Params, logfields.Repr(params)).Debug("PATCH /config request")
+	h.logger.Debug(
+		"PATCH /config request",
+		logfields.Params, params,
+	)
 
 	c := &ConfigModifyEvent{
 		params:       params,
@@ -318,25 +355,34 @@ func (h *patchConfigHandler) Handle(params daemonapi.PatchConfigParams) middlewa
 }
 
 type getConfigHandler struct {
-	logger logrus.FieldLogger
+	logger *slog.Logger
 
-	db           *statedb.DB
-	devices      statedb.Table[*datapathTables.Device]
-	clientset    k8sClient.Clientset
-	monitorAgent monitorAgent.Agent
-	mtuConfig    mtu.MTU
-	bigTCPConfig *bigtcp.Configuration
-	tunnelConfig tunnel.Config
+	daemonConfig    *option.DaemonConfig
+	db              *statedb.DB
+	devices         statedb.Table[*datapathTables.Device]
+	clientset       k8sClient.Clientset
+	kvstoreConfig   kvstore.Config
+	monitorAgent    monitorAgent.Agent
+	mtuConfig       mtu.MTU
+	bigTCPConfig    bigtcp.Config
+	tunnelConfig    tunnel.Config
+	bandwidthConfig bandwidth.Config
+	wgConfig        wgTypes.Config
+	connectorConfig connector.Config
+	localNodeStore  *node.LocalNodeStore
 }
 
 func (h *getConfigHandler) Handle(params daemonapi.GetConfigParams) middleware.Responder {
-	h.logger.WithField(logfields.Params, logfields.Repr(params)).Debug("GET /config request")
+	h.logger.Debug(
+		"GET /config request",
+		logfields.Params, params,
+	)
 
-	m := make(map[string]interface{})
+	m := make(map[string]any)
 
 	// Collect config ignoring the mutable options.
 	e := reflect.ValueOf(option.Config).Elem()
-	for i := 0; i < e.NumField(); i++ {
+	for i := range e.NumField() {
 		if e.Field(i).Kind() != reflect.Func {
 			field := e.Type().Field(i)
 			// Only consider exported fields and ignore the mutable options.
@@ -355,33 +401,42 @@ func (h *getConfigHandler) Handle(params daemonapi.GetConfigParams) middleware.R
 		PolicyEnforcement: policy.GetPolicyEnabled(),
 	}
 
+	routerNodeAddressing, err := h.getNodeRouterAddressing(params.HTTPRequest.Context())
+	if err != nil {
+		return api.Error(http.StatusInternalServerError, err)
+	}
+
 	status := &models.DaemonConfigurationStatus{
-		Addressing:       node.GetNodeAddressing(),
+		Addressing:       routerNodeAddressing,
 		K8sConfiguration: h.clientset.Config().K8sKubeConfigPath,
-		K8sEndpoint:      h.clientset.Config().K8sAPIServer,
 		NodeMonitor:      h.monitorAgent.State(),
 		KvstoreConfiguration: &models.KVstoreConfiguration{
-			Type:    option.Config.KVStore,
-			Options: option.Config.KVStoreOpt,
+			Type:    h.kvstoreConfig.KVStore,
+			Options: h.kvstoreConfig.KVStoreOpt,
 		},
 		Realized:                     spec,
 		DaemonConfigurationMap:       m,
 		DeviceMTU:                    int64(h.mtuConfig.GetDeviceMTU()),
 		RouteMTU:                     int64(h.mtuConfig.GetRouteMTU()),
 		EnableRouteMTUForCNIChaining: h.mtuConfig.IsEnableRouteMTUForCNIChaining(),
-		DatapathMode:                 models.DatapathMode(option.Config.DatapathMode),
+		DatapathMode:                 models.DatapathMode(h.connectorConfig.GetOperationalMode().String()),
+		ConfiguredDatapathMode:       models.ConfiguredDatapathMode(h.connectorConfig.GetConfiguredMode().String()),
 		IpamMode:                     option.Config.IPAM,
 		Masquerade:                   option.Config.MasqueradingEnabled(),
 		MasqueradeProtocols: &models.DaemonConfigurationStatusMasqueradeProtocols{
-			IPV4: option.Config.EnableIPv4Masquerade,
-			IPV6: option.Config.EnableIPv6Masquerade,
+			IPv4: option.Config.EnableIPv4Masquerade,
+			IPv6: option.Config.EnableIPv6Masquerade,
 		},
-		EgressMultiHomeIPRuleCompat: option.Config.EgressMultiHomeIPRuleCompat,
-		GROMaxSize:                  int64(h.bigTCPConfig.GetGROIPv6MaxSize()),
-		GSOMaxSize:                  int64(h.bigTCPConfig.GetGSOIPv6MaxSize()),
-		GROIPV4MaxSize:              int64(h.bigTCPConfig.GetGROIPv4MaxSize()),
-		GSOIPV4MaxSize:              int64(h.bigTCPConfig.GetGSOIPv4MaxSize()),
-		IPLocalReservedPorts:        h.getIPLocalReservedPorts(),
+		InstallUplinkRoutesForDelegatedIPAM: option.Config.InstallUplinkRoutesForDelegatedIPAM,
+		GROMaxSize:                          int64(h.bigTCPConfig.GetGROIPv6MaxSize()),
+		GSOMaxSize:                          int64(h.bigTCPConfig.GetGSOIPv6MaxSize()),
+		GROIPv4MaxSize:                      int64(h.bigTCPConfig.GetGROIPv4MaxSize()),
+		GSOIPv4MaxSize:                      int64(h.bigTCPConfig.GetGSOIPv4MaxSize()),
+		IPLocalReservedPorts:                h.getIPLocalReservedPorts(),
+		EnableBBRHostNamespaceOnly:          h.bandwidthConfig.EnableBBRHostnsOnly,
+		DeviceHeadroom:                      int64(h.connectorConfig.GetPodDeviceHeadroom()),
+		DeviceTailroom:                      int64(h.connectorConfig.GetPodDeviceTailroom()),
+		PacketizationLayerPMTUDMode:         h.mtuConfig.PacketizationLayerPMTUDMode(),
 	}
 
 	cfg := &models.DaemonConfiguration{
@@ -390,6 +445,33 @@ func (h *getConfigHandler) Handle(params daemonapi.GetConfigParams) middleware.R
 	}
 
 	return daemonapi.NewGetConfigOK().WithPayload(cfg)
+}
+
+func (h *getConfigHandler) getNodeRouterAddressing(ctx context.Context) (*models.NodeAddressing, error) {
+	ln, err := h.localNodeStore.Get(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get local node: %w", err)
+	}
+
+	nodeRouterAddressing := &models.NodeAddressing{}
+
+	if h.daemonConfig.EnableIPv6 {
+		nodeRouterAddressing.IPv6 = &models.NodeAddressingElement{
+			Enabled:    h.daemonConfig.EnableIPv6,
+			IP:         ln.GetCiliumInternalIP(true).String(),
+			AllocRange: ln.IPv6AllocCIDR.String(),
+		}
+	}
+
+	if h.daemonConfig.EnableIPv4 {
+		nodeRouterAddressing.IPv4 = &models.NodeAddressingElement{
+			Enabled:    h.daemonConfig.EnableIPv4,
+			IP:         ln.GetCiliumInternalIP(false).String(),
+			AllocRange: ln.IPv4AllocCIDR.String(),
+		}
+	}
+
+	return nodeRouterAddressing, nil
 }
 
 // getIPLocalReservedPorts returns a comma-separated list of ports which
@@ -410,7 +492,7 @@ func (h *getConfigHandler) getIPLocalReservedPorts() string {
 	// range and thus may conflict with the ephemeral source port of DNS clients
 	// in the container network namespace.
 	var ports []string
-	if option.Config.EnableWireguard {
+	if h.wgConfig.Enabled() {
 		ports = append(ports, strconv.Itoa(wgTypes.ListenPort))
 	}
 
@@ -418,12 +500,14 @@ func (h *getConfigHandler) getIPLocalReservedPorts() string {
 	// default, but is user configurable and thus should be included regardless.
 	// The Linux kernel documentation explicitly allows to reserve ports which
 	// are not part of the ephemeral port range, in which case this is a no-op.
-	if h.tunnelConfig.Protocol() != tunnel.Disabled {
+	if h.tunnelConfig.EncapProtocol() != tunnel.Disabled {
 		ports = append(ports, fmt.Sprintf("%d", h.tunnelConfig.Port()))
 	}
 
-	h.logger.WithField(logfields.Ports, ports).
-		Info("Auto-detected local ports to reserve in the container namespace for transparent DNS proxy")
+	h.logger.Info(
+		"Auto-detected local ports to reserve in the container namespace for transparent DNS proxy",
+		logfields.Ports, ports,
+	)
 
 	return strings.Join(ports, ",")
 }

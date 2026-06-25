@@ -18,12 +18,10 @@ package suite
 
 import (
 	"fmt"
-	"sort"
 
 	"k8s.io/apimachinery/pkg/util/sets"
 
 	confv1 "sigs.k8s.io/gateway-api/conformance/apis/v1"
-	"sigs.k8s.io/gateway-api/pkg/features"
 )
 
 // -----------------------------------------------------------------------------
@@ -38,10 +36,11 @@ type testResult struct {
 type resultType string
 
 var (
-	testSucceeded    resultType = "SUCCEEDED"
-	testFailed       resultType = "FAILED"
-	testSkipped      resultType = "SKIPPED"
-	testNotSupported resultType = "NOT_SUPPORTED"
+	testSucceeded          resultType = "SUCCEEDED"
+	testFailed             resultType = "FAILED"
+	testSkipped            resultType = "SKIPPED"
+	testNotSupported       resultType = "NOT_SUPPORTED"
+	testProvisionalSkipped resultType = "PROVISIONAL_SKIPPED"
 )
 
 type profileReportsMap map[ConformanceProfileName]confv1.ProfileReport
@@ -67,9 +66,9 @@ func (p profileReportsMap) addTestResults(conformanceProfile ConformanceProfile,
 			if report.Extended == nil {
 				report.Extended = &confv1.ExtendedStatus{}
 			}
-			report.Extended.Statistics.Passed++
+			report.Extended.Passed++
 		} else {
-			report.Core.Statistics.Passed++
+			report.Core.Passed++
 		}
 	case testFailed:
 		if testIsExtended {
@@ -77,9 +76,9 @@ func (p profileReportsMap) addTestResults(conformanceProfile ConformanceProfile,
 				report.Extended = &confv1.ExtendedStatus{}
 			}
 			report.Extended.FailedTests = append(report.Extended.FailedTests, result.test.ShortName)
-			report.Extended.Statistics.Failed++
+			report.Extended.Failed++
 		} else {
-			report.Core.Statistics.Failed++
+			report.Core.Failed++
 			if report.Core.FailedTests == nil {
 				report.Core.FailedTests = []string{}
 			}
@@ -90,10 +89,10 @@ func (p profileReportsMap) addTestResults(conformanceProfile ConformanceProfile,
 			if report.Extended == nil {
 				report.Extended = &confv1.ExtendedStatus{}
 			}
-			report.Extended.Statistics.Skipped++
+			report.Extended.Skipped++
 			report.Extended.SkippedTests = append(report.Extended.SkippedTests, result.test.ShortName)
 		} else {
-			report.Core.Statistics.Skipped++
+			report.Core.Skipped++
 			report.Core.SkippedTests = append(report.Core.SkippedTests, result.test.ShortName)
 		}
 	}
@@ -107,7 +106,7 @@ func (p profileReportsMap) list() (profileReports []confv1.ProfileReport) {
 	return
 }
 
-func (p profileReportsMap) compileResults(supportedFeaturesMap map[ConformanceProfileName]sets.Set[features.FeatureName], unsupportedFeaturesMap map[ConformanceProfileName]sets.Set[features.FeatureName]) {
+func (p profileReportsMap) compileResults(supportedFeaturesMap map[ConformanceProfileName]FeaturesSet, unsupportedFeaturesMap map[ConformanceProfileName]FeaturesSet) {
 	for key, report := range p {
 		// report the overall result for core features
 		switch {
@@ -136,10 +135,7 @@ func (p profileReportsMap) compileResults(supportedFeaturesMap map[ConformancePr
 		supportedFeatures := supportedFeaturesMap[ConformanceProfileName(report.Name)]
 		if report.Extended != nil {
 			if supportedFeatures != nil {
-				supportedFeatures := supportedFeatures.UnsortedList()
-				sort.Slice(supportedFeatures, func(i, j int) bool {
-					return supportedFeatures[i] < supportedFeatures[j]
-				})
+				supportedFeatures := sets.List(supportedFeatures)
 				for _, f := range supportedFeatures {
 					report.Extended.SupportedFeatures = append(report.Extended.SupportedFeatures, string(f))
 				}
@@ -149,10 +145,7 @@ func (p profileReportsMap) compileResults(supportedFeaturesMap map[ConformancePr
 		unsupportedFeatures := unsupportedFeaturesMap[ConformanceProfileName(report.Name)]
 		if report.Extended != nil {
 			if unsupportedFeatures != nil {
-				unsupportedFeatures := unsupportedFeatures.UnsortedList()
-				sort.Slice(unsupportedFeatures, func(i, j int) bool {
-					return unsupportedFeatures[i] < unsupportedFeatures[j]
-				})
+				unsupportedFeatures := sets.List(unsupportedFeatures)
 				for _, f := range unsupportedFeatures {
 					report.Extended.UnsupportedFeatures = append(report.Extended.UnsupportedFeatures, string(f))
 				}
@@ -168,7 +161,8 @@ func (p profileReportsMap) compileResults(supportedFeaturesMap map[ConformancePr
 // isTestExtended determines if a provided test is considered to be supported
 // at an extended level of support given the provided conformance profile.
 //
-// TODO: right now the tests themselves don't indicate the conformance
+// TODO(#3759) Update this method to be based on Features inferred.
+// Right now the tests themselves don't indicate the conformance
 // support level associated with them. The only way we have right now
 // in this prototype to know whether a test belongs to any particular
 // conformance level is to compare the features needed for the test to
@@ -202,9 +196,9 @@ func buildReportSummary(status confv1.Status) string {
 	case confv1.Success:
 		message = "succeeded"
 	case confv1.Partial:
-		message = fmt.Sprintf("partially succeeded with %d test skips", status.Statistics.Skipped)
+		message = fmt.Sprintf("partially succeeded with %d test skips", status.Skipped)
 	case confv1.Failure:
-		message = fmt.Sprintf("failed with %d test failures", status.Statistics.Failed)
+		message = fmt.Sprintf("failed with %d test failures", status.Failed)
 	}
 	return message
 }

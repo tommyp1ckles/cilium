@@ -6,6 +6,7 @@ package socketlb
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -13,9 +14,9 @@ import (
 
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/cgroups"
+	"github.com/cilium/cilium/pkg/datapath/config"
 	"github.com/cilium/cilium/pkg/datapath/linux/sysctl"
-	"github.com/cilium/cilium/pkg/logging"
-	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/maps/registry"
 	"github.com/cilium/cilium/pkg/option"
 )
 
@@ -34,15 +35,19 @@ const (
 	GetPeerName6 = "cil_sock6_getpeername"
 	PostBind6    = "cil_sock6_post_bind"
 	PreBind6     = "cil_sock6_pre_bind"
+	SockRelease  = "cil_sock_release"
+
+	socketPrefix = "bpf_sock"
+	socketObj    = socketPrefix + ".o"
+	socketConfig = socketPrefix + ".json"
 )
 
 var (
-	log = logging.DefaultLogger.WithField(logfields.LogSubsys, Subsystem)
-
 	cgroupProgs = []string{
 		Connect4, SendMsg4, RecvMsg4, GetPeerName4,
 		PostBind4, PreBind4, Connect6, SendMsg6,
-		RecvMsg6, GetPeerName6, PostBind6, PreBind6}
+		RecvMsg6, GetPeerName6, PostBind6, PreBind6,
+		SockRelease}
 )
 
 // TODO: Clean up bpffs root logic and make this a var.
@@ -50,26 +55,40 @@ func cgroupLinkPath() string {
 	return filepath.Join(bpf.CiliumPath(), Subsystem, "links/cgroup")
 }
 
+// File to dump the socketlb BPF configuration to.
+var configDumpPath = filepath.Join(option.Config.StateDir, "bpf", socketConfig)
+
 // Enable attaches necessary bpf programs for socketlb based on ciliums config.
 //
 // On restart, Enable can also detach unnecessary programs if specific configuration
 // options have changed.
 // It expects bpf_sock.c to be compiled previously, so that bpf_sock.o is present
 // in the Runtime dir.
-func Enable(sysctl sysctl.Sysctl) error {
+func Enable(logger *slog.Logger, reg *registry.MapRegistry,
+	sysctl sysctl.Sysctl, lnc *config.Config) error {
 	if err := os.MkdirAll(cgroupLinkPath(), 0777); err != nil {
 		return fmt.Errorf("create bpffs link directory: %w", err)
 	}
 
-	spec, err := bpf.LoadCollectionSpec(filepath.Join(option.Config.StateDir, "bpf_sock.o"))
+	spec, err := ebpf.LoadCollectionSpec(filepath.Join(option.Config.StateDir, socketObj))
 	if err != nil {
-		return fmt.Errorf("failed to load collection spec for bpf_sock.o: %w", err)
+		return fmt.Errorf("load CollectionSpec: %w", err)
 	}
 
-	coll, commit, err := bpf.LoadCollection(spec, &bpf.CollectionOptions{
+	cfg := config.NewBPFSock(config.NodeConfig(lnc))
+	cfg.EnableNoServiceEndpointsRoutable = lnc.SvcRouteConfig.EnableNoServiceEndpointsRoutable
+	cfg.EnableLRP = option.Config.EnableLocalRedirectPolicy
+
+	cfg.TunnelProtocol = lnc.TunnelProtocol
+	cfg.TunnelPort = lnc.TunnelPort
+
+	coll, commit, err := bpf.LoadCollection(logger, spec, &bpf.CollectionOptions{
+		MapRegistry: reg,
+		Constants:   cfg,
 		CollectionOptions: ebpf.CollectionOptions{
 			Maps: ebpf.MapOptions{PinPath: bpf.TCGlobalsPath()},
 		},
+		ConfigDumpPath: configDumpPath,
 	})
 	var ve *ebpf.VerifierError
 	if errors.As(err, &ve) {
@@ -93,15 +112,15 @@ func Enable(sysctl sysctl.Sysctl) error {
 		enabled[SendMsg4] = true
 		enabled[RecvMsg4] = true
 
-		if option.Config.EnableSocketLBPeer {
+		if option.Config.UnsafeDaemonConfigOption.EnableSocketLBPeer {
 			enabled[GetPeerName4] = true
 		}
 
-		if option.Config.EnableNodePort && option.Config.NodePortBindProtection {
+		if lnc.KPRConfig.KubeProxyReplacement && option.Config.NodePortBindProtection {
 			enabled[PostBind4] = true
 		}
 
-		if option.Config.EnableHealthDatapath {
+		if option.Config.UnsafeDaemonConfigOption.EnableHealthDatapath {
 			enabled[PreBind4] = true
 		}
 	}
@@ -115,27 +134,29 @@ func Enable(sysctl sysctl.Sysctl) error {
 		enabled[SendMsg6] = true
 		enabled[RecvMsg6] = true
 
-		if option.Config.EnableSocketLBPeer {
+		if option.Config.UnsafeDaemonConfigOption.EnableSocketLBPeer {
 			enabled[GetPeerName6] = true
 		}
 
-		if option.Config.EnableNodePort && option.Config.NodePortBindProtection {
+		if lnc.KPRConfig.KubeProxyReplacement && option.Config.NodePortBindProtection {
 			enabled[PostBind6] = true
 		}
 
-		if option.Config.EnableHealthDatapath {
+		if option.Config.UnsafeDaemonConfigOption.EnableHealthDatapath {
 			enabled[PreBind6] = true
 		}
 	}
 
+	enabled[SockRelease] = option.Config.EnableIPv4 || option.Config.EnableIPv6
+
 	for p, s := range enabled {
 		if s {
-			if err := attachCgroup(coll, p, cgroups.GetCgroupRoot(), cgroupLinkPath()); err != nil {
+			if err := attachCgroup(logger, coll, p, cgroups.GetCgroupRoot(), cgroupLinkPath()); err != nil {
 				return fmt.Errorf("cgroup attach: %w", err)
 			}
 			continue
 		}
-		if err := detachCgroup(p, cgroups.GetCgroupRoot(), cgroupLinkPath()); err != nil {
+		if err := detachCgroup(logger, p, cgroups.GetCgroupRoot(), cgroupLinkPath()); err != nil {
 			return fmt.Errorf("cgroup detach: %w", err)
 		}
 	}
@@ -148,9 +169,9 @@ func Enable(sysctl sysctl.Sysctl) error {
 }
 
 // Disable detaches all bpf programs for socketlb.
-func Disable() error {
+func Disable(logger *slog.Logger) error {
 	for _, p := range cgroupProgs {
-		if err := detachCgroup(p, cgroups.GetCgroupRoot(), cgroupLinkPath()); err != nil {
+		if err := detachCgroup(logger, p, cgroups.GetCgroupRoot(), cgroupLinkPath()); err != nil {
 			return fmt.Errorf("detach cgroup: %w", err)
 		}
 	}

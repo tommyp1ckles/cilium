@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 /* Copyright Authors of Cilium */
 
-#include "common.h"
 #include <bpf/ctx/skb.h>
-#include <linux/in.h>
+#include "common.h"
 #include "pktgen.h"
 
 /* Enable code paths under test */
@@ -17,22 +16,9 @@
 /* Test SRH encap. Reduced encap code path is a subset of SRH encap */
 #define ENABLE_SRV6_SRH_ENCAP
 
-#include "bpf_lxc.c"
+#include "lib/bpf_lxc.h"
 #include "lib/ipcache.h"
 #include "lib/policy.h"
-
-#define FROM_CONTAINER 0
-
-struct {
-	__uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-	__uint(key_size, sizeof(__u32));
-	__uint(max_entries, 1);
-	__array(values, int());
-} entry_call_map __section(".maps") = {
-	.values = {
-		[FROM_CONTAINER] = &cil_from_container,
-	},
-};
 
 #define POD_IPV4 v4_pod_one
 #define EXT_IPV4 v4_ext_one
@@ -96,14 +82,13 @@ int srv6_encap_from_pod_ipv4_setup(struct __ctx_buff *ctx __maybe_unused)
 	__u32 vrf_id = 1;
 
 	memcpy(&sid, (const void *)SID, sizeof(sid));
-	map_update_elem(&SRV6_VRF_MAP4, &vrf_key, &vrf_id, 0);
-	map_update_elem(&SRV6_POLICY_MAP4, &policy_key, &sid, 0);
+	map_update_elem(&cilium_srv6_vrf_v4, &vrf_key, &vrf_id, 0);
+	map_update_elem(&cilium_srv6_policy_v4, &policy_key, &sid, 0);
 
 	/* We need this rule. Otherwise, network policy will drop the inner packet. */
 	policy_add_egress_allow_all_entry();
 
-	tail_call_static(ctx, entry_call_map, FROM_CONTAINER);
-	return TEST_FAIL;
+	return pod_send_packet(ctx);
 }
 
 CHECK("tc", "tc_srv6_encap_from_pod_ipv4")
@@ -246,17 +231,16 @@ int srv6_encap_from_pod_ipv6_setup(struct __ctx_buff *ctx __maybe_unused)
 
 	memcpy(&vrf_key.src_ip, (const void *)POD_IPV6, sizeof(union v6addr));
 	memset(&vrf_key.dst_cidr, 0, sizeof(union v6addr));
-	map_update_elem(&SRV6_VRF_MAP6, &vrf_key, &vrf_id, 0);
+	map_update_elem(&cilium_srv6_vrf_v6, &vrf_key, &vrf_id, 0);
 
 	memcpy(&policy_key.dst_cidr, (const void *)EXT_IPV6, sizeof(union v6addr));
 	memcpy(&sid, (const void *)SID, sizeof(sid));
-	map_update_elem(&SRV6_POLICY_MAP6, &policy_key, &sid, 0);
+	map_update_elem(&cilium_srv6_policy_v6, &policy_key, &sid, 0);
 
 	/* We need this rule. Otherwise, network policy will drop the inner packet. */
 	policy_add_egress_allow_all_entry();
 
-	tail_call_static(ctx, entry_call_map, FROM_CONTAINER);
-	return TEST_FAIL;
+	return pod_send_packet(ctx);
 }
 
 CHECK("tc", "tc_srv6_encap_from_pod_ipv6")

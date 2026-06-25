@@ -18,13 +18,13 @@ import (
 	cmdConfig "github.com/cilium/cilium/hubble/cmd/config"
 	"github.com/cilium/cilium/hubble/cmd/list"
 	"github.com/cilium/cilium/hubble/cmd/observe"
-	"github.com/cilium/cilium/hubble/cmd/record"
 	"github.com/cilium/cilium/hubble/cmd/reflect"
 	"github.com/cilium/cilium/hubble/cmd/status"
 	"github.com/cilium/cilium/hubble/cmd/version"
 	"github.com/cilium/cilium/hubble/cmd/watch"
 	"github.com/cilium/cilium/hubble/pkg"
 	"github.com/cilium/cilium/hubble/pkg/logger"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 )
 
 // New create a new root command.
@@ -61,7 +61,7 @@ func NewWithViper(vp *viper.Viper) *cobra.Command {
 		// initialize the logger after all the config parameters get loaded to viper.
 		logger.Initialize(newLogHandler(vp))
 		if err == nil {
-			logger.Logger.Debug("Using config file", "config-file", vp.ConfigFileUsed())
+			logger.Logger.Debug("Using config file", logfields.ConfigFile, vp.ConfigFileUsed())
 		}
 
 		username := vp.GetString(config.KeyBasicAuthUsername)
@@ -90,13 +90,12 @@ func NewWithViper(vp *viper.Viper) *cobra.Command {
 	rootCmd.SetUsageTemplate(template.Usage)
 
 	rootCmd.SetErr(os.Stderr)
-	rootCmd.SetVersionTemplate("{{with .Name}}{{printf \"%s \" .}}{{end}}{{printf \"v%s\" .Version}}\r\n")
+	rootCmd.SetVersionTemplate("{{with .Name}}{{printf \"%s \" .}}{{end}}{{printf \"%s\" .Version}}\r\n")
 
 	rootCmd.AddCommand(
 		cmdConfig.New(vp),
 		list.New(vp),
 		observe.New(vp),
-		record.New(vp),
 		reflect.New(vp),
 		status.New(vp),
 		version.New(),

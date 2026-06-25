@@ -16,6 +16,9 @@ on:
       SHA:
         description: "SHA under test (head of the PR branch)."
         required: true
+      base-SHA:
+        description: "SHA of the base branch (target branch of the PR)."
+        required: false
       extra-args:
         description: "[JSON object] Arbitrary arguments passed from the trigger comment via regex capture group. Parse with 'fromJson(inputs.extra-args).argName' in workflow."
         required: false
@@ -29,7 +32,7 @@ on:
 # By specifying the access of one of the scopes, all of those that are not
 # specified are set to 'none'.
 permissions:
-  # To read actions state with catchpoint/workflow-telemetry-action
+  # To read actions state with cilium/workflow-telemetry-action
   actions: read
   # To be able to access the repository with actions/checkout
   contents: read
@@ -61,35 +64,53 @@ concurrency:
 
 env:
   clusterName: ${{ github.event.repository.name }}-${{ github.run_id }}-${{ github.run_attempt }}
-  cilium_cli_ci_version:
   test_name: gke-perf
   USE_GKE_GCLOUD_AUTH_PLUGIN: True
   gcp_zone: us-east5-a
-  k8s_version: 1.28
   # renovate: datasource=docker depName=google/cloud-sdk
-  gcloud_version: 491.0.0
+  gcloud_version: 568.0.0
 
 jobs:
   echo-inputs:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     name: Echo Workflow Dispatch Inputs
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - name: Echo Workflow Dispatch Inputs
         run: |
           echo '${{ tojson(inputs) }}'
   commit-status-start:
     name: Commit Status Start
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Set initial commit status
-        uses: myrotvorets/set-commit-status-action@3730c0a348a2ace3c110851bed53331bc6406e9f # v2.0.1
+        uses: cilium/cilium/.github/actions/set-commit-status@main # main
         with:
           sha: ${{ inputs.SHA || github.sha }}
 
+  wait-for-images:
+    name: Wait for images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout context ref (trusted)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.context-ref || github.sha }}
+          persist-credentials: false
+
+      - name: Wait for images
+        uses: ./.github/actions/wait-for-images
+        with:
+          SHA: ${{ inputs.SHA || github.sha }}
+          login-host: ${{ vars.DOCKER_READ_HOST }}
+          login-username: ${{ vars.DOCKER_READ_USERNAME }}
+          login-password: ${{ secrets.DOCKER_READ_PASSWORD }}
+
   installation-and-perf:
     name: Installation and Perf Test
-    runs-on: ubuntu-latest
+    needs: wait-for-images
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       job_name: "Installation and Perf Test"
@@ -97,86 +118,54 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - index: 0
+            name: "baseline"
+            mode: "baseline"
+            encryption: "baseline"
+
           - index: 1
             name: "native"
             mode: "gke"
             encryption: "none"
-            hubble: "false"
 
           - index: 2
             name: "tunnel"
             mode: "tunnel"
             encryption: "none"
-            hubble: "false"
 
           - index: 3
             name: "native-ipsec"
             mode: "gke"
             encryption: "ipsec"
-            hubble: "false"
 
           - index: 4
             name: "tunnel-ipsec"
             mode: "tunnel"
             encryption: "ipsec"
-            hubble: "false"
 
           - index: 5
             name: "native-wireguard"
             mode: "gke"
             encryption: "wireguard"
-            hubble: "false"
 
           - index: 6
             name: "tunnel-wireguard"
             mode: "tunnel"
             encryption: "wireguard"
-            hubble: "false"
-
-          - index: 7
-            name: "native-hubble"
-            mode: "gke"
-            encryption: "none"
-            hubble: "true"
-
-          - index: 8
-            name: "tunnel-hubble"
-            mode: "tunnel"
-            encryption: "none"
-            hubble: "true"
-
-          - index: 9
-            name: "native-ipsec-hubble"
-            mode: "gke"
-            encryption: "ipsec"
-            hubble: "true"
-
-          - index: 10
-            name: "tunnel-ipsec-hubble"
-            mode: "tunnel"
-            encryption: "ipsec"
-            hubble: "true"
-
-          - index: 11
-            name: "native-wireguard-hubble"
-            mode: "gke"
-            encryption: "wireguard"
-            hubble: "true"
-
-          - index: 12
-            name: "tunnel-wireguard-hubble"
-            mode: "tunnel"
-            encryption: "wireguard"
-            hubble: "true"
 
     steps:
+      - name: Set commit status to pending
+        uses: cilium/cilium/.github/actions/set-commit-status@main # main
+        with:
+          sha: ${{ inputs.SHA || github.sha }}
+
       - name: Collect Workflow Telemetry
-        uses: catchpoint/workflow-telemetry-action@94c3c3d9567a0205de6da68a76c428ce4e769af1 # v2.0.0
+        uses: cilium/workflow-telemetry-action@b1a318f80a08acede58027afe1455d037379966f # v2.2.0
         with:
           comment_on_pr: false
 
       - name: Checkout context ref (trusted)
-        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.context-ref || github.sha }}
           persist-credentials: false
@@ -184,45 +173,33 @@ jobs:
       - name: Set Environment Variables
         uses: ./.github/actions/set-env-variables
 
+      - name: Get Cilium's default values
+        id: default_vars
+        uses: ./.github/actions/helm-default
+        with:
+          image-tag: ${{ inputs.SHA || github.sha }}
+          registry_host: ${{ vars.DOCKER_READ_HOST }}
+          registry_organization: ${{ vars.DOCKER_READ_ORG }}
+          chart-dir: ./install/kubernetes/cilium
+          debug: false
+          image-pull-secret: "cilium-registry"
+
+      - name: Truncate owner label for GKE
+        id: truncate-owner
+        uses: ./.github/actions/truncate-label
+        with:
+          label: ${{ (github.event_name == 'workflow_dispatch' || github.event.pull_request) && inputs.PR-number || github.ref_name }}
+
       - name: Set up job variables
         id: vars
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ ${{ github.event.pull_request }} ] ; then
-            SHA="${{ inputs.SHA }}"
-            OWNER="${{ inputs.PR-number }}"
-          else
-            SHA="${{ github.sha }}"
-            OWNER="${{ github.ref_name }}"
-            OWNER="${OWNER//[.\/]/-}"
-          fi
+          OWNER="${{ steps.truncate-owner.outputs.truncated_label }}"
 
-          CILIUM_INSTALL_DEFAULTS="--chart-directory=install/kubernetes/cilium \
+          CILIUM_INSTALL_DEFAULTS="${{ steps.default_vars.outputs.cilium_install_defaults }} \
             --helm-set=cluster.name=${{ env.clusterName }}-${{ matrix.index }} \
             --helm-set=agentNotReadyTaintKey=ignore-taint.cluster-autoscaler.kubernetes.io/cilium-agent-not-ready \
-            --helm-set=debug.enabled=false \
-            --helm-set=bpf.monitorAggregation=maximum \
-            --helm-set=hubble.enabled=${{ matrix.hubble == 'true' }} \
-            --wait=false"
-
-          # only add SHA to the image tags if it was set
-          if [ -n "${SHA}" ]; then
-            echo sha=${SHA} >> $GITHUB_OUTPUT
-            CILIUM_INSTALL_DEFAULTS+=" --helm-set=image.repository=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-ci \
-            --helm-set=image.useDigest=false \
-            --helm-set=image.tag=${SHA} \
-            --helm-set=operator.image.repository=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/operator \
-            --helm-set=operator.image.suffix=-ci \
-            --helm-set=operator.image.tag=${SHA} \
-            --helm-set=operator.image.useDigest=false \
-            --helm-set=clustermesh.apiserver.image.repository=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/clustermesh-apiserver-ci \
-            --helm-set=clustermesh.apiserver.image.tag=${SHA} \
-            --helm-set=clustermesh.apiserver.image.useDigest=false \
-            --helm-set=hubble.relay.image.repository=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/hubble-relay-ci \
-            --helm-set=hubble.relay.image.tag=${SHA} \
-            --helm-set=hubble.relay.image.useDigest=false"
-          fi
-
-          CILIUM_INSTALL_DEFAULTS+=" --datapath-mode=${{ matrix.mode }}"
+            --wait=false \
+            --datapath-mode=${{ matrix.mode }}"
 
           if [ "${{ matrix.encryption }}" = "ipsec" ] ; then
             CILIUM_INSTALL_DEFAULTS+=" --helm-set=encryption.enabled=true --helm-set=encryption.type=ipsec"
@@ -232,22 +209,31 @@ jobs:
             CILIUM_INSTALL_DEFAULTS+=" --helm-set=encryption.enabled=true --helm-set=encryption.type=wireguard"
           fi
 
+          CILIUM_INSTALL_DEFAULTS+=" ${{ env.CILIUM_INSTALL_NET_PERF_EXTRA_ARGS }}"
+
+          NODE_TAINTS="ignore-taint.cluster-autoscaler.kubernetes.io/cilium-agent-not-ready=true:NoExecute"
+
+          if [ "${{ matrix.mode }}" = "baseline" ] ; then
+            NODE_TAINTS=""
+          fi
+
           echo cilium_install_defaults=${CILIUM_INSTALL_DEFAULTS} >> $GITHUB_OUTPUT
           echo owner=${OWNER} >> $GITHUB_OUTPUT
+          echo node_taints=${NODE_TAINTS} >> $GITHUB_OUTPUT
 
       - name: Set up gcloud credentials
         id: 'auth'
-        uses: google-github-actions/auth@62cf5bd3e4211a0a0b51f2c6d6a37129d828611d # v2.1.5
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_PERF_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_PERF_SA }}
+          project_id: ${{ secrets.GCP_PERF_PROJECT_ID }}
           create_credentials_file: true
           export_environment_variables: true
 
       - name: Set up gcloud CLI
-        uses: google-github-actions/setup-gcloud@f0990588f1e5b5af6827153b93673613abdc6ec7 # v2.1.1
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
         with:
-          project_id: ${{ secrets.GCP_PERF_PROJECT_ID }}
           version: ${{ env.gcloud_version }}
 
       - name: Install gke-gcloud-auth-plugin
@@ -259,55 +245,66 @@ jobs:
           gcloud info
 
       - name: Create GKE cluster
-        run: |
-          gcloud container clusters create ${{ env.clusterName }}-${{ matrix.index }} \
-            --labels "usage=${{ github.repository_owner }}-${{ github.event.repository.name }},owner=${{ steps.vars.outputs.owner }}" \
-            --zone ${{ env.gcp_zone }} \
-            --cluster-version ${{ env.k8s_version }} \
-            --enable-ip-alias \
-            --create-subnetwork="range=/26" \
-            --cluster-ipv4-cidr="/21" \
-            --services-ipv4-cidr="/24" \
-            --image-type COS_CONTAINERD \
-            --num-nodes 2 \
-            --machine-type n2-standard-2 \
-            --disk-type pd-standard \
-            --disk-size 20GB \
-            --node-taints ignore-taint.cluster-autoscaler.kubernetes.io/cilium-agent-not-ready=true:NoExecute
+        id: create-cluster
+        uses: ./.github/actions/setup-gke-cluster
+        with:
+          cluster-name: ${{ env.clusterName }}-${{ matrix.index }}
+          zone: ${{ env.gcp_zone }}
+          node-taints: ${{ steps.vars.outputs.node_taints }}
+          labels: "usage=${{ github.repository_owner }}-${{ github.event.repository.name }},owner=${{ steps.vars.outputs.owner }}"
+
+      - name: Create ESP allow firewall rule
+        if: ${{ matrix.name == 'tunnel-ipsec' }}
+        uses: ./.github/actions/gke-create-esp-rule
+        with:
+          cluster_name: ${{ env.clusterName }}-${{ matrix.index }}
+          cluster_zone: ${{ env.gcp_zone }}
 
       - name: Get cluster credentials
         run: |
           gcloud container clusters get-credentials ${{ env.clusterName }}-${{ matrix.index }} --zone ${{ env.gcp_zone }}
 
+      - name: Generate cilium-cli kubeconfig
+        id: gen-kubeconfig
+        uses: ./.github/actions/get-cloud-kubeconfig
+        with:
+          kubeconfig: "~/.kube/config"
+
+      - name: Create imagePullSecret
+        if: ${{ matrix.mode != 'baseline' }}
+        run: |
+          kubectl create secret docker-registry cilium-registry \
+            --namespace kube-system \
+            --docker-server=${{ vars.DOCKER_READ_HOST }} \
+            --docker-username="${{ vars.DOCKER_READ_USERNAME }}" \
+            --docker-password="${{ secrets.DOCKER_READ_PASSWORD }}"
+
       - name: Install Cilium CLI
-        uses: cilium/cilium-cli@62bd4511031211b50a4623870955a5ad27b43e3b # v0.16.16
+        uses: cilium/cilium-cli@e391e739db83a8b888ecf18786af6853c51a0c58 # v0.19.5
         with:
           skip-build: ${{ env.CILIUM_CLI_SKIP_BUILD }}
           image-repo: ${{ env.CILIUM_CLI_IMAGE_REPO }}
-          image-tag: ${{ steps.vars.outputs.sha }}
-
-      - name: Wait for images to be available
-        timeout-minutes: 30
-        shell: bash
-        run: |
-          for image in cilium-ci operator-generic-ci hubble-relay-ci ; do
-            until docker manifest inspect quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/$image:${{ steps.vars.outputs.sha }} &> /dev/null; do sleep 45s; done
-          done
+          image-tag: ${{ steps.default_vars.outputs.sha }}
+          repository: ${{ env.CILIUM_CLI_RELEASE_REPO }}
+          release-version: ${{ env.CILIUM_CLI_VERSION }}
+          kubeconfig: ${{ steps.gen-kubeconfig.outputs.kubeconfig_path }}
 
       - name: Create custom IPsec secret
         if: ${{ matrix.encryption == 'ipsec' }}
         run: |
-          kubectl create -n kube-system secret generic cilium-ipsec-keys --from-literal=keys="15 rfc4106(gcm(aes)) $(echo $(dd if=/dev/urandom count=20 bs=1 2> /dev/null | xxd -p -c 64)) 128"
+          cilium encrypt create-key --auth-algo rfc4106-gcm-aes
 
       - name: Install Cilium
+        if: ${{ matrix.mode != 'baseline' }}
         id: install-cilium
         run: |
-          cilium install --dry-run-helm-values ${{ steps.vars.outputs.cilium_install_defaults }}
-          cilium install ${{ steps.vars.outputs.cilium_install_defaults }}
+          cilium install --dry-run-helm-values ${{ steps.vars.outputs.cilium_install_defaults }} --helm-set=ipv4NativeRoutingCIDR=${{ steps.create-cluster.outputs.native_cidr }} --nodes-without-cilium
+          cilium install ${{ steps.vars.outputs.cilium_install_defaults }} --helm-set=ipv4NativeRoutingCIDR=${{ steps.create-cluster.outputs.native_cidr }} --nodes-without-cilium
 
       - name: Wait for Cilium to be ready
+        if: ${{ matrix.mode != 'baseline' }}
         run: |
-          cilium status --wait --wait-duration=10m
+          cilium status --wait --interactive=false --wait-duration=10m
           kubectl get pods -n kube-system
           kubectl -n kube-system exec daemonset/cilium -- cilium-dbg status
 
@@ -315,15 +312,24 @@ jobs:
         id: run-perf
         run: |
           mkdir output
-          cilium connectivity perf --duration=30s --host-net=true --pod-net=true --report-dir=./output
+          cilium connectivity perf --duration=30s --host-net=true --pod-net=true --crr=true --report-dir=./output --unsafe-capture-kernel-profiles
           sudo chmod -R +r ./output
 
-      - name: Get sysdump
-        if: ${{ always() && steps.run-perf.outcome != 'skipped' && steps.run-perf.outcome != 'cancelled' }}
-        run: |
-          cilium status
-          cilium sysdump --output-filename cilium-sysdump-final
-          sudo chmod +r cilium-sysdump-final.zip
+      - name: Run common post steps
+        if: ${{ always() && matrix.mode != 'baseline' && steps.install-cilium.outcome != 'skipped' }}
+        uses: ./.github/actions/post-logic
+        with:
+          always_capture_sysdump: true
+          artifacts_suffix: "${{ env.job_name }} (${{ join(matrix.*, ', ') }})"
+          job_status: "${{ job.status }}"
+          capture_features_tested: ${{ steps.run-perf.outcome != 'skipped' }}
+
+      - name: Clean up ESP allow firewall rule
+        if: ${{ always() && matrix.name == 'tunnel-ipsec' }}
+        uses: ./.github/actions/gke-clean-esp-rule
+        with:
+          cluster_name: ${{ env.clusterName }}-${{ matrix.index }}
+          cluster_zone: ${{ env.gcp_zone }}
 
       - name: Clean up GKE
         if: ${{ always() }}
@@ -334,23 +340,32 @@ jobs:
           gcloud container clusters delete ${{ env.clusterName }}-${{ matrix.index }} --zone ${{ env.gcp_zone }} --quiet --async
         shell: bash {0} # Disable default fail-fast behavior so that all commands run independently
 
+      # We needed to configure a unique suffix to ensure that the artifacts can
+      # be correctly uploaded, but we want the sysdump to have a fixed name when
+      # uploading it to the GS bucket.
+      - name: Rename sysdump before uploading it to the GS bucket
+        if : ${{ always() && matrix.mode != 'baseline' }}
+        run: |
+          mv "cilium-sysdump-${{ env.job_name }} (${{ join(matrix.*, ', ') }}).zip" cilium-sysdump-final.zip
+
       - name: Export results and sysdump to GS bucket
         if: ${{ always() && steps.run-perf.outcome != 'skipped' && steps.run-perf.outcome != 'cancelled' }}
-        uses: cilium/scale-tests-action/export-results@378ada318fd6dbf7ede1288da713e0cc9ba26f46 # main
+        uses: cilium/scale-tests-action/export-results@995a08156171644e92e5688b0785b7baf86ce22a # main
         with:
           test_name: ${{ env.test_name }}-${{ matrix.name }}
+          tested_sha: ${{ inputs.SHA || github.sha }}
           results_bucket: ${{ env.GCP_PERF_RESULTS_BUCKET }}
-          artifacts: ./output/*
-          other_files: cilium-sysdump-final.zip
+          artifacts: ./output/
+          results_regex: 'NetworkPerformance*'
+          other_files: ${{ matrix.mode != 'baseline' && 'cilium-sysdump-final.zip' || '' }}
 
-  commit-status-final:
+  merge-upload-and-status:
+    name: Merge Upload and Status
     if: ${{ always() }}
-    name: Commit Status Final
     needs: installation-and-perf
-    runs-on: ubuntu-latest
-    steps:
-      - name: Set final commit status
-        uses: myrotvorets/set-commit-status-action@3730c0a348a2ace3c110851bed53331bc6406e9f # v2.0.1
-        with:
-          sha: ${{ inputs.SHA || github.sha }}
-          status: ${{ needs.installation-and-perf.result }}
+    uses: ./.github/workflows/common-post-jobs.yaml
+    secrets: inherit
+    with:
+      context-ref: ${{ inputs.context-ref || github.sha }}
+      sha: ${{ inputs.SHA || github.sha }}
+      success: ${{ needs.installation-and-perf.result == 'success' }}

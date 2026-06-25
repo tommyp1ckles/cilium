@@ -4,22 +4,34 @@
 package maps
 
 import (
+	"log/slog"
+
 	"github.com/cilium/hive/cell"
-	"github.com/sirupsen/logrus"
 
 	daemonapi "github.com/cilium/cilium/api/v1/server/restapi/daemon"
 	"github.com/cilium/cilium/pkg/maps/act"
 	"github.com/cilium/cilium/pkg/maps/authmap"
 	"github.com/cilium/cilium/pkg/maps/bwmap"
 	"github.com/cilium/cilium/pkg/maps/configmap"
+	"github.com/cilium/cilium/pkg/maps/ctmap"
 	"github.com/cilium/cilium/pkg/maps/ctmap/gc"
 	"github.com/cilium/cilium/pkg/maps/egressmap"
+	"github.com/cilium/cilium/pkg/maps/encrypt"
+	"github.com/cilium/cilium/pkg/maps/fragmap"
 	"github.com/cilium/cilium/pkg/maps/l2respondermap"
+	"github.com/cilium/cilium/pkg/maps/l2v6respondermap"
+	"github.com/cilium/cilium/pkg/maps/lxcmap"
 	"github.com/cilium/cilium/pkg/maps/multicast"
 	"github.com/cilium/cilium/pkg/maps/nat"
+	"github.com/cilium/cilium/pkg/maps/neighborsmap"
+	"github.com/cilium/cilium/pkg/maps/netdev"
 	"github.com/cilium/cilium/pkg/maps/nodemap"
+	"github.com/cilium/cilium/pkg/maps/policymap"
+	"github.com/cilium/cilium/pkg/maps/registry"
 	"github.com/cilium/cilium/pkg/maps/signalmap"
 	"github.com/cilium/cilium/pkg/maps/srv6map"
+	"github.com/cilium/cilium/pkg/maps/subnet"
+	"github.com/cilium/cilium/pkg/maps/vtep"
 )
 
 // Cell contains all cells which are providing BPF Maps.
@@ -29,18 +41,31 @@ var Cell = cell.Module(
 
 	cell.Provide(newMapApiHandler),
 
+	// Provides the map spec registry which gets initialized by the specs defined in the datapath which
+	// can then be modified during hive construction and the modified specs used once started.
+	registry.Cell,
+
 	// Provides the auth.Map which contains the authentication state between Cilium security identities.
 	authmap.Cell,
 
 	// ConfigMap stores runtime configuration state for the Cilium datapath.
 	configmap.Cell,
 
+	// Provides access to eBPF map which stores network devices properties for datapath usage.
+	netdev.Cell,
+
 	// Receives datapath signals for GC fill-up events
 	// Note that we can't import this from ctmap package, as gc needs to import ctmap.
 	gc.Cell,
 
+	// Provides the ctmap.GCMps which contains the connection tracking state maps.
+	ctmap.Cell,
+
 	// Provides access to egressgateway specific maps.
 	egressmap.Cell,
+
+	// Initializes the fragments map in the datapath
+	fragmap.Cell,
 
 	// Provides signalmap for datapath signals
 	signalmap.Cell,
@@ -48,11 +73,15 @@ var Cell = cell.Module(
 	// Provides the node map which contains information about node IDs and their IP addresses.
 	nodemap.Cell,
 
-	// Provides access to the L2 responder map.
+	// Provides access to the L2 responder maps.
 	l2respondermap.Cell,
+	l2v6respondermap.Cell,
 
 	// Provides access to the multicast maps.
 	multicast.Cell,
+
+	// Initializes the neighbors map in the datapath
+	neighborsmap.Cell,
 
 	// Provides access to the SRv6 maps.
 	srv6map.Cell,
@@ -66,6 +95,21 @@ var Cell = cell.Module(
 
 	// Provides access to NAT maps.
 	nat.Cell,
+
+	// Provides access to policy maps.
+	policymap.Cell,
+
+	// Provides access to the encryption map.
+	encrypt.Cell,
+
+	// Provides access to the lxc / endpoints map.
+	lxcmap.Cell,
+
+	// Provides access to the vtep map.
+	vtep.Cell,
+
+	// Provides access to the subnet map.
+	subnet.Cell,
 )
 
 type mapApiHandlerOut struct {
@@ -76,10 +120,10 @@ type mapApiHandlerOut struct {
 	GetMapNameEventsHandler daemonapi.GetMapNameEventsHandler
 }
 
-func newMapApiHandler(logger logrus.FieldLogger) mapApiHandlerOut {
+func newMapApiHandler(logger *slog.Logger) mapApiHandlerOut {
 	return mapApiHandlerOut{
 		GetMapHandler:           &getMapHandler{},
-		GetMapNameHandler:       &getMapNameHandler{},
-		GetMapNameEventsHandler: &getMapNameEventsHandler{logger: logger, mapGetter: &mapGetterImpl{}},
+		GetMapNameHandler:       &getMapNameHandler{logger: logger},
+		GetMapNameEventsHandler: &getMapNameEventsHandler{logger: logger, mapGetter: &mapGetterImpl{logger: logger}},
 	}
 }

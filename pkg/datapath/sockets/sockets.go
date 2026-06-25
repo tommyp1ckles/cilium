@@ -4,18 +4,26 @@
 package sockets
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"syscall"
 
-	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/sys/unix"
 
-	"github.com/cilium/cilium/pkg/logging"
+	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/link"
+
+	"github.com/cilium/cilium/pkg/bpf"
+	bpfgen "github.com/cilium/cilium/pkg/datapath/bpf"
+	"github.com/cilium/cilium/pkg/datapath/loader"
+	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 )
 
@@ -27,13 +35,83 @@ const (
 )
 
 var (
-	log          = logging.DefaultLogger.WithField(logfields.LogSubsys, "datapath-sockets")
-	native       = nl.NativeEndian()
+	native       = binary.NativeEndian
 	networkOrder = binary.BigEndian
 )
 
+func stateMask(ms ...int) uint32 {
+	var out uint32
+	for _, m := range ms {
+		out |= 1 << m
+	}
+	return out
+}
+
+// StateFilterTCP is a mask of all states we consider for socket termination.
+// Instead of destroying all states, we make some notable omissions which are
+// documented below:
+//
+//   - TCP_CLOSE: Calls to close a socket in TCP_CLOSE state will result in
+//     ENOENT, this is also confusing as it is the same err code returned
+//     when a socket that doesn't exist is destroyed.
+//
+//   - TCP_TIME_WAIT: Socket may enter this state post close/FIN-wait states
+//     to catch any leftover traffic that may not have arrived yet. This is
+//     for security reasons, as well as avoiding late traffic from entering
+//     a new socket bound to the same addr/port. Technically, for the socket
+//     LB its not necessary as we remove the key from the rev NAT map in the
+//     cil_sock_release() hook, so these sockets won't be found. On the other
+//     hand we also do not need to waste time to iterate them.
+var StateFilterTCP = stateMask(
+	// The following states emit RST (net/ipv4/tcp.c#L3228-L3235)
+	netlink.TCP_ESTABLISHED,
+	netlink.TCP_CLOSE_WAIT,
+	netlink.TCP_FIN_WAIT1,
+	netlink.TCP_FIN_WAIT2,
+	netlink.TCP_SYN_RECV,
+	// Sockets in SYN-RECV state are simply removed from request queue
+	// and freed in memory (net/ipv4/tcp.c#L4878-L4885)
+	netlink.TCP_NEW_SYN_REC,
+	// Sockets in TCP_LISTEN are moved to closing state
+	// (net/ipv4/tcp.c#L4908)
+	netlink.TCP_CLOSE,
+	// Following are handled without any special consideration/just closed
+	netlink.TCP_SYN_SENT,
+	netlink.TCP_CLOSING,
+	netlink.TCP_LAST_ACK,
+	netlink.TCP_LISTEN,
+)
+
+// StateFilterUDP is a mask of all states we consider for socket termination.
+// There are no state omissions.
+const StateFilterUDP = 0xffff
+
+// Iterate iterates netlink sockets via a callback.
+func Iterate(proto uint8, family uint8, stateFilter uint32, fn func(*netlink.Socket, error) error) error {
+	return iterate(proto, family, stateFilter, func(s *Socket, err error) error {
+		return fn((*netlink.Socket)(s), err)
+	})
+}
+
+// DestroySocket sends a socket destroy message via netlink and waits for a ack response.
+// This is implemented using primitives in vishvananda library, however the default SocketDestroy()
+// function is insufficient for our purposes as it identifies socket only on src/dst address
+// whereas this allows destroying socket precisely via the netlink.Socket object.
+func DestroySocket(logger *slog.Logger, sock netlink.Socket, proto netlink.Proto, stateFilter uint32) error {
+	return destroySocket(logger, sock.ID, sock.Family, uint8(proto), stateFilter, true)
+}
+
+func iterate(proto uint8, family uint8, stateFilter uint32, fn func(*Socket, error) error) error {
+	switch proto {
+	case unix.IPPROTO_UDP, unix.IPPROTO_TCP:
+	default:
+		return fmt.Errorf("unsupported protocol for iterating sockets: %d", proto)
+	}
+	return iterateNetlinkSockets(proto, family, stateFilter, fn)
+}
+
 type SocketDestroyer interface {
-	Destroy(filter SocketFilter) error
+	Destroy(logger *slog.Logger, filter SocketFilter) error
 }
 
 type SocketFilter struct {
@@ -41,21 +119,23 @@ type SocketFilter struct {
 	DestPort uint16
 	Family   uint8
 	Protocol uint8
+	States   uint32
 	// Optional callback function to determine whether a filtered socket needs to be destroyed
 	DestroyCB DestroySocketCB
 }
 
 type DestroySocketCB func(id netlink.SocketID) bool
 
+type netlinkSocketDestroyer struct {
+}
+
 // Destroy destroys sockets matching the passed filter parameters using the
 // sock_diag netlink framework.
 //
 // Supported families in the filter: syscall.AF_INET, syscall.AF_INET6
-// Supported protocols in the filter: unix.IPPROTO_UDP
-func Destroy(filter SocketFilter) error {
+// Supported protocols in the filter: unix.IPPROTO_UDP, unix.IPPROTO_TCP
+func (d *netlinkSocketDestroyer) Destroy(logger *slog.Logger, filter SocketFilter) error {
 	family := filter.Family
-	protocol := filter.Protocol
-
 	if family != syscall.AF_INET && family != syscall.AF_INET6 {
 		return fmt.Errorf("unsupported family for socket destroy: %d", family)
 	}
@@ -64,39 +144,54 @@ func Destroy(filter SocketFilter) error {
 
 	// Query sockets matching the passed filter, and then destroy the filtered
 	// sockets.
-	switch protocol {
-	case unix.IPPROTO_UDP:
-		err := filterAndDestroyUDPSockets(family, func(sock netlink.SocketID, err error) {
+	switch filter.Protocol {
+	case unix.IPPROTO_UDP, unix.IPPROTO_TCP:
+	redo:
+		err := filterAndDestroySockets(family, filter.Protocol, filter.States, func(sock netlink.SocketID, err error) {
 			if err != nil {
-				errs = errors.Join(errs, fmt.Errorf("UDP socket with filter [%v]: %w", filter, err))
+				errs = errors.Join(errs, fmt.Errorf("socket with filter [%v]: %w", filter, err))
 				failed++
 				return
 			}
 			if filter.MatchSocket(sock) {
-				log.Infof("socket %v", sock)
-				if err := destroySocket(sock, family, unix.IPPROTO_UDP); err != nil {
-					errs = errors.Join(errs, fmt.Errorf("destroying UDP socket with filter [%v]: %w", filter, err))
+				logger.Info("", logfields.Socket, sock)
+				if err := destroySocket(logger, sock, family, filter.Protocol, filter.States, true); err != nil {
+					errs = errors.Join(errs, fmt.Errorf("destroying socket with filter [%v]: %w", filter, err))
 					failed++
 					return
 				}
-				log.Debugf("Destroyed socket: %v", sock)
+				logger.Debug("Destroyed socket", logfields.Socket, sock)
 				success++
 			}
 		})
 		if err != nil {
 			return fmt.Errorf("failed to get sockets with filter %v: %w", filter, err)
 		}
-
+		// After we iterated all IPv4 sockets, we now need to do the same
+		// also for IPv6 client sockets given they can have IPv4-in-IPv6
+		// mapped addresses and got connected to the terminating IPv4
+		// backend this way.
+		//
+		// Note that socketlb placed the revnat entry into the IPv4-related
+		// map (not the IPv6 one!). The DestroyCB looks up the right revnat
+		// BPF map based on the filter.DestIp which in our case is an IPv4
+		// address. The filter.DestIp stores the IPv4 address internally
+		// as IPv4-mapped IPv6 form as per net.IP.
+		if family == syscall.AF_INET {
+			family = syscall.AF_INET6
+			goto redo
+		}
 	default:
-		return fmt.Errorf("unsupported protocol for socket destroy: %d", protocol)
+		return fmt.Errorf("unsupported protocol for socket destroy: %d", filter.Protocol)
 	}
 	if success > 0 || failed > 0 || errs != nil {
-		log.WithFields(logrus.Fields{
-			"filter":  filter,
-			"success": success,
-			"failed":  failed,
-			"errors":  errs,
-		}).Info("Forcefully terminated sockets")
+		logger.Info(
+			"Forcefully terminated sockets",
+			logfields.Filter, filter,
+			logfields.Success, success,
+			logfields.Failed, failed,
+			logfields.Errors, errs,
+		)
 	}
 
 	return nil
@@ -112,22 +207,152 @@ func (f *SocketFilter) MatchSocket(socket netlink.SocketID) bool {
 	return false
 }
 
-func filterAndDestroyUDPSockets(family uint8, socketCB func(socket netlink.SocketID, err error)) error {
-	err := socketDiagUDPExecutor(family, func(m syscall.NetlinkMessage) error {
-		sockInfo := &socket{}
-		err := sockInfo.deserialize(m.Data)
-		socketCB(sockInfo.ID, err)
+func filterAndDestroySockets(family, protocol uint8, states uint32, socketCB func(socket netlink.SocketID, err error)) error {
+	return iterateNetlinkSockets(protocol, family, states, func(sockInfo *Socket, err error) error {
+		if err != nil {
+			socketCB(netlink.SocketID{}, err)
+			return nil
+		}
+		socketCB(sockInfo.ID, nil)
 		return nil
 	})
+}
+
+type bpfSocketDestroyer struct {
+	destroyMu    lock.Mutex
+	progs        *bpfgen.SockTermPrograms
+	filterSetter loader.FilterSetter
+}
+
+func newBPFSocketDestroyer(logger *slog.Logger, sockRevNat4, sockRevNat6 *bpf.Map) (*bpfSocketDestroyer, error) {
+	progs, filterSetter, err := loader.LoadSockTerm(logger, sockRevNat4, sockRevNat6)
 	if err != nil {
-		return err
+		return nil, err
 	}
+
+	return &bpfSocketDestroyer{
+		progs:        progs,
+		filterSetter: filterSetter,
+	}, nil
+}
+
+// Destroy destroys sockets matching the passed filter parameters using a BPF
+// socket iterator and the cil_sock_udp_destroy program.
+//
+// Supported families in the filter: syscall.AF_INET, syscall.AF_INET6
+// Supported protocols in the filter: unix.IPPROTO_UDP, unix.IPPROTO_TCP
+func (sd *bpfSocketDestroyer) Destroy(logger *slog.Logger, f SocketFilter) error {
+	if f.Family != syscall.AF_INET && f.Family != syscall.AF_INET6 {
+		return fmt.Errorf("unsupported family for socket destroy: %d", f.Family)
+	}
+	if f.Protocol != unix.IPPROTO_UDP && f.Protocol != unix.IPPROTO_TCP {
+		return fmt.Errorf("unsupported protocol for socket destroy: %d", f.Protocol)
+	}
+
+	sd.destroyMu.Lock()
+	defer sd.destroyMu.Unlock()
+
+	if err := sd.filterSetter(f.Family, f.DestIp, f.DestPort); err != nil {
+		return fmt.Errorf("configuring filter: %w", err)
+	}
+
+	var prog *ebpf.Program
+	if f.Family == syscall.AF_INET {
+		if f.Protocol == unix.IPPROTO_UDP {
+			prog = sd.progs.CilSockUdpDestroyV4
+		} else {
+			prog = sd.progs.CilSockTcpDestroyV4
+		}
+	} else {
+		if f.Protocol == unix.IPPROTO_UDP {
+			prog = sd.progs.CilSockUdpDestroyV6
+		} else {
+			prog = sd.progs.CilSockTcpDestroyV6
+		}
+	}
+
+	if prog == nil {
+		return fmt.Errorf("no socket deletion program available for address family %d", f.Family)
+	}
+
+	iter, err := link.AttachIter(link.IterOptions{
+		Program: prog,
+	})
+	if err != nil {
+		return fmt.Errorf("creating iterator: %w", err)
+	}
+
+	defer iter.Close()
+
+	rc, err := iter.Open()
+	if err != nil {
+		return fmt.Errorf("creating reader: %w", err)
+	}
+
+	defer rc.Close()
+
+	var cookie [8]byte
+	var n int
+	count := 0
+	for err == nil {
+		n, err = rc.Read(cookie[:])
+		if err != nil || n == 0 {
+			continue
+		}
+
+		if n != len(cookie) {
+			logger.Warn("Unexpected number of bytes", logfields.Value, n)
+			continue
+		}
+
+		logger.Debug("Destroyed socket",
+			logfields.Filter, f,
+			logfields.SocketCookie, native.Uint64(cookie[:]),
+		)
+		count++
+	}
+
+	if !errors.Is(err, io.EOF) {
+		return fmt.Errorf("reading: %w", err)
+	}
+
+	if count > 0 {
+		logger.Info("Forcefully terminated sockets",
+			logfields.Filter, f,
+			logfields.Success, count,
+		)
+	}
+
 	return nil
 }
 
-// Below handlers are adapted from netlink/socket_linux.go to avoid memory allocations.
+// NewSocketDestroyer creates an instance of a SocketDestroyer based on the
+// capabilities of the current system. By default, NewSocketDestroyer chooses
+// a socket destruction strategy based on BPF socket iterators. If that is not
+// supported, it falls back to a Netlink-based strategy based on sock_diag.
+//
+// sockRevNat4 and sockRevNat6 must be provided to use the BPF-based strategy;
+// otherwise, initialization falls back to Netlink.
+func NewSocketDestroyer(l *slog.Logger, sockRevNat4, sockRevNat6 *bpf.Map) (SocketDestroyer, error) {
+	if sockRevNat4 != nil || sockRevNat6 != nil {
+		l.Info("Creating BPF socket destroyer")
+		bpfSD, err := newBPFSocketDestroyer(l, sockRevNat4, sockRevNat6)
+		if errors.Is(err, ebpf.ErrNotSupported) {
+			l.Info("bpf_sock_destroy is not supported on the current kernel. Falling back to netlink-based socket destroyer")
+		} else if err != nil {
+			return nil, fmt.Errorf("creating BPF socket destroyer: %w", err)
+		} else {
+			return bpfSD, nil
+		}
+	}
 
-type socketRequest struct {
+	l.Info("Creating netlink socket destroyer")
+	return &netlinkSocketDestroyer{}, nil
+}
+
+// SocketRequest implements netlink.NetlinkRequestData to be used
+// to send socket requests to netlink.
+type SocketRequest struct {
 	Family   uint8
 	Protocol uint8
 	Ext      uint8
@@ -136,145 +361,174 @@ type socketRequest struct {
 	ID       netlink.SocketID
 }
 
-type writeBuffer struct {
-	Bytes []byte
-	pos   int
+func (r SocketRequest) Serialize() []byte {
+	var bb bytes.Buffer
+
+	bb.Grow(sizeofSocketRequest)
+
+	bb.WriteByte(r.Family)
+	bb.WriteByte(r.Protocol)
+	bb.WriteByte(r.Ext)
+	bb.WriteByte(r.pad)
+	b := bb.AvailableBuffer()
+	b = native.AppendUint32(b, r.States)
+	b = networkOrder.AppendUint16(b, r.ID.SourcePort)
+	b = networkOrder.AppendUint16(b, r.ID.DestinationPort)
+	bb.Write(b)
+	serializeAddr(&bb, r.Family, r.ID.Source)
+	serializeAddr(&bb, r.Family, r.ID.Destination)
+	b = bb.AvailableBuffer()
+	b = native.AppendUint32(b, r.ID.Interface)
+	b = native.AppendUint32(b, r.ID.Cookie[0])
+	b = native.AppendUint32(b, r.ID.Cookie[1])
+	bb.Write(b)
+
+	return bb.Bytes()
 }
 
-func (b *writeBuffer) write(c byte) {
-	b.Bytes[b.pos] = c
-	b.pos++
-}
+func (r *SocketRequest) Len() int { return sizeofSocketRequest }
 
-func (b *writeBuffer) next(n int) []byte {
-	s := b.Bytes[b.pos : b.pos+n]
-	b.pos += n
-	return s
-}
-
-func (r *socketRequest) Serialize() []byte {
-	b := writeBuffer{Bytes: make([]byte, sizeofSocketRequest)}
-	b.write(r.Family)
-	b.write(r.Protocol)
-	b.write(r.Ext)
-	b.write(r.pad)
-	native.PutUint32(b.next(4), r.States)
-	networkOrder.PutUint16(b.next(2), r.ID.SourcePort)
-	networkOrder.PutUint16(b.next(2), r.ID.DestinationPort)
-	if r.Family == unix.AF_INET6 {
-		copy(b.next(16), r.ID.Source)
-		copy(b.next(16), r.ID.Destination)
-	} else {
-		copy(b.next(4), r.ID.Source.To4())
-		b.next(12)
-		copy(b.next(4), r.ID.Destination.To4())
-		b.next(12)
+func serializeAddr(bb *bytes.Buffer, family uint8, addr net.IP) {
+	if addr == nil {
+		for range net.IPv6len {
+			bb.WriteByte(0)
+		}
+		return
 	}
-	native.PutUint32(b.next(4), r.ID.Interface)
-	native.PutUint32(b.next(4), r.ID.Cookie[0])
-	native.PutUint32(b.next(4), r.ID.Cookie[1])
-	return b.Bytes
+	if family == unix.AF_INET6 {
+		bb.Write(addr)
+	} else {
+		bb.Write(addr.To4())
+		for range net.IPv6len - net.IPv4len {
+			bb.WriteByte(0)
+		}
+	}
 }
 
-func (r *socketRequest) Len() int { return sizeofSocketRequest }
+// Socket is an alias of the netlink library Socket
+// type but it implements deserialization functions.
+type Socket netlink.Socket
 
-type readBuffer struct {
-	Bytes []byte
-	pos   int
-}
-
-func (b *readBuffer) Read() byte {
-	c := b.Bytes[b.pos]
-	b.pos++
-	return c
-}
-
-func (b *readBuffer) Next(n int) []byte {
-	s := b.Bytes[b.pos : b.pos+n]
-	b.pos += n
-	return s
-}
-
-type socket netlink.Socket
-
-func (s *socket) deserialize(b []byte) error {
+// Deserialize accepts raw byte data of a netlink socket diag response
+// and deserializes it into the target socket.
+func (s *Socket) Deserialize(b []byte) error {
+	// early size check to guarantee safety of reads below
 	if len(b) < sizeofSocket {
 		return fmt.Errorf("socket data short read (%d); want %d", len(b), sizeofSocket)
 	}
-	rb := readBuffer{Bytes: b}
-	s.Family = rb.Read()
-	s.State = rb.Read()
-	s.Timer = rb.Read()
-	s.Retrans = rb.Read()
-	s.ID.SourcePort = networkOrder.Uint16(rb.Next(2))
-	s.ID.DestinationPort = networkOrder.Uint16(rb.Next(2))
+
+	bb := bytes.NewBuffer(b)
+	s.Family, _ = bb.ReadByte()
+	s.State, _ = bb.ReadByte()
+	s.Timer, _ = bb.ReadByte()
+	s.Retrans, _ = bb.ReadByte()
+	s.ID.SourcePort = networkOrder.Uint16(bb.Next(2))
+	s.ID.DestinationPort = networkOrder.Uint16(bb.Next(2))
 	if s.Family == unix.AF_INET6 {
-		s.ID.Source = net.IP(rb.Next(16))
-		s.ID.Destination = net.IP(rb.Next(16))
+		s.ID.Source = net.IP(bb.Next(net.IPv6len))
+		s.ID.Destination = net.IP(bb.Next(net.IPv6len))
 	} else {
-		s.ID.Source = net.IPv4(rb.Read(), rb.Read(), rb.Read(), rb.Read())
-		rb.Next(12)
-		s.ID.Destination = net.IPv4(rb.Read(), rb.Read(), rb.Read(), rb.Read())
-		rb.Next(12)
+		src := bb.Next(net.IPv6len)
+		s.ID.Source = net.IPv4(src[0], src[1], src[2], src[3])
+		dst := bb.Next(net.IPv6len)
+		s.ID.Destination = net.IPv4(dst[0], dst[1], dst[2], dst[3])
 	}
-	s.ID.Interface = native.Uint32(rb.Next(4))
-	s.ID.Cookie[0] = native.Uint32(rb.Next(4))
-	s.ID.Cookie[1] = native.Uint32(rb.Next(4))
-	s.Expires = native.Uint32(rb.Next(4))
-	s.RQueue = native.Uint32(rb.Next(4))
-	s.WQueue = native.Uint32(rb.Next(4))
-	s.UID = native.Uint32(rb.Next(4))
-	s.INode = native.Uint32(rb.Next(4))
+	s.ID.Interface = native.Uint32(bb.Next(4))
+	s.ID.Cookie[0] = native.Uint32(bb.Next(4))
+	s.ID.Cookie[1] = native.Uint32(bb.Next(4))
+	s.Expires = native.Uint32(bb.Next(4))
+	s.RQueue = native.Uint32(bb.Next(4))
+	s.WQueue = native.Uint32(bb.Next(4))
+	s.UID = native.Uint32(bb.Next(4))
+	s.INode = native.Uint32(bb.Next(4))
 	return nil
 }
 
-func destroySocket(sockId netlink.SocketID, family uint8, protocol uint8) error {
-	s, err := nl.Subscribe(unix.NETLINK_INET_DIAG)
+func destroySocket(logger *slog.Logger, sockId netlink.SocketID, family uint8, protocol uint8, stateFilter uint32, waitForAck bool) error {
+	s, err := openSubscribeHandle()
 	if err != nil {
 		return err
 	}
 	defer s.Close()
 
-	req := nl.NewNetlinkRequest(SOCK_DESTROY, unix.NLM_F_REQUEST)
-	req.AddData(&socketRequest{
+	params := unix.NLM_F_REQUEST
+	if waitForAck {
+		params |= unix.NLM_F_ACK
+	}
+	req := nl.NewNetlinkRequest(SOCK_DESTROY, params)
+	req.AddData(&SocketRequest{
 		Family:   family,
 		Protocol: protocol,
-		States:   uint32(0xfff),
+		States:   stateFilter,
 		ID:       sockId,
 	})
 	err = s.Send(req)
 	if err != nil {
-		fmt.Printf("error in destroying socket: %v", sockId)
+		return fmt.Errorf("error in destroying socket: %w", err)
 	}
+
+	if !waitForAck {
+		return nil
+	}
+	msg, _, err := s.Receive()
+	if err != nil {
+		return fmt.Errorf("failed to recv destroy resp: %w", err)
+	}
+	for _, m := range msg {
+		switch m.Header.Type {
+		case unix.NLMSG_ERROR:
+			error := int32(native.Uint32(m.Data[0:4]))
+			errno := syscall.Errno(-error)
+			if errno != 0 {
+				return fmt.Errorf("got error response to socket destroy: %w", errno)
+			}
+			return nil
+		default:
+			logger.Info("netlink socket delete received was followed by an unexpected response header type.",
+				logfields.Type, m.Header.Type,
+			)
+		}
+	}
+
 	return err
 }
 
-func socketDiagUDPExecutor(family uint8, receiver func(message syscall.NetlinkMessage) error) error {
-	s, err := nl.Subscribe(unix.NETLINK_INET_DIAG)
+// openSubscribeHandle opens a netlink socket sub.
+func openSubscribeHandle() (*nl.NetlinkSocket, error) {
+	return nl.Subscribe(unix.NETLINK_INET_DIAG)
+}
+
+func iterateNetlinkSockets(proto uint8, family uint8, stateFilter uint32, fn func(*Socket, error) error) error {
+	s, err := openSubscribeHandle()
 	if err != nil {
 		return err
 	}
 	defer s.Close()
 
 	req := nl.NewNetlinkRequest(nl.SOCK_DIAG_BY_FAMILY, unix.NLM_F_DUMP)
-	req.AddData(&socketRequest{
+	req.AddData(&SocketRequest{
 		Family:   family,
-		Protocol: unix.IPPROTO_UDP,
-		States:   uint32(0xfff),
+		Protocol: uint8(proto),
+		States:   stateFilter,
 	})
-	s.Send(req)
+	if err := s.Send(req); err != nil {
+		return fmt.Errorf("failed to send netlink list request: %w", err)
+	}
 
 loop:
 	for {
 		msgs, from, err := s.Receive()
 		if err != nil {
-			return err
+			fn(nil, err)
+			continue loop
 		}
 		if from.Pid != nl.PidKernel {
-			return fmt.Errorf("Wrong sender portid %d, expected %d", from.Pid, nl.PidKernel)
+			fn(nil, fmt.Errorf("Wrong sender portid %d, expected %d", from.Pid, nl.PidKernel))
+			continue loop
 		}
 		if len(msgs) == 0 {
-			return errors.New("no message nor error from netlink")
+			fn(nil, errors.New("no message nor error from netlink"))
+			continue loop
 		}
 
 		for _, m := range msgs {
@@ -283,9 +537,12 @@ loop:
 				break loop
 			case unix.NLMSG_ERROR:
 				error := int32(native.Uint32(m.Data[0:4]))
-				return syscall.Errno(-error)
+				fn(nil, syscall.Errno(-error))
+				continue loop
 			}
-			if err := receiver(m); err != nil {
+			sockInfo := &Socket{}
+			err := sockInfo.Deserialize(m.Data)
+			if err := fn(sockInfo, err); err != nil {
 				return err
 			}
 		}

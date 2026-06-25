@@ -8,24 +8,27 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
 
-	"github.com/sirupsen/logrus"
-
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/safeio"
 )
 
 type EnvoyAdminClient struct {
+	logger          *slog.Logger
 	adminURL        string
 	unixPath        string
 	currentLogLevel string
 	defaultLogLevel string
 }
 
-func NewEnvoyAdminClientForSocket(envoySocketDir string, defaultLogLevel string) *EnvoyAdminClient {
+func NewEnvoyAdminClientForSocket(logger *slog.Logger, envoySocketDir string, defaultLogLevel string) *EnvoyAdminClient {
 	return &EnvoyAdminClient{
+		logger: logger,
+
 		// Needs to be provided to envoy (received as ':authority') - even though we Dial to a Unix domain socket.
 		adminURL:        fmt.Sprintf("http://%s/", "envoy-admin"),
 		unixPath:        getAdminSocketPath(envoySocketDir),
@@ -33,7 +36,8 @@ func NewEnvoyAdminClientForSocket(envoySocketDir string, defaultLogLevel string)
 	}
 }
 
-func (a *EnvoyAdminClient) transact(query string) error {
+// Post sends a POST request with the given query to the Envoy Admin API.
+func (a *EnvoyAdminClient) Post(query string) (string, error) {
 	// Use a custom dialer to use a Unix domain socket for an HTTP connection.
 	var conn net.Conn
 	var err error
@@ -48,39 +52,50 @@ func (a *EnvoyAdminClient) transact(query string) error {
 
 	resp, err := client.Post(a.adminURL+query, "", nil)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer conn.Close()
 	defer resp.Body.Close()
 	body, err := safeio.ReadAllLimit(resp.Body, safeio.MB)
 	if err != nil {
-		return err
+		return "", err
 	}
+
 	ret := strings.ReplaceAll(string(body), "\r", "")
-	log.Debugf("Envoy: Admin response to %s: %s", query, ret)
-	return nil
+	a.logger.Debug("Envoy: Admin response",
+		logfields.Request, query,
+		logfields.Response, ret,
+	)
+
+	return string(body), nil
 }
 
-// ChangeLogLevel changes Envoy log level to correspond to the logrus log level 'level'.
-func (a *EnvoyAdminClient) ChangeLogLevel(agentLogLevel logrus.Level) error {
+// ChangeLogLevel changes Envoy log level to correspond to the specified 'level'.
+func (a *EnvoyAdminClient) ChangeLogLevel(agentLogLevel slog.Level) error {
 	envoyLevel := mapLogLevel(agentLogLevel, a.defaultLogLevel)
 
 	if envoyLevel == a.currentLogLevel {
-		log.Debugf("Envoy: Log level is already set as: %v", envoyLevel)
+		a.logger.Debug("Envoy: Log level is already set",
+			logfields.Value, envoyLevel,
+		)
 		return nil
 	}
 
-	err := a.transact("logging?level=" + envoyLevel)
-	if err != nil {
-		log.WithError(err).Warnf("Envoy: Failed to set log level to: %v", envoyLevel)
-	} else {
-		a.currentLogLevel = envoyLevel
+	if _, err := a.Post("logging?level=" + envoyLevel); err != nil {
+		a.logger.Warn("Envoy: Failed to set log level",
+			logfields.Value, envoyLevel,
+			logfields.Error, err,
+		)
+		return err
 	}
-	return err
+
+	a.currentLogLevel = envoyLevel
+	return nil
 }
 
 func (a *EnvoyAdminClient) quit() error {
-	return a.transact("quitquitquit")
+	_, err := a.Post("quitquitquit")
+	return err
 }
 
 // GetEnvoyVersion returns the envoy binary version string
@@ -109,7 +124,7 @@ func (a *EnvoyAdminClient) GetEnvoyVersion() (string, error) {
 		return "", fmt.Errorf("failed to read ServerInfo response: %w", err)
 	}
 
-	serverInfo := map[string]interface{}{}
+	serverInfo := map[string]any{}
 	if err := json.Unmarshal(body, &serverInfo); err != nil {
 		return "", fmt.Errorf("failed to parse ServerInfo: %w", err)
 	}

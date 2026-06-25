@@ -6,14 +6,17 @@ package ebpf
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
 	ciliumebpf "github.com/cilium/ebpf"
+	"golang.org/x/sys/unix"
 
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/metrics"
 )
 
@@ -28,6 +31,8 @@ const (
 	HashOfMaps = ciliumebpf.HashOfMaps
 	LPMTrie    = ciliumebpf.LPMTrie
 	LRUHash    = ciliumebpf.LRUHash
+	LRUCPUHash = ciliumebpf.LRUCPUHash
+	RingBuf    = ciliumebpf.RingBuf
 
 	PinNone   = ciliumebpf.PinNone
 	PinByName = ciliumebpf.PinByName
@@ -40,11 +45,12 @@ var (
 // IterateCallback represents the signature of the callback function expected by
 // the IterateWithCallback method, which in turn is used to iterate all the
 // keys/values of a map.
-type IterateCallback func(key, value interface{})
+type IterateCallback func(key, value any)
 
 // Map represents an eBPF map.
 type Map struct {
-	lock lock.RWMutex
+	logger *slog.Logger
+	lock   lock.RWMutex
 	*ciliumebpf.Map
 
 	spec *MapSpec
@@ -52,18 +58,19 @@ type Map struct {
 }
 
 // NewMap creates a new Map object.
-func NewMap(spec *MapSpec) *Map {
+func NewMap(logger *slog.Logger, spec *MapSpec) *Map {
 	return &Map{
-		spec: spec,
+		logger: logger,
+		spec:   spec,
 	}
 }
 
 // LoadRegisterMap loads the specified map from a bpffs pin path and registers
 // its handle in the package-global map register.
-func LoadRegisterMap(mapName string) (*Map, error) {
-	path := bpf.MapPath(mapName)
+func LoadRegisterMap(logger *slog.Logger, mapName string) (*Map, error) {
+	path := bpf.MapPath(logger, mapName)
 
-	m, err := LoadPinnedMap(path)
+	m, err := LoadPinnedMap(logger, path)
 	if err != nil {
 		return nil, err
 	}
@@ -74,26 +81,28 @@ func LoadRegisterMap(mapName string) (*Map, error) {
 }
 
 // LoadPinnedMap wraps cilium/ebpf's LoadPinnedMap.
-func LoadPinnedMap(fileName string) (*Map, error) {
+func LoadPinnedMap(logger *slog.Logger, fileName string) (*Map, error) {
 	m, err := ciliumebpf.LoadPinnedMap(fileName, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	return &Map{
-		Map:  m,
-		path: fileName,
+		logger: logger,
+		Map:    m,
+		path:   fileName,
 	}, nil
 }
 
-func MapFromID(id int) (*Map, error) {
+func MapFromID(logger *slog.Logger, id int) (*Map, error) {
 	newMap, err := ciliumebpf.NewMapFromID(ciliumebpf.MapID(id))
 	if err != nil {
 		return nil, err
 	}
 
 	return &Map{
-		Map: newMap,
+		logger: logger,
+		Map:    newMap,
 	}, nil
 }
 
@@ -115,9 +124,8 @@ func (m *Map) OpenOrCreate() error {
 		PinPath: bpf.TCGlobalsPath(),
 	}
 
-	m.spec.Flags |= bpf.GetPreAllocateMapFlags(m.spec.Type)
-
-	path := bpf.MapPath(m.spec.Name)
+	memoryFlags := bpf.GetMapMemoryFlags(m.spec.Type)
+	path := bpf.MapPath(m.logger, m.spec.Name)
 
 	if m.spec.Pinning == ciliumebpf.PinByName {
 		mapDir := filepath.Dir(path)
@@ -131,7 +139,30 @@ func (m *Map) OpenOrCreate() error {
 				}
 			}
 		}
+
+		// On upgrade (no flag -> flag): remove BPF_F_RDONLY_PROG from spec
+		// to reuse the existing map, since the datapath functions correctly
+		// with a more privileged (read-write) map.
+		// On downgrade (flag -> no flag): unpin the existing map to force
+		// recreation without the flag, since BPF programs need write access.
+		if existing, err := ciliumebpf.LoadPinnedMap(path, nil); err == nil {
+			if info, err := existing.Info(); err == nil {
+				const bpfFRdonlyProg = unix.BPF_F_RDONLY_PROG
+				switch {
+				case m.spec.Flags&bpfFRdonlyProg != 0 && info.Flags&bpfFRdonlyProg == 0:
+					// Upgrade: strip flag from spec to reuse existing map.
+					m.spec.Flags &^= bpfFRdonlyProg
+				case m.spec.Flags&bpfFRdonlyProg == 0 && info.Flags&bpfFRdonlyProg != 0:
+					// Downgrade: unpin to force recreation without the flag.
+					existing.Unpin()
+				}
+			}
+			existing.Close()
+		}
 	}
+
+	// Add memory flags after compatibility check
+	m.spec.Flags |= memoryFlags
 
 	newMap, err := ciliumebpf.NewMapWithOptions(m.spec, opts)
 	if err != nil {
@@ -143,8 +174,11 @@ func (m *Map) OpenOrCreate() error {
 		// configuration (e.g different type, k/v size or flags).
 		// Try to delete and recreate it.
 
-		log.WithField("map", m.spec.Name).
-			WithError(err).Warn("Removing map to allow for property upgrade (expect map data loss)")
+		m.logger.Warn(
+			"Removing map to allow for property upgrade (expect map data loss)",
+			logfields.Error, err,
+			logfields.BPFMapName, m.spec.Name,
+		)
 
 		oldMap, err := ciliumebpf.LoadPinnedMap(path, &opts.LoadPinOptions)
 		if err != nil {
@@ -152,7 +186,11 @@ func (m *Map) OpenOrCreate() error {
 		}
 		defer func() {
 			if err := oldMap.Close(); err != nil {
-				log.WithField("map", m.spec.Name).Warnf("Cannot close map: %v", err)
+				m.logger.Warn(
+					"Cannot close map",
+					logfields.Error, err,
+					logfields.BPFMapName, m.spec.Name,
+				)
 			}
 		}()
 
@@ -176,11 +214,9 @@ func (m *Map) OpenOrCreate() error {
 
 // IterateWithCallback iterates through all the keys/values of a map, passing
 // each key/value pair to the cb callback.
-func (m *Map) IterateWithCallback(key, value interface{}, cb IterateCallback) error {
-	if m.Map == nil {
-		if err := m.OpenOrCreate(); err != nil {
-			return err
-		}
+func (m *Map) IterateWithCallback(key, value any, cb IterateCallback) error {
+	if err := m.OpenOrCreate(); err != nil {
+		return err
 	}
 
 	m.lock.RLock()
@@ -206,4 +242,11 @@ func (m *Map) GetModel() *models.BPFMap {
 	// TODO: handle map cache. See pkg/bpf/map_linux.go:GetModel()
 
 	return mapModel
+}
+
+func (m *Map) IsEmpty() bool {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+	var key, value any
+	return !m.Iterate().Next(key, value)
 }

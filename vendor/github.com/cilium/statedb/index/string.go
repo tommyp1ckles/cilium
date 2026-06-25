@@ -6,10 +6,16 @@ package index
 import (
 	"fmt"
 	"iter"
+	"unsafe"
 )
 
 func String(s string) Key {
-	return []byte(s)
+	// Key is never mutated, so it's safe to just cast.
+	return unsafe.Slice(unsafe.StringData(s), len(s))
+}
+
+func FromString(s string) (Key, error) {
+	return String(s), nil
 }
 
 func Stringer[T fmt.Stringer](s T) Key {

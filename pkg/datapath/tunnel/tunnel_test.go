@@ -11,12 +11,16 @@ import (
 	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/assert"
 
-	dpcfgdef "github.com/cilium/cilium/pkg/datapath/linux/config/defines"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/hive"
+	"github.com/cilium/cilium/pkg/option"
 )
 
-var defaultTestConfig = userCfg{TunnelProtocol: string(Geneve), TunnelPort: 0}
+var (
+	defaultTestConfig = userCfg{UnderlayProtocol: string(IPv4), TunnelProtocol: string(Geneve), TunnelPort: 0, TunnelSourcePortRange: defaults.TunnelSourcePortRange}
+	daemonCfgIPv46    = &option.DaemonConfig{EnableIPv4: true, EnableIPv6: true}
+	daemonCfgIPv4     = &option.DaemonConfig{EnableIPv4: true, EnableIPv6: false}
+)
 
 func TestConfig(t *testing.T) {
 	enabler := func(enable bool, opts ...enablerOpt) any {
@@ -27,33 +31,55 @@ func TestConfig(t *testing.T) {
 		name     string
 		ucfg     userCfg
 		enablers []any
+		dcfg     *option.DaemonConfig
 
 		shallFail      bool
-		proto          Protocol
+		proto          EncapProtocol
+		underlay       UnderlayProtocol
 		port           uint16
 		deviceName     string
 		shouldAdaptMTU bool
 	}{
 		{
 			name:      "invalid protocol",
-			ucfg:      userCfg{TunnelProtocol: "invalid", TunnelPort: 0},
+			ucfg:      userCfg{UnderlayProtocol: string(IPv4), TunnelProtocol: "invalid", TunnelPort: 0, TunnelSourcePortRange: defaults.TunnelSourcePortRange},
+			dcfg:      daemonCfgIPv46,
 			shallFail: true,
 		},
 		{
-			name:  "tunnel not enabled",
-			ucfg:  defaultTestConfig,
-			proto: Disabled,
+			name:      "invalid underlay",
+			ucfg:      userCfg{UnderlayProtocol: "invalid", TunnelProtocol: string(VXLAN), TunnelPort: 0, TunnelSourcePortRange: defaults.TunnelSourcePortRange},
+			dcfg:      daemonCfgIPv46,
+			shallFail: true,
+		},
+		{
+			name:     "tunnel not enabled",
+			ucfg:     defaultTestConfig,
+			dcfg:     daemonCfgIPv46,
+			underlay: IPv4,
+			proto:    Disabled,
 		},
 		{
 			name:     "tunnel not enabled, with enablers",
 			ucfg:     defaultTestConfig,
+			dcfg:     daemonCfgIPv46,
 			enablers: []any{enabler(false), enabler(false)},
+			underlay: IPv4,
 			proto:    Disabled,
 		},
 		{
+			name:      "tunnel enabled, disabled underlay",
+			ucfg:      userCfg{UnderlayProtocol: string(IPv6), TunnelProtocol: string(VXLAN), TunnelPort: 0, TunnelSourcePortRange: defaults.TunnelSourcePortRange},
+			dcfg:      daemonCfgIPv4,
+			enablers:  []any{enabler(true), enabler(false)},
+			shallFail: true,
+		},
+		{
 			name:           "tunnel enabled, vxlan",
-			ucfg:           userCfg{TunnelProtocol: string(VXLAN), TunnelPort: 0},
+			ucfg:           userCfg{UnderlayProtocol: string(IPv4), TunnelProtocol: string(VXLAN), TunnelPort: 0, TunnelSourcePortRange: defaults.TunnelSourcePortRange},
+			dcfg:           daemonCfgIPv46,
 			enablers:       []any{enabler(true), enabler(false)},
+			underlay:       IPv4,
 			proto:          VXLAN,
 			port:           defaults.TunnelPortVXLAN,
 			deviceName:     defaults.VxlanDevice,
@@ -61,8 +87,10 @@ func TestConfig(t *testing.T) {
 		},
 		{
 			name:           "tunnel enabled, vxlan, custom port",
-			ucfg:           userCfg{TunnelProtocol: string(VXLAN), TunnelPort: 1234},
+			ucfg:           userCfg{UnderlayProtocol: string(IPv4), TunnelProtocol: string(VXLAN), TunnelPort: 1234, TunnelSourcePortRange: defaults.TunnelSourcePortRange},
+			dcfg:           daemonCfgIPv46,
 			enablers:       []any{enabler(false), enabler(true)},
+			underlay:       IPv4,
 			proto:          VXLAN,
 			port:           1234,
 			deviceName:     defaults.VxlanDevice,
@@ -71,16 +99,31 @@ func TestConfig(t *testing.T) {
 		{
 			name:           "tunnel enabled, geneve",
 			ucfg:           defaultTestConfig,
+			dcfg:           daemonCfgIPv46,
 			enablers:       []any{enabler(true), enabler(true)},
+			underlay:       IPv4,
 			proto:          Geneve,
 			port:           defaults.TunnelPortGeneve,
 			deviceName:     defaults.GeneveDevice,
 			shouldAdaptMTU: true,
 		},
 		{
+			name:           "tunnel enabled, vxlan, ipv6 underlay",
+			ucfg:           userCfg{UnderlayProtocol: string(IPv6), TunnelProtocol: string(VXLAN), TunnelPort: 0, TunnelSourcePortRange: defaults.TunnelSourcePortRange},
+			dcfg:           daemonCfgIPv46,
+			enablers:       []any{enabler(true), enabler(true)},
+			underlay:       IPv6,
+			proto:          VXLAN,
+			port:           defaults.TunnelPortVXLAN,
+			deviceName:     defaults.VxlanDevice,
+			shouldAdaptMTU: true,
+		},
+		{
 			name:           "tunnel enabled, geneve, custom port",
-			ucfg:           userCfg{TunnelProtocol: string(Geneve), TunnelPort: 1234},
+			ucfg:           userCfg{UnderlayProtocol: string(IPv4), TunnelProtocol: string(Geneve), TunnelPort: 1234, TunnelSourcePortRange: defaults.TunnelSourcePortRange},
+			dcfg:           daemonCfgIPv46,
 			enablers:       []any{enabler(true), enabler(false)},
+			underlay:       IPv4,
 			proto:          Geneve,
 			port:           1234,
 			deviceName:     defaults.GeneveDevice,
@@ -89,7 +132,8 @@ func TestConfig(t *testing.T) {
 		{
 			name: "tunnel enabled, validation function",
 			ucfg: defaultTestConfig,
-			enablers: []any{enabler(true, WithValidator(func(proto Protocol) error {
+			dcfg: daemonCfgIPv46,
+			enablers: []any{enabler(true, WithValidator(func(proto EncapProtocol) error {
 				if proto == Geneve {
 					return errors.New("invalid protocol")
 				}
@@ -100,7 +144,9 @@ func TestConfig(t *testing.T) {
 		{
 			name:           "tunnel enabled, don't need MTU adaptation, one",
 			ucfg:           defaultTestConfig,
+			dcfg:           daemonCfgIPv46,
 			enablers:       []any{enabler(true, WithoutMTUAdaptation()), enabler(true)},
+			underlay:       IPv4,
 			proto:          Geneve,
 			port:           defaults.TunnelPortGeneve,
 			deviceName:     defaults.GeneveDevice,
@@ -109,11 +155,24 @@ func TestConfig(t *testing.T) {
 		{
 			name:           "tunnel enabled, don't need MTU adaptation, all",
 			ucfg:           defaultTestConfig,
+			dcfg:           daemonCfgIPv46,
 			enablers:       []any{enabler(true, WithoutMTUAdaptation()), enabler(false)},
+			underlay:       IPv4,
 			proto:          Geneve,
 			port:           defaults.TunnelPortGeneve,
 			deviceName:     defaults.GeneveDevice,
 			shouldAdaptMTU: false,
+		},
+		{
+			name:           "tunnel enabled, vxlan, auto underlay",
+			ucfg:           userCfg{UnderlayProtocol: string(Auto), TunnelProtocol: string(VXLAN), TunnelPort: 0, TunnelSourcePortRange: defaults.TunnelSourcePortRange},
+			dcfg:           daemonCfgIPv46,
+			enablers:       []any{enabler(true), enabler(false)},
+			underlay:       IPv4,
+			proto:          VXLAN,
+			port:           defaults.TunnelPortVXLAN,
+			deviceName:     defaults.VxlanDevice,
+			shouldAdaptMTU: true,
 		},
 	}
 
@@ -125,6 +184,7 @@ func TestConfig(t *testing.T) {
 				cell.Config(tt.ucfg),
 				cell.Provide(newConfig),
 				cell.Provide(tt.enablers...),
+				cell.Provide(func() *option.DaemonConfig { return tt.dcfg }),
 				cell.Invoke(func(tc Config) { out = tc }),
 			).Populate(hivetest.Logger(t))
 
@@ -134,57 +194,11 @@ func TestConfig(t *testing.T) {
 			}
 
 			assert.NoError(t, err)
-			assert.Equal(t, tt.proto, out.Protocol())
+			assert.Equal(t, tt.underlay, out.UnderlayProtocol())
+			assert.Equal(t, tt.proto, out.EncapProtocol())
 			assert.Equal(t, tt.port, out.Port())
 			assert.Equal(t, tt.deviceName, out.DeviceName())
 			assert.Equal(t, tt.shouldAdaptMTU, out.ShouldAdaptMTU())
-		})
-	}
-}
-
-func TestConfigDatapathProvider(t *testing.T) {
-	tests := []struct {
-		name     string
-		proto    Protocol
-		expected dpcfgdef.Map
-	}{
-		{
-			name:     "disabled",
-			proto:    Disabled,
-			expected: dpcfgdef.Map{},
-		},
-		{
-			name:  "vxlan",
-			proto: VXLAN,
-			expected: dpcfgdef.Map{
-				"TUNNEL_PROTOCOL_VXLAN":  "1",
-				"TUNNEL_PROTOCOL_GENEVE": "2",
-				"TUNNEL_PROTOCOL":        "1",
-				"TUNNEL_PORT":            "1234",
-			},
-		},
-		{
-			name:  "geneve",
-			proto: Geneve,
-			expected: dpcfgdef.Map{
-				"TUNNEL_PROTOCOL_VXLAN":  "1",
-				"TUNNEL_PROTOCOL_GENEVE": "2",
-				"TUNNEL_PROTOCOL":        "2",
-				"TUNNEL_PORT":            "1234",
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			out, _ := Config{
-				protocol:       tt.proto,
-				port:           1234,
-				deviceName:     "device",
-				shouldAdaptMTU: false,
-			}.datapathConfigProvider()
-
-			assert.Equal(t, out.NodeDefines, tt.expected)
 		})
 	}
 }

@@ -61,7 +61,10 @@ Configuration
 
 * The Cilium agent and operator must be run with the option ``--ipam=eni`` or
   the option ``ipam: eni``  must be set in the ConfigMap. This will enable ENI
-  allocation in both the node agent and operator.
+  allocation in both the node agent and operator. When installing via Helm, the 
+  flag ``eni.enabled=true`` must also be set. This flag configures all
+  requirements for AWS ENI environments, such as operator image selection,
+  enabling endpoint routes, CiliumNode management, and IPv4 masquerade defaults.
 
 * In most scenarios, it makes sense to automatically create the
   ``ciliumnodes.cilium.io`` custom resource when the agent starts up on a node
@@ -90,8 +93,34 @@ Configuration
 Custom ENI Configuration
 ========================
 
-Custom ENI configuration can be defined with a custom CNI configuration
-``ConfigMap``:
+Custom ENI configuration can be defined from Helm or with a custom CNI
+configuration ``ConfigMap``.
+
+If you configure both helm and Custom CNI for the same field, Custom CNI is 
+preferred over Helm configuration.
+
+Helm
+----
+
+The ENI configuration can be specified via Helm, using either the ``--set`` flag
+or a values file.
+
+The following example configures Cilium to:
+
+* Use subnets with the tag ``foo=bar`` to create ENIs.
+* Use index 1 as the first interface for pod IP allocation.
+* Set the minimum number of IPs to allocate to 10.
+
+.. cilium-helm-upgrade::
+   :namespace: kube-system
+   :extra-args: --reuse-values
+   :set: eni.enabled=true
+         eni.nodeSpec.subnetTags={foo=bar}
+         eni.nodeSpec.firstInterfaceIndex=1
+         ipam.nodeSpec.ipamMinAllocate=10
+
+The full list of available options can be found in the :ref:`helm_reference`
+section in the ``eni.nodeSpec`` and ``ipam.nodeSpec`` sections.
 
 Create a CNI configuration
 --------------------------
@@ -183,14 +212,6 @@ allocation:
 
   If unspecified, no minimum number of IPs is required.
 
-``spec.ipam.max-allocate``
-  The maximum number of IPs that can be allocated to the node.
-  When the current amount of allocated IPs will approach this value,
-  the considered value for PreAllocate will decrease down to 0 in order to
-  not attempt to allocate more addresses than defined.
-
-  If unspecified, no maximum number of IPs will be enforced.
-
 ``spec.ipam.pre-allocate``
   The number of IP addresses that must be available for allocation at all
   times.  It defines the buffer of addresses available immediately without
@@ -198,14 +219,10 @@ allocation:
 
   If unspecified, this value defaults to 8.
 
-``spec.ipam.max-above-watermark``
-  The maximum number of addresses to allocate beyond the addresses needed to
-  reach the PreAllocate watermark.  Going above the watermark can help reduce
-  the number of API calls to allocate IPs, e.g. when a new ENI is allocated, as
-  many secondary IPs as possible are allocated. Limiting the amount can help
-  reduce waste of IPs.
+``spec.ipam.static-ip-tags``
+  A map of tags to select a pool of IPs from which to assign a static IP to the node.
 
-  If let unspecified, the value defaults to 0.
+  If unspecified, no tags are required.
 
 ``spec.eni.first-interface-index``
   The index of the first ENI to use for IP allocation, e.g. if the node has
@@ -252,6 +269,17 @@ allocation:
   ``subnet-tags`` or ``first-interface-index`` to exclude additional interfaces.
 
   If unspecified, no tags are used to exclude interfaces.
+
+``spec.eni.use-primary-address``
+  Whether an ENI's primary address should be available for allocations on the node.
+
+  If unspecified, this option is disabled.
+
+``spec.eni.disable-prefix-delegation``
+  Whether ENI prefix delegation should be disabled on this node.
+
+  If unspecified, this option is disabled.
+
 
 ``spec.eni.delete-on-termination``
   Remove the ENI when the instance is terminated
@@ -428,8 +456,13 @@ is selected.
 If neither ``subnet-ids`` nor ``subnet-tags`` are set, the operator consults
 ``spec.eni.node-subnet-id``, attempting to create the ENI in the same subnet as
 the primary ENI of the instance. If this is not possible (e.g. if there are not
-enough IPs in said subnet), the operator falls back to allocating the IP in the
-largest subnet matching VPC and Availability Zone.
+enough IPs in said subnet), the operator will look for the subnet in the same 
+route table with the node's subnet. If it's not possible, falls back to allocating 
+the IP in the largest subnet matching VPC and Availability Zone.
+
+After selecting the subnet, operator will check selected subnets is in the same 
+route table with the node's subnet. It will generate the warning log if there is 
+mismatch to prevent the unexpected routing behavior.
 
 After selecting the subnet, the interface index is determined. For this purpose,
 all existing ENIs are scanned and the first unused index greater than
@@ -486,6 +519,7 @@ perform ENI creation and IP allocation:
  * ``DescribeNetworkInterfaces``
  * ``DescribeSubnets``
  * ``DescribeVpcs``
+ * ``DescribeRouteTables``
  * ``DescribeSecurityGroups``
  * ``CreateNetworkInterface``
  * ``AttachNetworkInterface``
@@ -509,17 +543,12 @@ If ``--instance-tags-filter`` is used:
 EC2 instance types ENI limits
 *****************************
 
-Currently the EC2 Instance ENI limits (adapters per instance + IPv4/IPv6 IPs per adapter) are
-hardcoded in the Cilium codebase for easy out-of-the box deployment and usage.
+The EC2 Instance ENI limits is only fetched from the EC2 API dynamically from 1.18 onwards.
 
-The limits can be modified via the ``--aws-instance-limit-mapping`` CLI flag on
-the cilium-operator. This allows the user to supply a custom limit.
+This requires the EC2 having ``DescribeInstanceTypes`` IAM permission, which is included in the EKS built-in policy ``AmazonEKSWorkerNodePolicy``.
+you can find more details at `AmazonEKSWorkerNodePolicy <https://docs.aws.amazon.com/aws-managed-policy/latest/reference/AmazonEKSWorkerNodePolicy.html>`__.
 
-Additionally the limits can be updated via the EC2 API by passing the
-``--update-ec2-adapter-limit-via-api`` CLI flag.
-This will require an additional EC2 IAM permission:
 
- * ``DescribeInstanceTypes``
 
 *******
 Metrics

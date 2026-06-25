@@ -25,6 +25,7 @@ import (
 	"github.com/cilium/cilium/hubble/pkg/defaults"
 	"github.com/cilium/cilium/hubble/pkg/logger"
 	hubtime "github.com/cilium/cilium/hubble/pkg/time"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 )
 
 func newDebugEventsCommand(vp *viper.Viper) *cobra.Command {
@@ -41,16 +42,16 @@ func newDebugEventsCommand(vp *viper.Viper) *cobra.Command {
 				return err
 			}
 
-			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
+			ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt, os.Kill)
 			defer cancel()
 
-			hubbleConn, err := conn.New(ctx, vp.GetString(config.KeyServer), vp.GetDuration(config.KeyTimeout))
+			hubbleConn, err := conn.NewWithFlags(ctx, vp)
 			if err != nil {
 				return err
 			}
 			defer hubbleConn.Close()
 			client := observerpb.NewObserverClient(hubbleConn)
-			logger.Logger.Debug("Sending GetDebugEvents request", "request", req)
+			logger.Logger.Debug("Sending GetDebugEvents request", logfields.Request, req)
 			if err := getDebugEvents(ctx, client, req); err != nil {
 				msg := err.Error()
 				// extract custom error message from failed grpc call

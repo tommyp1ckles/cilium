@@ -5,7 +5,7 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: cilium-envoy
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "cilium.namespace" . }}
   {{- with .Values.envoy.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
@@ -15,18 +15,22 @@ metadata:
     app.kubernetes.io/part-of: cilium
     app.kubernetes.io/name: cilium-envoy
     name: cilium-envoy
+    helm.sh/chart: {{ include "cilium.chart" . }}
+    {{- with .Values.commonLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 spec:
+  {{- if .Values.envoy.minReadySeconds }}
+  minReadySeconds: {{ .Values.envoy.minReadySeconds }}
+  {{- end }}
   selector:
     matchLabels:
       k8s-app: cilium-envoy
-  {{- with .Values.envoy.updateStrategy }}
-  updateStrategy:
-    {{- toYaml . | trim | nindent 4 }}
-  {{- end }}
+  {{- include "envoy.updateStrategy" . | nindent 2 }}
   template:
     metadata:
       annotations:
-        {{- if .Values.envoy.rollOutPods }}
+        {{- if and (.Values.envoy.rollOutPods) (not .Values.envoy.bootstrapConfigMap) }}
         # ensure pods roll when configmap updates
         cilium.io/cilium-envoy-configmap-checksum: {{ include (print $.Template.BasePath "/cilium-envoy/configmap.yaml") . | sha256sum | quote }}
         {{- end }}
@@ -46,6 +50,10 @@ spec:
         name: cilium-envoy
         app.kubernetes.io/name: cilium-envoy
         app.kubernetes.io/part-of: cilium
+        helm.sh/chart: {{ include "cilium.chart" . }}
+        {{- with .Values.commonLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
         {{- with .Values.envoy.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -63,6 +71,55 @@ spec:
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+
+
+      {{- $extraInitContainers := include "envoy.initContainers" . | trim }}
+      {{- if $extraInitContainers }}
+      {{- $extraInitContainers | nindent 6 }}
+      {{- end }}
+      {{- if .Values.envoy.nodeLocality.enabled }}
+      {{- if not $extraInitContainers }}
+      initContainers:
+      {{- end }}
+      - name: lookup-bootstrap-locality
+        image: {{ include "cilium.image" .Values.image }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command:
+          - /usr/bin/cilium-envoy-bootstrap-locality
+        args:
+          - --output=/var/run/cilium/envoy-locality-config/service-zone
+        env:
+        - name: K8S_NODE_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: spec.nodeName
+        {{- if and .Values.k8sServiceHostRef.name .Values.k8sServiceHostRef.key }}
+        - name: KUBERNETES_SERVICE_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: {{ .Values.k8sServiceHostRef.name }}
+              key: {{ .Values.k8sServiceHostRef.key }}
+        - name: KUBERNETES_SERVICE_PORT
+          value: {{ include "k8sServicePort" . }}
+        {{- end }}
+        {{- if .Values.k8sServiceHost }}
+        - name: KUBERNETES_SERVICE_HOST
+          value: {{ include "k8sServiceHost" . }}
+        - name: KUBERNETES_SERVICE_PORT
+          value: {{ include "k8sServicePort" . }}
+        {{- end }}
+        securityContext:
+          runAsUser: 0
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: envoy-config-locality
+          mountPath: /var/run/cilium/envoy-locality-config
+          readOnly: false
+      {{- end }}
       containers:
       - name: cilium-envoy
         image: {{ include "cilium.image" .Values.envoy.image | quote }}
@@ -74,6 +131,10 @@ spec:
         - '--keep-cap-net-bind-service'
         {{- end }}
         - '--'
+        {{- if .Values.envoy.nodeLocality.enabled }}
+        - '--service-zone'
+        - '@/var/run/cilium/envoy-locality-config/service-zone'
+        {{- end }}
         - '-c /var/run/cilium/envoy/bootstrap-config.json'
         - '--base-id {{ int .Values.envoy.baseID }}'
         {{- if and (.Values.debug.enabled) (hasKey .Values.debug "verbose") (.Values.debug.verbose) (has "envoy" ( splitList " " .Values.debug.verbose )) }}
@@ -85,13 +146,14 @@ spec:
         {{- else }}
         - '--log-level info'
         {{- end }}
-        - '--log-format {{ .Values.envoy.log.format }}'
         {{- if .Values.envoy.log.path }}
         - '--log-path {{ .Values.envoy.log.path }}'
         {{- end }}
+        {{- include "envoy.args.extra" . | nindent 8 }}
         {{- with .Values.envoy.extraArgs }}
         {{- toYaml . | trim | nindent 8 }}
         {{- end }}
+        {{- if .Values.envoy.startupProbe.enabled }}
         startupProbe:
           httpGet:
             host: {{ .Values.ipv4.enabled | ternary "127.0.0.1" "::1" | quote }}
@@ -101,7 +163,10 @@ spec:
           failureThreshold: {{ .Values.envoy.startupProbe.failureThreshold }}
           periodSeconds: {{ .Values.envoy.startupProbe.periodSeconds }}
           successThreshold: 1
-          initialDelaySeconds: 5
+          initialDelaySeconds: {{ .Values.envoy.startupProbe.initialDelaySeconds }}
+          timeoutSeconds: {{ .Values.envoy.startupProbe.timeoutSeconds }}
+        {{- end }}
+        {{- if .Values.envoy.livenessProbe.enabled }}
         livenessProbe:
           httpGet:
             host: {{ .Values.ipv4.enabled | ternary "127.0.0.1" "::1" | quote }}
@@ -111,7 +176,9 @@ spec:
           periodSeconds: {{ .Values.envoy.livenessProbe.periodSeconds }}
           successThreshold: 1
           failureThreshold: {{ .Values.envoy.livenessProbe.failureThreshold }}
-          timeoutSeconds: 5
+          initialDelaySeconds: {{ .Values.envoy.livenessProbe.initialDelaySeconds }}
+          timeoutSeconds: {{ .Values.envoy.livenessProbe.timeoutSeconds }}
+        {{- end }}
         readinessProbe:
           httpGet:
             host: {{ .Values.ipv4.enabled | ternary "127.0.0.1" "::1" | quote }}
@@ -121,7 +188,15 @@ spec:
           periodSeconds: {{ .Values.envoy.readinessProbe.periodSeconds }}
           successThreshold: 1
           failureThreshold: {{ .Values.envoy.readinessProbe.failureThreshold }}
-          timeoutSeconds: 5
+          initialDelaySeconds: {{ .Values.envoy.readinessProbe.initialDelaySeconds }}
+          timeoutSeconds: {{ .Values.envoy.readinessProbe.timeoutSeconds }}
+
+        {{- $lifecycleHooks := include "envoy.lifecycle" . | trim }}
+        {{- if $lifecycleHooks }}
+        lifecycle:
+        {{- $lifecycleHooks | nindent 10 }}
+        {{- end }}
+
         env:
         - name: K8S_NODE_NAME
           valueFrom:
@@ -133,12 +208,22 @@ spec:
             fieldRef:
               apiVersion: v1
               fieldPath: metadata.namespace
+        {{- if and .Values.k8sServiceHostRef.name .Values.k8sServiceHostRef.key }}
+        - name: KUBERNETES_SERVICE_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: {{ .Values.k8sServiceHostRef.name }}
+              key: {{ .Values.k8sServiceHostRef.key }}
+        - name: KUBERNETES_SERVICE_PORT
+          value: {{ include "k8sServicePort" . }}
+        {{- end }}
         {{- if .Values.k8sServiceHost }}
         - name: KUBERNETES_SERVICE_HOST
           value: {{ include "k8sServiceHost" . }}
         - name: KUBERNETES_SERVICE_PORT
           value: {{ include "k8sServicePort" . }}
         {{- end }}
+        {{- include "envoy.env.extra" . | nindent 8 }}
         {{- with .Values.envoy.extraEnv }}
         {{- toYaml . | trim | nindent 8 }}
         {{- end }}
@@ -146,19 +231,7 @@ spec:
         resources:
           {{- toYaml . | trim | nindent 10 }}
         {{- end }}
-        {{- if .Values.envoy.prometheus.enabled }}
-        ports:
-        - name: envoy-metrics
-          containerPort: {{ .Values.envoy.prometheus.port }}
-          hostPort: {{ .Values.envoy.prometheus.port }}
-          protocol: TCP
-        {{- if and .Values.envoy.debug.admin.enabled .Values.envoy.debug.admin.port }}
-        - name: envoy-admin
-          containerPort: {{ .Values.envoy.debug.admin.port }}
-          hostPort: {{ .Values.envoy.debug.admin.port }}
-          protocol: TCP
-        {{- end }}
-        {{- end }}
+        {{- include "envoy.ports" . }}
         securityContext:
           {{- if .Values.envoy.securityContext.privileged }}
           privileged: true
@@ -191,6 +264,12 @@ spec:
           mountPath: /sys/fs/bpf
           mountPropagation: HostToContainer
         {{- end }}
+        {{- include "envoy.volumeMounts.extra" . | nindent 8 }}
+        {{- if .Values.envoy.nodeLocality.enabled }}
+        - mountPath: /var/run/cilium/envoy-locality-config
+          name: envoy-config-locality
+          readOnly: true
+        {{- end }}
         {{- range .Values.envoy.extraHostPathMounts }}
         - name: {{ .name }}
           mountPath: {{ .mountPath }}
@@ -211,13 +290,13 @@ spec:
       automountServiceAccountToken: {{ .Values.serviceAccounts.envoy.automount }}
       terminationGracePeriodSeconds: {{ .Values.envoy.terminationGracePeriodSeconds }}
       hostNetwork: true
+      {{- if (semverCompare ">= 1.33-0" .Capabilities.KubeVersion.Version) }}
+      hostUsers: true
+      {{- end }}
       {{- if .Values.envoy.dnsPolicy }}
       dnsPolicy: {{ .Values.envoy.dnsPolicy }}
       {{- end }}
-      {{- with .Values.envoy.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+      {{- include "envoy.affinity" . | nindent 6  }}
       {{- with .Values.envoy.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -237,7 +316,7 @@ spec:
           type: DirectoryOrCreate
       - name: envoy-config
         configMap:
-          name: cilium-envoy-config
+          name: {{ .Values.envoy.bootstrapConfigMap | default "cilium-envoy-config" | quote }}
           # note: the leading zero means this number is in octal representation: do not remove it
           defaultMode: 0400
           items:
@@ -250,6 +329,11 @@ spec:
         hostPath:
           path: /sys/fs/bpf
           type: DirectoryOrCreate
+      {{- end }}
+      {{- include "envoy.hostPathMounts.extra" . | nindent 4 }}
+      {{- if .Values.envoy.nodeLocality.enabled }}
+      - name: envoy-config-locality
+        emptyDir: {}
       {{- end }}
       {{- range .Values.envoy.extraHostPathMounts }}
       - name: {{ .name }}

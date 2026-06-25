@@ -6,16 +6,15 @@
 package v1
 
 import (
-	"net/http"
+	http "net/http"
 
-	v1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
-	"github.com/cilium/cilium/pkg/k8s/slim/k8s/client/clientset/versioned/scheme"
+	corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
+	scheme "github.com/cilium/cilium/pkg/k8s/slim/k8s/client/clientset/versioned/scheme"
 	rest "k8s.io/client-go/rest"
 )
 
 type CoreV1Interface interface {
 	RESTClient() rest.Interface
-	EndpointsGetter
 	NamespacesGetter
 	NodesGetter
 	PodsGetter
@@ -26,10 +25,6 @@ type CoreV1Interface interface {
 // CoreV1Client is used to interact with features provided by the  group.
 type CoreV1Client struct {
 	restClient rest.Interface
-}
-
-func (c *CoreV1Client) Endpoints(namespace string) EndpointsInterface {
-	return newEndpoints(c, namespace)
 }
 
 func (c *CoreV1Client) Namespaces() NamespaceInterface {
@@ -57,9 +52,7 @@ func (c *CoreV1Client) Services(namespace string) ServiceInterface {
 // where httpClient was generated with rest.HTTPClientFor(c).
 func NewForConfig(c *rest.Config) (*CoreV1Client, error) {
 	config := *c
-	if err := setConfigDefaults(&config); err != nil {
-		return nil, err
-	}
+	setConfigDefaults(&config)
 	httpClient, err := rest.HTTPClientFor(&config)
 	if err != nil {
 		return nil, err
@@ -71,9 +64,7 @@ func NewForConfig(c *rest.Config) (*CoreV1Client, error) {
 // Note the http client provided takes precedence over the configured transport values.
 func NewForConfigAndClient(c *rest.Config, h *http.Client) (*CoreV1Client, error) {
 	config := *c
-	if err := setConfigDefaults(&config); err != nil {
-		return nil, err
-	}
+	setConfigDefaults(&config)
 	client, err := rest.RESTClientForConfigAndClient(&config, h)
 	if err != nil {
 		return nil, err
@@ -96,17 +87,15 @@ func New(c rest.Interface) *CoreV1Client {
 	return &CoreV1Client{c}
 }
 
-func setConfigDefaults(config *rest.Config) error {
-	gv := v1.SchemeGroupVersion
+func setConfigDefaults(config *rest.Config) {
+	gv := corev1.SchemeGroupVersion
 	config.GroupVersion = &gv
 	config.APIPath = "/api"
-	config.NegotiatedSerializer = scheme.Codecs.WithoutConversion()
+	config.NegotiatedSerializer = rest.CodecFactoryForGeneratedClient(scheme.Scheme, scheme.Codecs).WithoutConversion()
 
 	if config.UserAgent == "" {
 		config.UserAgent = rest.DefaultKubernetesUserAgent()
 	}
-
-	return nil
 }
 
 // RESTClient returns a RESTClient that is used to communicate

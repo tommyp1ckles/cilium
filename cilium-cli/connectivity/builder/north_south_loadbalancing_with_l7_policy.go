@@ -21,7 +21,7 @@ type northSouthLoadbalancingWithL7Policy struct{}
 
 func (t northSouthLoadbalancingWithL7Policy) build(ct *check.ConnectivityTest, _ map[string]string) {
 	northSouthLoadbalancingWithL7PolicyTest(ct, false)
-	if ct.Features[features.PortRanges].Enabled {
+	if ct.Features[features.L7PortRanges].Enabled {
 		northSouthLoadbalancingWithL7PolicyTest(ct, true)
 	}
 }
@@ -40,7 +40,6 @@ func northSouthLoadbalancingWithL7PolicyTest(ct *check.ConnectivityTest, portRan
 				features.RequireEnabled(features.NodeWithoutCilium),
 				features.RequireEnabled(features.L7Proxy))...,
 		).
-		WithCiliumVersion(">1.13.2").
 		WithCiliumPolicy(policyYAML).
 		WithScenarios(tests.OutsideToNodePort())
 }

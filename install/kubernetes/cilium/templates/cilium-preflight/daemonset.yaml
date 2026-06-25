@@ -1,9 +1,15 @@
+{{- $envoyDS := eq (include "envoyDaemonSetEnabled" .) "true" -}}
+
 {{- if .Values.preflight.enabled }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: cilium-pre-flight-check
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "cilium.namespace" . }}
+  {{- with .Values.commonLabels }}
+  labels:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   {{- with .Values.preflight.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
@@ -15,15 +21,20 @@ spec:
       kubernetes.io/cluster-service: "true"
   template:
     metadata:
-      {{- with .Values.preflight.podAnnotations }}
       annotations:
+        kubectl.kubernetes.io/default-container: cilium-pre-flight-check
+        {{- with .Values.preflight.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       labels:
         app.kubernetes.io/part-of: cilium
         k8s-app: cilium-pre-flight-check
         app.kubernetes.io/name: cilium-pre-flight-check
+        helm.sh/chart: {{ include "cilium.chart" . }}
         kubernetes.io/cluster-service: "true"
+        {{- with .Values.commonLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
         {{- with .Values.preflight.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -77,7 +88,7 @@ spec:
                 apiVersion: v1
                 fieldPath: spec.nodeName
           {{- with .Values.preflight.extraEnv }}
-            {{- toYaml . | trim | nindent 12 }}
+          {{- toYaml . | trim | nindent 10 }}
           {{- end }}
           volumeMounts:
           - name: cilium-run
@@ -104,57 +115,35 @@ spec:
             {{- toYaml . | trim | nindent 14 }}
           {{- end }}
           terminationMessagePolicy: FallbackToLogsOnError
-        {{- if ne .Values.preflight.tofqdnsPreCache "" }}
-        - name: cilium-pre-flight-fqdn-precache
-          image: {{ include "cilium.image" .Values.preflight.image | quote }}
+        {{- if $envoyDS }}
+        - name: cilium-pre-flight-envoy
+          image: {{ include "cilium.image" .Values.preflight.envoy.image | quote }}
           imagePullPolicy: {{ .Values.preflight.image.pullPolicy }}
-          name: cilium-pre-flight-fqdn-precache
           command: ["/bin/sh"]
           args:
-          - -ec
-          - |
-            cilium-dbg preflight fqdn-poller --tofqdns-pre-cache {{ .Values.preflight.tofqdnsPreCache }};
-            touch /tmp/ready-tofqdns-precache;
+          - -c
+          - "touch /tmp/ready; sleep 1h"
           livenessProbe:
             exec:
               command:
               - cat
-              - /tmp/read-tofqdns-precachey
+              - /tmp/ready
             initialDelaySeconds: 5
             periodSeconds: 5
           readinessProbe:
             exec:
               command:
               - cat
-              - /tmp/read-tofqdns-precachey
+              - /tmp/ready
             initialDelaySeconds: 5
             periodSeconds: 5
-          env:
-          {{- if .Values.k8sServiceHost }}
-          - name: KUBERNETES_SERVICE_HOST
-            value: {{ include "k8sServiceHost" . }}
-          - name: KUBERNETES_SERVICE_PORT
-            value: {{ include "k8sServicePort" . }}
-          {{- end }}
           volumeMounts:
-          - name: cilium-run
-            mountPath: /var/run/cilium
-          {{- if .Values.etcd.enabled }}
-          - name: etcd-config-path
-            mountPath: /var/lib/etcd-config
+          - name: envoy-sockets
+            mountPath: /var/run/cilium/envoy/sockets
+            readOnly: false
+          - name: envoy-artifacts
+            mountPath: /var/run/cilium/envoy/artifacts
             readOnly: true
-          {{- if .Values.etcd.ssl }}
-          - name: etcd-secrets
-            mountPath: /var/lib/etcd-secrets
-            readOnly: true
-          {{- end }}
-          {{- end }}
-          {{- with .Values.preflight.extraVolumeMounts }}
-          {{- toYaml . | nindent 10 }}
-          {{- end }}
-          {{- with .Values.preflight.extraEnv }}
-          {{- toYaml . | trim | nindent 10 }}
-          {{- end }}
           {{- with .Values.preflight.resources }}
           resources:
             {{- toYaml . | trim | nindent 12 }}
@@ -166,6 +155,9 @@ spec:
           terminationMessagePolicy: FallbackToLogsOnError
         {{- end }}
       hostNetwork: true
+      {{- if (semverCompare ">= 1.33-0" .Capabilities.KubeVersion.Version) }}
+      hostUsers: true
+      {{- end }}
       dnsPolicy: ClusterFirstWithHostNet
       restartPolicy: Always
       priorityClassName: {{ include "cilium.priorityClass" (list $ .Values.preflight.priorityClassName "system-node-critical") }}
@@ -209,8 +201,18 @@ spec:
           defaultMode: 0400
           optional: true
       {{- end }}
+      {{- end }}
+      {{- if $envoyDS }}
+      - name: envoy-sockets
+        hostPath:
+          path: "{{ .Values.daemon.runPath }}/envoy/sockets"
+          type: DirectoryOrCreate
+      - name: envoy-artifacts
+        hostPath:
+          path: "{{ .Values.daemon.runPath }}/envoy/artifacts"
+          type: DirectoryOrCreate
+      {{- end }}
       {{- with .Values.preflight.extraVolumes }}
       {{- toYaml . | nindent 6 }}
-      {{- end }}
       {{- end }}
 {{- end }}

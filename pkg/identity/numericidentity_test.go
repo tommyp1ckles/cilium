@@ -18,9 +18,9 @@ func TestLocalIdentity(t *testing.T) {
 	require.True(t, localID.HasLocalScope())
 
 	maxClusterID := NumericIdentity(cmtypes.ClusterIDMax | 1)
-	require.Equal(t, false, maxClusterID.HasLocalScope())
+	require.False(t, maxClusterID.HasLocalScope())
 
-	require.Equal(t, false, ReservedIdentityWorld.HasLocalScope())
+	require.False(t, ReservedIdentityWorld.HasLocalScope())
 }
 
 func TestClusterID(t *testing.T) {
@@ -87,16 +87,19 @@ func TestGetClusterIDShift(t *testing.T) {
 		name                   string
 		maxConnectedClusters   uint32
 		expectedClusterIDShift uint32
+		expectedClusterIDBits  uint32
 	}{
 		{
 			name:                   "clustermesh255",
 			maxConnectedClusters:   255,
 			expectedClusterIDShift: 16,
+			expectedClusterIDBits:  8,
 		},
 		{
 			name:                   "clustermesh511",
 			maxConnectedClusters:   511,
 			expectedClusterIDShift: 15,
+			expectedClusterIDBits:  9,
 		},
 	}
 
@@ -109,6 +112,7 @@ func TestGetClusterIDShift(t *testing.T) {
 			cinfo := cmtypes.ClusterInfo{MaxConnectedClusters: tt.maxConnectedClusters}
 			cinfo.InitClusterIDMax()
 			assert.Equal(t, tt.expectedClusterIDShift, GetClusterIDShift())
+			assert.Equal(t, tt.expectedClusterIDBits, GetClusterIDBits())
 
 			// ensure we cannot change the clusterIDShift after it has been initialized
 			for _, tc := range tests {
@@ -119,6 +123,7 @@ func TestGetClusterIDShift(t *testing.T) {
 				newCinfo := cmtypes.ClusterInfo{MaxConnectedClusters: tc.maxConnectedClusters}
 				newCinfo.InitClusterIDMax()
 				assert.NotEqual(t, tc.expectedClusterIDShift, GetClusterIDShift())
+				assert.NotEqual(t, tc.expectedClusterIDBits, GetClusterIDBits())
 			}
 		})
 	}

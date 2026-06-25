@@ -12,88 +12,21 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
-	"strconv"
+	"slices"
 	"strings"
 	"time"
 
-	"github.com/blang/semver/v4"
 	"github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	"golang.org/x/sys/unix"
 
-	"github.com/cilium/cilium/pkg/versioncheck"
 	"github.com/cilium/cilium/test/config"
 	ginkgoext "github.com/cilium/cilium/test/ginkgo-ext"
 )
 
-var runningCiliumVersion string
-
-// IsRunningOnJenkins detects if the currently running Ginkgo application is
-// most likely running in a Jenkins environment. Returns true if certain
-// environment variables that are present in Jenkins jobs are set, false
-// otherwise.
-func IsRunningOnJenkins() bool {
-	result := true
-
-	env := []string{"JENKINS_HOME", "NODE_NAME"}
-
-	for _, varName := range env {
-		if val := os.Getenv(varName); val == "" {
-			result = false
-			log.Infof("build is not running on Jenkins; environment variable '%v' is not set", varName)
-		}
-	}
-	if result {
-		panic("Jenkins is no longer supported")
-	}
-	return result
-}
-
-// SetCiliumVersion sets the currently running cilium version
-// and returns a function that unsets it.
-func SetRunningCiliumVersion(v string) func() {
-	runningCiliumVersion = v
-	return func() {
-		runningCiliumVersion = ""
-	}
-}
-
-// GetRunningCiliumVersion gets the currently running cilium version.
-func GetRunningCiliumVersion() string {
-	return runningCiliumVersion
-}
-
-// HasNewServiceOutput checks to see if the current running cilium
-// version uses the old style service output (e.g. "0.0.0.0:53") vs
-// the new style (e.g. "0.0.0.0:53/TCP").
-func HasNewServiceOutput(ver string) bool {
-	cst, err := versioncheck.Version(ver)
-	// If the version is not parseable it is probably
-	// someone's custom build  or not set.
-	// Either way, it is probably using the new output
-	// format.
-	if err != nil {
-		return true
-	}
-	return versioncheck.MustCompile(">=1.17.0")(cst)
-}
-
 // Sleep sleeps for the specified duration in seconds
 func Sleep(delay time.Duration) {
 	time.Sleep(delay * time.Second)
-}
-
-// CountValues returns the count of the occurrences of key in data, as well as
-// the length of data.
-func CountValues(key string, data []string) (int, int) {
-	var result int
-
-	for _, x := range data {
-		if x == key {
-			result++
-		}
-	}
-	return result, len(data)
 }
 
 // MakeUID returns a randomly generated string.
@@ -226,8 +159,7 @@ func WithContext(ctx context.Context, f func(ctx context.Context) (bool, error),
 }
 
 // GetAppPods fetches app pod names for a namespace.
-// For Http based tests, we identify pods with format id=<pod_name>, while
-// for Kafka based tests, we identify pods with the format app=<pod_name>.
+// For Http based tests, we identify pods with format id=<pod_name>.
 func GetAppPods(apps []string, namespace string, kubectl *Kubectl, appFmt string) map[string]string {
 	appPods := make(map[string]string)
 	for _, v := range apps {
@@ -251,7 +183,7 @@ func HoldEnvironment(description ...string) {
 	fmt.Fprintf(os.Stdout, "\n---\n%s", test.FullTestText)
 	fmt.Fprintf(os.Stdout, "\nat %s:%d", test.FileName, test.LineNumber)
 	fmt.Fprintf(os.Stdout, "\n\n%s", description)
-	fmt.Fprintf(os.Stdout, "\n\nPausing test for debug, use vagrant to access test setup.")
+	fmt.Fprintf(os.Stdout, "\n\nPausing test for debug.")
 	fmt.Fprintf(os.Stdout, "\nRun \"kill -SIGCONT %d\" to continue.\n", pid)
 	unix.Kill(pid, unix.SIGSTOP)
 	time.Sleep(time.Millisecond)
@@ -280,7 +212,7 @@ func ReportDirectoryPath() string {
 	prefix := ""
 	testName := ginkgoext.GetTestName()
 	if strings.HasPrefix(strings.ToLower(testName), K8s) {
-		prefix = fmt.Sprintf("%s-", strings.Replace(GetCurrentK8SEnv(), ".", "", -1))
+		prefix = fmt.Sprintf("%s-", strings.ReplaceAll(GetCurrentK8SEnv(), ".", ""))
 	}
 	return filepath.Join(TestResultsPath, prefix, testName)
 }
@@ -359,39 +291,8 @@ func reportMapContext(ctx context.Context, path string, reportCmds map[string]st
 	}
 }
 
-// ManifestGet returns the full path of the given manifest corresponding to the
-// Kubernetes version being tested, if such a manifest exists, if not it
-// returns the global manifest file.
-// The paths are checked in order:
-// 1- base_path/integration/filename
-// 2- base_path/k8s_version/integration/filename
-// 3- base_path/k8s_version/filename
-// 4- base_path/filename
+// ManifestGet returns the full path of the given manifest.
 func ManifestGet(base, manifestFilename string) string {
-	// Try dependent integration file only if we have one configured. This is
-	// needed since no integration is "" and that causes us to find the
-	// base_path/filename before we check the base_path/k8s_version/filename
-	if integration := GetCurrentIntegration(); integration != "" {
-		fullPath := filepath.Join(K8sManifestBase, integration, manifestFilename)
-		_, err := os.Stat(fullPath)
-		if err == nil {
-			return filepath.Join(base, fullPath)
-		}
-
-		// try dependent k8s version and integration file
-		fullPath = filepath.Join(K8sManifestBase, GetCurrentK8SEnv(), integration, manifestFilename)
-		_, err = os.Stat(fullPath)
-		if err == nil {
-			return filepath.Join(base, fullPath)
-		}
-	}
-
-	// try dependent k8s version
-	fullPath := filepath.Join(K8sManifestBase, GetCurrentK8SEnv(), manifestFilename)
-	_, err := os.Stat(fullPath)
-	if err == nil {
-		return filepath.Join(base, fullPath)
-	}
 	return filepath.Join(base, K8sManifestBase, manifestFilename)
 }
 
@@ -413,84 +314,12 @@ func WriteOrAppendToFile(filename string, data []byte, perm os.FileMode) error {
 	return err
 }
 
-// DNSDeployment returns the manifest to install dns engine on the server.
-func DNSDeployment(base string) string {
-	var DNSEngine = "coredns"
-	k8sVersion := GetCurrentK8SEnv()
-	switch k8sVersion {
-	case "1.8", "1.9", "1.10":
-		DNSEngine = "kubedns"
-	}
-
-	if integration := GetCurrentIntegration(); integration != "" {
-		fullPath := filepath.Join("provision", "manifest", k8sVersion, integration, DNSEngine+"_deployment.yaml")
-		_, err := os.Stat(fullPath)
-		if err == nil {
-			return filepath.Join(base, fullPath)
-		}
-	}
-
-	fullPath := filepath.Join("provision", "manifest", k8sVersion, DNSEngine+"_deployment.yaml")
-	_, err := os.Stat(fullPath)
-	if err == nil {
-		return filepath.Join(base, fullPath)
-	}
-	return filepath.Join(base, "provision", "manifest", DNSEngine+"_deployment.yaml")
-}
-
-// getK8sSupportedConstraints returns the Kubernetes versions supported by
-// a specific Cilium version.
-func getK8sSupportedConstraints(ciliumVersion string) (semver.Range, error) {
-	cst, err := versioncheck.Version(ciliumVersion)
-	if err != nil {
-		return nil, err
-	}
-	switch {
-	case IsCiliumV1_17(cst):
-		return versioncheck.MustCompile(">=1.16.0 <1.32.0"), nil
-	case IsCiliumV1_16(cst):
-		return versioncheck.MustCompile(">=1.16.0 <1.31.0"), nil
-	case IsCiliumV1_15(cst):
-		return versioncheck.MustCompile(">=1.16.0 <1.30.0"), nil
-	case IsCiliumV1_14(cst):
-		return versioncheck.MustCompile(">=1.16.0 <1.28.0"), nil
-	case IsCiliumV1_13(cst):
-		return versioncheck.MustCompile(">=1.16.0 <1.27.0"), nil
-	case IsCiliumV1_12(cst):
-		return versioncheck.MustCompile(">=1.16.0 <1.25.0"), nil
-	case IsCiliumV1_11(cst):
-		return versioncheck.MustCompile(">=1.16.0 <1.24.0"), nil
-	case IsCiliumV1_10(cst):
-		return versioncheck.MustCompile(">=1.16.0 <1.22.0"), nil
-	case IsCiliumV1_9(cst):
-		return versioncheck.MustCompile(">=1.12.0 <1.20.0"), nil
-	case IsCiliumV1_8(cst):
-		return versioncheck.MustCompile(">=1.10.0 <1.19.0"), nil
-	default:
-		return nil, fmt.Errorf("unrecognized version '%s'", ciliumVersion)
-	}
-}
-
-// CanRunK8sVersion returns true if the givel ciliumVersion can run in the given
-// Kubernetes version. If any version is unparsable, an error is returned.
-func CanRunK8sVersion(ciliumVersion, k8sVersionStr string) (bool, error) {
-	k8sVersion, err := versioncheck.Version(k8sVersionStr)
-	if err != nil {
-		return false, err
-	}
-	constraint, err := getK8sSupportedConstraints(ciliumVersion)
-	if err != nil {
-		return false, err
-	}
-	return constraint(k8sVersion), nil
-}
-
 // failIfContainsBadLogMsg makes a test case to fail if any message from
 // given log messages contains an entry from the blacklist (map key) AND
 // does not contain ignore messages (map value).
 func failIfContainsBadLogMsg(logs, label string, blacklist map[string][]string) {
 	uniqueFailures := make(map[string]int)
-	for _, msg := range strings.Split(logs, "\n") {
+	for msg := range strings.SplitSeq(logs, "\n") {
 		for fail, ignoreMessages := range blacklist {
 			if strings.Contains(msg, fail) {
 				ok := false
@@ -545,10 +374,6 @@ func DoesNotRunOn54Kernel() bool {
 	return !RunsOn54Kernel()
 }
 
-func NativeRoutingCIDR() string {
-	return os.Getenv("NATIVE_CIDR")
-}
-
 // RunsOn54OrLaterKernel checks whether a test case is running on 5.4 or later kernel
 func RunsOn54OrLaterKernel() bool {
 	return RunsOnNetNextKernel() || RunsOn54Kernel()
@@ -559,59 +384,17 @@ func DoesNotRunOn54OrLaterKernel() bool {
 	return !RunsOn54OrLaterKernel()
 }
 
-// RunsOnGKE returns true if the tests are running on GKE.
-func RunsOnGKE() bool {
-	return GetCurrentIntegration() == CIIntegrationGKE
-}
-
-// DoesNotRunOnGKE is the complement function of DoesNotRunOnGKE.
-func DoesNotRunOnGKE() bool {
-	return !RunsOnGKE()
-}
-
-// RunsOnAKS returns true if the tests are running on AKS.
-func RunsOnAKS() bool {
-	return GetCurrentIntegration() == CIIntegrationAKS
-}
-
-// DoesNotRunOnAKS is the complement function of DoesNotRunOnAKS.
-func DoesNotRunOnAKS() bool {
-	return !RunsOnAKS()
-}
-
-// RunsOnEKS returns true if the tests are running on EKS.
-func RunsOnEKS() bool {
-	return GetCurrentIntegration() == CIIntegrationEKS
-}
-
-// DoesNotRunOnEKS is the complement function of DoesNotRunOnEKS.
-func DoesNotRunOnEKS() bool {
-	return !RunsOnEKS()
-}
-
 // RunsWithKubeProxyReplacement returns true if the kernel supports our
 // kube-proxy replacement. Note that kube-proxy may still be running
 // alongside Cilium.
 func RunsWithKubeProxyReplacement() bool {
-	return RunsOnGKE() || RunsOn54OrLaterKernel()
+	return RunsOn54OrLaterKernel()
 }
 
 // DoesNotRunWithKubeProxyReplacement is the complement function of
 // RunsWithKubeProxyReplacement.
 func DoesNotRunWithKubeProxyReplacement() bool {
 	return !RunsWithKubeProxyReplacement()
-}
-
-// DoesNotHaveHosts returns a function which returns true if a CI job
-// has less VMs than the given count.
-func DoesNotHaveHosts(count int) func() bool {
-	return func() bool {
-		if c, err := strconv.Atoi(os.Getenv("K8S_NODES")); err != nil {
-			return true
-		} else {
-			return c < count
-		}
-	}
 }
 
 // RunsWithHostFirewall returns true is Cilium runs with the host firewall enabled.
@@ -622,11 +405,6 @@ func RunsWithHostFirewall() bool {
 // RunsWithKubeProxy returns true if cilium runs together with k8s' kube-proxy.
 func RunsWithKubeProxy() bool {
 	return os.Getenv("KUBEPROXY") != "0"
-}
-
-// RunsWithoutKubeProxy is the complement function of RunsWithKubeProxy.
-func RunsWithoutKubeProxy() bool {
-	return !RunsWithKubeProxy()
 }
 
 // ExistNodeWithoutCilium returns true if there is a node in a cluster which does
@@ -702,25 +480,7 @@ func (kub *Kubectl) GetNodeCILabel(nodeName string) string {
 
 // IsNodeWithoutCilium returns true if node node doesn't run Cilium.
 func IsNodeWithoutCilium(node string) bool {
-	for _, n := range GetNodesWithoutCilium() {
-		if n == node {
-			return true
-		}
-	}
-	return false
-}
-
-// GetLatestImageVersion infers which docker tag should be used
-func GetLatestImageVersion() string {
-	if len(config.CiliumTestConfig.CiliumTag) > 0 {
-		return config.CiliumTestConfig.CiliumTag
-	}
-	return "latest"
-}
-
-// SkipQuarantined returns whether test under quarantine should be skipped
-func SkipQuarantined() bool {
-	return !config.CiliumTestConfig.RunQuarantined
+	return slices.Contains(GetNodesWithoutCilium(), node)
 }
 
 // SkipRaceDetectorEnabled returns whether tests failing with race detector
@@ -730,99 +490,23 @@ func SkipRaceDetectorEnabled() bool {
 	return race == "1" || race == "true"
 }
 
-// SkipK8sVersions returns true if the current K8s versions matched the
-// constraints passed in argument.
-func SkipK8sVersions(k8sVersions string) bool {
-	k8sVersion, err := versioncheck.Version(GetCurrentK8SEnv())
-	if err != nil {
-		return false
-	}
-	constraint := versioncheck.MustCompile(k8sVersions)
-	return constraint(k8sVersion)
-}
-
 // DualStackSupported returns whether the current environment has DualStack IPv6
 // enabled or not for the cluster.
 func DualStackSupported() bool {
-	supportedVersions := versioncheck.MustCompile(">=1.18.0")
-	kubeProxyOnlySupportedVersions := versioncheck.MustCompile(">=1.20.0")
-
-	k8sVersion, err := versioncheck.Version(GetCurrentK8SEnv())
-	if err != nil {
-		// If we cannot conclude the k8s version we assume that dual stack is not
-		// supported.
-		return false
-	}
-
-	// When running with kube-proxy only, some IPv6 family services are not
-	// provisioned in ip6tables on k8s < 1.20. Therefore, skip any DualStack
-	// tests on those versions/configurations.
-	if DoesNotRunWithKubeProxyReplacement() && !kubeProxyOnlySupportedVersions(k8sVersion) {
-		return false
-	}
-
-	// AKS does not support dual stack yet
-	if IsIntegration(CIIntegrationAKS) {
-		return false
-	}
-
-	// We only have DualStack enabled in Vagrant test env or on KIND.
-	return (GetCurrentIntegration() == "" || IsIntegration(CIIntegrationKind)) &&
-		supportedVersions(k8sVersion)
+	// We only have DualStack enabled in KIND.
+	return GetCurrentIntegration() == "" || IsIntegration(CIIntegrationKind)
 }
 
 // DualStackSupportBeta returns true if the environment has a Kubernetes version that
 // has support for k8s DualStack beta API types.
 func DualStackSupportBeta() bool {
-	// DualStack support was promoted to beta with API types finalized in k8s 1.21
-	// The API types for dualstack services are same in k8s 1.20 and 1.21 so we include
-	// K8s version 1.20 as well.
-	// https://github.com/kubernetes/kubernetes/pull/98969
-	supportedVersions := versioncheck.MustCompile(">=1.20.0")
-	k8sVersion, err := versioncheck.Version(GetCurrentK8SEnv())
-	if err != nil {
-		return false
-	}
-
-	// AKS does not support dual stack yet
-	if IsIntegration(CIIntegrationAKS) {
-		return false
-	}
-
-	return (GetCurrentIntegration() == "" || IsIntegration(CIIntegrationKind)) &&
-		supportedVersions(k8sVersion)
+	return GetCurrentIntegration() == "" || IsIntegration(CIIntegrationKind)
 }
 
 // CiliumEndpointSliceFeatureEnabled returns true only if the environment has a kubernetes version
 // greater than or equal to 1.21.
 func CiliumEndpointSliceFeatureEnabled() bool {
-	k8sVersionGreaterEqual121 := versioncheck.MustCompile(">=1.21.0")
-	k8sVersion, err := versioncheck.Version(GetCurrentK8SEnv())
-	if err != nil {
-		return false
-	}
-	return k8sVersionGreaterEqual121(k8sVersion) && (GetCurrentIntegration() == "" ||
-		IsIntegration(CIIntegrationKind))
-}
-
-// SupportIPv6Connectivity returns true if the CI environment supports IPv6
-// connectivity across pods.
-func SupportIPv6Connectivity() bool {
-	supportedVersions := versioncheck.MustCompile(">=1.20.0")
-	k8sVersion, err := versioncheck.Version(GetCurrentK8SEnv())
-	if err != nil {
-		return false
-	}
-
-	if supportedVersions(k8sVersion) {
-		return true
-	}
-
-	if IsIntegration(CIIntegrationKind) {
-		return false
-	}
-
-	return true
+	return GetCurrentIntegration() == "" || IsIntegration(CIIntegrationKind)
 }
 
 // SupportIPv6ToOutside returns true if the CI environment supports IPv6

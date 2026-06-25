@@ -16,9 +16,7 @@ import (
 // Amazon Web Services creates a unique Amazon Web Services managed KMS key in
 // each Region for use with encryption by default. If you change the default KMS
 // key to a symmetric customer managed KMS key, it is used instead of the Amazon
-// Web Services managed KMS key. To reset the default KMS key to the Amazon Web
-// Services managed KMS key for EBS, use ResetEbsDefaultKmsKeyId. Amazon EBS does not support asymmetric
-// KMS keys.
+// Web Services managed KMS key. Amazon EBS does not support asymmetric KMS keys.
 //
 // If you delete or disable the customer managed KMS key that you specified for
 // use with encryption by default, your instances will fail to launch.
@@ -122,13 +120,16 @@ func (c *Client) addOperationModifyEbsDefaultKmsKeyIdMiddlewares(stack *middlewa
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
+	if err = addRetry(stack, options, c); err != nil {
 		return err
 	}
 	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
 	if err = addRecordResponseTiming(stack); err != nil {
+		return err
+	}
+	if err = addSpanRetryLoop(stack, options); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -143,10 +144,10 @@ func (c *Client) addOperationModifyEbsDefaultKmsKeyIdMiddlewares(stack *middlewa
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
-	if err = addTimeOffsetBuild(stack, c); err != nil {
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
-	if err = addUserAgentRetryMode(stack, options); err != nil {
+	if err = addCredentialSource(stack, options); err != nil {
 		return err
 	}
 	if err = addOpModifyEbsDefaultKmsKeyIdValidationMiddleware(stack); err != nil {
@@ -168,6 +169,15 @@ func (c *Client) addOperationModifyEbsDefaultKmsKeyIdMiddlewares(stack *middlewa
 		return err
 	}
 	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptBeforeRetryLoop(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptAttempt(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil

@@ -9,70 +9,111 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
-
-	"github.com/cilium/statedb/internal"
-	"github.com/cilium/statedb/part"
+	"time"
 
 	"github.com/cilium/statedb/index"
+	"github.com/cilium/statedb/internal"
+	"github.com/cilium/statedb/part"
+	"go.yaml.in/yaml/v3"
 )
 
-// NewTable creates a new table with given name and indexes.
-// Can fail if the indexes or the name are malformed.
+// NewTable creates a new table with given name and indexes, and registers it
+// with the database. Can fail if the indexes or the name are malformed, or a
+// table with the same name is already registered.
 // The name must match regex "^[a-z][a-z0-9_\\-]{0,30}$".
 //
 // To provide access to the table via Hive:
 //
 //	cell.Provide(
 //		// Provide statedb.RWTable[*MyObject]. Often only provided to the module with ProvidePrivate.
-//		statedb.NewTable[*MyObject]("my-objects", MyObjectIDIndex, MyObjectNameIndex),
+//		func(db *statedb.DB) (statedb.RWTable[*MyObject], error) {
+//			return NewTable(db, "my-objects", MyObjectIDIndex, MyObjectNameIndex)
+//		},
 //		// Provide the read-only statedb.Table[*MyObject].
 //		statedb.RWTable[*MyObject].ToTable,
 //	)
-func NewTable[Obj any](
+func NewTable[Obj TableWritable](
+	db *DB,
 	tableName TableName,
 	primaryIndexer Indexer[Obj],
 	secondaryIndexers ...Indexer[Obj],
 ) (RWTable[Obj], error) {
+	var obj Obj
+	return NewTableAny[Obj](
+		db,
+		tableName,
+		obj.TableHeader,
+		Obj.TableRow,
+		primaryIndexer,
+		secondaryIndexers...,
+	)
+}
+
+// MustNewTable creates a new table with given name and indexes, and registers
+// it with the database. Panics if indexes are malformed, or a table with the
+// same name is already registered.
+func MustNewTable[Obj TableWritable](
+	db *DB,
+	tableName TableName,
+	primaryIndexer Indexer[Obj],
+	secondaryIndexers ...Indexer[Obj]) RWTable[Obj] {
+	t, err := NewTable(db, tableName, primaryIndexer, secondaryIndexers...)
+	if err != nil {
+		panic(err)
+	}
+	return t
+}
+
+// NewTableAny creates a new table for any type object with the given table
+// header and row functions.
+func NewTableAny[Obj any](
+	db *DB,
+	tableName TableName,
+	tableHeader func() []string,
+	tableRow func(Obj) []string,
+	primaryIndexer Indexer[Obj],
+	secondaryIndexers ...Indexer[Obj]) (RWTable[Obj], error) {
 	if err := validateTableName(tableName); err != nil {
 		return nil, err
 	}
 
-	toAnyIndexer := func(idx Indexer[Obj]) anyIndexer {
+	toAnyIndexer := func(idx Indexer[Obj], pos int) anyIndexer {
 		return anyIndexer{
-			name: idx.indexName(),
-			fromObject: func(iobj object) index.KeySet {
-				return idx.fromObject(iobj.data.(Obj))
-			},
-			unique: idx.isUnique(),
+			name:          idx.indexName(),
+			fromString:    idx.fromString,
+			newTableIndex: idx.newTableIndex,
+			pos:           pos,
 		}
 	}
 
 	table := &genTable[Obj]{
 		table:                tableName,
 		smu:                  internal.NewSortableMutex(),
-		primaryAnyIndexer:    toAnyIndexer(primaryIndexer),
+		primaryAnyIndexer:    toAnyIndexer(primaryIndexer, PrimaryIndexPos),
 		primaryIndexer:       primaryIndexer,
-		secondaryAnyIndexers: make(map[string]anyIndexer, len(secondaryIndexers)),
-		indexPositions:       make(map[string]int),
+		secondaryAnyIndexers: make([]anyIndexer, 0, len(secondaryIndexers)),
+		indexPositions:       make([]string, SecondaryIndexStartPos+len(secondaryIndexers)),
 		pos:                  -1,
+		tableHeaderFunc:      tableHeader,
+		tableRowFunc:         tableRow,
 	}
 
-	table.indexPositions[primaryIndexer.indexName()] = PrimaryIndexPos
-
 	// Internal indexes
-	table.indexPositions[RevisionIndex] = RevisionIndexPos
-	table.indexPositions[GraveyardIndex] = GraveyardIndexPos
-	table.indexPositions[GraveyardRevisionIndex] = GraveyardRevisionIndexPos
+	table.indexPositions[RevisionIndexPos] = RevisionIndex
+	table.indexPositions[GraveyardIndexPos] = GraveyardIndex
+	table.indexPositions[GraveyardRevisionIndexPos] = GraveyardRevisionIndex
+
+	table.indexPositions[PrimaryIndexPos] = primaryIndexer.indexName()
 
 	indexPos := SecondaryIndexStartPos
 	for _, indexer := range secondaryIndexers {
 		name := indexer.indexName()
-		anyIndexer := toAnyIndexer(indexer)
-		anyIndexer.pos = indexPos
-		table.secondaryAnyIndexers[name] = anyIndexer
-		table.indexPositions[name] = indexPos
+		anyIndexer := toAnyIndexer(indexer, indexPos)
+		table.secondaryAnyIndexers = append(table.secondaryAnyIndexers, anyIndexer)
+		table.indexPositions[indexPos] = name
 		indexPos++
 	}
 
@@ -95,16 +136,20 @@ func NewTable[Obj any](
 			return nil, tableError(tableName, fmt.Errorf("index %q: %w", name, ErrReservedPrefix))
 		}
 	}
-	return table, nil
+	return table, db.registerTable(table)
 }
 
-// MustNewTable creates a new table with given name and indexes.
-// Panics if indexes are malformed.
-func MustNewTable[Obj any](
+// MustNewTableAny creates a new table with given name and indexes, and registers
+// it with the database. Panics if indexes are malformed, or a table with the
+// same name is already registered.
+func MustNewTableAny[Obj any](
+	db *DB,
 	tableName TableName,
+	tableHeader func() []string,
+	tableRow func(Obj) []string,
 	primaryIndexer Indexer[Obj],
 	secondaryIndexers ...Indexer[Obj]) RWTable[Obj] {
-	t, err := NewTable(tableName, primaryIndexer, secondaryIndexers...)
+	t, err := NewTableAny(db, tableName, tableHeader, tableRow, primaryIndexer, secondaryIndexers...)
 	if err != nil {
 		panic(err)
 	}
@@ -126,27 +171,116 @@ type genTable[Obj any] struct {
 	smu                  internal.SortableMutex
 	primaryIndexer       Indexer[Obj]
 	primaryAnyIndexer    anyIndexer
-	secondaryAnyIndexers map[string]anyIndexer
-	indexPositions       map[string]int
+	secondaryAnyIndexers []anyIndexer
+	indexPositions       []string
+	tableHeaderFunc      func() []string
+	tableRowFunc         func(Obj) []string
+	lastWriteTxn         acquiredInfo
 }
 
-func (t *genTable[Obj]) tableEntry() tableEntry {
+type acquiredInfo struct {
+	mu         sync.Mutex
+	handle     string
+	acquiredAt time.Time
+	duration   time.Duration
+}
+
+func (t *genTable[Obj]) acquired(txn *writeTxnState) {
+	t.lastWriteTxn.mu.Lock()
+	t.lastWriteTxn.handle = txn.handle
+	t.lastWriteTxn.acquiredAt = txn.acquiredAt
+	t.lastWriteTxn.mu.Unlock()
+}
+
+func (t *genTable[Obj]) released() {
+	t.lastWriteTxn.mu.Lock()
+	t.lastWriteTxn.duration = time.Since(t.lastWriteTxn.acquiredAt)
+	t.lastWriteTxn.mu.Unlock()
+}
+
+func (t *genTable[Obj]) indexPos(name string) int {
+	// By default don't consider the internal indexes.
+	start := PrimaryIndexPos
+
+	if name[0] == '_' {
+		// Might be one of the internal indexes
+		start = 0
+	}
+
+	for i, n := range t.indexPositions[start:] {
+		if n == name {
+			return start + i
+		}
+	}
+	panic(fmt.Sprintf("BUG: index position not found for %s", name))
+
+}
+
+func (t *genTable[Obj]) getAcquiredInfo() string {
+	t.lastWriteTxn.mu.Lock()
+	defer t.lastWriteTxn.mu.Unlock()
+	info := &t.lastWriteTxn
+	if info.handle == "" {
+		return ""
+	}
+
+	since := internal.PrettySince(info.acquiredAt)
+	if info.duration == 0 {
+		// Still locked
+		return fmt.Sprintf("%s (locked for %s)", info.handle, since)
+	}
+	dur := time.Duration(info.duration)
+	return fmt.Sprintf("%s (%s ago, locked for %s)", info.handle, since, internal.PrettyDuration(dur))
+}
+
+func (t *genTable[Obj]) tableEntry() *tableEntry {
 	var entry tableEntry
 	entry.meta = t
-	entry.deleteTrackers = part.New[anyDeleteTracker]()
-	entry.initWatchChan = make(chan struct{})
-	entry.indexes = make([]indexEntry, len(t.indexPositions))
-	entry.indexes[t.indexPositions[t.primaryIndexer.indexName()]] = indexEntry{part.New[object](), nil, true}
+	deleteTrackers := part.New[anyDeleteTracker]()
+	entry.deleteTrackers = &deleteTrackers
 
-	for index, indexer := range t.secondaryAnyIndexers {
-		entry.indexes[t.indexPositions[index]] = indexEntry{part.New[object](), nil, indexer.unique}
+	// A new table is initialized, as no initializers are registered.
+	entry.indexes = make([]tableIndex, len(t.indexPositions))
+
+	primaryIndex := t.primaryIndexer.newTableIndex()
+	entry.indexes[PrimaryIndexPos] = primaryIndex
+
+	for _, indexer := range t.secondaryAnyIndexers {
+		entry.indexes[t.indexPos(indexer.name)] = indexer.newTableIndex()
 	}
 	// For revision indexes we only need to watch the root.
-	entry.indexes[t.indexPositions[RevisionIndex]] = indexEntry{part.New[object](part.RootOnlyWatch), nil, true}
-	entry.indexes[t.indexPositions[GraveyardRevisionIndex]] = indexEntry{part.New[object](part.RootOnlyWatch), nil, true}
-	entry.indexes[t.indexPositions[GraveyardIndex]] = indexEntry{part.New[object](), nil, true}
+	entry.indexes[RevisionIndexPos] = newRevisionIndex()
+	entry.indexes[GraveyardRevisionIndexPos] = newRevisionIndex()
+	entry.indexes[GraveyardIndexPos] = newGraveyardIndex(primaryIndex)
 
-	return entry
+	return &entry
+}
+
+// newRevisionIndex constructs an index for storing objects by revision.
+func newRevisionIndex() tableIndex {
+	return &partIndex{
+		tree: part.New[object](part.RootOnlyWatch),
+		partIndexTxn: partIndexTxn{
+			objectToKeys: func(obj object) index.KeySet {
+				return index.NewKeySet(index.Uint64(obj.revision))
+			},
+			unique: true,
+		},
+	}
+}
+
+// newGraveyardIndex constructs an index for storing dead objects that
+// are waiting to be observed via Changes().
+func newGraveyardIndex(primaryIndex tableIndex) tableIndex {
+	return &partIndex{
+		tree: part.New[object](part.RootOnlyWatch),
+		partIndexTxn: partIndexTxn{
+			objectToKeys: func(obj object) index.KeySet {
+				return index.NewKeySet(primaryIndex.objectToKey(obj))
+			},
+			unique: true,
+		},
+	}
 }
 
 func (t *genTable[Obj]) setTablePos(pos int) {
@@ -157,26 +291,23 @@ func (t *genTable[Obj]) tablePos() int {
 	return t.pos
 }
 
-func (t *genTable[Obj]) tableKey() []byte {
-	return []byte(t.table)
-}
-
-func (t *genTable[Obj]) indexPos(name string) int {
-	if t.primaryAnyIndexer.name == name {
-		return PrimaryIndexPos
+func (t *genTable[Obj]) getIndexer(name string) *anyIndexer {
+	if name == "" || t.primaryAnyIndexer.name == name {
+		return &t.primaryAnyIndexer
 	}
-	return t.indexPositions[name]
+	for i, indexer := range t.secondaryAnyIndexers {
+		if indexer.name == name {
+			return &t.secondaryAnyIndexers[i]
+		}
+	}
+	return nil
 }
 
 func (t *genTable[Obj]) PrimaryIndexer() Indexer[Obj] {
 	return t.primaryIndexer
 }
 
-func (t *genTable[Obj]) primary() anyIndexer {
-	return t.primaryAnyIndexer
-}
-
-func (t *genTable[Obj]) secondary() map[string]anyIndexer {
+func (t *genTable[Obj]) secondary() []anyIndexer {
 	return t.secondaryAnyIndexers
 }
 
@@ -184,53 +315,96 @@ func (t *genTable[Obj]) Name() string {
 	return t.table
 }
 
+func (t *genTable[Obj]) Indexes() []string {
+	idxs := make([]string, 0, 1+len(t.secondaryAnyIndexers))
+	idxs = append(idxs, t.primaryAnyIndexer.name)
+	for _, idx := range t.secondaryAnyIndexers {
+		idxs = append(idxs, idx.name)
+	}
+	sort.Strings(idxs)
+	return idxs
+}
+
 func (t *genTable[Obj]) ToTable() Table[Obj] {
 	return t
 }
 
 func (t *genTable[Obj]) Initialized(txn ReadTxn) (bool, <-chan struct{}) {
-	table := txn.getTxn().getTableEntry(t)
-	if len(table.pendingInitializers) == 0 {
-		return true, closedWatchChannel
+	table := txn.getTableEntry(t)
+	if init := table.init; init != nil {
+		if len(init.pending) == 0 {
+			// Table has been initialized in this write transaction, but not yet
+			// committed. [init.watch] is closed on Commit(), so return an already
+			// closed watch channel here.
+			return true, closedWatchChannel
+		}
+		return false, init.watch
 	}
-	return false, table.initWatchChan
+	return true, closedWatchChannel
 }
 
 func (t *genTable[Obj]) PendingInitializers(txn ReadTxn) []string {
-	return txn.getTxn().getTableEntry(t).pendingInitializers
+	table := txn.getTableEntry(t)
+	if init := table.init; init != nil {
+		return init.pending
+	}
+	return nil
 }
 
 func (t *genTable[Obj]) RegisterInitializer(txn WriteTxn, name string) func(WriteTxn) {
-	table := txn.getTxn().modifiedTables[t.pos]
-	if table != nil {
-		if slices.Contains(table.pendingInitializers, name) {
-			panic(fmt.Sprintf("RegisterInitializer: %q already registered", name))
-		}
-		table.pendingInitializers =
-			append(slices.Clone(table.pendingInitializers), name)
-		var once sync.Once
-		return func(txn WriteTxn) {
-			once.Do(func() {
-				if table := txn.getTxn().modifiedTables[t.pos]; table != nil {
-					table.pendingInitializers = slices.DeleteFunc(
-						slices.Clone(table.pendingInitializers),
-						func(n string) bool { return n == name },
-					)
-				}
-			})
-		}
-	} else {
+	table := txn.unwrap().tableEntries[t.pos]
+	if !table.locked {
 		panic(fmt.Sprintf("RegisterInitializer: Table %q not locked for writing", t.table))
+	}
+
+	var init *tableInitialization
+	if table.init == nil {
+		init = &tableInitialization{
+			watch: make(chan struct{}),
+		}
+		table.init = init
+	} else {
+		// Clone
+		init2 := *table.init
+		init2.pending = slices.Clone(init2.pending)
+		init = &init2
+		table.init = init
+	}
+
+	if slices.Contains(init.pending, name) {
+		panic(fmt.Sprintf("RegisterInitializer: %q already registered", name))
+	}
+
+	init.pending = append(init.pending, name)
+	var once sync.Once
+	return func(txn WriteTxn) {
+		once.Do(func() {
+			table := txn.unwrap().tableEntries[t.pos]
+			if !table.locked {
+				panic(fmt.Sprintf("RegisterInitializer/MarkDone: Table %q not locked for writing", t.table))
+			}
+			init := *table.init
+			init.pending = slices.DeleteFunc(
+				slices.Clone(init.pending),
+				func(n string) bool { return n == name },
+			)
+			table.init = &init
+		})
 	}
 }
 
 func (t *genTable[Obj]) Revision(txn ReadTxn) Revision {
-	return txn.getTxn().getTableEntry(t).revision
+	return txn.getTableEntry(t).revision
 }
 
 func (t *genTable[Obj]) NumObjects(txn ReadTxn) int {
-	table := txn.getTxn().getTableEntry(t)
+	table := txn.getTableEntry(t)
 	return table.numObjects()
+}
+
+func (t *genTable[Obj]) numDeletedObjects(txn ReadTxn) int {
+	table := txn.getTableEntry(t)
+	return table.numDeletedObjects()
 }
 
 func (t *genTable[Obj]) Get(txn ReadTxn, q Query[Obj]) (obj Obj, revision uint64, ok bool) {
@@ -239,56 +413,8 @@ func (t *genTable[Obj]) Get(txn ReadTxn, q Query[Obj]) (obj Obj, revision uint64
 }
 
 func (t *genTable[Obj]) GetWatch(txn ReadTxn, q Query[Obj]) (obj Obj, revision uint64, watch <-chan struct{}, ok bool) {
-	// Since we're not returning an iterator here we can optimize and not use
-	// indexReadTxn which clones if this is a WriteTxn (to avoid invalidating iterators).
-	indexPos := t.indexPos(q.index)
-	itxn := txn.getTxn()
-	var (
-		ops    part.Ops[object]
-		unique bool
-	)
-	if itxn.modifiedTables != nil && itxn.modifiedTables[t.tablePos()] != nil {
-		var err error
-		iwtxn, err := itxn.indexWriteTxn(t, indexPos)
-		if err != nil {
-			panic(err)
-		}
-		ops = iwtxn.Txn
-		unique = iwtxn.unique
-	} else {
-		entry := itxn.root[t.tablePos()].indexes[indexPos]
-		ops = entry.tree
-		unique = entry.unique
-	}
-
-	var iobj object
-	if unique {
-		// On a unique index we can do a direct get rather than a prefix search.
-		iobj, watch, ok = ops.Get(q.key)
-		if !ok {
-			return
-		}
-		obj = iobj.data.(Obj)
-		revision = iobj.revision
-		return
-	}
-
-	// For a non-unique index we need to do a prefix search.
-	iter, watch := ops.Prefix(q.key)
-	for {
-		var key []byte
-		key, iobj, ok = iter.Next()
-		if !ok {
-			break
-		}
-
-		// Check that we have a full match on the key
-		_, secondary := decodeNonUniqueKey(key)
-		if len(secondary) == len(q.key) {
-			break
-		}
-	}
-
+	index := txn.root()[t.pos].indexes[t.indexPos(q.index)]
+	iobj, watch, ok := index.get(q.key)
 	if ok {
 		obj = iobj.data.(Obj)
 		revision = iobj.revision
@@ -302,13 +428,9 @@ func (t *genTable[Obj]) LowerBound(txn ReadTxn, q Query[Obj]) iter.Seq2[Obj, Rev
 }
 
 func (t *genTable[Obj]) LowerBoundWatch(txn ReadTxn, q Query[Obj]) (iter.Seq2[Obj, Revision], <-chan struct{}) {
-	indexTxn := txn.getTxn().mustIndexReadTxn(t, t.indexPos(q.index))
-	// Since LowerBound query may be invalidated by changes in another branch
-	// of the tree, we cannot just simply watch the node we seeked to. Instead
-	// we watch the whole table for changes.
-	watch := indexTxn.RootWatch()
-	iter := indexTxn.LowerBound(q.key)
-	return partSeq[Obj](iter), watch
+	indexTxn := txn.mustIndexReadTxn(t, t.indexPos(q.index))
+	iter, watch := indexTxn.lowerBound(q.key)
+	return objSeq[Obj](iter), watch
 }
 
 func (t *genTable[Obj]) Prefix(txn ReadTxn, q Query[Obj]) iter.Seq2[Obj, Revision] {
@@ -317,9 +439,9 @@ func (t *genTable[Obj]) Prefix(txn ReadTxn, q Query[Obj]) iter.Seq2[Obj, Revisio
 }
 
 func (t *genTable[Obj]) PrefixWatch(txn ReadTxn, q Query[Obj]) (iter.Seq2[Obj, Revision], <-chan struct{}) {
-	indexTxn := txn.getTxn().mustIndexReadTxn(t, t.indexPos(q.index))
-	iter, watch := indexTxn.Prefix(q.key)
-	return partSeq[Obj](iter), watch
+	indexTxn := txn.mustIndexReadTxn(t, t.indexPos(q.index))
+	iter, watch := indexTxn.prefix(q.key)
+	return objSeq[Obj](iter), watch
 }
 
 func (t *genTable[Obj]) All(txn ReadTxn) iter.Seq2[Obj, Revision] {
@@ -328,8 +450,13 @@ func (t *genTable[Obj]) All(txn ReadTxn) iter.Seq2[Obj, Revision] {
 }
 
 func (t *genTable[Obj]) AllWatch(txn ReadTxn) (iter.Seq2[Obj, Revision], <-chan struct{}) {
-	indexTxn := txn.getTxn().mustIndexReadTxn(t, PrimaryIndexPos)
-	return partSeq[Obj](indexTxn.Iterator()), indexTxn.RootWatch()
+	indexTxn := txn.mustIndexReadTxn(t, PrimaryIndexPos)
+	iter, watch := indexTxn.all()
+	return func(yield func(Obj, Revision) bool) {
+		iter.All(func(_ []byte, obj object) bool {
+			return yield(obj.data.(Obj), obj.revision)
+		})
+	}, watch
 }
 
 func (t *genTable[Obj]) List(txn ReadTxn, q Query[Obj]) iter.Seq2[Obj, Revision] {
@@ -338,30 +465,19 @@ func (t *genTable[Obj]) List(txn ReadTxn, q Query[Obj]) iter.Seq2[Obj, Revision]
 }
 
 func (t *genTable[Obj]) ListWatch(txn ReadTxn, q Query[Obj]) (iter.Seq2[Obj, Revision], <-chan struct{}) {
-	indexTxn := txn.getTxn().mustIndexReadTxn(t, t.indexPos(q.index))
-	if indexTxn.unique {
-		// Unique index means that there can be only a single matching object.
-		// Doing a Get() is more efficient than constructing an iterator.
-		value, watch, ok := indexTxn.Get(q.key)
-		seq := func(yield func(Obj, Revision) bool) {
-			if ok {
-				yield(value.data.(Obj), value.revision)
-			}
-		}
-		return seq, watch
-	}
-
-	// For a non-unique index we do a prefix search. The keys are of
-	// form <secondary key><primary key><secondary key length>, and thus the
-	// iteration will continue until key length mismatches, e.g. we hit a
-	// longer key sharing the same prefix.
-	iter, watch := indexTxn.Prefix(q.key)
-	return nonUniqueSeq[Obj](iter, q.key), watch
+	indexTxn := txn.mustIndexReadTxn(t, t.indexPos(q.index))
+	iter, watch := indexTxn.list(q.key)
+	return objSeq[Obj](iter), watch
 }
 
 func (t *genTable[Obj]) Insert(txn WriteTxn, obj Obj) (oldObj Obj, hadOld bool, err error) {
+	oldObj, hadOld, _, err = t.InsertWatch(txn, obj)
+	return
+}
+
+func (t *genTable[Obj]) InsertWatch(txn WriteTxn, obj Obj) (oldObj Obj, hadOld bool, watch <-chan struct{}, err error) {
 	var old object
-	old, hadOld, err = txn.getTxn().insert(t, Revision(0), obj)
+	old, hadOld, watch, err = txn.unwrap().insert(t, Revision(0), obj)
 	if hadOld {
 		oldObj = old.data.(Obj)
 	}
@@ -369,11 +485,12 @@ func (t *genTable[Obj]) Insert(txn WriteTxn, obj Obj) (oldObj Obj, hadOld bool, 
 }
 
 func (t *genTable[Obj]) Modify(txn WriteTxn, obj Obj, merge func(old, new Obj) Obj) (oldObj Obj, hadOld bool, err error) {
+	mergeObjects := func(old object, new object) object {
+		new.data = merge(old.data.(Obj), new.data.(Obj))
+		return new
+	}
 	var old object
-	old, hadOld, err = txn.getTxn().modify(t, Revision(0), obj,
-		func(old any) any {
-			return merge(old.(Obj), obj)
-		})
+	old, hadOld, _, err = txn.unwrap().modify(t, Revision(0), obj, mergeObjects)
 	if hadOld {
 		oldObj = old.data.(Obj)
 	}
@@ -382,7 +499,7 @@ func (t *genTable[Obj]) Modify(txn WriteTxn, obj Obj, merge func(old, new Obj) O
 
 func (t *genTable[Obj]) CompareAndSwap(txn WriteTxn, rev Revision, obj Obj) (oldObj Obj, hadOld bool, err error) {
 	var old object
-	old, hadOld, err = txn.getTxn().insert(t, rev, obj)
+	old, hadOld, _, err = txn.unwrap().insert(t, rev, obj)
 	if hadOld {
 		oldObj = old.data.(Obj)
 	}
@@ -391,7 +508,7 @@ func (t *genTable[Obj]) CompareAndSwap(txn WriteTxn, rev Revision, obj Obj) (old
 
 func (t *genTable[Obj]) Delete(txn WriteTxn, obj Obj) (oldObj Obj, hadOld bool, err error) {
 	var old object
-	old, hadOld, err = txn.getTxn().delete(t, Revision(0), obj)
+	old, hadOld, err = txn.unwrap().delete(t, Revision(0), obj)
 	if hadOld {
 		oldObj = old.data.(Obj)
 	}
@@ -400,7 +517,7 @@ func (t *genTable[Obj]) Delete(txn WriteTxn, obj Obj) (oldObj Obj, hadOld bool, 
 
 func (t *genTable[Obj]) CompareAndDelete(txn WriteTxn, rev Revision, obj Obj) (oldObj Obj, hadOld bool, err error) {
 	var old object
-	old, hadOld, err = txn.getTxn().delete(t, rev, obj)
+	old, hadOld, err = txn.unwrap().delete(t, rev, obj)
 	if hadOld {
 		oldObj = old.data.(Obj)
 	}
@@ -408,7 +525,7 @@ func (t *genTable[Obj]) CompareAndDelete(txn WriteTxn, rev Revision, obj Obj) (o
 }
 
 func (t *genTable[Obj]) DeleteAll(txn WriteTxn) error {
-	itxn := txn.getTxn()
+	itxn := txn.unwrap()
 	for obj := range t.All(txn) {
 		_, _, err := itxn.delete(t, Revision(0), obj)
 		if err != nil {
@@ -427,13 +544,8 @@ func (t *genTable[Obj]) Changes(txn WriteTxn) (ChangeIterator[Obj], error) {
 		table:          t,
 		watch:          closedWatchChannel,
 	}
-	// Set a finalizer to unregister the delete tracker when the iterator
-	// is dropped.
-	runtime.SetFinalizer(iter, func(iter *changeIterator[Obj]) {
-		iter.close()
-	})
 
-	itxn := txn.getTxn()
+	itxn := txn.unwrap()
 	name := fmt.Sprintf("changes-%p", iter)
 	iter.dt = &deleteTracker[Obj]{
 		db:          itxn.db,
@@ -446,6 +558,13 @@ func (t *genTable[Obj]) Changes(txn WriteTxn) (ChangeIterator[Obj], error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Add a cleanup to unregister the delete tracker.
+	runtime.AddCleanup(
+		iter,
+		func(dt *deleteTracker[Obj]) { dt.close() },
+		iter.dt,
+	)
 
 	// Prime it.
 	iter.refresh(txn)
@@ -466,6 +585,27 @@ func (t *genTable[Obj]) anyChanges(txn WriteTxn) (anyChangeIterator, error) {
 
 func (t *genTable[Obj]) sortableMutex() internal.SortableMutex {
 	return t.smu
+}
+
+func (t *genTable[Obj]) typeName() string {
+	var zero Obj
+	return fmt.Sprintf("%T", zero)
+}
+
+func (t *genTable[Obj]) tableHeader() []string {
+	return t.tableHeaderFunc()
+}
+
+func (t *genTable[Obj]) tableRowAny(obj any) []string {
+	return t.tableRowFunc(obj.(Obj))
+}
+
+func (t *genTable[Obj]) unmarshalYAML(data []byte) (any, error) {
+	var obj Obj
+	if err := yaml.Unmarshal(data, &obj); err != nil {
+		return nil, err
+	}
+	return obj, nil
 }
 
 var _ Table[bool] = &genTable[bool]{}

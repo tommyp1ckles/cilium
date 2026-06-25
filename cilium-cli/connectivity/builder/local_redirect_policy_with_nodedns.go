@@ -18,13 +18,12 @@ type localRedirectPolicyWithNodeDNS struct{}
 
 func (t localRedirectPolicyWithNodeDNS) build(ct *check.ConnectivityTest, templates map[string]string) {
 	newTest("local-redirect-policy-with-node-dns", ct).
-		WithCondition(func() bool { return ct.Params().IncludeUnsafeTests }).
+		WithUnsafeTests().
 		WithCiliumPolicy(templates["clientEgressNodeLocalDNSYAML"]).
 		WithFeatureRequirements(
 			features.RequireEnabled(features.NodeLocalDNS),
 			features.RequireEnabled(features.NodeWithoutCilium),
 			features.RequireEnabled(features.LocalRedirectPolicy),
-			features.RequireEnabled(features.KPRSocketLB),
 		).
 		WithScenarios(
 			tests.LRPWithNodeDNS(),

@@ -19,6 +19,22 @@ import (
 // attributes, we recommend that you cancel the Capacity Reservation, and then
 // create a new one with the required attributes. For more information, see [Modify an active Capacity Reservation].
 //
+// The allowed modifications depend on the state of the Capacity Reservation:
+//
+//   - assessing or scheduled state - You can modify the tags only.
+//
+//   - pending state - You can't modify the Capacity Reservation in any way.
+//
+//   - active state but still within the commitment duration - You can't decrease
+//     the instance count or set an end date that is within the commitment duration.
+//     All other modifications are allowed.
+//
+//   - active state with no commitment duration or elapsed commitment duration -
+//     All modifications are allowed.
+//
+//   - expired , cancelled , unsupported , or failed state - You can't modify the
+//     Capacity Reservation in any way.
+//
 // [Modify an active Capacity Reservation]: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/capacity-reservations-modify.html
 func (c *Client) ModifyCapacityReservation(ctx context.Context, params *ModifyCapacityReservationInput, optFns ...func(*Options)) (*ModifyCapacityReservationOutput, error) {
 	if params == nil {
@@ -140,13 +156,16 @@ func (c *Client) addOperationModifyCapacityReservationMiddlewares(stack *middlew
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
+	if err = addRetry(stack, options, c); err != nil {
 		return err
 	}
 	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
 	if err = addRecordResponseTiming(stack); err != nil {
+		return err
+	}
+	if err = addSpanRetryLoop(stack, options); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -161,10 +180,10 @@ func (c *Client) addOperationModifyCapacityReservationMiddlewares(stack *middlew
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
-	if err = addTimeOffsetBuild(stack, c); err != nil {
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
-	if err = addUserAgentRetryMode(stack, options); err != nil {
+	if err = addCredentialSource(stack, options); err != nil {
 		return err
 	}
 	if err = addOpModifyCapacityReservationValidationMiddleware(stack); err != nil {
@@ -186,6 +205,15 @@ func (c *Client) addOperationModifyCapacityReservationMiddlewares(stack *middlew
 		return err
 	}
 	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptBeforeRetryLoop(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptAttempt(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil

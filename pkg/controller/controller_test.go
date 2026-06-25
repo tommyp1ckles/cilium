@@ -5,6 +5,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -19,7 +20,33 @@ func TestUpdateRemoveController(t *testing.T) {
 	mngr := NewManager()
 	mngr.UpdateController("test", ControllerParams{})
 	require.NoError(t, mngr.RemoveController("test"))
-	require.Error(t, mngr.RemoveController("not-exits"))
+}
+
+func TestRemoveControllerNotFound(t *testing.T) {
+	mngr := NewManager()
+
+	err := mngr.RemoveController("not-exists")
+	require.ErrorIs(t, err, errControllerNotFound)
+}
+
+func TestRemoveControllerEmptyMap(t *testing.T) {
+	var mngr Manager
+
+	err := mngr.RemoveController("not-exists")
+	require.ErrorIs(t, err, errControllerMapEmpty)
+}
+
+func TestRemoveControllerAndWaitNotFound(t *testing.T) {
+	mngr := NewManager()
+
+	require.NoError(t, mngr.RemoveControllerAndWait("not-exists"))
+}
+
+func TestRemoveControllerAndWaitEmptyMap(t *testing.T) {
+	var mngr Manager
+
+	err := mngr.RemoveControllerAndWait("not-exists")
+	require.ErrorIs(t, err, errControllerMapEmpty)
 }
 
 func TestCreateController(t *testing.T) {
@@ -203,7 +230,7 @@ func TestWaitForTermination(t *testing.T) {
 
 	// Ensure that the channel does not get closed while the controller is
 	// still running
-	require.Nil(t, testutils.WaitUntil(func() bool {
+	require.NoError(t, testutils.WaitUntil(func() bool {
 		select {
 		case <-mngr.terminationChannel("test1"):
 			return false
@@ -212,7 +239,7 @@ func TestWaitForTermination(t *testing.T) {
 		}
 	}, 20*time.Millisecond))
 
-	require.Nil(t, mngr.RemoveControllerAndWait("test1"))
+	require.NoError(t, mngr.RemoveControllerAndWait("test1"))
 
 	// The controller must have been terminated already due to AndWait above
 	select {
@@ -220,4 +247,77 @@ func TestWaitForTermination(t *testing.T) {
 	default:
 		t.Fail()
 	}
+}
+
+type testEvent struct {
+	name          string
+	doFunc        ControllerFunc
+	result        int32
+	waitToExecute bool
+	start         chan struct{}
+	complete      chan struct{}
+}
+
+func TestConcurrentControllerUpdate(t *testing.T) {
+	var (
+		result        atomic.Int32
+		waitToExecute = make(chan struct{})
+	)
+
+	events := make([]testEvent, 3)
+	for i := range len(events) {
+		// wait on the first function so we can apply multiple updates
+		// while the inner doFunc is blocked.
+		wait := i == 0
+		name := fmt.Sprintf("func%d", i)
+		complete := make(chan struct{})
+		start := make(chan struct{})
+		events[i] = testEvent{
+			name: name,
+			doFunc: func(ctx context.Context) error {
+				t.Log("Running " + name)
+				close(start)
+				if events[i].waitToExecute {
+					<-waitToExecute
+				}
+				result.Store(int32(i))
+				close(complete)
+				return nil
+			},
+			result:        int32(i),
+			waitToExecute: wait,
+			start:         start,
+			complete:      complete,
+		}
+	}
+
+	t.Log("Executing the first update")
+	mngr := NewManager()
+	mngr.UpdateController("test", ControllerParams{
+		DoFunc: events[0].doFunc,
+	})
+	<-events[0].start
+
+	t.Log("Applying subsequent updates while the controller is executing")
+	for i := 1; i < len(events); i++ {
+		mngr.UpdateController("test", ControllerParams{
+			DoFunc: events[i].doFunc,
+		})
+	}
+
+	t.Log("Completing the first execution")
+	close(waitToExecute)
+	<-events[0].complete
+
+	t.Log("Waiting for a later function to complete")
+	err := errors.New("Intermediate updates should have been elided")
+	select {
+	case <-events[1].complete:
+	case <-events[2].complete:
+		err = nil
+	}
+
+	require.NoError(t, err)
+	require.NoError(t, mngr.RemoveControllerAndWait("test"))
+	require.Equal(t, result.Load(), events[len(events)-1].result)
 }

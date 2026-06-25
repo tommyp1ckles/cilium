@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"sync"
 
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/option"
@@ -33,17 +34,6 @@ type Identity struct {
 	// for faster lookup.
 	LabelArray labels.LabelArray `json:"-"`
 
-	// CIDRLabel is the primary identity label when the identity represents
-	// a CIDR. The Labels field will consist of all matching prefixes, e.g.
-	// 10.0.0.0/8
-	// 10.0.0.0/7
-	// 10.0.0.0/6
-	// [...]
-	// reserved:world
-	//
-	// The CIDRLabel field will only contain 10.0.0.0/8
-	CIDRLabel labels.Labels `json:"-"`
-
 	// ReferenceCount counts the number of references pointing to this
 	// identity. This field is used by the owning cache of the identity.
 	ReferenceCount int `json:"-"`
@@ -57,15 +47,16 @@ type Identity struct {
 // This structure is written as JSON to the key-value store. Do NOT modify this
 // structure in ways which are not JSON forward compatible.
 type IPIdentityPair struct {
-	IP           net.IP          `json:"IP"`
-	Mask         net.IPMask      `json:"Mask"`
-	HostIP       net.IP          `json:"HostIP"`
-	ID           NumericIdentity `json:"ID"`
-	Key          uint8           `json:"Key"`
-	Metadata     string          `json:"Metadata"`
-	K8sNamespace string          `json:"K8sNamespace,omitempty"`
-	K8sPodName   string          `json:"K8sPodName,omitempty"`
-	NamedPorts   []NamedPort     `json:"NamedPorts,omitempty"`
+	IP                net.IP          `json:"IP"`
+	Mask              net.IPMask      `json:"Mask"`
+	HostIP            net.IP          `json:"HostIP"`
+	ID                NumericIdentity `json:"ID"`
+	Key               uint8           `json:"Key"`
+	Metadata          string          `json:"Metadata"`
+	K8sNamespace      string          `json:"K8sNamespace,omitempty"`
+	K8sPodName        string          `json:"K8sPodName,omitempty"`
+	K8sServiceAccount string          `json:"K8sServiceAccount,omitempty"`
+	NamedPorts        []NamedPort     `json:"NamedPorts,omitempty"`
 }
 
 type IdentityMap map[NumericIdentity]labels.LabelArray
@@ -110,12 +101,7 @@ func (id *Identity) Sanitize() {
 	}
 }
 
-// StringID returns the identity identifier as string
-func (id *Identity) StringID() string {
-	return id.ID.StringID()
-}
-
-// StringID returns the identity identifier as string
+// String returns the identity identifier as string
 func (id *Identity) String() string {
 	return id.ID.StringID()
 }
@@ -138,12 +124,6 @@ func (id *Identity) IsFixed() bool {
 // (true), or not (false).
 func (id *Identity) IsWellKnown() bool {
 	return WellKnown.lookupByNumericIdentity(id.ID) != nil
-}
-
-// IsWellKnownIdentity returns true if the identity represents a well-known
-// identity, false otherwise.
-func IsWellKnownIdentity(id NumericIdentity) bool {
-	return WellKnown.lookupByNumericIdentity(id) != nil
 }
 
 // NewIdentityFromLabelArray creates a new identity
@@ -186,12 +166,6 @@ func (pair *IPIdentityPair) PrefixString() string {
 	return ipstr + "/" + strconv.Itoa(ones)
 }
 
-// RequiresGlobalIdentity returns true if the label combination requires a
-// global identity
-func RequiresGlobalIdentity(lbls labels.Labels) bool {
-	return ScopeForLabels(lbls) == IdentityScopeGlobal
-}
-
 // ScopeForLabels returns the identity scope to be used for the label set.
 // If all labels are either CIDR or reserved, then returns the CIDR scope.
 // Note: This assumes the caller has already called LookupReservedIdentityByLabels;
@@ -207,9 +181,16 @@ func ScopeForLabels(lbls labels.Labels) NumericIdentity {
 		return IdentityScopeRemoteNode
 	}
 
+	// The ingress label is for L7 LB with cilium proxy, which is running on
+	// every node. So it's not necessary to be global identity, but local
+	// identity instead.
+	if lbls.IsReserved() && lbls.HasIngressLabel() {
+		return IdentityScopeLocal
+	}
+
 	for _, label := range lbls {
 		switch label.Source {
-		case labels.LabelSourceCIDR, labels.LabelSourceFQDN, labels.LabelSourceReserved:
+		case labels.LabelSourceCIDR, labels.LabelSourceFQDN, labels.LabelSourceReserved, labels.LabelSourceCIDRGroup:
 			scope = IdentityScopeLocal
 		default:
 			return IdentityScopeGlobal
@@ -321,4 +302,9 @@ func IdentityAllocationIsLocal(lbls labels.Labels) bool {
 	// If there is only one label with the "reserved" source and a well-known
 	// key, the well-known identity for it can be allocated locally.
 	return LookupReservedIdentityByLabels(lbls) != nil
+}
+
+// UpdateIdentities is an interface to be called when identities change
+type UpdateIdentities interface {
+	UpdateIdentities(added, deleted IdentityMap, wg *sync.WaitGroup) (mutated bool)
 }

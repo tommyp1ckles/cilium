@@ -13,17 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/util/sets"
 
 	"github.com/cilium/cilium/pkg/defaults"
-	"github.com/cilium/cilium/pkg/fqdn/re"
 	"github.com/cilium/cilium/pkg/ip"
 )
-
-func init() {
-	re.InitRegexCompileLRU(defaults.FQDNRegexCompileLRUSize)
-}
 
 // TestUpdateLookup tests that we can insert DNS data and retrieve it. We
 // iterate through time, ensuring that data is expired as appropriate. We also
@@ -77,8 +73,8 @@ func TestUpdateLookup(t *testing.T) {
 	}
 }
 
-// TestDelete tests that we can forcibly clear parts of the cache.
-func TestDelete(t *testing.T) {
+// TestPrivilegedDelete tests that we can forcibly clear parts of the cache.
+func TestPrivilegedDelete(t *testing.T) {
 	names := map[string]netip.Addr{
 		"test1.com": netip.MustParseAddr("2.2.2.1"),
 		"test2.com": netip.MustParseAddr("2.2.2.2"),
@@ -97,9 +93,9 @@ func TestDelete(t *testing.T) {
 	// Test that a non-matching ForceExpire doesn't do anything. All data should
 	// still be present.
 	nameMatch, err := regexp.Compile("^notatest.com$")
-	require.Nil(t, err)
+	require.NoError(t, err)
 	namesAffected := cache.ForceExpire(now, nameMatch)
-	require.Lenf(t, namesAffected, 0, "Incorrect count of names removed %v", namesAffected)
+	require.Emptyf(t, namesAffected, "Incorrect count of names removed %v", namesAffected)
 	for _, name := range []string{"test1.com", "test2.com", "test3.com"} {
 		ips := cache.lookupByTime(now, name)
 		require.Lenf(t, ips, 2, "Wrong count of IPs returned (%v) for non-deleted name '%s'", ips, name)
@@ -113,12 +109,12 @@ func TestDelete(t *testing.T) {
 	// - It is returned in namesAffected
 	// - Lookups for it show no data, but data remains for other names
 	nameMatch, err = regexp.Compile("^test1.com$")
-	require.Nil(t, err)
+	require.NoError(t, err)
 	namesAffected = cache.ForceExpire(now, nameMatch)
 	require.Lenf(t, namesAffected, 1, "Incorrect count of names removed %v", namesAffected)
 	require.Containsf(t, namesAffected, "test1.com", "Incorrect affected name returned on forced expire: %s", namesAffected)
 	ips := cache.lookupByTime(now, "test1.com")
-	require.Lenf(t, ips, 0, "IPs returned (%v) for deleted name 'test1.com'", ips)
+	require.Emptyf(t, ips, "IPs returned (%v) for deleted name 'test1.com'", ips)
 	require.NotContains(t, cache.forward, "test1.com", "Expired name 'test1.com' not deleted from forward")
 	for _, ip := range ips {
 		require.Containsf(t, cache.reverse, ip, "Expired IP '%s' not deleted from reverse", ip)
@@ -140,12 +136,12 @@ func TestDelete(t *testing.T) {
 	}
 	for name := range names {
 		ips = cache.lookupByTime(now, name)
-		require.Lenf(t, ips, 0, "Returned IP data for %s after the cache was fully cleared: %v", name, ips)
+		require.Emptyf(t, ips, "Returned IP data for %s after the cache was fully cleared: %v", name, ips)
 	}
-	require.Len(t, cache.forward, 0)
-	require.Len(t, cache.reverse, 0)
+	require.Empty(t, cache.forward)
+	require.Empty(t, cache.reverse)
 	dump := cache.Dump()
-	require.Lenf(t, dump, 0, "Returned cache entries from cache dump after the cache was fully cleared: %v", dump)
+	require.Emptyf(t, dump, "Returned cache entries from cache dump after the cache was fully cleared: %v", dump)
 }
 
 func Test_forceExpiredByNames(t *testing.T) {
@@ -189,14 +185,14 @@ func TestReverseUpdateLookup(t *testing.T) {
 
 	lookupNames = cache.lookupIPByTime(currentTime, names["test1.com"])
 	require.Len(t, lookupNames, 1, "Incorrect number of names returned")
-	require.Equal(t, lookupNames[0], "test1.com", "Returned a DNS name that doesn't match IP")
+	require.Equal(t, "test1.com", lookupNames[0], "Returned a DNS name that doesn't match IP")
 
 	lookupNames = cache.lookupIPByTime(currentTime, names["test2.com"])
 	require.Len(t, lookupNames, 1, "Incorrect number of names returned")
-	require.Equal(t, lookupNames[0], "test2.com", "Returned a DNS name that doesn't match IP")
+	require.Equal(t, "test2.com", lookupNames[0], "Returned a DNS name that doesn't match IP")
 
 	lookupNames = cache.lookupIPByTime(currentTime, names["test3.com"])
-	require.Len(t, lookupNames, 0, "Returned names for IP not in cache")
+	require.Empty(t, lookupNames, "Returned names for IP not in cache")
 
 	// lookup between 2-4 seconds later (test1.com has expired) for both names
 	// should return 2 names for sharedIPs, and one name for the 2.2.2.* IPs
@@ -206,29 +202,29 @@ func TestReverseUpdateLookup(t *testing.T) {
 	require.Equal(t, "test2.com", lookupNames[0], "Returned a DNS name that doesn't match IP")
 
 	lookupNames = cache.lookupIPByTime(currentTime, names["test1.com"])
-	require.Len(t, lookupNames, 0, "Incorrect number of names returned")
+	require.Empty(t, lookupNames, "Incorrect number of names returned")
 
 	lookupNames = cache.lookupIPByTime(currentTime, names["test2.com"])
 	require.Len(t, lookupNames, 1, "Incorrect number of names returned")
-	require.Equal(t, lookupNames[0], "test2.com", "Returned a DNS name that doesn't match IP")
+	require.Equal(t, "test2.com", lookupNames[0], "Returned a DNS name that doesn't match IP")
 
 	lookupNames = cache.lookupIPByTime(currentTime, names["test3.com"])
-	require.Len(t, lookupNames, 0, "Returned names for IP not in cache")
+	require.Empty(t, lookupNames, "Returned names for IP not in cache")
 
 	// lookup between after 4 seconds later (all have expired) for both names
 	// should return no names in all cases.
 	currentTime = now.Add(5 * time.Second)
 	lookupNames = cache.lookupIPByTime(currentTime, sharedIP)
-	require.Len(t, lookupNames, 0, "Incorrect number of names returned")
+	require.Empty(t, lookupNames, "Incorrect number of names returned")
 
 	lookupNames = cache.lookupIPByTime(currentTime, names["test1.com"])
-	require.Len(t, lookupNames, 0, "Incorrect number of names returned")
+	require.Empty(t, lookupNames, "Incorrect number of names returned")
 
 	lookupNames = cache.lookupIPByTime(currentTime, names["test2.com"])
-	require.Len(t, lookupNames, 0, "Incorrect number of names returned")
+	require.Empty(t, lookupNames, "Incorrect number of names returned")
 
 	lookupNames = cache.lookupIPByTime(currentTime, names["test3.com"])
-	require.Len(t, lookupNames, 0, "Returned names for IP not in cache")
+	require.Empty(t, lookupNames, "Returned names for IP not in cache")
 }
 
 func TestJSONMarshal(t *testing.T) {
@@ -250,11 +246,11 @@ func TestJSONMarshal(t *testing.T) {
 
 	// Marshal and unmarshal
 	data, err := cache.MarshalJSON()
-	require.Nil(t, err)
+	require.NoError(t, err)
 
 	newCache := NewDNSCache(0)
 	err = newCache.UnmarshalJSON(data)
-	require.Nil(t, err)
+	require.NoError(t, err)
 
 	// Marshalled data should have no duplicate entries Note: this is tightly
 	// coupled with the implementation of DNSCache.MarshalJSON because the
@@ -262,8 +258,8 @@ func TestJSONMarshal(t *testing.T) {
 	// since we control the inserted data, and we test its correctness below.
 	rawList := make([]*cacheEntry, 0)
 	err = json.Unmarshal(data, &rawList)
-	require.Nil(t, err)
-	require.Equal(t, 6, len(rawList))
+	require.NoError(t, err)
+	require.Len(t, rawList, 6)
 
 	// Check that the unmarshalled instance contains all the data at now
 	currentTime := now
@@ -279,7 +275,7 @@ func TestJSONMarshal(t *testing.T) {
 	currentTime = now.Add(10 * time.Second)
 	for name := range names {
 		IPs := cache.lookupByTime(currentTime, name)
-		require.Len(t, IPs, 0, "Returned IPs that should be expired for %s", name)
+		require.Empty(t, IPs, "Returned IPs that should be expired for %s", name)
 	}
 }
 
@@ -301,7 +297,7 @@ func TestCountIPs(t *testing.T) {
 	// Dump() returns the deduplicated (or consolidated) list of entries with
 	// length equal to CountFQDNs(), while CountIPs() returns the raw number of
 	// IPs.
-	require.Equal(t, len(names), len(cache.Dump()))
+	require.Len(t, cache.Dump(), len(names))
 	require.Equal(t, len(names), int(fqdns))
 	require.Equal(t, len(names)*2, int(ips))
 }
@@ -321,7 +317,7 @@ var (
 // makeIPs generates count sequential IPv4 IPs
 func makeIPs(count uint32) []netip.Addr {
 	ips := make([]netip.Addr, 0, count)
-	for i := uint32(0); i < count; i++ {
+	for i := range count {
 		ips = append(ips, netip.AddrFrom4([4]byte{byte(i >> 24), byte(i >> 16), byte(i >> 8), byte(i >> 0)}))
 	}
 	return ips
@@ -371,7 +367,6 @@ func makeEntries(now time.Time, live, redundant, expired uint32) (entries []*cac
 
 // Note: each "op" works on size things
 func BenchmarkGetIPs(b *testing.B) {
-	b.StopTimer()
 	now := time.Now()
 	cache := NewDNSCache(0)
 	cache.Update(now, "test.com", []netip.Addr{netip.MustParseAddr("1.2.3.4")}, 60)
@@ -379,16 +374,15 @@ func BenchmarkGetIPs(b *testing.B) {
 	for _, entry := range entriesOrig {
 		cache.updateWithEntryIPs(entries, entry)
 	}
-	b.StartTimer()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		entries.getIPs(now)
 	}
 }
 
 // Note: each "op" works on size things
 func BenchmarkUpdateIPs(b *testing.B) {
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		b.StopTimer()
 		now := time.Now()
 		cache := NewDNSCache(0)
@@ -437,19 +431,17 @@ func BenchmarkMarshalJSON1000Repeat2(b *testing.B) {
 // Note: It assumes the JSON only uses data in DNSCache.forward when generating
 // the data. Changes to the implementation need to also change this benchmark.
 func benchmarkMarshalJSON(b *testing.B, numDNSEntries int) {
-	b.StopTimer()
 	ips := makeIPs(uint32(numIPsPerEntry))
 
 	cache := NewDNSCache(0)
-	for i := 0; i < numDNSEntries; i++ {
+	for i := range numDNSEntries {
 		// TTL needs to be far enough in the future that the entry is serialized
 		cache.Update(time.Now(), fmt.Sprintf("domain-%v.com", i), ips, 86400)
 	}
-	b.StartTimer()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, err := cache.MarshalJSON()
-		require.Nil(b, err)
+		require.NoError(b, err)
 	}
 }
 
@@ -458,27 +450,26 @@ func benchmarkMarshalJSON(b *testing.B, numDNSEntries int) {
 // Note: It assumes the JSON only uses data in DNSCache.forward when generating
 // the data. Changes to the implementation need to also change this benchmark.
 func benchmarkUnmarshalJSON(b *testing.B, numDNSEntries int) {
-	b.StopTimer()
 	ips := makeIPs(uint32(numIPsPerEntry))
 
 	cache := NewDNSCache(0)
-	for i := 0; i < numDNSEntries; i++ {
+	for i := range numDNSEntries {
 		// TTL needs to be far enough in the future that the entry is serialized
 		cache.Update(time.Now(), fmt.Sprintf("domain-%v.com", i), ips, 86400)
 	}
 
 	data, err := cache.MarshalJSON()
-	require.Nil(b, err)
+	require.NoError(b, err)
 
-	emptyCaches := make([]*DNSCache, b.N)
-	for i := 0; i < b.N; i++ {
+	n := b.N
+	emptyCaches := make([]*DNSCache, n)
+	for i := range n {
 		emptyCaches[i] = NewDNSCache(0)
 	}
-	b.StartTimer()
 
-	for i := 0; i < b.N; i++ {
+	for i := range n {
 		err := emptyCaches[i].UnmarshalJSON(data)
-		require.Nil(b, err)
+		require.NoError(b, err)
 	}
 }
 
@@ -500,7 +491,7 @@ func TestTTLInsertWithMinValue(t *testing.T) {
 	// Validate that in future time the value is correct
 	future := time.Now().Add(time.Second * 70)
 	res = cache.lookupByTime(future, "test.com")
-	require.Len(t, res, 0)
+	require.Empty(t, res)
 }
 
 func TestTTLInsertWithZeroValue(t *testing.T) {
@@ -521,17 +512,17 @@ func TestTTLInsertWithZeroValue(t *testing.T) {
 	// Checking that expires correctly
 	future := now.Add(time.Second * 11)
 	res = cache.lookupByTime(future, "test.com")
-	require.Len(t, res, 0)
+	require.Empty(t, res)
 }
 
 func TestTTLCleanupEntries(t *testing.T) {
 	cache := NewDNSCache(0)
 	cache.Update(now, "test.com", []netip.Addr{netip.MustParseAddr("1.2.3.4")}, 3)
-	require.Equal(t, 1, len(cache.cleanup))
+	require.Len(t, cache.cleanup, 1)
 	entries, _ := cache.cleanupExpiredEntries(time.Now().Add(5 * time.Second))
 	require.Len(t, entries, 1)
-	require.Len(t, cache.cleanup, 0)
-	require.Len(t, cache.Lookup("test.com"), 0)
+	require.Empty(t, cache.cleanup)
+	require.Empty(t, cache.Lookup("test.com"))
 }
 
 func TestTTLCleanupWithoutForward(t *testing.T) {
@@ -541,8 +532,8 @@ func TestTTLCleanupWithoutForward(t *testing.T) {
 	// To make sure that all entries are validated correctly
 	cache.lastCleanup = time.Now().Add(-1 * time.Minute)
 	entries, _ := cache.cleanupExpiredEntries(time.Now().Add(5 * time.Second))
-	require.Len(t, entries, 0)
-	require.Len(t, cache.cleanup, 0)
+	require.Empty(t, entries)
+	require.Empty(t, cache.cleanup)
 }
 
 func TestOverlimitEntriesWithValidLimit(t *testing.T) {
@@ -555,24 +546,24 @@ func TestOverlimitEntriesWithValidLimit(t *testing.T) {
 		cache.Update(now, "test.com", []netip.Addr{netip.MustParseAddr(fmt.Sprintf("1.1.1.%d", i))}, i)
 	}
 	affectedNames, _ := cache.cleanupOverLimitEntries()
-	require.EqualValues(t, sets.New[string]("test.com"), affectedNames)
+	require.Equal(t, sets.New[string]("test.com"), affectedNames)
 
 	require.Len(t, cache.Lookup("test.com"), limit)
-	require.EqualValues(t, []string{"foo.bar"}, cache.LookupIP(netip.MustParseAddr("1.1.1.1")))
+	require.Equal(t, []string{"foo.bar"}, cache.LookupIP(netip.MustParseAddr("1.1.1.1")))
 	require.Nil(t, cache.forward["test.com"][netip.MustParseAddr("1.1.1.1")])
 	require.Len(t, cache.Lookup("foo.bar"), 1)
 	require.Len(t, cache.Lookup("bar.foo"), 1)
-	require.Len(t, cache.overLimit, 0)
+	require.Empty(t, cache.overLimit)
 }
 
 func TestOverlimitEntriesWithoutLimit(t *testing.T) {
 	limit := 0
 	cache := NewDNSCacheWithLimit(0, limit)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		cache.Update(now, "test.com", []netip.Addr{netip.MustParseAddr(fmt.Sprintf("1.1.1.%d", i))}, i)
 	}
 	affectedNames, _ := cache.cleanupOverLimitEntries()
-	require.Len(t, affectedNames, 0)
+	require.Empty(t, affectedNames)
 	require.Len(t, cache.Lookup("test.com"), 5)
 }
 
@@ -590,11 +581,11 @@ func TestGCOverlimitAfterTTLCleanup(t *testing.T) {
 	require.Len(t, cache.overLimit, 1)
 
 	result, _ := cache.cleanupExpiredEntries(time.Now().Add(5 * time.Second))
-	require.EqualValues(t, sets.New[string]("test.com"), result)
+	require.Equal(t, sets.New[string]("test.com"), result)
 
 	// Due all entries are deleted on TTL, the overlimit should return 0 entries.
 	affectedNames, _ := cache.cleanupOverLimitEntries()
-	require.Len(t, affectedNames, 0)
+	require.Empty(t, affectedNames)
 }
 
 func TestOverlimitAfterDeleteForwardEntry(t *testing.T) {
@@ -603,7 +594,7 @@ func TestOverlimitAfterDeleteForwardEntry(t *testing.T) {
 	dnsCache := NewDNSCache(0)
 	dnsCache.overLimit["test.com"] = true
 	affectedNames, _ := dnsCache.cleanupOverLimitEntries()
-	require.Len(t, affectedNames, 0)
+	require.Empty(t, affectedNames)
 }
 
 func assertZombiesContain(t *testing.T, zombies []*DNSZombieMapping, expected map[string][]string) {
@@ -625,8 +616,10 @@ func assertZombiesContain(t *testing.T, zombies []*DNSZombieMapping, expected ma
 }
 
 func TestZombiesSiblingsGC(t *testing.T) {
+	logger := hivetest.Logger(t)
+
 	now := time.Now()
-	zombies := NewDNSZombieMappings(defaults.ToFQDNsMaxDeferredConnectionDeletes, defaults.ToFQDNsMaxIPsPerHost)
+	zombies := NewDNSZombieMappings(logger, defaults.ToFQDNsMaxDeferredConnectionDeletes, defaults.ToFQDNsMaxIPsPerHost)
 
 	// Siblings are IPs that resolve to the same name.
 	zombies.Upsert(now, netip.MustParseAddr("1.1.1.1"), "test.com")
@@ -653,15 +646,17 @@ func TestZombiesSiblingsGC(t *testing.T) {
 }
 
 func TestZombiesGC(t *testing.T) {
+	logger := hivetest.Logger(t)
+
 	now := time.Now()
-	zombies := NewDNSZombieMappings(defaults.ToFQDNsMaxDeferredConnectionDeletes, defaults.ToFQDNsMaxIPsPerHost)
+	zombies := NewDNSZombieMappings(logger, defaults.ToFQDNsMaxDeferredConnectionDeletes, defaults.ToFQDNsMaxIPsPerHost)
 
 	zombies.Upsert(now, netip.MustParseAddr("1.1.1.1"), "test.com")
 	zombies.Upsert(now, netip.MustParseAddr("2.2.2.2"), "somethingelse.com")
 
 	// Without any MarkAlive or SetCTGCTime, all entries remain alive
 	alive, dead := zombies.GC()
-	require.Len(t, dead, 0)
+	require.Empty(t, dead)
 	assertZombiesContain(t, alive, map[string][]string{
 		"1.1.1.1": {"test.com"},
 		"2.2.2.2": {"somethingelse.com"},
@@ -671,7 +666,7 @@ func TestZombiesGC(t *testing.T) {
 	// zombie
 	zombies.Upsert(now, netip.MustParseAddr("1.1.1.1"), "anotherthing.com")
 	alive, dead = zombies.GC()
-	require.Len(t, dead, 0)
+	require.Empty(t, dead)
 	assertZombiesContain(t, alive, map[string][]string{
 		"1.1.1.1": {"test.com", "anotherthing.com"},
 		"2.2.2.2": {"somethingelse.com"},
@@ -683,14 +678,14 @@ func TestZombiesGC(t *testing.T) {
 	next := now.Add(5 * time.Minute)
 	zombies.SetCTGCTime(now, next)
 	alive, dead = zombies.GC()
-	require.Len(t, dead, 0)
+	require.Empty(t, dead)
 	assertZombiesContain(t, alive, map[string][]string{
 		"1.1.1.1": {"test.com", "anotherthing.com"},
 		"2.2.2.2": {"somethingelse.com"},
 	})
 
 	// Cause 1.1.1.1 to die by not marking it alive before the second GC
-	//zombies.MarkAlive(now, netip.MustParseAddr("1.1.1.1"))
+	// zombies.MarkAlive(now, netip.MustParseAddr("1.1.1.1"))
 	now = now.Add(5 * time.Minute)
 	next = now.Add(5 * time.Minute)
 	// Mark 2.2.2.2 alive with 1 second grace period
@@ -709,7 +704,7 @@ func TestZombiesGC(t *testing.T) {
 
 	// A second GC call only returns alive entries
 	alive, dead = zombies.GC()
-	require.Len(t, dead, 0)
+	require.Empty(t, dead)
 	require.Len(t, alive, 1)
 
 	// Update 2.2.2.2 with a new DNS name. It remains alive.
@@ -718,7 +713,7 @@ func TestZombiesGC(t *testing.T) {
 	zombies.Upsert(now, netip.MustParseAddr("1.1.1.1"), "onemorething.com")
 
 	alive, dead = zombies.GC()
-	require.Len(t, dead, 0)
+	require.Empty(t, dead)
 	assertZombiesContain(t, alive, map[string][]string{
 		"1.1.1.1": {"onemorething.com"},
 		"2.2.2.2": {"somethingelse.com", "thelastthing.com"},
@@ -745,15 +740,17 @@ func TestZombiesGC(t *testing.T) {
 	now = now.Add(2 * time.Second)
 	zombies.SetCTGCTime(now, next)
 	alive, dead = zombies.GC()
-	require.Len(t, alive, 0)
+	require.Empty(t, alive)
 	assertZombiesContain(t, dead, map[string][]string{
 		"2.2.2.2": {"somethingelse.com", "thelastthing.com"},
 	})
 }
 
 func TestZombiesGCOverLimit(t *testing.T) {
+	logger := hivetest.Logger(t)
+
 	now := time.Now()
-	zombies := NewDNSZombieMappings(defaults.ToFQDNsMaxDeferredConnectionDeletes, 1)
+	zombies := NewDNSZombieMappings(logger, defaults.ToFQDNsMaxDeferredConnectionDeletes, 1)
 
 	// Limit the total number of IPs to be associated with a specific host
 	// to 1, but associate 'test.com' with multiple IPs.
@@ -776,22 +773,24 @@ func TestZombiesGCOverLimit(t *testing.T) {
 }
 
 func TestZombiesGCOverLimitWithCTGC(t *testing.T) {
+	logger := hivetest.Logger(t)
+
 	now := time.Now()
 	afterNow := now.Add(1 * time.Nanosecond)
 	maxConnections := 3
-	zombies := NewDNSZombieMappings(defaults.ToFQDNsMaxDeferredConnectionDeletes, maxConnections)
+	zombies := NewDNSZombieMappings(logger, defaults.ToFQDNsMaxDeferredConnectionDeletes, maxConnections)
 	zombies.SetCTGCTime(now, afterNow)
 
 	// Limit the number of IPs per hostname, but associate 'test.com' with
 	// more IPs.
-	for i := 0; i < maxConnections+1; i++ {
+	for i := range maxConnections + 1 {
 		zombies.Upsert(now, netip.MustParseAddr(fmt.Sprintf("1.1.1.%d", i+1)), "test.com")
 	}
 
 	// Simulate that CT garbage collection marks some IPs as live, we'll
 	// use the first 'maxConnections' IPs just so we can sort the output
 	// in the test below.
-	for i := 0; i < maxConnections; i++ {
+	for i := range maxConnections {
 		zombies.MarkAlive(afterNow, netip.MustParseAddr(fmt.Sprintf("1.1.1.%d", i+1)))
 	}
 	zombies.SetCTGCTime(afterNow, afterNow.Add(5*time.Minute))
@@ -811,8 +810,10 @@ func TestZombiesGCOverLimitWithCTGC(t *testing.T) {
 }
 
 func TestZombiesGCDeferredDeletes(t *testing.T) {
+	logger := hivetest.Logger(t)
+
 	now := time.Now()
-	zombies := NewDNSZombieMappings(defaults.ToFQDNsMaxDeferredConnectionDeletes, defaults.ToFQDNsMaxIPsPerHost)
+	zombies := NewDNSZombieMappings(logger, defaults.ToFQDNsMaxDeferredConnectionDeletes, defaults.ToFQDNsMaxIPsPerHost)
 
 	zombies.Upsert(now.Add(0*time.Second), netip.MustParseAddr("1.1.1.1"), "test.com")
 	zombies.Upsert(now.Add(1*time.Second), netip.MustParseAddr("2.2.2.2"), "somethingelse.com")
@@ -820,19 +821,19 @@ func TestZombiesGCDeferredDeletes(t *testing.T) {
 
 	// No zombies should be evicted because the limit is high
 	alive, dead := zombies.GC()
-	require.Len(t, dead, 0)
+	require.Empty(t, dead)
 	assertZombiesContain(t, alive, map[string][]string{
 		"1.1.1.1": {"test.com"},
 		"2.2.2.2": {"somethingelse.com"},
 		"3.3.3.3": {"onemorething.com"},
 	})
 
-	zombies = NewDNSZombieMappings(2, defaults.ToFQDNsMaxIPsPerHost)
+	zombies = NewDNSZombieMappings(logger, 2, defaults.ToFQDNsMaxIPsPerHost)
 	zombies.Upsert(now.Add(0*time.Second), netip.MustParseAddr("1.1.1.1"), "test.com")
 
 	// No zombies should be evicted because we are below the limit
 	alive, dead = zombies.GC()
-	require.Len(t, dead, 0)
+	require.Empty(t, dead)
 	assertZombiesContain(t, alive, map[string][]string{
 		"1.1.1.1": {"test.com"},
 	})
@@ -870,24 +871,26 @@ func TestZombiesGCDeferredDeletes(t *testing.T) {
 }
 
 func TestZombiesForceExpire(t *testing.T) {
+	logger := hivetest.Logger(t)
+
 	now := time.Now()
-	zombies := NewDNSZombieMappings(defaults.ToFQDNsMaxDeferredConnectionDeletes, defaults.ToFQDNsMaxIPsPerHost)
+	zombies := NewDNSZombieMappings(logger, defaults.ToFQDNsMaxDeferredConnectionDeletes, defaults.ToFQDNsMaxIPsPerHost)
 
 	zombies.Upsert(now, netip.MustParseAddr("1.1.1.1"), "test.com", "anothertest.com")
 	zombies.Upsert(now, netip.MustParseAddr("2.2.2.2"), "somethingelse.com")
 
 	// Without any MarkAlive or SetCTGCTime, all entries remain alive
 	alive, dead := zombies.GC()
-	require.Len(t, dead, 0)
+	require.Empty(t, dead)
 	require.Len(t, alive, 2)
 
 	// Expire only 1 name on 1 zombie
 	nameMatch, err := regexp.Compile("^test.com$")
-	require.Nil(t, err)
+	require.NoError(t, err)
 	zombies.ForceExpire(time.Time{}, nameMatch)
 
 	alive, dead = zombies.GC()
-	require.Len(t, dead, 0)
+	require.Empty(t, dead)
 	assertZombiesContain(t, alive, map[string][]string{
 		"1.1.1.1": {"anothertest.com"},
 		"2.2.2.2": {"somethingelse.com"},
@@ -896,10 +899,10 @@ func TestZombiesForceExpire(t *testing.T) {
 	// Expire the last name on a zombie. It will be deleted and not returned in a
 	// GC
 	nameMatch, err = regexp.Compile("^anothertest.com$")
-	require.Nil(t, err)
+	require.NoError(t, err)
 	zombies.ForceExpire(time.Time{}, nameMatch)
 	alive, dead = zombies.GC()
-	require.Len(t, dead, 0)
+	require.Empty(t, dead)
 	assertZombiesContain(t, alive, map[string][]string{
 		"2.2.2.2": {"somethingelse.com"},
 	})
@@ -908,45 +911,43 @@ func TestZombiesForceExpire(t *testing.T) {
 	zombies.Upsert(now, netip.MustParseAddr("2.2.2.2"), "test.com")
 
 	// Don't expire if the IP doesn't match
-	err = zombies.ForceExpireByNameIP(time.Time{}, "somethingelse.com", netip.MustParseAddr("1.1.1.1"))
-	require.Nil(t, err)
+	zombies.ForceExpireByNameIP(time.Time{}, "somethingelse.com", netip.MustParseAddr("1.1.1.1"))
 	alive, dead = zombies.GC()
-	require.Len(t, dead, 0)
+	require.Empty(t, dead)
 	assertZombiesContain(t, alive, map[string][]string{
 		"2.2.2.2": {"somethingelse.com", "test.com"},
 	})
 
 	// Expire 1 name for this IP but leave other names
-	err = zombies.ForceExpireByNameIP(time.Time{}, "somethingelse.com", netip.MustParseAddr("2.2.2.2"))
-	require.Nil(t, err)
+	zombies.ForceExpireByNameIP(time.Time{}, "somethingelse.com", netip.MustParseAddr("2.2.2.2"))
 	alive, dead = zombies.GC()
-	require.Len(t, dead, 0)
+	require.Empty(t, dead)
 	assertZombiesContain(t, alive, map[string][]string{
 		"2.2.2.2": {"test.com"},
 	})
 
 	// Don't remove if the name doesn't match
-	err = zombies.ForceExpireByNameIP(time.Time{}, "blarg.com", netip.MustParseAddr("2.2.2.2"))
-	require.Nil(t, err)
+	zombies.ForceExpireByNameIP(time.Time{}, "blarg.com", netip.MustParseAddr("2.2.2.2"))
 	alive, dead = zombies.GC()
-	require.Len(t, dead, 0)
+	require.Empty(t, dead)
 	assertZombiesContain(t, alive, map[string][]string{
 		"2.2.2.2": {"test.com"},
 	})
 
 	// Clear everything
-	err = zombies.ForceExpireByNameIP(time.Time{}, "test.com", netip.MustParseAddr("2.2.2.2"))
-	require.Nil(t, err)
+	zombies.ForceExpireByNameIP(time.Time{}, "test.com", netip.MustParseAddr("2.2.2.2"))
 	alive, dead = zombies.GC()
-	require.Len(t, dead, 0)
-	require.Len(t, alive, 0)
+	require.Empty(t, dead)
+	require.Empty(t, alive)
 	assertZombiesContain(t, alive, map[string][]string{})
 }
 
 func TestCacheToZombiesGCCascade(t *testing.T) {
+	logger := hivetest.Logger(t)
+
 	now := time.Now()
 	cache := NewDNSCache(0)
-	zombies := NewDNSZombieMappings(defaults.ToFQDNsMaxDeferredConnectionDeletes, defaults.ToFQDNsMaxIPsPerHost)
+	zombies := NewDNSZombieMappings(logger, defaults.ToFQDNsMaxDeferredConnectionDeletes, defaults.ToFQDNsMaxIPsPerHost)
 
 	// Add entries that should expire at different times
 	cache.Update(now, "test.com", []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("2.2.2.2")}, 3)
@@ -963,7 +964,7 @@ func TestCacheToZombiesGCCascade(t *testing.T) {
 	require.NotContains(t, cache.reverse, netip.MustParseAddr("1.1.1.1"))
 	require.NotContains(t, cache.reverse, netip.MustParseAddr("2.2.2.2"))
 	alive, dead := zombies.GC()
-	require.Len(t, dead, 0)
+	require.Empty(t, dead)
 	assertZombiesContain(t, alive, map[string][]string{
 		"1.1.1.1": {"test.com"},
 		"2.2.2.2": {"test.com"},
@@ -976,11 +977,11 @@ func TestCacheToZombiesGCCascade(t *testing.T) {
 	require.Equal(t, 1, expired.Len()) // test.com
 	// Now all IPs expired so we expect test.com to be removed from the cache.
 	require.NotContains(t, cache.forward, "test.com")
-	require.Len(t, cache.forward, 0)
+	require.Empty(t, cache.forward)
 	require.NotContains(t, cache.reverse, "3.3.3.")
-	require.Len(t, cache.reverse, 0)
+	require.Empty(t, cache.reverse)
 	alive, dead = zombies.GC()
-	require.Len(t, dead, 0)
+	require.Empty(t, dead)
 	assertZombiesContain(t, alive, map[string][]string{
 		"1.1.1.1": {"test.com"},
 		"2.2.2.2": {"test.com"},
@@ -989,11 +990,13 @@ func TestCacheToZombiesGCCascade(t *testing.T) {
 }
 
 func TestZombiesDumpAlive(t *testing.T) {
+	logger := hivetest.Logger(t)
+
 	now := time.Now()
-	zombies := NewDNSZombieMappings(defaults.ToFQDNsMaxDeferredConnectionDeletes, defaults.ToFQDNsMaxIPsPerHost)
+	zombies := NewDNSZombieMappings(logger, defaults.ToFQDNsMaxDeferredConnectionDeletes, defaults.ToFQDNsMaxIPsPerHost)
 
 	alive := zombies.DumpAlive(nil)
-	require.Len(t, alive, 0)
+	require.Empty(t, alive)
 
 	zombies.Upsert(now, netip.MustParseAddr("1.1.1.1"), "test.com")
 	zombies.Upsert(now, netip.MustParseAddr("2.2.2.2"), "example.com")
@@ -1033,7 +1036,7 @@ func TestZombiesDumpAlive(t *testing.T) {
 
 	cidrMatcher := func(addr netip.Addr) bool { return false }
 	alive = zombies.DumpAlive(cidrMatcher)
-	require.Len(t, alive, 0)
+	require.Empty(t, alive)
 
 	cidrMatcher = func(_ netip.Addr) bool { return true }
 	alive = zombies.DumpAlive(cidrMatcher)
@@ -1060,16 +1063,18 @@ func TestZombiesDumpAlive(t *testing.T) {
 	prefix = netip.MustParsePrefix("4.4.0.0/16")
 	cidrMatcher = func(a netip.Addr) bool { return prefix.Contains(a) }
 	alive = zombies.DumpAlive(cidrMatcher)
-	require.Len(t, alive, 0)
+	require.Empty(t, alive)
 }
 
 func TestOverlimitPreferNewerEntries(t *testing.T) {
+	logger := hivetest.Logger(t)
+
 	toFQDNsMinTTL := 100
 	toFQDNsMaxIPsPerHost := 5
 	cache := NewDNSCacheWithLimit(toFQDNsMinTTL, toFQDNsMaxIPsPerHost)
 
 	toFQDNsMaxDeferredConnectionDeletes := 10
-	zombies := NewDNSZombieMappings(toFQDNsMaxDeferredConnectionDeletes, toFQDNsMaxIPsPerHost)
+	zombies := NewDNSZombieMappings(logger, toFQDNsMaxDeferredConnectionDeletes, toFQDNsMaxIPsPerHost)
 
 	name := "test.com"
 	IPs := []netip.Addr{
@@ -1106,7 +1111,7 @@ func TestOverlimitPreferNewerEntries(t *testing.T) {
 	affected := cache.GC(time.Now(), zombies)
 
 	require.Equal(t, 1, affected.Len())
-	require.Equal(t, true, affected.Has(name))
+	require.True(t, affected.Has(name))
 
 	// No entries have expired, but no more than toFQDNsMaxIPsPerHost can be
 	// kept in the cache.
@@ -1143,6 +1148,115 @@ func TestOverlimitPreferNewerEntries(t *testing.T) {
 	})
 }
 
+// This test tests the over limit behaviour of DNS Mapping zombies for repeated
+// lookups to the same domain (e.g. an S3 bucket). It tries to mimic the "fun"
+// interactions between the CT GC, FQDN GC and per-host IP limits. It covers a
+// case which, prior to the commit introducing this test, zombies were reaped
+// erroneously, since their "AliveAt" field was zero (and they thus sorted to
+// the front).
+func TestPerHostLimitBehaviourForS3(t *testing.T) {
+	logger := hivetest.Logger(t)
+
+	someDomain := "s3.example.com"
+	maxIPs := 5
+	dnsTTL := 4 // seconds
+
+	tc := NewDNSCacheWithLimit(0, maxIPs)
+	z := NewDNSZombieMappings(logger, 10000, maxIPs)
+
+	// These are simulated lookup results for someDomain.
+	reallyOldLookup := []netip.Addr{
+		netip.MustParseAddr("1.0.0.1"),
+	}
+	recentLookup := []netip.Addr{
+		netip.MustParseAddr("1.1.0.1"),
+		netip.MustParseAddr("1.1.0.2"),
+		netip.MustParseAddr("1.1.0.3"),
+		netip.MustParseAddr("1.1.0.4"),
+		netip.MustParseAddr("1.1.0.5"),
+	}
+	keepaliveLookup := netip.MustParseAddr("1.2.0.1")
+
+	simulateFQDNGC := func(when time.Time) sets.Set[string] {
+		t.Helper()
+		names := tc.GC(when, z)
+		z.GC()
+		return names
+	}
+
+	simulateCTGC := func(when time.Time, alive []netip.Addr) {
+		t.Helper()
+		for _, ip := range alive {
+			z.MarkAlive(when, ip)
+		}
+		z.SetCTGCTime(when, when.Add(10*time.Second))
+	}
+
+	// Simulates a lookup and runs all GCs
+	tick := func(tock time.Time) {
+		t.Helper()
+		tc.Update(tock, someDomain, []netip.Addr{keepaliveLookup}, dnsTTL)
+		// Must be past TTL
+		simulateFQDNGC(tock.Add((2*time.Duration(dnsTTL)*time.Second + 1)))
+		simulateCTGC(tock.Add(2*time.Duration(dnsTTL)*time.Second+2), nil)
+	}
+
+	now := time.Now()
+	aLongTimeAgo := now.Add(-10 * time.Hour)
+	sevenSecondsAgo := now.Add(-7 * time.Second) // TTL expired by "now"
+
+	// A long time ago, we looked up example.com
+	tc.Update(aLongTimeAgo, someDomain, reallyOldLookup, dnsTTL)
+	// At some point past the lookup's TTL, a FQDN GC happens. The lookup now
+	// moves to the DNSMappingZombies. It's not yet dead, since the zombie
+	// tracking doesn't know whether its dead or alive (since CT GC hasn't run).
+	simulateFQDNGC(aLongTimeAgo.Add(8 * time.Second))
+	// Turns out it was a long-standing connection and hence CT GC marked it
+	// alive. The entry is still a zombie, but a live one.
+	simulateCTGC(aLongTimeAgo.Add(10*time.Second), reallyOldLookup)
+	if _, found := z.deletes[reallyOldLookup[0]]; !found {
+		t.Errorf("expected really old lookup to still be present")
+	}
+
+	// During these "ticks", we simulate lookups to someDomain. We call these
+	// keep-alive lookups because they keep the really old lookup alive. Any
+	// alive IP for a name keeps that name alive, and any name keeps
+	// corresponding zombies alive. Cilium wants to keep these alive to not
+	// break applications which resolve someDomain once, early, and then assume
+	// the resolved IPs to be alive for longer than TTL.
+	tick(aLongTimeAgo.Add(20 * time.Second))
+	tick(aLongTimeAgo.Add(30 * time.Second))
+	tick(aLongTimeAgo.Add(40 * time.Second))
+	tick(aLongTimeAgo.Add(50 * time.Second))
+	if _, found := z.deletes[reallyOldLookup[0]]; !found {
+		t.Errorf("expected really old lookup to still be present")
+	}
+
+	// Seven seconds ago, we looked example.com up again. To test the over-limit
+	// behaviour, this lookup gets multiple IPs back.
+	tc.Update(sevenSecondsAgo, someDomain, recentLookup, dnsTTL)
+	// FQDN GC should collect all but the newest five IPs due to the perHost limit.
+	affectedNames := simulateFQDNGC(now)
+	if len(affectedNames) != 1 || !affectedNames.Has(someDomain) {
+		t.Errorf("expected affected name to contain only %s but it is %+v", someDomain, affectedNames)
+	}
+
+	// Assert that the zombies respect the limit.
+	if len(z.deletes) != maxIPs {
+		t.Errorf("expected zombies to contain %v entries, but has %v", maxIPs, len(z.deletes))
+	}
+	// Assert that the old lookup was thrown out.
+	if _, found := z.deletes[reallyOldLookup[0]]; found {
+		t.Errorf("expected really old lookup not to be present")
+	}
+	// Asser that the new lookups are present.
+	for _, ip := range recentLookup {
+		if _, found := z.deletes[ip]; !found {
+			t.Errorf("expected recent lookup %v to be present", ip)
+		}
+	}
+}
+
 // Define a test-only string representation to make the output below more readable.
 func (z *DNSZombieMapping) String() string {
 	return fmt.Sprintf(
@@ -1167,7 +1281,7 @@ func validateZombieSort(t *testing.T, zombies []*DNSZombieMapping) {
 	}
 	// Don't try to be efficient, just check that the properties we want hold
 	// for every pair of zombie mappings.
-	for i := 0; i < sl; i++ {
+	for i := range sl {
 		for j := i + 1; j < sl; j++ {
 			if zombies[i].AliveAt.Before(zombies[j].AliveAt) {
 				continue
@@ -1282,7 +1396,7 @@ func Test_sortZombieMappingSlice(t *testing.T) {
 	}
 
 	// Five random tests:
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		ts := make([]*DNSZombieMapping, len(allMappings))
 		copy(ts, allMappings)
 		rand.Shuffle(len(ts), func(i, j int) {

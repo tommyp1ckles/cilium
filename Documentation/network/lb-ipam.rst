@@ -37,17 +37,22 @@ A basic IP Pools with both an IPv4 and IPv6 range looks like this:
 
 .. code-block:: yaml
 
-    apiVersion: "cilium.io/v2alpha1"
+    apiVersion: "cilium.io/v2"
     kind: CiliumLoadBalancerIPPool
     metadata:
       name: "blue-pool"
     spec:
       blocks:
       - cidr: "10.0.10.0/24"
-      - cidr: "2004::0/64"
+      - cidr: "2004::0/112"
       - start: "20.0.20.100"
         stop: "20.0.20.200"
-      - start: "1.2.3.4"
+
+.. caution::
+
+    Pay attention to the dashes in the YAML file: the ``start`` and ``stop``
+    fields together define a single, independent block and must be specified as
+    one item in the ``blocks`` sequence.
 
 After adding the pool to the cluster, it appears like so.
 
@@ -55,7 +60,13 @@ After adding the pool to the cluster, it appears like so.
 
     $ kubectl get ippools                           
     NAME        DISABLED   CONFLICTING   IPS AVAILABLE   AGE
-    blue-pool   false      False         65788           2s
+    blue-pool   false      False         65892           2s
+
+.. warning::
+
+  Updating an IP pool can result in IP addresses being reassigned and service IPs
+  could change. See :gh-issue:`40358`
+
 
 CIDRs, Ranges and reserved IPs
 ------------------------------
@@ -79,12 +90,6 @@ since these only have 1 or 2 IPs respectively.
 This setting only applies to blocks specified with ``.spec.blocks[].cidr`` and not to
 blocks specified with ``.spec.blocks[].start`` and ``.spec.blocks[].stop``.
 
-.. warning::
-
-  In v1.15, ``.spec.allowFirstLastIPs`` defaults to ``No``. This has changed to
-  ``Yes`` in v1.16. Please set this field explicitly if you rely on the field
-  being set to ``No``.
-
 Service Selectors
 -----------------
 
@@ -94,27 +99,29 @@ The pool will allocate to any service if no service selector is specified.
 
 .. code-block:: yaml
 
-    apiVersion: "cilium.io/v2alpha1"
-    kind: CiliumLoadBalancerIPPool
-    metadata:
-      name: "blue-pool"
-    spec:
-      blocks:
-      - cidr: "20.0.10.0/24"
-      serviceSelector:
-        matchExpressions:
-          - {key: color, operator: In, values: [blue, cyan]}
-    ---
-    apiVersion: "cilium.io/v2alpha1"
-    kind: CiliumLoadBalancerIPPool
-    metadata:
-      name: "red-pool"
-    spec:
-      blocks:
-      - cidr: "20.0.10.0/24"
-      serviceSelector:
-        matchLabels:
-          color: red
+   apiVersion: "cilium.io/v2"
+   kind: CiliumLoadBalancerIPPool
+   metadata:
+     name: "blue-pool"
+   spec:
+     blocks:
+     - cidr: "20.0.10.0/24"
+     serviceSelector:
+       matchExpressions:
+         - {key: color, operator: In, values: [blue, cyan]}
+
+.. code-block:: yaml
+
+   apiVersion: "cilium.io/v2"
+   kind: CiliumLoadBalancerIPPool
+   metadata:
+     name: "red-pool"
+   spec:
+     blocks:
+     - cidr: "20.0.10.0/24"
+     serviceSelector:
+       matchLabels:
+         color: red
 
 There are a few special purpose selector fields which don't match on labels but
 instead on other metadata like ``.meta.name`` or ``.meta.namespace``.
@@ -130,7 +137,7 @@ For example:
 
 .. code-block:: yaml
 
-    apiVersion: "cilium.io/v2alpha1"
+    apiVersion: "cilium.io/v2"
     kind: CiliumLoadBalancerIPPool
     metadata:
       name: "blue-pool"
@@ -194,7 +201,7 @@ an administrator to slowly drain pool or reserve a pool for future use.
 
 .. code-block:: yaml
 
-    apiVersion: "cilium.io/v2alpha1"
+    apiVersion: "cilium.io/v2"
     kind: CiliumLoadBalancerIPPool
     metadata:
       name: "blue-pool"
@@ -252,7 +259,7 @@ Or human readable output like so
     Namespace:    
     Labels:       <none>
     Annotations:  <none>
-    API Version:  cilium.io/v2alpha1
+    API Version:  cilium.io/v2
     Kind:         CiliumLoadBalancerIPPool
     #[...]
     Status:
@@ -404,18 +411,16 @@ load balancer class by setting the following configuration in the Helm chart or 
 .. tabs::
     .. group-tab:: Helm
 
-        .. parsed-literal::
-
-            $ helm upgrade cilium |CHART_RELEASE| \\
-               --namespace kube-system \\
-               --reuse-values \\
-               --set LBIPAM.requireLBClass=true
+        .. cilium-helm-upgrade::
+           :namespace: kube-system
+           :extra-args: --reuse-values
+           :set: defaultLBServiceIPAM=none
 
     .. group-tab:: ConfigMap
 
         .. code-block:: yaml
 
-            lbipam-require-lb-class: true
+            default-lb-service-ipam: none
 
 Requesting IPs
 --------------
@@ -477,7 +482,9 @@ Services that have the same sharing key annotation will share the same IP or set
     type: LoadBalancer
     ports:
     - port: 1234
-  ---
+
+.. code-block:: yaml
+
   apiVersion: v1
   kind: Service
   metadata:

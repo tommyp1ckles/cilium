@@ -17,7 +17,7 @@ generated diff is what needs to be committed; all other changes are
 unnecessary.
 
 ```bash
-tag=v1.31.0
+tag=v1.36.0
 url="https://raw.githubusercontent.com/kubernetes/kubernetes/${tag}"
 
 curl "${url}/staging/src/k8s.io/api/core/v1/doc.go" > pkg/k8s/slim/k8s/api/core/v1/doc.go
@@ -25,19 +25,10 @@ curl "${url}/staging/src/k8s.io/api/core/v1/register.go" > pkg/k8s/slim/k8s/api/
 curl "${url}/staging/src/k8s.io/api/core/v1/taint.go" > pkg/k8s/slim/k8s/api/core/v1/taint.go
 curl "${url}/staging/src/k8s.io/api/core/v1/types.go" > pkg/k8s/slim/k8s/api/core/v1/types.go
 
-curl "${url}/staging/src/k8s.io/api/discovery/v1beta1/doc.go" > pkg/k8s/slim/k8s/api/discovery/v1beta1/doc.go
-curl "${url}/staging/src/k8s.io/api/discovery/v1beta1/register.go" > pkg/k8s/slim/k8s/api/discovery/v1beta1/register.go
-curl "${url}/staging/src/k8s.io/api/discovery/v1beta1/types.go" > pkg/k8s/slim/k8s/api/discovery/v1beta1/types.go
-curl "${url}/staging/src/k8s.io/api/discovery/v1beta1/well_known_labels.go" > pkg/k8s/slim/k8s/api/discovery/v1beta1/well_known_labels.go
-
 curl "${url}/staging/src/k8s.io/api/discovery/v1/doc.go" > pkg/k8s/slim/k8s/api/discovery/v1/doc.go
 curl "${url}/staging/src/k8s.io/api/discovery/v1/register.go" > pkg/k8s/slim/k8s/api/discovery/v1/register.go
 curl "${url}/staging/src/k8s.io/api/discovery/v1/types.go" > pkg/k8s/slim/k8s/api/discovery/v1/types.go
 curl "${url}/staging/src/k8s.io/api/discovery/v1/well_known_labels.go" > pkg/k8s/slim/k8s/api/discovery/v1/well_known_labels.go
-
-curl "${url}/staging/src/k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1/doc.go" > pkg/k8s/slim/k8s/apis/apiextensions/v1/doc.go
-curl "${url}/staging/src/k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1/register.go" > pkg/k8s/slim/k8s/apis/apiextensions/v1/register.go
-curl "${url}/staging/src/k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1/types.go" > pkg/k8s/slim/k8s/apis/apiextensions/v1/types.go
 
 curl "${url}/staging/src/k8s.io/apimachinery/pkg/labels/doc.go" > pkg/k8s/slim/k8s/apis/labels/doc.go
 curl "${url}/staging/src/k8s.io/apimachinery/pkg/labels/labels.go" > pkg/k8s/slim/k8s/apis/labels/labels.go

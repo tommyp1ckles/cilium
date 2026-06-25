@@ -4,28 +4,27 @@
 package endpointslicesync
 
 import (
+	"log/slog"
 	"time"
 
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/job"
-	"github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
 
 	"github.com/cilium/cilium/pkg/clustermesh/operator"
+	"github.com/cilium/cilium/pkg/clustermesh/types"
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
 	"github.com/cilium/cilium/pkg/k8s/resource"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	"github.com/cilium/cilium/pkg/metrics"
 )
 
-const subsystem = "clustermesh"
-
 // Cell is the cell for the Operator ClusterMesh
 var Cell = cell.Module(
 	"endpointslicesync-clustermesh",
 	"EndpointSlice clustermesh synchronization in the Cilium operator",
 	cell.Config(EndpointSliceSyncConfig{}),
-	cell.Invoke(registerEndpointSliceSync),
+	cell.Invoke(registerEndpointSliceSyncLegacy),
 
 	metrics.Metric(NewMetrics),
 )
@@ -33,9 +32,11 @@ var Cell = cell.Module(
 type endpointSliceSyncParams struct {
 	cell.In
 
+	Logger *slog.Logger
+
 	operator.ClusterMeshConfig
 	EndpointSliceSyncConfig
-	Logger   logrus.FieldLogger
+	types.ServiceModeV2Config
 	JobGroup job.Group
 
 	Clientset   k8sClient.Clientset

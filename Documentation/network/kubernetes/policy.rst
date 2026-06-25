@@ -50,11 +50,6 @@ Known missing features for Kubernetes Network Policy:
 +===============================+===================+
 | ``ipBlock`` set with a pod IP | :gh-issue:`9209`  |
 +-------------------------------+-------------------+
-| SCTP                          | :gh-issue:`5719`  |
-+-------------------------------+-------------------+
-
-As of v1.15, ``ipBlock`` can now optionally select :ref:`node IPs <cidr_select_nodes>`. Previously,
-nodes were excluded from ``ipBlock``; see :gh-issue:`20550`.
 
 .. _CiliumNetworkPolicy:
 
@@ -108,8 +103,8 @@ Status
 Examples
 ========
 
-See :ref:`policy_examples`, :ref:`l4_policy` and :ref:`l7_policy` for
-detailed lists of example policies.
+See :ref:`l3_policy`, :ref:`l4_policy` and :ref:`l7_policy` for detailed lists
+of example policies.
 
 
 .. _CiliumClusterwideNetworkPolicy:

@@ -8,14 +8,18 @@ import (
 	"time"
 
 	"github.com/cilium/hive/cell"
+	"github.com/cilium/hive/hivetest"
 	"github.com/go-openapi/runtime/middleware"
 	"github.com/stretchr/testify/require"
 
 	"github.com/cilium/cilium/api/v1/models"
 	. "github.com/cilium/cilium/api/v1/server/restapi/daemon"
-	fakeTypes "github.com/cilium/cilium/pkg/datapath/fake/types"
+	fakeipset "github.com/cilium/cilium/pkg/datapath/iptables/ipset/fake"
+	"github.com/cilium/cilium/pkg/datapath/tunnel"
+	"github.com/cilium/cilium/pkg/node"
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/option"
+	fakewireguard "github.com/cilium/cilium/pkg/wireguard/fake"
 )
 
 type GetNodesSuite struct {
@@ -24,17 +28,17 @@ type GetNodesSuite struct {
 
 var fakeConfig = &option.DaemonConfig{
 	RoutingMode: option.RoutingModeTunnel,
-	EnableIPSec: true,
 	EncryptNode: true,
 }
 
 func setupGetNodesSuite(tb testing.TB) *GetNodesSuite {
+	logger := hivetest.Logger(tb)
 	option.Config.IPv4ServiceRange = "auto"
 	option.Config.IPv6ServiceRange = "auto"
 
 	h, _ := cell.NewSimpleHealth()
-	nm, err := New(fakeConfig, nil, &fakeTypes.IPSet{}, nil, NewNodeMetrics(), h)
-	require.Nil(tb, err)
+	nm, err := New(logger, fakeConfig, tunnel.Config{}, nil, &fakeipset.IPSet{}, nil, NewNodeMetrics(), h, nil, nil, nil, fakewireguard.Config{}, node.NewTestLocalNodeStore(node.LocalNode{}))
+	require.NoError(tb, err)
 
 	g := &GetNodesSuite{
 		nm: nm,
@@ -50,7 +54,7 @@ func Test_getNodesHandle(t *testing.T) {
 	const numberOfClients = 10
 
 	clientIDs := make([]int64, 0, numberOfClients)
-	for i := 0; i < numberOfClients; i++ {
+	for range numberOfClients {
 		clientIDs = append(clientIDs, randGen.Int64())
 	}
 
@@ -346,13 +350,13 @@ func Test_getNodesHandle(t *testing.T) {
 			clients:     args.clients,
 		}
 		responder := h.Handle(args.params)
-		require.EqualValues(t, len(want.clients), len(h.clients))
+		require.Len(t, h.clients, len(want.clients))
 		for k, v := range h.clients {
 			wantClient, ok := want.clients[k]
-			require.Equal(t, true, ok)
-			require.EqualValues(t, wantClient.ClusterNodeStatus, v.ClusterNodeStatus)
+			require.True(t, ok)
+			require.Equal(t, wantClient.ClusterNodeStatus, v.ClusterNodeStatus)
 		}
-		require.EqualValues(t, middleware.Responder(want.responder), responder)
+		require.Equal(t, middleware.Responder(want.responder), responder)
 	}
 }
 
@@ -403,6 +407,6 @@ func Test_cleanupClients(t *testing.T) {
 			clients:     args.clients,
 		}
 		h.cleanupClients()
-		require.EqualValues(t, want.clients, h.clients)
+		require.Equal(t, want.clients, h.clients)
 	}
 }

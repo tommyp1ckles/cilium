@@ -20,12 +20,12 @@ When running Cilium using the container image ``cilium/cilium``, the host
 system must meet these requirements:
 
 - Hosts with either AMD64 or AArch64 architecture
-- `Linux kernel`_ >= 5.4 or equivalent (e.g., 4.18 on RHEL 8.6)
+- `Linux kernel`_ >= 5.10 or equivalent (e.g., 4.18 on RHEL 8.10)
 
 When running Cilium as a native process on your host (i.e. **not** running the
 ``cilium/cilium`` container image) these additional requirements must be met:
 
-- `clang+LLVM`_ >= 10.0
+- `clang+LLVM`_ >= 18.1
 
 .. _`clang+LLVM`: https://llvm.org
 
@@ -34,13 +34,13 @@ must be met:
 
 - :ref:`req_kvstore` etcd >= 3.1.0
 
-======================== ============================== ===================
-Requirement              Minimum Version                In cilium container
-======================== ============================== ===================
-`Linux kernel`_          >= 5.4 or >= 4.18 on RHEL 8.6  no
-Key-Value store (etcd)   >= 3.1.0                       no
-clang+LLVM               >= 10.0                        yes
-======================== ============================== ===================
+======================== =============================== ===================
+Requirement              Minimum Version                 In cilium container
+======================== =============================== ===================
+`Linux kernel`_          >= 5.10 or >= 4.18 on RHEL 8.10 no
+Key-Value store (etcd)   >= 3.1.0                        no
+clang+LLVM               >= 18.1                         yes
+======================== =============================== ===================
 
 Architecture Support
 ====================
@@ -144,7 +144,7 @@ subsystems which integrate with eBPF. Therefore, host systems are required to
 run a recent Linux kernel to run a Cilium agent. More recent kernels may
 provide additional eBPF functionality that Cilium will automatically detect and
 use on agent start. For this version of Cilium, it is recommended to use kernel
-4.19.57 or later (or equivalent such as 4.18 on RHEL8). For a list of features
+5.10 or later (or equivalent such as 4.18 on RHEL 8.10). For a list of features
 that require newer kernels, see :ref:`advanced_features`.
 
 In order for the eBPF feature to be enabled properly, the following kernel
@@ -155,11 +155,13 @@ linked, either choice is valid.
 ::
 
         CONFIG_BPF=y
+        CONFIG_BPF_EVENTS=y
         CONFIG_BPF_SYSCALL=y
         CONFIG_NET_CLS_BPF=y
         CONFIG_BPF_JIT=y
         CONFIG_NET_CLS_ACT=y
         CONFIG_NET_SCH_INGRESS=y
+        CONFIG_DEBUG_INFO_BTF=y
         CONFIG_CRYPTO_SHA1=y
         CONFIG_CRYPTO_USER_API_HASH=y
         CONFIG_CGROUPS=y
@@ -179,6 +181,37 @@ default value), then you will need the following kernel configuration options.
         CONFIG_NETFILTER_XT_SET=m
         CONFIG_IP_SET=m
         CONFIG_IP_SET_HASH_IP=m
+        CONFIG_NETFILTER_XT_MATCH_COMMENT=m
+
+Requirements for Tunneling and Routing
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Cilium uses tunneling protocols like VXLAN by default for pod-to-pod communication
+across nodes, as well as policy routing for various traffic management functionality. 
+The following kernel configuration options are required for proper operation:
+
+::
+
+        CONFIG_VXLAN=y
+        CONFIG_GENEVE=y
+        CONFIG_FIB_RULES=y
+
+
+.. note::
+
+   On some embedded or custom Linux systems, especially when cross-compiling for
+   ARM, enabling ``CONFIG_FIB_RULES=y`` directly in the kernel ``.config`` is not sufficient,
+   as it depends on other routing-related kernel options to be enabled.
+
+   The recommended approach is to use:
+
+   ::
+
+       scripts/config --enable CONFIG_FIB_RULES
+       make olddefconfig
+
+   The kernel build system uses ``Kconfig`` logic to validate and manage dependencies, 
+   so direct edits to ``.config`` may be ignored or silently overridden.
 
 Requirements for L7 and FQDN Policies
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -190,6 +223,7 @@ configuration must include the following modules:
 ::
 
         CONFIG_NETFILTER_XT_TARGET_TPROXY=m
+        CONFIG_NETFILTER_XT_TARGET_MARK=m
         CONFIG_NETFILTER_XT_TARGET_CT=m
         CONFIG_NETFILTER_XT_MATCH_MARK=m
         CONFIG_NETFILTER_XT_MATCH_SOCKET=m
@@ -201,16 +235,14 @@ modes. Since some notable kernels (e.g., COS) are shipping without
 to allow L7 policies and visibility to be used with those
 kernels. Currently this fallback disables ``ip_early_demux`` kernel
 feature in non-tunneled datapath modes, which may decrease system
-networking performance. This guarantees HTTP and Kafka redirection
-works as intended.  However, if HTTP or Kafka enforcement policies or
-visibility annotations are never used, this behavior can be turned off
-by adding the following to the helm configuration command line:
+networking performance. This guarantees HTTP redirection
+works as intended.  However, if HTTP enforcement policies are
+never used, this behavior can be turned off by adding the following to
+the helm configuration command line:
 
-.. parsed-literal::
-
-   helm install cilium |CHART_RELEASE| \\
-     ...
-     --set enableXTSocketFallback=false
+.. cilium-helm-install::
+   :set: enableXTSocketFallback=false
+   :extra-args: ...
 
 .. _features_kernel_matrix:
 
@@ -253,6 +285,16 @@ to change the packet scheduling algorithm.
 
         CONFIG_NET_SCH_FQ=m
 
+Requirements for Netkit Device Mode
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The :ref:`netkit` requires the following kernel configuration option
+to create netkit devices.
+
+::
+
+        CONFIG_NETKIT=y
+
 .. _advanced_features:
 
 Required Kernel Versions for Advanced Features
@@ -265,19 +307,11 @@ enabled by upgrading to more recent kernel versions as detailed below.
 ====================================================== ===============================
 Cilium Feature                                         Minimum Kernel Version
 ====================================================== ===============================
-:ref:`bandwidth-manager`                               >= 5.1
-:ref:`egress-gateway`                                  >= 5.2
-VXLAN Tunnel Endpoint (VTEP) Integration               >= 5.2
-:ref:`encryption_wg`                                   >= 5.6
-Full support for :ref:`session-affinity`               >= 5.7
-BPF-based proxy redirection                            >= 5.7
-Socket-level LB bypass in pod netns                    >= 5.7
-L3 devices                                             >= 5.8
-BPF-based host routing                                 >= 5.10
 :ref:`enable_multicast` (AMD64)                        >= 5.10
 IPv6 BIG TCP support                                   >= 5.19
 :ref:`enable_multicast` (AArch64)                      >= 6.0
 IPv4 BIG TCP support                                   >= 6.3
+:ref:`netkit`                                          >= 6.8
 ====================================================== ===============================
 
 .. _req_kvstore:
@@ -310,7 +344,7 @@ clang+LLVM
 
 LLVM is the compiler suite that Cilium uses to generate eBPF bytecode programs
 to be loaded into the Linux kernel. The minimum supported version of LLVM
-available to ``cilium-agent`` should be >=5.0. The version of clang installed
+available to ``cilium-agent`` should be >=18.1. The version of clang installed
 must be compiled with the eBPF backend enabled.
 
 See https://releases.llvm.org/ for information on how to download and install
@@ -338,10 +372,7 @@ For IPsec enabled Cilium deployments, you need to ensure that the firewall
 allows ESP traffic through. For example, AWS Security Groups doesn't allow ESP
 traffic by default.
 
-If you are using WireGuard, you must allow UDP port 51871. Furthermore, if you
-have disabled node-to-node encryption and configured an overlay network mode
-(such as VXLAN or Geneve) in addition to WireGuard, then the overlay ports must
-also be allowed.
+If you are using WireGuard, you must allow UDP port 51871.
 
 If you are using VXLAN overlay network mode, Cilium uses Linux's default VXLAN
 port 8472 over UDP, unless Linux has been configured otherwise. In this case,
@@ -478,6 +509,19 @@ otherwise used by the system.
 The index of those per-ENI routing tables is computed as
 ``10 + <eni-interface-index>``. The base offset of 10 is chosen as it is highly
 unlikely to collide with the main routing table which is between 253-255.
+
+Cilium uses the following routing table IDs:
+
+================= =========================================================
+Route table ID    Purpose
+================= =========================================================
+200               IPsec routing rules
+202               VTEP routing rules
+2004              Routing rules to the proxy
+2005              Routing rules from the proxy
+================= =========================================================
+
+Cilium manages these routing table IDs even if none of the related features are in use.
 
 Privileges
 ==========

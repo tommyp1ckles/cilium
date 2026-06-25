@@ -33,8 +33,8 @@ func TestIteratorProductElements(t *testing.T) {
 		[]string{"0", "1"},
 		[]string{"foo"},
 	)
-	assert.Equal(4, len(p), "Should be 2 * 2 * 1 = 4 permutations")
-	assert.Equal(len(p[0]), 3)
+	assert.Len(p, 4, "Should be 2 * 2 * 1 = 4 permutations")
+	assert.Len(p[0], 3)
 	vs := map[string]any{}
 	for _, v := range p {
 		vs[fmt.Sprintf("%v", v)] = v
@@ -57,7 +57,7 @@ func TestIteratorProductEmpty(t *testing.T) {
 	assert.Empty(p)
 
 	assert.Empty(CartesianProduct([]string{}, []string{}, []string{}))
-	assert.Empty(0, CartesianProduct[int]())
+	assert.Empty(CartesianProduct[int]())
 	assert.Len(CartesianProduct([]string{""}, []string{""}, []string{""}), 1)
-	CartesianProduct[interface{}](nil, nil) // Test some weird cases.
+	CartesianProduct[any](nil, nil) // Test some weird cases.
 }

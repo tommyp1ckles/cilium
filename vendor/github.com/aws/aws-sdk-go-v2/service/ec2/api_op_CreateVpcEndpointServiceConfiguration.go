@@ -76,6 +76,9 @@ type CreateVpcEndpointServiceConfigurationInput struct {
 	// The supported IP address types. The possible values are ipv4 and ipv6 .
 	SupportedIpAddressTypes []string
 
+	// The Regions from which service consumers can access the service.
+	SupportedRegions []string
+
 	// The tags to associate with the service.
 	TagSpecifications []types.TagSpecification
 
@@ -131,13 +134,16 @@ func (c *Client) addOperationCreateVpcEndpointServiceConfigurationMiddlewares(st
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
+	if err = addRetry(stack, options, c); err != nil {
 		return err
 	}
 	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
 	if err = addRecordResponseTiming(stack); err != nil {
+		return err
+	}
+	if err = addSpanRetryLoop(stack, options); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -152,10 +158,10 @@ func (c *Client) addOperationCreateVpcEndpointServiceConfigurationMiddlewares(st
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
-	if err = addTimeOffsetBuild(stack, c); err != nil {
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
-	if err = addUserAgentRetryMode(stack, options); err != nil {
+	if err = addCredentialSource(stack, options); err != nil {
 		return err
 	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opCreateVpcEndpointServiceConfiguration(options.Region), middleware.Before); err != nil {
@@ -174,6 +180,15 @@ func (c *Client) addOperationCreateVpcEndpointServiceConfigurationMiddlewares(st
 		return err
 	}
 	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptBeforeRetryLoop(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptAttempt(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil

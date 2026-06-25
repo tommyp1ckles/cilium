@@ -9,22 +9,22 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/tidwall/gjson"
 
-	"github.com/cilium/cilium/pkg/logging"
+	"github.com/cilium/cilium/daemon/cmd/cni/config"
 )
 
 func TestInstallCNIConfFile(t *testing.T) {
 	workdir := t.TempDir()
-	//exhaustruct:ignore
-	cfg := Config{
+	cfg := config.Config{
 		CNILogFile:            `/opt"/cni.log`,
 		CNIChainingMode:       "none",
 		CNIExclusive:          true,
 		WriteCNIConfWhenReady: path.Join(workdir, "05-cilium.conflist"),
 	}
-	c := newConfigManager(logging.DefaultLogger, cfg, false)
+	c := newConfigManager(hivetest.Logger(t), cfg, false)
 
 	touch(t, workdir, "other.conflist")
 	touch(t, workdir, "05-cilium.conf") // older config file we no longer create
@@ -48,11 +48,10 @@ func TestInstallCNIConfFile(t *testing.T) {
 }
 
 func TestRenderCNIConfUnchained(t *testing.T) {
-	//exhaustruct:ignore
-	cfg := Config{
+	cfg := config.Config{
 		CNILogFile: `/opt"/cni.log`,
 	}
-	c := newConfigManager(logging.DefaultLogger, cfg, false)
+	c := newConfigManager(hivetest.Logger(t), cfg, false)
 	// check that all templates compile
 	for mode := range cniConfigs {
 		c.config.CNIChainingMode = mode
@@ -65,14 +64,13 @@ func TestRenderCNIConfUnchained(t *testing.T) {
 }
 
 func TestRenderCNIConfChained(t *testing.T) {
-	//exhaustruct:ignore
-	cfg := Config{
+	cfg := config.Config{
 		CNILogFile:        `/opt"/cni.log`,
 		CNIChainingMode:   "testing",
 		CNIChainingTarget: "another-network",
 	}
 
-	c := newConfigManager(logging.DefaultLogger, cfg, false)
+	c := newConfigManager(hivetest.Logger(t), cfg, false)
 	for _, tc := range []struct {
 		name            string
 		cniConf         string
@@ -235,12 +233,11 @@ func TestRenderCNIConfChained(t *testing.T) {
 
 func TestCleanupOtherCNI(t *testing.T) {
 	workdir := t.TempDir()
-	//exhaustruct:ignore
-	cfg := Config{
+	cfg := config.Config{
 		CNIExclusive:          true,
 		WriteCNIConfWhenReady: path.Join(workdir, "42-keep.json"),
 	}
-	c := newConfigManager(logging.DefaultLogger, cfg, false)
+	c := newConfigManager(hivetest.Logger(t), cfg, false)
 
 	for _, name := range []string{
 		"01-someoneelse.conf",

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/netip"
 	"path/filepath"
@@ -15,12 +16,11 @@ import (
 	"time"
 
 	"github.com/cilium/fake"
+	"github.com/cilium/hive/hivetest"
 	"github.com/gopacket/gopacket/layers"
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
@@ -33,23 +33,18 @@ import (
 	"github.com/cilium/cilium/pkg/hubble/parser"
 	"github.com/cilium/cilium/pkg/hubble/parser/getters"
 	peerTypes "github.com/cilium/cilium/pkg/hubble/peer/types"
-	"github.com/cilium/cilium/pkg/hubble/relay/defaults"
 	relayObserver "github.com/cilium/cilium/pkg/hubble/relay/observer"
 	"github.com/cilium/cilium/pkg/hubble/relay/pool"
 	poolTypes "github.com/cilium/cilium/pkg/hubble/relay/pool/types"
 	"github.com/cilium/cilium/pkg/hubble/server"
 	"github.com/cilium/cilium/pkg/hubble/server/serveroption"
 	"github.com/cilium/cilium/pkg/hubble/testutils"
+	"github.com/cilium/cilium/pkg/mac"
 	"github.com/cilium/cilium/pkg/monitor"
 	monitorAPI "github.com/cilium/cilium/pkg/monitor/api"
 )
 
-var log *logrus.Logger
-
-func init() {
-	log = logrus.New()
-	log.SetOutput(io.Discard)
-}
+var log = slog.New(slog.DiscardHandler)
 
 func noopParser(t testing.TB) *parser.Parser {
 	pp, err := parser.New(
@@ -78,7 +73,7 @@ var endpoints map[string]*testutils.FakeEndpointInfo
 
 func init() {
 	endpoints = make(map[string]*testutils.FakeEndpointInfo, 254)
-	for i := 0; i < 254; i++ {
+	for i := range 254 {
 		ip := fake.IP(fake.WithIPv4())
 		endpoints[ip] = &testutils.FakeEndpointInfo{
 			ID:           uint64(i),
@@ -100,9 +95,8 @@ func getRandomEndpoint() *testutils.FakeEndpointInfo {
 func newHubbleObserver(t testing.TB, nodeName string, numFlows int) *observer.LocalObserverServer {
 	queueSize := numFlows
 
-	pp := noopParser(t)
-	nsMgr := observer.NewNamespaceManager()
-	s, err := observer.NewLocalServer(pp, nsMgr, log,
+	pp, nm := noopParser(t), testutils.NoopNamespaceManager
+	s, err := observer.NewLocalServer(pp, nm, log,
 		observeroption.WithMaxFlows(container.Capacity65535),
 		observeroption.WithMonitorBuffer(queueSize),
 	)
@@ -110,16 +104,14 @@ func newHubbleObserver(t testing.TB, nodeName string, numFlows int) *observer.Lo
 
 	m := s.GetEventsChannel()
 
-	for i := 0; i < numFlows; i++ {
-		tn := monitor.TraceNotifyV0{Type: byte(monitorAPI.MessageTypeTrace)}
+	for i := range numFlows {
+		tn := monitor.TraceNotify{Type: byte(monitorAPI.MessageTypeTrace)}
 		src := getRandomEndpoint()
 		dst := getRandomEndpoint()
-		srcMAC, _ := net.ParseMAC(fake.MAC())
-		dstMAC, _ := net.ParseMAC(fake.MAC())
 		data := testutils.MustCreateL3L4Payload(tn,
 			&layers.Ethernet{
-				SrcMAC:       srcMAC,
-				DstMAC:       dstMAC,
+				SrcMAC:       net.HardwareAddr(mac.MustParseMAC(fake.MAC())),
+				DstMAC:       net.HardwareAddr(mac.MustParseMAC(fake.MAC())),
 				EthernetType: layers.EthernetTypeIPv4,
 			},
 			&layers.IPv4{
@@ -150,7 +142,7 @@ func newHubbleObserver(t testing.TB, nodeName string, numFlows int) *observer.Lo
 func newHubblePeer(t testing.TB, ctx context.Context, address string, hubbleObserver *observer.LocalObserverServer) {
 	options := []serveroption.Option{
 		serveroption.WithInsecure(),
-		serveroption.WithUnixSocketListener(address),
+		serveroption.WithUnixSocketListener(hivetest.Logger(t), address),
 		serveroption.WithObserverService(hubbleObserver),
 	}
 
@@ -175,7 +167,7 @@ func newHubblePeer(t testing.TB, ctx context.Context, address string, hubbleObse
 func benchmarkRelayGetFlows(b *testing.B, withFieldMask bool) {
 	tmp := b.TempDir()
 	root := "unix://" + filepath.Join(tmp, "peer-")
-	ctx := context.Background()
+	ctx := b.Context()
 	numFlows := b.N
 	numPeers := 2
 
@@ -208,15 +200,7 @@ func benchmarkRelayGetFlows(b *testing.B, withFieldMask bool) {
 	}
 
 	// Create hubble relay server and connect to all peers from previous step.
-	ccb := pool.GRPCClientConnBuilder{
-		DialTimeout: defaults.DialTimeout,
-		Options: []grpc.DialOption{
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithBlock(),
-			grpc.FailOnNonTempDialError(true),
-			grpc.WithReturnConnectionError(),
-		},
-	}
+	ccb := pool.GRPCClientConnBuilder{}
 	plr := &testutils.FakePeerLister{
 		OnList: func() []poolTypes.Peer {
 			ret := make([]poolTypes.Peer, len(peers))
@@ -256,7 +240,7 @@ func benchmarkRelayGetFlows(b *testing.B, withFieldMask bool) {
 	// Make sure that all peers are connected
 	nodesResp, err := client.GetNodes(ctx, &observerpb.GetNodesRequest{})
 	require.NoError(b, err)
-	require.Equal(b, numPeers, len(nodesResp.Nodes))
+	require.Len(b, nodesResp.Nodes, numPeers)
 
 	getFlowsReq := new(observerpb.GetFlowsRequest)
 	if withFieldMask {
@@ -269,9 +253,6 @@ func benchmarkRelayGetFlows(b *testing.B, withFieldMask bool) {
 		)
 		require.NoError(b, err)
 		getFlowsReq.FieldMask = fieldmask
-		getFlowsReq.Experimental = &observerpb.GetFlowsRequest_Experimental{
-			FieldMask: fieldmask,
-		}
 	}
 	found := make([]*observerpb.Flow, 0, numFlows)
 	b.StartTimer()
@@ -290,7 +271,7 @@ func benchmarkRelayGetFlows(b *testing.B, withFieldMask bool) {
 		case *observerpb.GetFlowsResponse_NodeStatus:
 		}
 	}
-	assert.Equal(b, numFlows, len(found))
+	assert.Len(b, found, numFlows)
 	b.StopTimer()
 
 	for _, f := range found {

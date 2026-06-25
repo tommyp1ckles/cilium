@@ -49,10 +49,12 @@ The following Cilium network policy allows ``mediabot`` pods to only access ``ap
    .. group-tab:: Generic
 
       .. literalinclude:: ../../examples/kubernetes-dns/dns-matchname.yaml
+          :language: yaml
 
    .. group-tab:: OpenShift
 
       .. literalinclude:: ../../examples/kubernetes-dns/dns-matchname-openshift.yaml
+          :language: yaml
 
 .. note::
 
@@ -104,6 +106,7 @@ e.g., the pattern ``*.github.com``. We can achieve this easily by changing the
 ``toFQDN`` rule to use ``matchPattern`` instead of ``matchName``.
 
 .. literalinclude:: ../../examples/kubernetes-dns/dns-pattern.yaml
+    :language: yaml
 
 .. parsed-literal::
 
@@ -138,6 +141,7 @@ policy below achieves the port-based restrictions along with the DNS-based
 policies.
 
 .. literalinclude:: ../../examples/kubernetes-dns/dns-port.yaml
+    :language: yaml
 
 .. parsed-literal::
 
@@ -166,3 +170,8 @@ Clean-up
 
    kubectl delete -f \ |SCM_WEB|\/examples/kubernetes-dns/dns-sw-app.yaml
    kubectl delete cnp fqdn
+
+Limitations
+===========
+
+By default, Cilium uses an in-agent DNS proxy for DNS policy enforcement. For high availability, consider using the :ref:`standalone_dns_proxy` (alpha feature).

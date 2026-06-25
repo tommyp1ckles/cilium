@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"text/tabwriter"
 
@@ -42,7 +43,7 @@ func NewK8sConfig(client k8sConfigImplementation, p Parameters) *K8sConfig {
 	}
 }
 
-func (k *K8sConfig) Log(format string, a ...interface{}) {
+func (k *K8sConfig) Log(format string, a ...any) {
 	fmt.Fprintf(k.params.Writer, format+"\n", a...)
 }
 
@@ -82,13 +83,7 @@ func (k *K8sConfig) View(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("unable get ConfigMap %q: %w", defaults.ConfigMapName, err)
 	}
 
-	keys := make([]string, 0, len(cm.Data))
-	for k := range cm.Data {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
-
-	for _, key := range keys {
+	for _, key := range slices.Sorted(maps.Keys(cm.Data)) {
 		fmt.Fprintf(w, "%s\t%s\n", key, cm.Data[key])
 	}
 
@@ -106,6 +101,11 @@ func (k *K8sConfig) restartPodsUponConfigChange(ctx context.Context, params Para
 	if err := k.client.DeletePodCollection(ctx, params.Namespace,
 		metav1.DeleteOptions{}, metav1.ListOptions{LabelSelector: defaults.AgentPodSelector}); err != nil {
 		return fmt.Errorf("⚠️  unable to restart Cilium pods: %w", err)
+	}
+
+	if err := k.client.DeletePodCollection(ctx, params.Namespace,
+		metav1.DeleteOptions{}, metav1.ListOptions{LabelSelector: defaults.OperatorPodSelector}); err != nil {
+		return fmt.Errorf("⚠️  unable to restart Cilium Operator pods: %w", err)
 	}
 
 	fmt.Println("♻️  Restarted Cilium pods")

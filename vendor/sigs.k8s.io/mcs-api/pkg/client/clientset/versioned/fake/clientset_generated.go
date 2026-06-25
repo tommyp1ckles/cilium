@@ -27,12 +27,18 @@ import (
 	clientset "sigs.k8s.io/mcs-api/pkg/client/clientset/versioned"
 	multiclusterv1alpha1 "sigs.k8s.io/mcs-api/pkg/client/clientset/versioned/typed/apis/v1alpha1"
 	fakemulticlusterv1alpha1 "sigs.k8s.io/mcs-api/pkg/client/clientset/versioned/typed/apis/v1alpha1/fake"
+	multiclusterv1beta1 "sigs.k8s.io/mcs-api/pkg/client/clientset/versioned/typed/apis/v1beta1"
+	fakemulticlusterv1beta1 "sigs.k8s.io/mcs-api/pkg/client/clientset/versioned/typed/apis/v1beta1/fake"
 )
 
 // NewSimpleClientset returns a clientset that will respond with the provided objects.
 // It's backed by a very simple object tracker that processes creates, updates and deletions as-is,
-// without applying any validations and/or defaults. It shouldn't be considered a replacement
+// without applying any field management, validations and/or defaults. It shouldn't be considered a replacement
 // for a real clientset and is mostly useful in simple unit tests.
+//
+// DEPRECATED: NewClientset replaces this with support for field management, which significantly improves
+// server side apply testing. NewClientset is only available when apply configurations are generated (e.g.
+// via --with-applyconfig).
 func NewSimpleClientset(objects ...runtime.Object) *Clientset {
 	o := testing.NewObjectTracker(scheme, codecs.UniversalDecoder())
 	for _, obj := range objects {
@@ -82,4 +88,9 @@ var (
 // MulticlusterV1alpha1 retrieves the MulticlusterV1alpha1Client
 func (c *Clientset) MulticlusterV1alpha1() multiclusterv1alpha1.MulticlusterV1alpha1Interface {
 	return &fakemulticlusterv1alpha1.FakeMulticlusterV1alpha1{Fake: &c.Fake}
+}
+
+// MulticlusterV1beta1 retrieves the MulticlusterV1beta1Client
+func (c *Clientset) MulticlusterV1beta1() multiclusterv1beta1.MulticlusterV1beta1Interface {
+	return &fakemulticlusterv1beta1.FakeMulticlusterV1beta1{Fake: &c.Fake}
 }

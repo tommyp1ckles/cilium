@@ -6,26 +6,25 @@ package k8s
 import (
 	"testing"
 
-	"github.com/sirupsen/logrus"
+	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/cilium/cilium/pkg/k8s"
 	cilium_v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	"github.com/cilium/cilium/pkg/k8s/resource"
 	k8sSynced "github.com/cilium/cilium/pkg/k8s/synced"
 	"github.com/cilium/cilium/pkg/k8s/types"
+	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/option"
-	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/policy/api"
+	policytypes "github.com/cilium/cilium/pkg/policy/types"
 )
 
 func Test_GH33432(t *testing.T) {
-	policyAdd := make(chan api.Rules, 1)
-	policyManager := &fakePolicyManager{
-		OnPolicyAdd: func(rules api.Rules, opts *policy.AddOptions) (newRev uint64, err error) {
-			policyAdd <- rules
-			return 0, nil
+	policyAdd := make(chan policytypes.PolicyEntries, 1)
+	policyImporter := &fakePolicyImporter{
+		OnUpdatePolicy: func(upd *policytypes.PolicyUpdate) {
+			policyAdd <- upd.Rules
 		},
 	}
 
@@ -60,33 +59,31 @@ func Test_GH33432(t *testing.T) {
 	cnpKey := resource.NewKey(cnp)
 	cnpResourceID := resourceIDForCiliumNetworkPolicy(cnpKey, cnp)
 
-	logger := logrus.New()
-	logger.SetLevel(logrus.DebugLevel)
-
 	p := &policyWatcher{
-		log:                logrus.NewEntry(logger),
+		log:                hivetest.Logger(t),
 		config:             &option.DaemonConfig{},
 		k8sResourceSynced:  &k8sSynced.Resources{CacheStatus: make(k8sSynced.CacheStatus)},
 		k8sAPIGroups:       &k8sSynced.APIGroups{},
-		policyManager:      policyManager,
-		svcCache:           fakeServiceCache{},
+		policyImporter:     policyImporter,
 		cnpCache:           map[resource.Key]*types.SlimCNP{},
 		toServicesPolicies: map[resource.Key]struct{}{},
-		cnpByServiceID:     map[k8s.ServiceID]map[resource.Key]struct{}{},
+		cnpByServiceID:     map[loadbalancer.ServiceName]map[resource.Key]struct{}{},
+		metricsManager:     NewCNPMetricsNoop(),
 	}
 
-	err := p.onUpsert(cnp, cnpKey, k8sAPIGroupCiliumNetworkPolicyV2, cnpResourceID)
+	err := p.onUpsert(cnp, cnpKey, k8sAPIGroupCiliumNetworkPolicyV2, cnpResourceID, nil)
 	assert.NoError(t, err)
 
 	// added rules should have a nil ToEndpoints slice
 	rules := <-policyAdd
 	assert.Len(t, rules, 1)
-	assert.Len(t, rules[0].Egress, 1)
-	assert.Equal(t, api.CIDRSlice{"1.1.1.1/32"}, rules[0].Egress[0].EgressCommonRule.ToCIDR)
-	assert.Len(t, rules[0].Egress[0].ToPorts, 1)
-	assert.Len(t, rules[0].Egress[0].ToPorts[0].Ports, 1)
-	assert.Equal(t, []api.PortProtocol{{Port: "80", Protocol: api.ProtoTCP}}, rules[0].Egress[0].ToPorts[0].Ports)
-	assert.Nil(t, rules[0].Egress[0].EgressCommonRule.ToEndpoints)
+	assert.False(t, rules[0].Ingress)
+	assert.Len(t, rules[0].L3, 1)
+	cidr := api.CIDR("1.1.1.1/32")
+	assert.Equal(t, policytypes.Selectors{policytypes.NewCIDRSelector(cidr.SelectorKey(), cidr, nil)}, rules[0].L3)
+	assert.Len(t, rules[0].L4, 1)
+	assert.Len(t, rules[0].L4[0].Ports, 1)
+	assert.Equal(t, []api.PortProtocol{{Port: "80", Protocol: api.ProtoTCP}}, rules[0].L4[0].Ports)
 
 	updCNP := cnp.DeepCopy()
 	updCNP.Generation++
@@ -97,18 +94,16 @@ func Test_GH33432(t *testing.T) {
 	updCNPKey := resource.NewKey(updCNP)
 	updCNPResourceID := resourceIDForCiliumNetworkPolicy(updCNPKey, updCNP)
 
-	err = p.onUpsert(updCNP, updCNPKey, k8sAPIGroupCiliumNetworkPolicyV2, updCNPResourceID)
+	err = p.onUpsert(updCNP, updCNPKey, k8sAPIGroupCiliumNetworkPolicyV2, updCNPResourceID, nil)
 	assert.NoError(t, err)
 
 	// policy update should be propagated and the new rules should be the same
-	// except for the empty non-nil ToEndpoints slice
+	// except for the empty L3 slice
 	rules = <-policyAdd
 	assert.Len(t, rules, 1)
-	assert.Len(t, rules[0].Egress, 1)
-	assert.Equal(t, api.CIDRSlice{"1.1.1.1/32"}, rules[0].Egress[0].EgressCommonRule.ToCIDR)
-	assert.Len(t, rules[0].Egress[0].ToPorts, 1)
-	assert.Len(t, rules[0].Egress[0].ToPorts[0].Ports, 1)
-	assert.Equal(t, []api.PortProtocol{{Port: "80", Protocol: api.ProtoTCP}}, rules[0].Egress[0].ToPorts[0].Ports)
-	assert.NotNil(t, rules[0].Egress[0].EgressCommonRule.ToEndpoints)
-	assert.Len(t, rules[0].Egress[0].EgressCommonRule.ToEndpoints, 0)
+	assert.False(t, rules[0].Ingress)
+	assert.Nil(t, rules[0].L3)
+	assert.Len(t, rules[0].L4, 1)
+	assert.Len(t, rules[0].L4[0].Ports, 1)
+	assert.Equal(t, []api.PortProtocol{{Port: "80", Protocol: api.ProtoTCP}}, rules[0].L4[0].Ports)
 }

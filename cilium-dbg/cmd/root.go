@@ -6,14 +6,21 @@ package cmd
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 
-	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/cilium/cilium/cilium-dbg/cmd/troubleshoot"
 	clientPkg "github.com/cilium/cilium/pkg/client"
+	"github.com/cilium/cilium/pkg/cmdref"
+	"github.com/cilium/cilium/pkg/command"
 	"github.com/cilium/cilium/pkg/components"
+	"github.com/cilium/cilium/pkg/hive"
+	"github.com/cilium/cilium/pkg/logging"
+	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/option"
 )
 
 var (
@@ -21,7 +28,7 @@ var (
 
 	cfgFile string
 	client  *clientPkg.Client
-	log     = logrus.New()
+	log     *slog.Logger
 	verbose = false
 )
 
@@ -50,9 +57,14 @@ func init() {
 	flags := RootCmd.PersistentFlags()
 	flags.StringVar(&cfgFile, "config", "", "Config file (default is $HOME/.cilium.yaml)")
 	flags.BoolP("debug", "D", false, "Enable debug messages")
+	flags.StringSlice(option.LogDriver, []string{}, "Logging endpoints to use (example: syslog)")
+	flags.Var(option.NewMapOptions(&option.Config.LogOpt), option.LogOpt, "Log driver options (example: format=json)")
 	flags.StringP("host", "H", "", "URI to server-side API")
 	vp.BindPFlags(flags)
+	RootCmd.AddCommand(cmdref.NewCmd(RootCmd))
 	RootCmd.AddCommand(newCmdCompletion(os.Stdout))
+	RootCmd.AddCommand(troubleshoot.Cmd)
+	RootCmd.AddCommand(hive.CiliumShellCmd)
 	RootCmd.SetOut(os.Stdout)
 	RootCmd.SetErr(os.Stderr)
 }
@@ -73,11 +85,20 @@ func initConfig() {
 		fmt.Println("Using config file:", vp.ConfigFileUsed())
 	}
 
-	if vp.GetBool("debug") {
-		log.Level = logrus.DebugLevel
-	} else {
-		log.Level = logrus.InfoLevel
+	logDriver := vp.GetStringSlice(option.LogDriver)
+	logOpts, err := command.GetStringMapStringE(vp, option.LogOpt)
+	if err != nil {
+		// slogloggercheck: log fatal errors using the default logger before it's initialized.
+		logging.Fatal(logging.DefaultSlogLogger, fmt.Sprintf("unable to parse %s", option.LogOpt), logfields.Error, err)
 	}
+
+	if err := logging.SetupLogging(logDriver, logOpts, "cilium-dbg", vp.GetBool(option.DebugArg)); err != nil {
+		// slogloggercheck: log fatal errors using the default logger before it's initialized.
+		logging.Fatal(logging.DefaultSlogLogger, "Unable to set up logging", logfields.Error, err)
+	}
+
+	// slogloggercheck: it has been properly initialized now.
+	log = logging.DefaultSlogLogger.With(logfields.LogSubsys, "cilium-dbg")
 
 	if cl, err := clientPkg.NewClient(vp.GetString("host")); err != nil {
 		Fatalf("Error while creating client: %s\n", err)

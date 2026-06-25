@@ -11,9 +11,12 @@
 Overview of Network Policy
 --------------------------
 
-This page documents the policy language used to configure network policies
-in Cilium. Security policies can be specified and imported via the following
-mechanisms:
+This chapter documents the policy language used to configure network policies
+in Cilium. For a basic understanding, read the :ref:`introduction <policy_guide>`.
+More details are covered on the respective pages for different kinds of policies
+and ways to define them.
+
+Security policies can be specified and imported via the following mechanisms:
 
 * Using Kubernetes `NetworkPolicy`, `CiliumNetworkPolicy` and `CiliumClusterwideNetworkPolicy`
   resources. See the section :ref:`k8s_policy` for more details. In this mode,
@@ -21,14 +24,20 @@ mechanisms:
 
 * Directly imported into the agent via CLI or :ref:`api_ref` of the agent. This
   method does not automatically distribute policies to all agents. It is in the
-  responsibility of the user to import the policy in all required agents.
+  responsibility of the user to import the policy in all required agents. (This
+  method is deprecated as of v1.18 and will be removed in v1.19.)
 
 .. toctree::
    :maxdepth: 2
    :glob:
 
    intro
-   language
+   layer3
+   layer4
+   layer7
+   deny
+   disk-based
+   host
    kubernetes
    lifecycle
    troubleshooting

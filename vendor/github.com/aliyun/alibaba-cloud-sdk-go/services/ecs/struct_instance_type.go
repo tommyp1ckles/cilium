@@ -26,6 +26,7 @@ type InstanceType struct {
 	NetworkEncryptionSupport    bool               `json:"NetworkEncryptionSupport" xml:"NetworkEncryptionSupport"`
 	Cores                       int                `json:"Cores" xml:"Cores"`
 	NetworkCardQuantity         int                `json:"NetworkCardQuantity" xml:"NetworkCardQuantity"`
+	JumboFrameSupport           bool               `json:"JumboFrameSupport" xml:"JumboFrameSupport"`
 	InstanceTypeId              string             `json:"InstanceTypeId" xml:"InstanceTypeId"`
 	InstanceBandwidthRx         int                `json:"InstanceBandwidthRx" xml:"InstanceBandwidthRx"`
 	InstanceType                string             `json:"InstanceType" xml:"InstanceType"`
@@ -60,5 +61,7 @@ type InstanceType struct {
 	LocalStorageCategory        string             `json:"LocalStorageCategory" xml:"LocalStorageCategory"`
 	PhysicalProcessorModel      string             `json:"PhysicalProcessorModel" xml:"PhysicalProcessorModel"`
 	SupportedBootModes          SupportedBootModes `json:"SupportedBootModes" xml:"SupportedBootModes"`
+	EnhancedNetwork             EnhancedNetwork    `json:"EnhancedNetwork" xml:"EnhancedNetwork"`
+	CpuOptions                  CpuOptions         `json:"CpuOptions" xml:"CpuOptions"`
 	NetworkCards                NetworkCards       `json:"NetworkCards" xml:"NetworkCards"`
 }

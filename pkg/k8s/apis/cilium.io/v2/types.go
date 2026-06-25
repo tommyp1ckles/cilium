@@ -10,12 +10,15 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/cilium/cilium/api/v1/models"
-	alibabaCloudTypes "github.com/cilium/cilium/pkg/alibabacloud/eni/types"
-	eniTypes "github.com/cilium/cilium/pkg/aws/eni/types"
+	alibabaCloudTypes "github.com/cilium/cilium/pkg/alibabacloud/types"
+	awsTypes "github.com/cilium/cilium/pkg/aws/types"
 	azureTypes "github.com/cilium/cilium/pkg/azure/types"
 	ipamTypes "github.com/cilium/cilium/pkg/ipam/types"
 	"github.com/cilium/cilium/pkg/node/addressing"
 )
+
+// +kubebuilder:validation:Format=cidr
+type IPv4orIPv6CIDR string
 
 // +genclient
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -24,7 +27,6 @@ import (
 // +kubebuilder:printcolumn:JSONPath=".status.identity.id",description="Security Identity",name="Security Identity",type=integer
 // +kubebuilder:printcolumn:JSONPath=".status.policy.ingress.state",description="Ingress enforcement in the endpoint",name="Ingress Enforcement",type=string,priority=1
 // +kubebuilder:printcolumn:JSONPath=".status.policy.egress.state",description="Egress enforcement in the endpoint",name="Egress Enforcement",type=string,priority=1
-// +kubebuilder:printcolumn:JSONPath=".status.visibility-policy-status",description="Status of visibility policy in the endpoint",name="Visibility Policy",type=string,priority=1
 // +kubebuilder:printcolumn:JSONPath=".status.state",description="Endpoint current state",name="Endpoint State",type=string
 // +kubebuilder:printcolumn:JSONPath=".status.networking.addressing[0].ipv4",description="Endpoint IPv4 address",name="IPv4",type=string
 // +kubebuilder:printcolumn:JSONPath=".status.networking.addressing[0].ipv6",description="Endpoint IPv6 address",name="IPv6",type=string
@@ -35,10 +37,11 @@ type CiliumEndpoint struct {
 	// +deepequal-gen=false
 	metav1.TypeMeta `json:",inline"`
 	// +deepequal-gen=false
+	// +kubebuilder:validation:Required
 	metav1.ObjectMeta `json:"metadata"`
 
 	// +kubebuilder:validation:Optional
-	Status EndpointStatus `json:"status"`
+	Status EndpointStatus `json:"status,omitempty"`
 }
 
 // EndpointPolicyState defines the state of the Policy mode: "enforcing", "non-enforcing", "disabled"
@@ -47,23 +50,35 @@ type EndpointPolicyState string
 // EndpointStatus is the status of a Cilium endpoint.
 type EndpointStatus struct {
 	// ID is the cilium-agent-local ID of the endpoint.
+	//
+	// +kubebuilder:validation:Optional
 	ID int64 `json:"id,omitempty"`
 
 	// Controllers is the list of failing controllers for this endpoint.
+	//
+	// +kubebuilder:validation:Optional
 	Controllers ControllerList `json:"controllers,omitempty"`
 
 	// ExternalIdentifiers is a set of identifiers to identify the endpoint
 	// apart from the pod name. This includes container runtime IDs.
+	//
+	// +kubebuilder:validation:Optional
 	ExternalIdentifiers *models.EndpointIdentifiers `json:"external-identifiers,omitempty"`
 
 	// Health is the overall endpoint & subcomponent health.
+	//
+	// +kubebuilder:validation:Optional
 	Health *models.EndpointHealth `json:"health,omitempty"`
 
 	// Identity is the security identity associated with the endpoint
+	//
+	// +kubebuilder:validation:Optional
 	Identity *EndpointIdentity `json:"identity,omitempty"`
 
 	// Log is the list of the last few warning and error log entries
-	Log []*models.EndpointStatusChange `json:"log,omitempty"`
+	//
+	// +kubebuilder:validation:Optional
+	Log []models.EndpointStatusChange `json:"log,omitempty"`
 
 	// Networking is the networking properties of the endpoint.
 	//
@@ -75,16 +90,22 @@ type EndpointStatus struct {
 	// +kubebuilder:validation:Optional
 	Encryption EncryptionSpec `json:"encryption,omitempty"`
 
+	// +kubebuilder:validation:Optional
 	Policy *EndpointPolicy `json:"policy,omitempty"`
-
-	VisibilityPolicyStatus *string `json:"visibility-policy-status,omitempty"`
 
 	// State is the state of the endpoint.
 	//
 	// +kubebuilder:validation:Enum=creating;waiting-for-identity;not-ready;waiting-to-regenerate;regenerating;restoring;ready;disconnecting;disconnected;invalid
+	// +kubebuilder:validation:Optional
 	State string `json:"state,omitempty"`
 
+	// +kubebuilder:validation:Optional
 	NamedPorts models.NamedPorts `json:"named-ports,omitempty"`
+
+	// ServiceAccount is the service account associated with the endpoint
+	//
+	// +kubebuilder:validation:Optional
+	ServiceAccount string `json:"service-account,omitempty"`
 }
 
 // +k8s:deepcopy-gen=false
@@ -100,15 +121,23 @@ func (c ControllerList) Sort() {
 // ControllerStatus is the status of a failing controller.
 type ControllerStatus struct {
 	// Name is the name of the controller
+	//
+	// +kubebuilder:validation:Optional
 	Name string `json:"name,omitempty"`
 
 	// Configuration is the controller configuration
+	//
+	// +kubebuilder:validation:Optional
 	Configuration *models.ControllerStatusConfiguration `json:"configuration,omitempty"`
 
 	// Status is the status of the controller
+	//
+	// +kubebuilder:validation:Optional
 	Status ControllerStatusStatus `json:"status,omitempty"`
 
 	// UUID is the UUID of the controller
+	//
+	// +kubebuilder:validation:Optional
 	UUID string `json:"uuid,omitempty"`
 }
 
@@ -116,39 +145,57 @@ type ControllerStatus struct {
 
 // ControllerStatusStatus is the detailed status section of a controller.
 type ControllerStatusStatus struct {
-	ConsecutiveFailureCount int64  `json:"consecutive-failure-count,omitempty"`
-	FailureCount            int64  `json:"failure-count,omitempty"`
-	LastFailureMsg          string `json:"last-failure-msg,omitempty"`
-	LastFailureTimestamp    string `json:"last-failure-timestamp,omitempty"`
-	LastSuccessTimestamp    string `json:"last-success-timestamp,omitempty"`
-	SuccessCount            int64  `json:"success-count,omitempty"`
+	// +kubebuilder:validation:Optional
+	ConsecutiveFailureCount int64 `json:"consecutive-failure-count,omitempty"`
+	// +kubebuilder:validation:Optional
+	FailureCount int64 `json:"failure-count,omitempty"`
+	// +kubebuilder:validation:Optional
+	LastFailureMsg string `json:"last-failure-msg,omitempty"`
+	// +kubebuilder:validation:Optional
+	LastFailureTimestamp string `json:"last-failure-timestamp,omitempty"`
+	// +kubebuilder:validation:Optional
+	LastSuccessTimestamp string `json:"last-success-timestamp,omitempty"`
+	// +kubebuilder:validation:Optional
+	SuccessCount int64 `json:"success-count,omitempty"`
 }
 
 // EndpointPolicy represents the endpoint's policy by listing all allowed
 // ingress and egress identities in combination with L4 port and protocol.
 type EndpointPolicy struct {
+	// +kubebuilder:validation:Optional
 	Ingress *EndpointPolicyDirection `json:"ingress,omitempty"`
-	Egress  *EndpointPolicyDirection `json:"egress,omitempty"`
+	// +kubebuilder:validation:Optional
+	Egress *EndpointPolicyDirection `json:"egress,omitempty"`
 }
 
 // EndpointPolicyDirection is the list of allowed identities per direction.
 type EndpointPolicyDirection struct {
-	Enforcing bool                `json:"enforcing"`
-	Allowed   AllowedIdentityList `json:"allowed,omitempty"`
-	Denied    DenyIdentityList    `json:"denied,omitempty"`
+	// +kubebuilder:validation:Required
+	Enforcing bool `json:"enforcing"`
+	// +kubebuilder:validation:Optional
+	Allowed AllowedIdentityList `json:"allowed,omitempty"`
+	// +kubebuilder:validation:Optional
+	Denied DenyIdentityList `json:"denied,omitempty"`
 	// Deprecated
+	// +kubebuilder:validation:Optional
 	Removing AllowedIdentityList `json:"removing,omitempty"`
 	// Deprecated
+	// +kubebuilder:validation:Optional
 	Adding AllowedIdentityList `json:"adding,omitempty"`
-	State  EndpointPolicyState `json:"state,omitempty"`
+	// +kubebuilder:validation:Optional
+	State EndpointPolicyState `json:"state,omitempty"`
 }
 
 // IdentityTuple specifies a peer by identity, destination port and protocol.
 type IdentityTuple struct {
-	Identity       uint64            `json:"identity,omitempty"`
+	// +kubebuilder:validation:Optional
+	Identity uint64 `json:"identity,omitempty"`
+	// +kubebuilder:validation:Optionals
 	IdentityLabels map[string]string `json:"identity-labels,omitempty"`
-	DestPort       uint16            `json:"dest-port,omitempty"`
-	Protocol       uint8             `json:"protocol,omitempty"`
+	// +kubebuilder:validation:Optional
+	DestPort uint16 `json:"dest-port,omitempty"`
+	// +kubebuilder:validation:Optional
+	Protocol uint8 `json:"protocol,omitempty"`
 }
 
 // +k8s:deepcopy-gen=false
@@ -197,9 +244,13 @@ func (d DenyIdentityList) Sort() {
 // EndpointIdentity is the identity information of an endpoint.
 type EndpointIdentity struct {
 	// ID is the numeric identity of the endpoint
+	//
+	// +kubebuilder:validation:Optional
 	ID int64 `json:"id,omitempty"`
 
 	// Labels is the list of labels associated with the identity
+	//
+	// +kubebuilder:validation:Optional
 	Labels []string `json:"labels,omitempty"`
 }
 
@@ -231,9 +282,11 @@ type CiliumIdentity struct {
 	// +deepequal-gen=false
 	metav1.TypeMeta `json:",inline"`
 	// +deepequal-gen=false
+	// +kubebuilder:validation:Required
 	metav1.ObjectMeta `json:"metadata"`
 
 	// SecurityLabels is the source-of-truth set of labels for this identity.
+	// +kubebuilder:validation:Required
 	SecurityLabels map[string]string `json:"security-labels"`
 }
 
@@ -243,9 +296,11 @@ type CiliumIdentity struct {
 // CiliumIdentityList is a list of CiliumIdentity objects.
 type CiliumIdentityList struct {
 	metav1.TypeMeta `json:",inline"`
+	// +kubebuilder:validation:Required
 	metav1.ListMeta `json:"metadata"`
 
 	// Items is a list of CiliumIdentity
+	// +kubebuilder:validation:Required
 	Items []CiliumIdentity `json:"items"`
 }
 
@@ -253,7 +308,9 @@ type CiliumIdentityList struct {
 
 // AddressPair is a pair of IPv4 and/or IPv6 address.
 type AddressPair struct {
+	// +kubebuilder:validation:Optional
 	IPV4 string `json:"ipv4,omitempty"`
+	// +kubebuilder:validation:Optional
 	IPV6 string `json:"ipv6,omitempty"`
 }
 
@@ -277,10 +334,12 @@ func (a AddressPairList) Sort() {
 // EndpointNetworking is the addressing information of an endpoint.
 type EndpointNetworking struct {
 	// IP4/6 addresses assigned to this Endpoint
+	// +kubebuilder:validation:Required
 	Addressing AddressPairList `json:"addressing"`
 
 	// NodeIP is the IP of the node the endpoint is running on. The IP must
 	// be reachable between nodes.
+	// +kubebuilder:validation:Optional
 	NodeIP string `json:"node,omitempty"`
 }
 
@@ -314,9 +373,12 @@ type CiliumNode struct {
 	// +deepequal-gen=false
 	metav1.TypeMeta `json:",inline"`
 	// +deepequal-gen=false
+	// +kubebuilder:validation:Required
 	metav1.ObjectMeta `json:"metadata"`
 
 	// Spec defines the desired specification/configuration of the node.
+	//
+	// +kubebuilder:validation:Required
 	Spec NodeSpec `json:"spec"`
 
 	// Status defines the realized specification/configuration and status
@@ -329,9 +391,13 @@ type CiliumNode struct {
 // NodeAddress is a node address.
 type NodeAddress struct {
 	// Type is the type of the node address
+	//
+	// +kubebuilder:validation:Optional
 	Type addressing.AddressType `json:"type,omitempty"`
 
 	// IP is an IP of a node
+	//
+	// +kubebuilder:validation:Optional
 	IP string `json:"ip,omitempty"`
 }
 
@@ -341,6 +407,8 @@ type NodeSpec struct {
 	// node name which is typically the FQDN of the node. The InstanceID
 	// typically refers to the identifier used by the cloud provider or
 	// some other means of identification.
+	//
+	// +kubebuilder:validation:Optional
 	InstanceID string `json:"instance-id,omitempty"`
 
 	// BootID is a unique node identifier generated on boot
@@ -372,7 +440,7 @@ type NodeSpec struct {
 	// ENI is the AWS ENI specific configuration.
 	//
 	// +kubebuilder:validation:Optional
-	ENI eniTypes.ENISpec `json:"eni,omitempty"`
+	ENI awsTypes.ENISpec `json:"eni,omitempty"`
 
 	// Azure is the Azure IPAM specific configuration.
 	//
@@ -390,11 +458,6 @@ type NodeSpec struct {
 	//
 	// +kubebuilder:validation:Optional
 	IPAM ipamTypes.IPAMSpec `json:"ipam,omitempty"`
-
-	// NodeIdentity is the Cilium numeric identity allocated for the node, if any.
-	//
-	// +kubebuilder:validation:Optional
-	NodeIdentity uint64 `json:"nodeidentity,omitempty"`
 }
 
 // HealthAddressingSpec is the addressing information required to do
@@ -425,7 +488,7 @@ type NodeStatus struct {
 	// ENI is the AWS ENI specific status of the node.
 	//
 	// +kubebuilder:validation:Optional
-	ENI eniTypes.ENIStatus `json:"eni,omitempty"`
+	ENI awsTypes.ENIStatus `json:"eni,omitempty"`
 
 	// Azure is the Azure specific status of the node.
 	//
@@ -459,10 +522,6 @@ type CiliumNodeList struct {
 func (n *CiliumNode) InstanceID() (instanceID string) {
 	if n != nil {
 		instanceID = n.Spec.InstanceID
-		// OBSOLETE: This fallback can be removed in Cilium 1.9
-		if instanceID == "" {
-			instanceID = n.Spec.ENI.InstanceID
-		}
 	}
 	return
 }

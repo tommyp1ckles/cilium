@@ -4,12 +4,11 @@
 package monitor
 
 import (
-	"bufio"
+	"encoding/binary"
 	"fmt"
-	"net"
-	"os"
+	"net/netip"
 
-	"github.com/cilium/cilium/pkg/byteorder"
+	"github.com/cilium/cilium/pkg/monitor/api"
 	"github.com/cilium/cilium/pkg/types"
 )
 
@@ -32,51 +31,52 @@ const (
 const TraceSockNotifyFlagIPv6 uint8 = 0x1
 
 const (
-	TraceSockNotifyLen = 38
+	TraceSockNotifyLen = 40
 )
 
 // TraceSockNotify is message format for socket trace notifications sent from datapath.
 // Keep this in sync to the datapath structure (trace_sock_notify) defined in
 // bpf/lib/trace_sock.h
 type TraceSockNotify struct {
-	Type       uint8
-	XlatePoint uint8
-	DstIP      types.IPv6
-	DstPort    uint16
-	SockCookie uint64
-	CgroupId   uint64
-	L4Proto    uint8
-	Flags      uint8
+	api.DefaultSrcDstGetter
+
+	Type       uint8      `align:"type"`
+	XlatePoint uint8      `align:"xlate_point"`
+	L4Proto    uint8      `align:"l4_proto"`
+	Flags      uint8      `align:"ipv6"`
+	DstPort    uint16     `align:"dst_port"`
+	_          uint16     `align:"pad2"`
+	SockCookie uint64     `align:"sock_cookie"`
+	CgroupId   uint64     `align:"cgroup_id"`
+	DstIP      types.IPv6 `align:"dst_ip"`
 }
 
-// DecodeTraceSockNotify will decode 'data' into the provided TraceSocNotify structure
-func DecodeTraceSockNotify(data []byte, sock *TraceSockNotify) error {
-	return sock.decodeTraceSockNotify(data)
+// Dump prints the message according to the verbosity level specified
+func (t *TraceSockNotify) Dump(args *api.DumpArgs) {
+	// Currently only printed with the debug option. Extend it to info and json.
+	// GH issue: https://github.com/cilium/cilium/issues/21510
+	if args.Verbosity == api.DEBUG {
+		fmt.Fprintf(args.Buf, "%s [%s] cgroup_id: %d sock_cookie: %d, dst [%s]:%d %s \n",
+			args.CpuPrefix, t.XlatePointStr(), t.CgroupId, t.SockCookie, t.IP(), t.DstPort, t.L4ProtoStr())
+	}
 }
 
-func (t *TraceSockNotify) decodeTraceSockNotify(data []byte) error {
+// Decode decodes the message in 'data' into the struct.
+func (t *TraceSockNotify) Decode(data []byte) error {
 	if l := len(data); l < TraceSockNotifyLen {
 		return fmt.Errorf("unexpected TraceSockNotify data length, expected %d but got %d", TraceSockNotifyLen, l)
 	}
 
 	t.Type = data[0]
 	t.XlatePoint = data[1]
-	copy(t.DstIP[:], data[2:18])
-	t.DstPort = byteorder.Native.Uint16(data[18:20])
-	t.SockCookie = byteorder.Native.Uint64(data[20:28])
-	t.CgroupId = byteorder.Native.Uint64(data[28:36])
-	t.L4Proto = data[36]
-	t.Flags = data[37]
+	t.L4Proto = data[2]
+	t.Flags = data[3]
+	t.DstPort = binary.NativeEndian.Uint16(data[4:6])
+	t.SockCookie = binary.NativeEndian.Uint64(data[8:16])
+	t.CgroupId = binary.NativeEndian.Uint64(data[16:24])
+	copy(t.DstIP[:], data[24:40])
 
 	return nil
-}
-
-func (t *TraceSockNotify) DumpDebug(prefix string) {
-	buf := bufio.NewWriter(os.Stdout)
-
-	fmt.Fprintf(buf, "%s [%s] cgroup_id: %d sock_cookie: %d, dst [%s]:%d %s \n",
-		prefix, t.XlatePointStr(), t.CgroupId, t.SockCookie, t.IP(), t.DstPort, t.L4ProtoStr())
-	buf.Flush()
 }
 
 func (t *TraceSockNotify) XlatePointStr() string {
@@ -95,11 +95,13 @@ func (t *TraceSockNotify) XlatePointStr() string {
 }
 
 // IP returns the IPv4 or IPv6 address field.
-func (t *TraceSockNotify) IP() net.IP {
+func (t *TraceSockNotify) IP() netip.Addr {
 	if (t.Flags & TraceSockNotifyFlagIPv6) != 0 {
-		return t.DstIP[:]
+		return netip.AddrFrom16(t.DstIP)
 	}
-	return t.DstIP[:4]
+	var arr [4]byte
+	copy(arr[:], t.DstIP[:4])
+	return netip.AddrFrom4(arr)
 }
 
 func (t *TraceSockNotify) L4ProtoStr() string {

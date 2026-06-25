@@ -101,18 +101,12 @@ var (
 		FromObject: func(s NatMapStats) index.KeySet {
 			return index.NewKeySet(s.Key())
 		},
-		FromKey: index.String,
-		Unique:  true,
+		FromKey:    index.String,
+		FromString: index.FromString,
+		Unique:     true,
 	}
 )
 
 func newTables(db *statedb.DB) (statedb.RWTable[NatMapStats], error) {
-	statusTable, err := statedb.NewTable(TableName, Index)
-	if err != nil {
-		return nil, err
-	}
-	if err := db.RegisterTable(statusTable); err != nil {
-		return nil, err
-	}
-	return statusTable, nil
+	return statedb.NewTable(db, TableName, Index)
 }

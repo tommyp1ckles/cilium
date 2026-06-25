@@ -23,28 +23,39 @@ const (
 )
 
 // GetAndFormatModulesHealth retrieves modules health and formats output.
-//
-// Deprecated: Following #30925 we will move to either a separate cilium-dbg command or
-// use health statedb dump data to render status reports externally.
-// Following this we should remove this output as part of status in version v1.17.
-func GetAndFormatModulesHealth(w io.Writer, ss []types.Status, verbose bool) {
+func GetAndFormatModulesHealth(w io.Writer, ss []types.Status, verbose bool, prefix string) {
 	// Although status' is received from the statedb remote table according to
 	// the order in which it's queried (in our case, by primary index identifier).
 	// We sort this to ensure order stability regardless.
 	sort.Slice(ss, func(i, j int) bool {
 		return ss[i].ID.String() < ss[j].ID.String()
 	})
-	fmt.Fprintf(w, "Modules Health:")
 	if verbose {
 		r := newRoot(rootNode)
 		for _, s := range ss {
 			stack := strings.Split(s.ID.String(), ".")
 			upsertTree(r, &s, stack)
 		}
-		r = r.nodes[0]
-		r.parent = nil
-		body := strings.ReplaceAll(r.String(), "\n", "\n		")
-		fmt.Fprintln(w, "\n\t\t"+body)
+		if len(r.nodes) == 0 {
+			return
+		}
+
+		var body string
+		if len(r.nodes) == 1 {
+			r = r.nodes[0]
+			r.parent = nil
+			body = r.String()
+		} else {
+			var b strings.Builder
+			for _, n := range r.nodes {
+				n.parent = nil
+				b.WriteString(n.String())
+			}
+			body = b.String()
+		}
+
+		body = strings.ReplaceAll(body, "\n", "\n"+prefix)
+		fmt.Fprintln(w, prefix+body)
 		return
 	}
 	tally := make(map[types.Level]int, 4)
@@ -79,15 +90,6 @@ func (t *TreeView) UpsertStatus(ss []types.Status) {
 	for _, s := range ss {
 		upsertTree(t.root, &s, strings.Split(s.ID.String(), "."))
 	}
-}
-
-func Render(ss []types.Status) {
-	n := newRoot("agent")
-	for _, s := range ss {
-		upsertTree(n, &s, strings.Split(s.ID.String(), "."))
-	}
-	body := strings.ReplaceAll(n.String(), "\n", "\n		")
-	fmt.Fprintln(os.Stdout, "\n\t\t"+body)
 }
 
 // upsertTree inserts a health report, using a stack of path tokens into

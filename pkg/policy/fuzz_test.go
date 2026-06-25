@@ -4,59 +4,58 @@
 package policy
 
 import (
+	"log/slog"
 	"testing"
 
 	fuzz "github.com/AdaLogics/go-fuzz-headers"
 
 	"github.com/cilium/cilium/pkg/identity"
-	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/policy/api"
 	"github.com/cilium/cilium/pkg/policy/trafficdirection"
+	"github.com/cilium/cilium/pkg/policy/types"
 	"github.com/cilium/cilium/pkg/u8proto"
 )
 
-func FuzzResolveEgressPolicy(f *testing.F) {
+func FuzzResolvePolicy(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		ff := fuzz.NewConsumer(data)
-		label, err := ff.GetString()
-		if err != nil {
-			return
-		}
-		fromBar := &SearchContext{From: labels.ParseSelectLabelArray(label)}
 		r := api.Rule{}
-		err = ff.GenerateStruct(&r)
+		err := ff.GenerateStruct(&r)
 		if err != nil {
 			return
 		}
+		r.EndpointSelector = endpointSelectorA // force the endpoint selector to one that will select, so we definitely evaluate policy
 		err = r.Sanitize()
 		if err != nil {
 			return
 		}
-		rule := &rule{Rule: r}
-		state := traceState{}
-		td := newTestData()
-		_, _ = rule.resolveEgressPolicy(td.testPolicyContext, fromBar, &state, NewL4PolicyMap(), nil, nil)
 
+		logger := slog.New(slog.DiscardHandler)
+		td := newTestData(f, logger).withIDs(ruleTestIDs)
+		td.repo.mustAdd(r)
+		sp, err := td.repo.resolvePolicyLocked(idA)
+		if err != nil {
+			return
+		}
+		sp.DistillPolicy(logger, &endpointInfo{ID: uint64(idA.ID)}, nil)
 	})
 }
 
 func FuzzDenyPreferredInsert(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
-		keys := newMapState()
+		keys := emptyMapState(slog.New(slog.DiscardHandler))
 		key := Key{}
-		entry := MapStateEntry{}
+		entry := NewMapStateEntry(types.AllowEntry())
 		ff := fuzz.NewConsumer(data)
-		ff.GenerateStruct(keys)
 		ff.GenerateStruct(&key)
 		ff.GenerateStruct(&entry)
-		keys.denyPreferredInsert(key, entry, nil, allFeatures)
+		keys.insertWithChanges(types.MaxDenyPrecedence, key, entry, allFeatures, ChangeState{})
 	})
 }
 
 func FuzzAccumulateMapChange(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		ff := fuzz.NewConsumer(data)
-		csFoo := newTestCachedSelector("Foo", false)
 		adds := make([]identity.NumericIdentity, 0)
 		ff.CreateSlice(&adds)
 		deletes := make([]identity.NumericIdentity, 0)
@@ -84,8 +83,13 @@ func FuzzAccumulateMapChange(f *testing.F) {
 			proxyPort = 1
 		}
 		key := KeyForDirection(dir).WithPortProto(proto, port)
-		value := NewMapStateEntry(csFoo, nil, proxyPort, "", 0, deny, DefaultAuthType, AuthTypeDisabled)
-		policyMaps := MapChanges{}
-		policyMaps.AccumulateMapChanges(csFoo, adds, deletes, []Key{key}, value)
+		verdict := types.Allow
+		if deny {
+			verdict = types.Deny
+		}
+		value := newMapStateEntry(0, types.HighestPriority, types.LowestPriority, NilRuleOrigin, proxyPort, 0, verdict, NoAuthRequirement)
+		policyMaps := MapChanges{logger: slog.New(slog.DiscardHandler)}
+		policyMaps.AccumulateMapChanges(0, 0, adds, deletes, key, value)
+		policyMaps.SyncMapChanges(types.MockSelectorSnapshot())
 	})
 }

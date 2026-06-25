@@ -4,7 +4,6 @@
 package flow
 
 import (
-	"context"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -18,7 +17,21 @@ import (
 
 func TestFlowHandler(t *testing.T) {
 	registry := prometheus.NewRegistry()
-	opts := api.Options{"sourceContext": "namespace", "destinationContext": "namespace"}
+	opts := &api.MetricConfig{
+		ContextOptionConfigs: []*api.ContextOptionConfig{
+			{
+				Name:   "sourceContext",
+				Values: []string{"namespace"},
+			},
+			{
+				Name:   "destinationContext",
+				Values: []string{"namespace"},
+			},
+		},
+		IncludeFilters: []*pb.FlowFilter{
+			{SourcePod: []string{"allowNs/"}},
+		},
+	}
 
 	h := &flowHandler{}
 
@@ -31,7 +44,7 @@ func TestFlowHandler(t *testing.T) {
 	})
 
 	t.Run("ProcessFlow", func(t *testing.T) {
-		flow1 := &pb.Flow{
+		flow0 := &pb.Flow{
 			EventType: &pb.CiliumEventType{Type: monitorAPI.MessageTypeAccessLog},
 			L7: &pb.Layer7{
 				Record: &pb.Layer7_Http{Http: &pb.HTTP{}},
@@ -40,7 +53,17 @@ func TestFlowHandler(t *testing.T) {
 			Destination: &pb.Endpoint{Namespace: "bar"},
 			Verdict:     pb.Verdict_FORWARDED,
 		}
-		h.ProcessFlow(context.TODO(), flow1)
+		flow1 := &pb.Flow{
+			EventType: &pb.CiliumEventType{Type: monitorAPI.MessageTypeAccessLog},
+			L7: &pb.Layer7{
+				Record: &pb.Layer7_Http{Http: &pb.HTTP{}},
+			},
+			Source:      &pb.Endpoint{Namespace: "allowNs"},
+			Destination: &pb.Endpoint{Namespace: "bar"},
+			Verdict:     pb.Verdict_FORWARDED,
+		}
+		h.ProcessFlow(t.Context(), flow0)
+		h.ProcessFlow(t.Context(), flow1)
 
 		metricFamilies, err := registry.Gather()
 		require.NoError(t, err)
@@ -57,7 +80,7 @@ func TestFlowHandler(t *testing.T) {
 		assert.Equal(t, "HTTP", *metric.Label[1].Value)
 
 		assert.Equal(t, "source", *metric.Label[2].Name)
-		assert.Equal(t, "foo", *metric.Label[2].Value)
+		assert.Equal(t, "allowNs", *metric.Label[2].Value)
 
 		assert.Equal(t, "subtype", *metric.Label[3].Name)
 		assert.Equal(t, "HTTP", *metric.Label[3].Value)
@@ -73,9 +96,10 @@ func TestFlowHandler(t *testing.T) {
 				// flow events cannot be derived from agent events
 				Type: monitorAPI.MessageTypeAgent,
 			},
+			Source: &pb.Endpoint{Namespace: "allowNs"},
 		}
 
-		h.ProcessFlow(context.TODO(), flow2)
+		h.ProcessFlow(t.Context(), flow2)
 
 		metricFamilies, err = registry.Gather()
 		require.NoError(t, err)
@@ -104,9 +128,10 @@ func TestFlowHandler(t *testing.T) {
 				},
 			},
 			Verdict: pb.Verdict_DROPPED,
+			Source:  &pb.Endpoint{Namespace: "allowNs"},
 		}
 
-		h.ProcessFlow(context.TODO(), flow3)
+		h.ProcessFlow(t.Context(), flow3)
 
 		metricFamilies, err = registry.Gather()
 		require.NoError(t, err)
@@ -120,7 +145,7 @@ func TestFlowHandler(t *testing.T) {
 		assert.Equal(t, "UDP", *metric.Label[1].Value)
 
 		assert.Equal(t, "subtype", *metric.Label[3].Name)
-		assert.Equal(t, "", *metric.Label[3].Value)
+		assert.Empty(t, *metric.Label[3].Value)
 
 		assert.Equal(t, "type", *metric.Label[4].Name)
 		assert.Equal(t, "PolicyVerdict", *metric.Label[4].Value)

@@ -18,6 +18,7 @@ package conformance
 
 import (
 	"io/fs"
+	"net/netip"
 	"os"
 	"testing"
 
@@ -25,6 +26,7 @@ import (
 	"sigs.k8s.io/gateway-api/apis/v1alpha2"
 	"sigs.k8s.io/gateway-api/apis/v1alpha3"
 	"sigs.k8s.io/gateway-api/apis/v1beta1"
+	xv1alpha1 "sigs.k8s.io/gateway-api/apisx/v1alpha1"
 	confv1 "sigs.k8s.io/gateway-api/conformance/apis/v1"
 	"sigs.k8s.io/gateway-api/conformance/tests"
 	conformanceconfig "sigs.k8s.io/gateway-api/conformance/utils/config"
@@ -34,8 +36,11 @@ import (
 	"github.com/stretchr/testify/require"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	clientset "k8s.io/client-go/kubernetes"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/yaml"
 )
 
@@ -43,9 +48,13 @@ import (
 // ConformanceOptions struct. It will also initialize the various clients
 // required by the tests.
 func DefaultOptions(t *testing.T) suite.ConformanceOptions {
+	// This line prevents controller-runtime from complaining about log.SetLogger never being called
+	log.SetLogger(zap.New(zap.WriteTo(os.Stdout), zap.UseDevMode(true)))
+
 	cfg, err := config.GetConfig()
 	require.NoError(t, err, "error loading Kubernetes config")
-	client, err := client.New(cfg, client.Options{})
+	clientOptions := client.Options{}
+	client, err := client.New(cfg, clientOptions)
 	require.NoError(t, err, "error initializing Kubernetes client")
 
 	// This clientset is needed in addition to the client only because
@@ -57,6 +66,7 @@ func DefaultOptions(t *testing.T) suite.ConformanceOptions {
 	require.NoError(t, v1alpha3.Install(client.Scheme()))
 	require.NoError(t, v1alpha2.Install(client.Scheme()))
 	require.NoError(t, v1beta1.Install(client.Scheme()))
+	require.NoError(t, xv1alpha1.Install(client.Scheme()))
 	require.NoError(t, v1.Install(client.Scheme()))
 	require.NoError(t, apiextensionsv1.AddToScheme(client.Scheme()))
 
@@ -74,11 +84,19 @@ func DefaultOptions(t *testing.T) suite.ConformanceOptions {
 		*flags.ImplementationVersion,
 		*flags.ImplementationContact,
 	)
+	var usable, unusable []v1beta1.GatewaySpecAddress
+	if v := *flags.UsableAddress; v != "" {
+		usable = append(usable, parseAddress(v))
+	}
+	if v := *flags.UnusableAddress; v != "" {
+		unusable = append(unusable, parseAddress(v))
+	}
 
 	return suite.ConformanceOptions{
 		AllowCRDsMismatch:          *flags.AllowCRDsMismatch,
 		CleanupBaseResources:       *flags.CleanupBaseResources,
 		Client:                     client,
+		ClientOptions:              clientOptions,
 		Clientset:                  clientset,
 		ConformanceProfiles:        conformanceProfiles,
 		Debug:                      *flags.ShowDebug,
@@ -86,6 +104,9 @@ func DefaultOptions(t *testing.T) suite.ConformanceOptions {
 		ExemptFeatures:             exemptFeatures,
 		ManifestFS:                 []fs.FS{&Manifests},
 		GatewayClassName:           *flags.GatewayClassName,
+		UsableNetworkAddresses:     usable,
+		UnusableNetworkAddresses:   unusable,
+		MeshName:                   *flags.MeshName,
 		Implementation:             implementation,
 		Mode:                       *flags.Mode,
 		NamespaceAnnotations:       namespaceAnnotations,
@@ -96,6 +117,22 @@ func DefaultOptions(t *testing.T) suite.ConformanceOptions {
 		SkipTests:                  skipTests,
 		SupportedFeatures:          supportedFeatures,
 		TimeoutConfig:              conformanceconfig.DefaultTimeoutConfig(),
+		SkipProvisionalTests:       *flags.SkipProvisionalTests,
+		FailFast:                   *flags.FailFast,
+	}
+}
+
+func parseAddress(v string) v1beta1.GatewaySpecAddress {
+	_, err := netip.ParseAddr(v)
+	if err == nil {
+		return v1beta1.GatewaySpecAddress{
+			Type:  ptr.To(v1beta1.IPAddressType),
+			Value: v,
+		}
+	}
+	return v1beta1.GatewaySpecAddress{
+		Type:  ptr.To(v1beta1.HostnameAddressType),
+		Value: v,
 	}
 }
 
@@ -141,6 +178,7 @@ func logOptions(t *testing.T, opts suite.ConformanceOptions) {
 	t.Logf("  Enable All Features: %t", opts.EnableAllSupportedFeatures)
 	t.Logf("  Supported Features: %v", opts.SupportedFeatures.UnsortedList())
 	t.Logf("  ExemptFeatures: %v", opts.ExemptFeatures.UnsortedList())
+	t.Logf("  ConformanceProfiles: %v", opts.ConformanceProfiles.UnsortedList())
 }
 
 func writeReport(logf func(string, ...any), report confv1.ConformanceReport, output string) error {

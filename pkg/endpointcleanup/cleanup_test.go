@@ -6,13 +6,12 @@ package endpointcleanup
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"testing"
 
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/hivetest"
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
-	"go.uber.org/goleak"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stesting "k8s.io/client-go/testing"
@@ -24,11 +23,13 @@ import (
 	cilium_v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	cilium_v2a1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
+	k8sFakeClient "github.com/cilium/cilium/pkg/k8s/client/testutils"
 	"github.com/cilium/cilium/pkg/k8s/resource"
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	"github.com/cilium/cilium/pkg/k8s/types"
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/promise"
+	"github.com/cilium/cilium/pkg/testutils"
 )
 
 var testCESs = []cilium_v2a1.CiliumEndpointSlice{
@@ -131,15 +132,7 @@ func TestGC(t *testing.T) {
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			defer goleak.VerifyNone(
-				t,
-				// Delaying workqueues used by resource.Resource[T].Events leaks this waitingLoop goroutine.
-				// It does stop when shutting down but is not guaranteed to before we actually exit.
-				goleak.IgnoreTopFunction("k8s.io/client-go/util/workqueue.(*delayingType).waitingLoop"),
-			)
-
-			node.SetTestLocalNodeStore()
-			defer node.UnsetTestLocalNodeStore()
+			defer testutils.GoleakVerifyNone(t)
 
 			var (
 				testCleanup *cleanup
@@ -147,7 +140,7 @@ func TestGC(t *testing.T) {
 			)
 
 			hive := hive.New(
-				k8sClient.FakeClientCell,
+				k8sFakeClient.FakeClientCell(),
 				k8s.ResourcesCell,
 				cell.ProvidePrivate(func() localEndpointCache {
 					return &fakeEPManager{test.managedEndpoints}
@@ -156,12 +149,9 @@ func TestGC(t *testing.T) {
 					return &fakeRestorer{}
 				}),
 				cell.Provide(func() *node.LocalNodeStore {
-					// no need to provide a real LocalNodeStore since the one set by
-					// SetTestLocalNodeStore will be referenced through the global
-					// variable
-					return nil
+					return node.NewTestLocalNodeStore(node.LocalNode{})
 				}),
-				cell.Invoke(func(clientset *k8sClient.FakeClientset) error {
+				cell.Invoke(func(clientset *k8sFakeClient.FakeClientset) error {
 					clientset.CiliumFakeClientset.PrependReactor("get", "ciliumendpoints", k8stesting.ReactionFunc(
 						func(action k8stesting.Action) (bool, runtime.Object, error) {
 							if !test.enableCES {
@@ -211,12 +201,13 @@ func TestGC(t *testing.T) {
 					return nil
 				}),
 				cell.Invoke(func(
-					logger logrus.FieldLogger,
+					logger *slog.Logger,
 					ciliumEndpoint resource.Resource[*types.CiliumEndpoint],
 					ciliumEndpointSlice resource.Resource[*cilium_v2a1.CiliumEndpointSlice],
 					clientset k8sClient.Clientset,
 					restorerPromise promise.Promise[endpointstate.Restorer],
 					endpointsCache localEndpointCache,
+					localNodeStore *node.LocalNodeStore,
 				) *cleanup {
 					testCleanup = &cleanup{
 						log:                        logger,
@@ -226,14 +217,13 @@ func TestGC(t *testing.T) {
 						restorerPromise:            restorerPromise,
 						endpointsCache:             endpointsCache,
 						ciliumEndpointSliceEnabled: test.enableCES,
+						localNodeStore:             localNodeStore,
 					}
 					return testCleanup
 				}),
 			)
 
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-
+			ctx := t.Context()
 			tlog := hivetest.Logger(t)
 			assert.NoError(t, hive.Start(tlog, ctx))
 
@@ -270,12 +260,20 @@ func cep(name, ns, nodeIP string) types.CiliumEndpoint {
 	}
 }
 
-type fakeRestorer struct {
-}
+type fakeRestorer struct{}
 
 func (r *fakeRestorer) Await(context.Context) (endpointstate.Restorer, error) {
 	return r, nil
 }
 
-func (r *fakeRestorer) WaitForEndpointRestore(_ context.Context) {
+func (r *fakeRestorer) WaitForEndpointRestoreWithoutRegeneration(ctx context.Context) error {
+	return nil
+}
+
+func (r *fakeRestorer) WaitForEndpointRestore(_ context.Context) error {
+	return nil
+}
+
+func (r *fakeRestorer) WaitForInitialPolicy(_ context.Context) error {
+	return nil
 }

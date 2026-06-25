@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -18,6 +19,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	"github.com/cilium/cilium/pkg/logging/logfields"
 )
 
 const (
@@ -32,6 +35,13 @@ type secretSyncer struct {
 
 	registrations    []*SecretSyncRegistration
 	secretNamespaces []string
+	// Synchronized Secrets will resync after this time,
+	// with some jitter (see jitterAmount)
+	resyncInterval time.Duration
+	// jitterAmount represents the fraction of the
+	// resyncInterval that resyncs will be jittered
+	// from the base interval.
+	jitterAmount float64
 }
 
 type SecretSyncRegistration struct {
@@ -70,7 +80,7 @@ func (r SecretSyncRegistration) IsDefaultSecret(secret *corev1.Secret) bool {
 	return r.DefaultSecret != nil && r.DefaultSecret.Namespace == secret.Namespace && r.DefaultSecret.Name == secret.Name
 }
 
-func NewSecretSyncReconciler(c client.Client, logger *slog.Logger, registrations []*SecretSyncRegistration) *secretSyncer {
+func NewSecretSyncReconciler(c client.Client, logger *slog.Logger, registrations []*SecretSyncRegistration, resyncInterval time.Duration, jitterAmount float64) *secretSyncer {
 	regs := []*SecretSyncRegistration{}
 	secretNamespaces := []string{}
 	for _, r := range registrations {
@@ -86,12 +96,14 @@ func NewSecretSyncReconciler(c client.Client, logger *slog.Logger, registrations
 
 		registrations:    regs,
 		secretNamespaces: secretNamespaces,
+		resyncInterval:   resyncInterval,
+		jitterAmount:     jitterAmount,
 	}
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *secretSyncer) SetupWithManager(mgr ctrl.Manager) error {
-	r.logger.Info("Setting up Secret synchronization", "registrations", r.registrations)
+	r.logger.Info("Setting up Secret synchronization", logfields.Registrations, r.registrations)
 
 	builder := ctrl.NewControllerManagedBy(mgr).
 		// Source Secrets outside of the secrets namespace

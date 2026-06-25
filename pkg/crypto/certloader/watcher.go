@@ -4,24 +4,27 @@
 package certloader
 
 import (
+	"context"
+	"log/slog"
 	"sync"
 
-	"github.com/sirupsen/logrus"
-
 	"github.com/cilium/cilium/pkg/fswatcher"
-	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/time"
 )
 
-const watcherEventCoalesceWindow = 100 * time.Millisecond
+const (
+	InitialLoadWarn = "Initial TLS configuration load failed, certificate files might not yet be available, waiting on fswatcher update to become ready"
+
+	watcherEventCoalesceWindow = 100 * time.Millisecond
+)
 
 // Watcher is a set of TLS configuration files including CA files, and a
 // certificate along with its private key. The files are watched for change and
 // reloaded automatically.
 type Watcher struct {
 	*FileReloader
-	log       logrus.FieldLogger
+	log       *slog.Logger
 	fswatcher *fswatcher.Watcher
 	stop      chan struct{}
 }
@@ -29,7 +32,7 @@ type Watcher struct {
 // NewWatcher returns a Watcher that watch over the given file
 // paths. The given files are expected to already exists when this function is
 // called. On success, the returned Watcher is ready to use.
-func NewWatcher(log logrus.FieldLogger, caFiles []string, certFile, privkeyFile string) (*Watcher, error) {
+func NewWatcher(log *slog.Logger, caFiles []string, certFile, privkeyFile string) (*Watcher, error) {
 	r, err := NewFileReloaderReady(caFiles, certFile, privkeyFile)
 	if err != nil {
 		return nil, err
@@ -37,7 +40,7 @@ func NewWatcher(log logrus.FieldLogger, caFiles []string, certFile, privkeyFile 
 	// An error here would be unexpected as we were able to create a
 	// FileReloader having read the files, so the files should exist and be
 	// "watchable".
-	fswatcher, err := newFsWatcher(caFiles, certFile, privkeyFile)
+	fswatcher, err := newFsWatcher(log, caFiles, certFile, privkeyFile)
 	if err != nil {
 		return nil, err
 	}
@@ -55,13 +58,14 @@ func NewWatcher(log logrus.FieldLogger, caFiles []string, certFile, privkeyFile 
 // FutureWatcher returns a channel where exactly one Watcher will be sent once
 // the given files are ready and loaded. This can be useful when the file paths
 // are well-known, but the files themselves don't exist yet. Note that the
-// requirement is that the file directories must exists.
-func FutureWatcher(log logrus.FieldLogger, caFiles []string, certFile, privkeyFile string) (<-chan *Watcher, error) {
+// requirement is that the file directories must exists. The provided context
+// ensures that we cleanup the spawned goroutines if the files never become ready.
+func FutureWatcher(ctx context.Context, log *slog.Logger, caFiles []string, certFile, privkeyFile string) (<-chan *Watcher, error) {
 	r, err := NewFileReloader(caFiles, certFile, privkeyFile)
 	if err != nil {
 		return nil, err
 	}
-	fswatcher, err := newFsWatcher(caFiles, certFile, privkeyFile)
+	fswatcher, err := newFsWatcher(log, caFiles, certFile, privkeyFile)
 	if err != nil {
 		return nil, err
 	}
@@ -82,6 +86,7 @@ func FutureWatcher(log logrus.FieldLogger, caFiles []string, certFile, privkeyFi
 		// to load the CA), we only need a successfully handled CA related fs
 		// notify event to become Ready (in other words, we don't need to
 		// receive a fs event for the keypair in that case to become ready).
+		log.Debug("Attempting initial TLS configuration load")
 		_, keypairErr := w.ReloadKeypair()
 		_, caErr := w.ReloadCA()
 		ready := w.Watch()
@@ -90,12 +95,17 @@ func FutureWatcher(log logrus.FieldLogger, caFiles []string, certFile, privkeyFi
 			res <- w
 			return
 		}
-		log.Debug("Waiting on fsnotify update to be ready")
+		log.Warn(InitialLoadWarn,
+			logfields.ReloadKeypairError, keypairErr,
+			logfields.ReloadCAError, caErr,
+		)
 		select {
 		case <-ready:
 			log.Debug("TLS configuration ready")
 			res <- w
 		case <-w.stop:
+		case <-ctx.Done():
+			w.Stop()
 		}
 	}(res)
 
@@ -138,26 +148,28 @@ func (w *Watcher) Watch() <-chan struct{} {
 			select {
 			case event := <-w.fswatcher.Events:
 				path := event.Name
-				log := w.log.WithFields(logrus.Fields{
-					logfields.Path: path,
-					"operation":    event.Op,
-				})
-				log.Debug("Received fswatcher event")
+				w.log.Debug("Received fswatcher event",
+					logfields.Path, path,
+					logfields.Operation, event.Op,
+				)
 
 				_, keypairUpdated := keypairMap[path]
 				_, caUpdated := caMap[path]
 
 				if keypairUpdated {
 					if keypairReload == nil {
-						keypairReload = inctimer.After(watcherEventCoalesceWindow)
+						keypairReload = time.After(watcherEventCoalesceWindow)
 					}
 				} else if caUpdated {
 					if caReload == nil {
-						caReload = inctimer.After(watcherEventCoalesceWindow)
+						caReload = time.After(watcherEventCoalesceWindow)
 					}
 				} else {
 					// fswatcher should never send events for unknown files
-					log.Warn("Unknown file, ignoring.")
+					w.log.Warn("Unknown file, ignoring.",
+						logfields.Path, path,
+						logfields.Operation, event.Op,
+					)
 					continue
 				}
 			case <-keypairReload:
@@ -165,11 +177,11 @@ func (w *Watcher) Watch() <-chan struct{} {
 
 				keypair, err := w.ReloadKeypair()
 				if err != nil {
-					w.log.WithError(err).Warn("Keypair update failed")
+					w.log.Warn("Keypair update failed", logfields.Error, err)
 					continue
 				}
 				id := keypairId(keypair)
-				w.log.WithField("keypair-sn", id).Info("Keypair updated")
+				w.log.Info("Keypair updated", logfields.KeyPairSN, id)
 				if w.Ready() {
 					markReady()
 				}
@@ -177,7 +189,7 @@ func (w *Watcher) Watch() <-chan struct{} {
 				caReload = nil
 
 				if _, err := w.ReloadCA(); err != nil {
-					w.log.WithError(err).Warn("Certificate authority update failed")
+					w.log.Warn("Certificate authority update failed", logfields.Error, err)
 					continue
 				}
 				w.log.Info("Certificate authority updated")
@@ -185,7 +197,7 @@ func (w *Watcher) Watch() <-chan struct{} {
 					markReady()
 				}
 			case err := <-w.fswatcher.Errors:
-				w.log.WithError(err).Warn("fswatcher error")
+				w.log.Warn("fswatcher error", logfields.Error, err)
 			case <-w.stop:
 				w.log.Info("Stopping fswatcher")
 				return
@@ -198,13 +210,17 @@ func (w *Watcher) Watch() <-chan struct{} {
 
 // Stop watching the files.
 func (w *Watcher) Stop() {
-	close(w.stop)
+	select {
+	case <-w.stop:
+	default:
+		close(w.stop)
+	}
 }
 
 // newFsWatcher returns a fswatcher.Watcher watching over the given files.
 // The fswatcher.Watcher supports watching over files which do not exist yet.
 // A create event will be emitted once the file is added.
-func newFsWatcher(caFiles []string, certFile, privkeyFile string) (*fswatcher.Watcher, error) {
+func newFsWatcher(logger *slog.Logger, caFiles []string, certFile, privkeyFile string) (*fswatcher.Watcher, error) {
 	trackFiles := []string{}
 
 	if certFile != "" {
@@ -219,5 +235,5 @@ func newFsWatcher(caFiles []string, certFile, privkeyFile string) (*fswatcher.Wa
 		}
 	}
 
-	return fswatcher.New(trackFiles)
+	return fswatcher.New(logger, trackFiles)
 }

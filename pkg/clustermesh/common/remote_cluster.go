@@ -7,24 +7,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/go-openapi/strfmt"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 
 	"github.com/cilium/cilium/api/v1/models"
+	"github.com/cilium/cilium/pkg/clustermesh/clustercfg"
 	"github.com/cilium/cilium/pkg/clustermesh/types"
-	cmutils "github.com/cilium/cilium/pkg/clustermesh/utils"
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/dial"
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/metrics"
-	"github.com/cilium/cilium/pkg/option"
 )
 
 var (
@@ -39,11 +38,8 @@ type RemoteCluster interface {
 
 	Stop()
 	Remove(ctx context.Context)
+	RevokeCache(ctx context.Context)
 }
-
-// backendFactoryFn is the type of the function to create the etcd client.
-type backendFactoryFn func(ctx context.Context, backend string, opts map[string]string,
-	options *kvstore.ExtraOptions) (kvstore.BackendOperations, chan error)
 
 // remoteCluster represents another cluster other than the cluster the agent is
 // running in
@@ -64,6 +60,8 @@ type remoteCluster struct {
 	resolvers []dial.Resolver
 
 	controllers *controller.Manager
+
+	ttlChecker *cacheTTLChecker
 
 	// wg is used to wait for the termination of the goroutines spawned by the
 	// controller upon reconnection for long running background tasks.
@@ -98,18 +96,18 @@ type remoteCluster struct {
 	// lastFailure is the timestamp of the last failure
 	lastFailure time.Time
 
-	logger logrus.FieldLogger
+	logger *slog.Logger
 
-	// backendFactory allows to override the function to create the etcd client
-	// for testing purposes.
-	backendFactory backendFactoryFn
+	// remoteClientFactory is the factory to create new backend instances.
+	remoteClientFactory RemoteClientFactoryFn
 	// clusterLockFactory allows to override the function to create the clusterLock
 	// for testing purposes.
 	clusterLockFactory func() *clusterLock
 
-	metricLastFailureTimestamp prometheus.Gauge
-	metricReadinessStatus      prometheus.Gauge
-	metricTotalFailures        prometheus.Gauge
+	metricLastFailureTimestamp  prometheus.Gauge
+	metricReadinessStatus       prometheus.Gauge
+	metricTotalFailures         prometheus.Gauge
+	metricTotalCacheRevocations prometheus.Gauge
 }
 
 // releaseOldConnection releases the etcd connection to a remote cluster
@@ -137,18 +135,27 @@ func (rc *remoteCluster) restartRemoteConnection() {
 		controller.ControllerParams{
 			Group: remoteConnectionControllerGroup,
 			DoFunc: func(ctx context.Context) error {
+				rc.ttlChecker.StartIfNeeded()
 				rc.releaseOldConnection()
 
 				clusterLock := rc.clusterLockFactory()
-				extraOpts := rc.makeExtraOpts(clusterLock)
-				backend, errChan := rc.backendFactory(ctx, kvstore.EtcdBackendName, rc.makeEtcdOpts(), &extraOpts)
+
+				ciliumConfig, err := ParseCiliumConfig(rc.configPath)
+				if err != nil {
+					rc.logger.Error("Failed to parse Cilium config from etcd client config",
+						logfields.Error, err,
+					)
+					return err
+				}
+
+				extraOpts := rc.makeExtraOpts(clusterLock, ciliumConfig)
+				backend, errChan := rc.remoteClientFactory(ctx, rc.logger, rc.configPath, extraOpts)
 
 				// Block until either an error is returned or
 				// the channel is closed due to success of the
 				// connection
-				rc.logger.Debugf("Waiting for connection to be established")
+				rc.logger.Debug("Waiting for connection to be established")
 
-				var err error
 				select {
 				case err = <-errChan:
 				case err = <-clusterLock.errors:
@@ -158,7 +165,12 @@ func (rc *remoteCluster) restartRemoteConnection() {
 					if backend != nil {
 						backend.Close()
 					}
-					rc.logger.WithError(err).Warning("Unable to establish etcd connection to remote cluster")
+
+					select {
+					case <-ctx.Done():
+					default:
+						rc.logger.Warn("Unable to establish etcd connection to remote cluster", logfields.Error, err)
+					}
 					return err
 				}
 
@@ -170,25 +182,40 @@ func (rc *remoteCluster) restartRemoteConnection() {
 				rc.mutex.Unlock()
 
 				ctx, cancel := context.WithCancel(ctx)
-				rc.wg.Add(1)
-				go func() {
+				rc.wg.Go(func() {
 					rc.watchdog(ctx, backend, clusterLock)
 					cancel()
-					rc.wg.Done()
-				}()
+				})
 
-				rc.logger.WithField(logfields.EtcdClusterID, etcdClusterID).Info("Connection to remote cluster established")
+				rc.logger.Info(
+					"Connection to remote cluster established",
+					logfields.EtcdClusterID, etcdClusterID,
+				)
 
 				config, err := rc.getClusterConfig(ctx, backend)
 				if err != nil {
-					lgr := rc.logger
-					if errors.Is(err, cmutils.ErrClusterConfigNotFound) {
-						lgr = lgr.WithField(logfields.Hint,
-							"If KVStoreMesh is enabled, check whether it is connected to the target cluster."+
-								" Additionally, ensure that the cluster name is correct.")
+					// Return immediately if the context has been canceled, to
+					// avoid emitting a spurious warning in case the failure is
+					// expected, and has already been logged elsewhere (or we
+					// are terminating).
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					default:
 					}
 
-					lgr.WithError(err).Warning("Unable to get remote cluster configuration")
+					if errors.Is(err, clustercfg.ErrNotFound) {
+						rc.logger.Warn("Unable to get remote cluster configuration",
+							logfields.Error, err,
+							logfields.Hint, "If KVStoreMesh is enabled, check whether it is connected to the target cluster."+
+								" Additionally, ensure that the cluster name is correct.",
+						)
+					} else {
+						rc.logger.Warn("Unable to get remote cluster configuration",
+							logfields.Error, err,
+						)
+					}
+
 					cancel()
 					return err
 				}
@@ -196,19 +223,28 @@ func (rc *remoteCluster) restartRemoteConnection() {
 
 				ready := make(chan error)
 
+				// We successfully reconnected to the remote cluster, so we can
+				// stop the TTL checker. Let's make sure that it actually terminated,
+				// so that we don't risk race conditions with the next operations.
+				rc.ttlChecker.Stop()
+
 				// Let's execute the long running logic in background. This allows
 				// to return early from the controller body, so that the statistics
 				// are updated correctly. Instead, blocking until rc.Run terminates
 				// would prevent a previous failure from being cleared out.
-				rc.wg.Add(1)
-				go func() {
+				rc.wg.Go(func() {
 					rc.Run(ctx, backend, config, ready)
 					cancel()
-					rc.wg.Done()
-				}()
+				})
 
 				if err := <-ready; err != nil {
-					rc.logger.WithError(err).Warning("Connection to remote cluster failed")
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					default:
+						rc.logger.Warn("Connection to remote cluster failed", logfields.Error, err)
+					}
+
 					return err
 				}
 
@@ -227,7 +263,7 @@ func (rc *remoteCluster) restartRemoteConnection() {
 
 func (rc *remoteCluster) watchdog(ctx context.Context, backend kvstore.BackendOperations, clusterLock *clusterLock) {
 	handleErr := func(err error) {
-		rc.logger.WithError(err).Warning("Error observed on etcd connection, reconnecting etcd")
+		rc.logger.Warn("Error observed on etcd connection, reconnecting etcd", logfields.Error, err)
 		rc.mutex.Lock()
 		rc.failures++
 		rc.lastFailure = time.Now()
@@ -280,7 +316,7 @@ func (rc *remoteCluster) getClusterConfig(ctx context.Context, backend kvstore.B
 		Group: clusterConfigControllerGroup,
 		DoFunc: func(ctx context.Context) error {
 			rc.logger.Debug("Retrieving cluster configuration from remote kvstore")
-			config, err := cmutils.GetClusterConfig(ctx, rc.name, backend)
+			config, err := clustercfg.Get(ctx, rc.name, backend)
 			if err != nil {
 				lastErrorLock.Lock()
 				lastError = err
@@ -304,6 +340,7 @@ func (rc *remoteCluster) getClusterConfig(ctx context.Context, backend kvstore.B
 		rc.config.Kvstoremesh = config.Capabilities.Cached
 		rc.config.SyncCanaries = config.Capabilities.SyncedCanaries
 		rc.config.ServiceExportsEnabled = config.Capabilities.ServiceExportsEnabled
+		rc.config.EndpointSlicesExportMode = string(config.Capabilities.EndpointSlicesExportMode)
 		rc.mutex.Unlock()
 
 		return config, nil
@@ -314,30 +351,24 @@ func (rc *remoteCluster) getClusterConfig(ctx context.Context, backend kvstore.B
 	}
 }
 
-func (rc *remoteCluster) makeEtcdOpts() map[string]string {
-	opts := map[string]string{
-		kvstore.EtcdOptionConfig: rc.configPath,
-	}
-
-	for key, value := range option.Config.KVStoreOpt {
-		switch key {
-		case kvstore.EtcdRateLimitOption, kvstore.EtcdMaxInflightOption, kvstore.EtcdListLimitOption,
-			kvstore.EtcdOptionKeepAliveHeartbeat, kvstore.EtcdOptionKeepAliveTimeout:
-			opts[key] = value
-		}
-	}
-
-	return opts
-}
-
-func (rc *remoteCluster) makeExtraOpts(clusterLock *clusterLock) kvstore.ExtraOptions {
+func (rc *remoteCluster) makeExtraOpts(clusterLock *clusterLock, ciliumConfig CiliumEtcdConfig) kvstore.ExtraOptions {
 	var dialOpts []grpc.DialOption
 
 	dialOpts = append(dialOpts, grpc.WithStreamInterceptor(newStreamInterceptor(clusterLock)), grpc.WithUnaryInterceptor(newUnaryInterceptor(clusterLock)))
 
 	// Allow to resolve service names without depending on the DNS. This prevents the need
 	// for setting the DNSPolicy to ClusterFirstWithHostNet when running in host network.
-	dialOpts = append(dialOpts, grpc.WithContextDialer(dial.NewContextDialer(rc.logger, rc.resolvers...)))
+	dialer := dial.NewContextDialer(rc.logger, rc.resolvers...)
+
+	if len(ciliumConfig.HostAliases) > 0 {
+		dialer = dial.NewStaticContextDialerWithFallback(
+			rc.logger,
+			ConvertHostAliasesToPlainMap(ciliumConfig.HostAliases),
+			dialer,
+		)
+	}
+
+	dialOpts = append(dialOpts, grpc.WithContextDialer(dialer))
 
 	return kvstore.ExtraOptions{
 		NoLockQuorumCheck:            true,
@@ -358,6 +389,7 @@ func (rc *remoteCluster) connect() {
 // we would break existing connections when the agent gets restarted.
 func (rc *remoteCluster) onStop() {
 	_ = rc.controllers.RemoveControllerAndWait(rc.remoteConnectionControllerName)
+	rc.ttlChecker.Stop()
 	rc.Stop()
 }
 
@@ -391,12 +423,7 @@ func (rc *remoteCluster) status() *models.RemoteCluster {
 	// for the first connection to succeed.
 	var backendStatus = "Waiting for initial connection to be established"
 	if rc.backend != nil {
-		var backendError error
-		backendStatus, backendError = rc.backend.Status()
-		if backendError != nil {
-			backendStatus = backendError.Error()
-		}
-
+		backendStatus = rc.backend.Status().Msg
 		if rc.etcdClusterID != "" {
 			backendStatus += ", ID: " + rc.etcdClusterID
 		}
@@ -407,10 +434,67 @@ func (rc *remoteCluster) status() *models.RemoteCluster {
 		Ready:       rc.isReadyLocked(),
 		Connected:   rc.backend != nil,
 		Status:      backendStatus,
-		Config:      rc.config,
+		Config:      rc.config.DeepCopy(),
 		NumFailures: int64(rc.failures),
 		LastFailure: strfmt.DateTime(rc.lastFailure),
 	}
 
 	return status
+}
+
+type cacheTTLChecker struct {
+	logger *slog.Logger
+	ttl    time.Duration
+
+	onExpiration func(context.Context)
+
+	checking bool
+	wg       sync.WaitGroup
+	cancel   context.CancelFunc
+}
+
+func newTTLChecker(log *slog.Logger, ttl time.Duration, onExpiration func(context.Context)) *cacheTTLChecker {
+	return &cacheTTLChecker{
+		logger:       log,
+		ttl:          ttl,
+		onExpiration: onExpiration,
+
+		// No need to check until we connected once.
+		checking: true,
+		cancel:   func() {},
+	}
+}
+
+func (tc *cacheTTLChecker) StartIfNeeded() {
+	// Nothing to do in case the TTL checker is disabled, or it is already
+	// running in background.
+	if tc.ttl == 0 || tc.checking {
+		return
+	}
+
+	tc.logger.Info("Starting remote cluster cache TTL timer", logfields.TTL, tc.ttl)
+	ctx, cancel := context.WithCancel(context.Background())
+	tc.cancel = cancel
+	tc.checking = true
+
+	tc.wg.Go(func() {
+		select {
+		case <-time.After(tc.ttl):
+			tc.logger.Warn("Remote cluster cache TTL expired, revoking cache", logfields.TTL, tc.ttl)
+			tc.onExpiration(ctx)
+		case <-ctx.Done():
+			tc.logger.Debug("Remote cluster cache TTL timer cancelled")
+		}
+
+		cancel()
+	})
+}
+
+func (tc *cacheTTLChecker) Stop() {
+	tc.cancel()
+	tc.wg.Wait()
+
+	// No need to restart the checker after a first timeout unless we successfully
+	// connected again, as calling onExpiration would be a no-op anyways.
+	tc.checking = false
 }

@@ -5,8 +5,10 @@ package ingress
 
 import (
 	"fmt"
+	"log/slog"
 
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
@@ -16,6 +18,7 @@ import (
 	ciliumv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	slim_networkingv1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/networking/v1"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/shortener"
 )
 
 const (
@@ -28,16 +31,18 @@ var _ translation.Translator = (*dedicatedIngressTranslator)(nil)
 type dedicatedIngressTranslator struct {
 	cecTranslator      translation.CECTranslator
 	hostNetworkEnabled bool
+	logger             *slog.Logger
 }
 
-func NewDedicatedIngressTranslator(cecTranslator translation.CECTranslator, hostNetworkEnabled bool) *dedicatedIngressTranslator {
+func NewDedicatedIngressTranslator(log *slog.Logger, cecTranslator translation.CECTranslator, hostNetworkEnabled bool) *dedicatedIngressTranslator {
 	return &dedicatedIngressTranslator{
+		logger:             log,
 		cecTranslator:      cecTranslator,
 		hostNetworkEnabled: hostNetworkEnabled,
 	}
 }
 
-func (d *dedicatedIngressTranslator) Translate(m *model.Model) (*ciliumv2.CiliumEnvoyConfig, *corev1.Service, *corev1.Endpoints, error) {
+func (d *dedicatedIngressTranslator) Translate(m *model.Model) (*ciliumv2.CiliumEnvoyConfig, *corev1.Service, []*discoveryv1.EndpointSlice, error) {
 	if m == nil || (len(m.HTTP) == 0 && len(m.TLSPassthrough) == 0) {
 		return nil, nil, nil, fmt.Errorf("model source can't be empty")
 	}
@@ -46,22 +51,19 @@ func (d *dedicatedIngressTranslator) Translate(m *model.Model) (*ciliumv2.Cilium
 	var namespace string
 	var sourceResource model.FullyQualifiedResource
 	var modelService *model.Service
-	var cecName string
 	var tlsOnly bool
 
 	if len(m.HTTP) == 0 {
-		name = fmt.Sprintf("%s-%s", ciliumIngressPrefix, m.TLSPassthrough[0].Sources[0].Name)
+		name = shortener.ShortenK8sResourceName(fmt.Sprintf("%s-%s", ciliumIngressPrefix, m.TLSPassthrough[0].Sources[0].Name))
 		namespace = m.TLSPassthrough[0].Sources[0].Namespace
 		sourceResource = m.TLSPassthrough[0].Sources[0]
 		modelService = m.TLSPassthrough[0].Service
-		cecName = fmt.Sprintf("%s-%s-%s", ciliumIngressPrefix, namespace, m.TLSPassthrough[0].Sources[0].Name)
 		tlsOnly = true
 	} else {
-		name = fmt.Sprintf("%s-%s", ciliumIngressPrefix, m.HTTP[0].Sources[0].Name)
+		name = shortener.ShortenK8sResourceName(fmt.Sprintf("%s-%s", ciliumIngressPrefix, m.HTTP[0].Sources[0].Name))
 		namespace = m.HTTP[0].Sources[0].Namespace
 		sourceResource = m.HTTP[0].Sources[0]
 		modelService = m.HTTP[0].Service
-		cecName = fmt.Sprintf("%s-%s-%s", ciliumIngressPrefix, namespace, m.HTTP[0].Sources[0].Name)
 	}
 
 	// The logic is same as what we have with default cecTranslator, but with a different model
@@ -72,11 +74,11 @@ func (d *dedicatedIngressTranslator) Translate(m *model.Model) (*ciliumv2.Cilium
 	}
 
 	// Set the name to avoid any breaking change during upgrade.
-	cec.Name = cecName
+	cec.Name = shortener.ShortenK8sResourceName(fmt.Sprintf("%s-%s-%s", ciliumIngressPrefix, namespace, sourceResource.Name))
 
 	dedicatedService := d.getService(sourceResource, modelService, tlsOnly)
 
-	return cec, dedicatedService, getEndpoints(sourceResource), err
+	return cec, dedicatedService, getEndpointSlice(sourceResource), err
 }
 
 func (d *dedicatedIngressTranslator) getService(resource model.FullyQualifiedResource, service *model.Service, tlsOnly bool) *corev1.Service {
@@ -123,14 +125,16 @@ func (d *dedicatedIngressTranslator) getService(resource model.FullyQualifiedRes
 		case string(corev1.ServiceTypeLoadBalancer):
 			// Do nothing as the port number is allocated by the cloud provider.
 		default:
-			log.WithField(logfields.ServiceType, service.Type).
-				Warn("only LoadBalancer and NodePort are supported. Defaulting to LoadBalancer")
+			d.logger.Warn(
+				"only LoadBalancer and NodePort are supported. Defaulting to LoadBalancer",
+				logfields.ServiceType, service.Type,
+			)
 		}
 	}
 
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-%s", ciliumIngressPrefix, resource.Name),
+			Name:      shortener.ShortenK8sResourceName(fmt.Sprintf("%s-%s", ciliumIngressPrefix, resource.Name)),
 			Namespace: resource.Namespace,
 			Labels:    map[string]string{ciliumIngressLabelKey: "true"},
 			OwnerReferences: []metav1.OwnerReference{
@@ -144,36 +148,52 @@ func (d *dedicatedIngressTranslator) getService(resource model.FullyQualifiedRes
 			},
 		},
 		Spec: corev1.ServiceSpec{
-			Type:      serviceType,
-			ClusterIP: clusterIP,
-			Ports:     ports,
+			Type:           serviceType,
+			ClusterIP:      clusterIP,
+			Ports:          ports,
+			IPFamilyPolicy: ptr.To(corev1.IPFamilyPolicyPreferDualStack),
 		},
 	}
 }
 
-func getEndpoints(resource model.FullyQualifiedResource) *corev1.Endpoints {
-	return &corev1.Endpoints{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-%s", ciliumIngressPrefix, resource.Name),
-			Namespace: resource.Namespace,
-			Labels:    map[string]string{ciliumIngressLabelKey: "true"},
-			OwnerReferences: []metav1.OwnerReference{
-				{
-					APIVersion: slim_networkingv1.SchemeGroupVersion.String(),
-					Kind:       "Ingress",
-					Name:       resource.Name,
-					UID:        types.UID(resource.UID),
-					Controller: ptr.To(true),
+func getEndpointSlice(resource model.FullyQualifiedResource) []*discoveryv1.EndpointSlice {
+	return []*discoveryv1.EndpointSlice{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      shortener.ShortenK8sResourceName(fmt.Sprintf("%s-%s", ciliumIngressPrefix, resource.Name)),
+				Namespace: resource.Namespace,
+				Labels: map[string]string{
+					ciliumIngressLabelKey:        "true",
+					discoveryv1.LabelServiceName: shortener.ShortenK8sResourceName(fmt.Sprintf("%s-%s", ciliumIngressPrefix, resource.Name)),
+				},
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion: slim_networkingv1.SchemeGroupVersion.String(),
+						Kind:       "Ingress",
+						Name:       resource.Name,
+						UID:        types.UID(resource.UID),
+						Controller: ptr.To(true),
+					},
 				},
 			},
-		},
-		Subsets: []corev1.EndpointSubset{
-			{
-				// This dummy endpoint is required as agent refuses to push service entry
-				// to the lb map when the service has no backends.
-				// Related github issue https://github.com/cilium/cilium/issues/19262
-				Addresses: []corev1.EndpointAddress{{IP: "192.192.192.192"}}, // dummy
-				Ports:     []corev1.EndpointPort{{Port: 9999}},               // dummy
+			AddressType: discoveryv1.AddressTypeIPv4,
+			Endpoints: []discoveryv1.Endpoint{
+				{
+					// This dummy endpoint is required as agent refuses to push service entry
+					// to the lb map when the service has no backends.
+					// Related github issue https://github.com/cilium/cilium/issues/19262
+					Addresses: []string{"192.192.192.192"}, // dummy
+					// Ready must be explicit: K8s treats nil as ready, but some
+					// consumers (e.g. GKE NEG controller) require it set. See #44611.
+					Conditions: discoveryv1.EndpointConditions{
+						Ready: ptr.To(true),
+					},
+				},
+			},
+			Ports: []discoveryv1.EndpointPort{
+				{
+					Port: ptr.To[int32](9999), // dummy
+				},
 			},
 		},
 	}

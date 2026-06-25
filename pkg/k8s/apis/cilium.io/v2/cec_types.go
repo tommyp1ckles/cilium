@@ -15,6 +15,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
+	"github.com/cilium/cilium/pkg/loadbalancer"
+	"github.com/cilium/cilium/pkg/logging"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
 )
 
@@ -30,9 +33,11 @@ type CiliumEnvoyConfig struct {
 	metav1.TypeMeta `json:",inline"`
 	// +k8s:openapi-gen=false
 	// +deepequal-gen=false
+	// +kubebuilder:validation:Required
 	metav1.ObjectMeta `json:"metadata"`
 
 	// +k8s:openapi-gen=false
+	// +kubebuilder:validation:Optional
 	Spec CiliumEnvoyConfigSpec `json:"spec,omitempty"`
 }
 
@@ -95,13 +100,17 @@ type Service struct {
 	// In CiliumEnvoyConfig namespace defaults to the namespace of the CEC,
 	// In CiliumClusterwideEnvoyConfig namespace defaults to "default".
 	// +kubebuilder:validation:Optional
-	Namespace string `json:"namespace"`
+	Namespace string `json:"namespace,omitempty"`
 
 	// Ports is a set of port numbers, which can be used for filtering in case of underlying
 	// is exposing multiple port numbers.
 	//
 	// +kubebuilder:validation:Optional
 	Ports []string `json:"number,omitempty"`
+}
+
+func (l *Service) ServiceName() loadbalancer.ServiceName {
+	return loadbalancer.NewServiceName(l.Namespace, l.Name)
 }
 
 type ServiceListener struct {
@@ -115,7 +124,7 @@ type ServiceListener struct {
 	// In CiliumEnvoyConfig namespace this is overridden to the namespace of the CEC,
 	// In CiliumClusterwideEnvoyConfig namespace defaults to "default".
 	// +kubebuilder:validation:Optional
-	Namespace string `json:"namespace"`
+	Namespace string `json:"namespace,omitempty"`
 
 	// Ports is a set of service's frontend ports that should be redirected to the Envoy
 	// listener. By default all frontend ports of the service are redirected.
@@ -132,7 +141,11 @@ type ServiceListener struct {
 	// used.
 	//
 	// +kubebuilder:validation:Optional
-	Listener string `json:"listener"`
+	Listener string `json:"listener,omitempty"`
+}
+
+func (l *ServiceListener) ServiceName() loadbalancer.ServiceName {
+	return loadbalancer.NewServiceName(l.Namespace, l.Name)
 }
 
 // +kubebuilder:pruning:PreserveUnknownFields
@@ -170,10 +183,14 @@ func (u *XDSResource) UnmarshalJSON(b []byte) (err error) {
 	if err != nil {
 		var buf bytes.Buffer
 		json.Indent(&buf, b, "", "\t")
-		log.Warningf("Ignoring invalid CiliumEnvoyConfig JSON (%s): %s",
-			err, buf.String())
+		// slogloggercheck: it's safe to use the default logger here as it has been initialized by the program up to this point.
+		logging.DefaultSlogLogger.Warn("Ignoring invalid CiliumEnvoyConfig JSON",
+			logfields.Error, err,
+			logfields.Object, buf,
+		)
 	} else if option.Config.Debug {
-		log.Debugf("CEC unmarshaled XDS Resource: %v", prototext.Format(u.Any))
+		// slogloggercheck: it's safe to use the default logger here as it has been initialized by the program up to this point.
+		logging.DefaultSlogLogger.Debug("CEC unmarshaled XDS Resource", logfields.Resource, prototext.Format(u.Any))
 	}
 	return nil
 }

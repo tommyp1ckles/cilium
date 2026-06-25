@@ -4,9 +4,9 @@
 package filters
 
 import (
-	"context"
-	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 
 	flowpb "github.com/cilium/cilium/api/v1/flow"
 	v1 "github.com/cilium/cilium/pkg/hubble/api/v1"
@@ -360,7 +360,7 @@ func TestLabelSelectorFilter(t *testing.T) {
 					{
 						Event: &flowpb.Flow{
 							Source: &flowpb.Endpoint{
-								Labels: []string{"container:foo=bar", "reserved:host"},
+								Labels: []string{"cni:foo=bar", "reserved:host"},
 							},
 						},
 					},
@@ -406,7 +406,7 @@ func TestLabelSelectorFilter(t *testing.T) {
 					{
 						Event: &flowpb.Flow{
 							Source: &flowpb.Endpoint{
-								Labels: []string{"container:foo=bar", "reserved:host"},
+								Labels: []string{"cni:foo=bar", "reserved:host"},
 							},
 						},
 					},
@@ -577,7 +577,7 @@ func TestLabelSelectorFilter(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fl, err := BuildFilterList(context.Background(), tt.args.f, []OnBuildFilter{&LabelsFilter{}})
+			fl, err := BuildFilterList(t.Context(), tt.args.f, []OnBuildFilter{&LabelsFilter{}})
 			if (err != nil) != tt.wantErr {
 				t.Errorf("\"%s\" error = %v, wantErr %v", tt.name, err, tt.wantErr)
 				return
@@ -648,8 +648,8 @@ func Test_parseSelector(t *testing.T) {
 				t.Errorf("parseSelector() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			if !tt.wantErr && !reflect.DeepEqual(got.String(), tt.want) {
-				t.Errorf("parseSelector() = %q, want %q", got, tt.want)
+			if !tt.wantErr {
+				assert.Equal(t, tt.want, got.String())
 			}
 		})
 	}

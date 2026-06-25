@@ -11,11 +11,12 @@ import (
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
 
-// Describe verification tokens. A verification token is an Amazon Web
-// Services-generated random value that you can use to prove ownership of an
-// external resource. For example, you can use a verification token to validate
-// that you control a public IP address range when you bring an IP address range to
-// Amazon Web Services (BYOIP).
+// Describe verification tokens.
+//
+// A verification token is an Amazon Web Services-generated random value that you
+// can use to prove ownership of an external resource. For example, you can use a
+// verification token to validate that you control a public IP address range when
+// you bring an IP address range to Amazon Web Services (BYOIP).
 func (c *Client) DescribeIpamExternalResourceVerificationTokens(ctx context.Context, params *DescribeIpamExternalResourceVerificationTokensInput, optFns ...func(*Options)) (*DescribeIpamExternalResourceVerificationTokensOutput, error) {
 	if params == nil {
 		params = &DescribeIpamExternalResourceVerificationTokensInput{}
@@ -125,13 +126,16 @@ func (c *Client) addOperationDescribeIpamExternalResourceVerificationTokensMiddl
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
+	if err = addRetry(stack, options, c); err != nil {
 		return err
 	}
 	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
 	if err = addRecordResponseTiming(stack); err != nil {
+		return err
+	}
+	if err = addSpanRetryLoop(stack, options); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -146,10 +150,10 @@ func (c *Client) addOperationDescribeIpamExternalResourceVerificationTokensMiddl
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
-	if err = addTimeOffsetBuild(stack, c); err != nil {
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
-	if err = addUserAgentRetryMode(stack, options); err != nil {
+	if err = addCredentialSource(stack, options); err != nil {
 		return err
 	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opDescribeIpamExternalResourceVerificationTokens(options.Region), middleware.Before); err != nil {
@@ -168,6 +172,15 @@ func (c *Client) addOperationDescribeIpamExternalResourceVerificationTokensMiddl
 		return err
 	}
 	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptBeforeRetryLoop(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptAttempt(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil

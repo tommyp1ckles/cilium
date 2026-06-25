@@ -118,6 +118,7 @@ type Logger struct {
 	mu   sync.Mutex
 
 	millCh    chan bool
+	millWg    sync.WaitGroup
 	startMill sync.Once
 }
 
@@ -132,6 +133,8 @@ var (
 	// variable so tests can mock it out and not need to write megabytes of data
 	// to disk.
 	megabyte = 1024 * 1024
+
+	defaultFileMode = os.FileMode(0644)
 )
 
 // Write implements io.Writer.  If a write would cause the log file to be larger
@@ -171,6 +174,11 @@ func (l *Logger) Write(p []byte) (n int, err error) {
 func (l *Logger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.millCh != nil {
+		close(l.millCh)
+		l.millWg.Wait()
+		l.millCh = nil
+	}
 	return l.close()
 }
 
@@ -218,16 +226,17 @@ func (l *Logger) openNew() error {
 	}
 
 	name := l.filename()
-	mode := os.FileMode(0644)
-
+	mode := defaultFileMode
 	if l.fileModeIsSet() {
 		mode = l.FileMode
 	}
 
 	info, err := osStat(name)
 	if err == nil {
-		// Copy the mode off the old logfile.
-		mode = info.Mode()
+		// If file mode is not set, use the mode of the existing file.
+		if !l.fileModeIsSet() {
+			mode = info.Mode()
+		}
 		// move the existing file
 		newname := backupName(name, l.LocalTime)
 		if err := os.Rename(name, newname); err != nil {
@@ -235,7 +244,7 @@ func (l *Logger) openNew() error {
 		}
 
 		// this is a no-op anywhere but linux
-		if err := chown(name, info); err != nil {
+		if err := chownWithMode(name, info, mode); err != nil {
 			return err
 		}
 	}
@@ -288,7 +297,7 @@ func (l *Logger) openExistingOrNew(writeLen int) error {
 		return l.rotate()
 	}
 
-	file, err := os.OpenFile(filename, os.O_APPEND|os.O_WRONLY, 0644)
+	file, err := os.OpenFile(filename, os.O_APPEND|os.O_WRONLY, defaultFileMode)
 	if err != nil {
 		// if we fail to open the old log file for some reason, just ignore
 		// it and open a new log file.
@@ -397,6 +406,7 @@ func (l *Logger) millRunOnce() error {
 // millRun runs in a goroutine to manage post-rotation compression and removal
 // of old log files.
 func (l *Logger) millRun() {
+	defer l.millWg.Done()
 	for range l.millCh {
 		// what am I going to do, log this?
 		_ = l.millRunOnce()
@@ -408,6 +418,7 @@ func (l *Logger) millRun() {
 func (l *Logger) mill() {
 	l.startMill.Do(func() {
 		l.millCh = make(chan bool, 1)
+		l.millWg.Add(1)
 		go l.millRun()
 	})
 	select {

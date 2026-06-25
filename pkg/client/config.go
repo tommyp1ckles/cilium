@@ -4,6 +4,8 @@
 package client
 
 import (
+	"maps"
+
 	"github.com/cilium/cilium/api/v1/client/daemon"
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/api"
@@ -11,7 +13,7 @@ import (
 
 // ConfigGet returns a daemon configuration.
 func (c *Client) ConfigGet() (*models.DaemonConfiguration, error) {
-	resp, err := c.Daemon.GetConfig(nil)
+	resp, err := c.Daemon.GetConfig(daemon.NewGetConfigParams().WithTimeout(api.ClientTimeout))
 	if err != nil {
 		return nil, Hint(err)
 	}
@@ -25,9 +27,7 @@ func (c *Client) ConfigPatch(cfg models.DaemonConfigurationSpec) error {
 		return err
 	}
 
-	for opt, value := range cfg.Options {
-		fullCfg.Spec.Options[opt] = value
-	}
+	maps.Copy(fullCfg.Spec.Options, cfg.Options)
 	if cfg.PolicyEnforcement != "" {
 		fullCfg.Spec.PolicyEnforcement = cfg.PolicyEnforcement
 	}

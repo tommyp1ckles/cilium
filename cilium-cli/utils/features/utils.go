@@ -3,7 +3,12 @@
 
 package features
 
-import "net"
+import (
+	"net"
+	"net/netip"
+
+	"github.com/cilium/cilium/pkg/subnet/topology"
+)
 
 type IPFamily int
 
@@ -25,6 +30,27 @@ func (f IPFamily) String() string {
 		return "ipv6"
 	}
 	return "undefined"
+}
+
+// GetIPFamilies function converts string slice to IPFamily slice.
+func GetIPFamilies(families []string) []IPFamily {
+	ipFams := make([]IPFamily, 0, len(families))
+	for i := range families {
+		ipFams = append(ipFams, NewIPFamily(families[i]))
+	}
+	return ipFams
+}
+
+// NewIPFamily is a factory function that consumes string and returns IPFamily.
+func NewIPFamily(s string) IPFamily {
+	switch s {
+	case "ipv4":
+		return IPFamilyV4
+	case "ipv6":
+		return IPFamilyV6
+	default:
+		return IPFamilyAny
+	}
 }
 
 func GetIPFamily(addr string) IPFamily {
@@ -82,4 +108,40 @@ func ComputeFailureExceptions(defaultExceptions, inputExceptions []string) []str
 		}
 	}
 	return exceptionList
+}
+
+// SameSubnet returns true if given two IP addresses belong to the same subnet, based on the subnet-topology.
+func SameSubnet(ip1, ip2, topologyStr string) bool {
+	if topologyStr == "" {
+		return false
+	}
+
+	parsedIP1, err := netip.ParseAddr(ip1)
+	if err != nil {
+		return false
+	}
+	parsedIP2, err := netip.ParseAddr(ip2)
+	if err != nil {
+		return false
+	}
+
+	entries, err := topology.Decode(topologyStr)
+	if err != nil {
+		return false
+	}
+
+	var group1, group2 uint32
+	for _, entry := range entries {
+		if entry.Key.Contains(parsedIP1) {
+			group1 = entry.Value
+		}
+		if entry.Key.Contains(parsedIP2) {
+			group2 = entry.Value
+		}
+		if group1 != 0 && group1 == group2 {
+			return true
+		}
+	}
+
+	return false
 }

@@ -6,15 +6,16 @@ package kvstore
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 
-	"github.com/sirupsen/logrus"
 	v3rpcErrors "go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	client "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
 
 	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/spanstat"
 	"github.com/cilium/cilium/pkg/time"
 )
@@ -28,7 +29,7 @@ type leaseInfo struct {
 // which lease is attached to which etcd key.
 type etcdLeaseManager struct {
 	client *client.Client
-	log    logrus.FieldLogger
+	log    *slog.Logger
 
 	ttl     time.Duration
 	limit   uint32
@@ -44,10 +45,10 @@ type etcdLeaseManager struct {
 }
 
 // newEtcdLeaseManager builds and returns a new lease manager instance.
-func newEtcdLeaseManager(cl *client.Client, ttl time.Duration, limit uint32, expired func(key string), log logrus.FieldLogger) *etcdLeaseManager {
+func newEtcdLeaseManager(logger *slog.Logger, cl *client.Client, ttl time.Duration, limit uint32, expired func(key string)) *etcdLeaseManager {
 	return &etcdLeaseManager{
 		client: cl,
-		log:    log,
+		log:    logger,
 
 		ttl:     ttl,
 		limit:   limit,
@@ -167,6 +168,13 @@ func (elm *etcdLeaseManager) GetSession(ctx context.Context, key string) (*concu
 	elm.leases[session.Lease()] = &leaseInfo{session: session}
 	elm.mu.Unlock()
 
+	// Kick off a goroutine that will remove the references to this lease when
+	// it expires. We add it to the map of leases before starting this goroutine,
+	// to ensure the cleanup always happens after adding it, and not in the opposite order.
+	elm.wg.Go(func() {
+		elm.waitForExpiration(session)
+	})
+
 	return elm.GetSession(ctx, key)
 }
 
@@ -251,19 +259,15 @@ func (elm *etcdLeaseManager) newSession(ctx context.Context) (session *concurren
 		return nil, err
 	}
 
-	elm.wg.Add(1)
-	go elm.waitForExpiration(session)
-
-	elm.log.WithFields(logrus.Fields{
-		"LeaseID": leaseID,
-		"TTL":     elm.ttl,
-	}).Info("New lease successfully acquired")
+	elm.log.Info(
+		"New lease successfully acquired",
+		logfields.LeaseID, leaseID,
+		logfields.TTL, elm.ttl,
+	)
 	return session, nil
 }
 
 func (elm *etcdLeaseManager) waitForExpiration(session *concurrency.Session) {
-	defer elm.wg.Done()
-
 	// Block until the session gets orphaned, either because it fails to be
 	// renewed or the etcd client is closed.
 	<-session.Done()
@@ -275,7 +279,10 @@ func (elm *etcdLeaseManager) waitForExpiration(session *concurrency.Session) {
 	default:
 	}
 
-	elm.log.WithField("LeaseID", session.Lease()).Warning("Lease expired")
+	elm.log.Warn(
+		"Lease expired",
+		logfields.LeaseID, session.Lease(),
+	)
 
 	elm.mu.Lock()
 	delete(elm.leases, session.Lease())

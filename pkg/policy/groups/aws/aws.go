@@ -12,7 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2_types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 
-	cilium_ec2 "github.com/cilium/cilium/pkg/aws/ec2"
+	awsAPI "github.com/cilium/cilium/pkg/aws/api"
 	"github.com/cilium/cilium/pkg/policy/api"
 )
 
@@ -22,18 +22,14 @@ var (
 	policyEC2Labelskey       = "tag"
 )
 
-func init() {
-	api.RegisterToGroupsProvider(api.AWSProvider, GetIPsFromGroup)
-}
-
 // GetIPsFromGroup will return the list of the IPs for the given group filter
 func GetIPsFromGroup(ctx context.Context, group *api.Groups) ([]netip.Addr, error) {
 	result := []netip.Addr{}
 	if group.AWS == nil {
-		return result, fmt.Errorf("no aws data available")
+		return result, nil
 	}
 
-	cfg, err := cilium_ec2.NewConfig(ctx)
+	cfg, err := awsAPI.NewConfig(ctx)
 	if err != nil {
 		return nil, err
 	}

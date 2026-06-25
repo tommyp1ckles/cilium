@@ -4,13 +4,16 @@
 package manager
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -22,28 +25,34 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	fakeTypes "github.com/cilium/cilium/pkg/datapath/fake/types"
+	"github.com/cilium/cilium/pkg/cidr"
+	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	"github.com/cilium/cilium/pkg/datapath/iptables/ipset"
-	datapath "github.com/cilium/cilium/pkg/datapath/types"
+	"github.com/cilium/cilium/pkg/datapath/tables"
+	"github.com/cilium/cilium/pkg/datapath/tunnel"
 	"github.com/cilium/cilium/pkg/hive"
 	"github.com/cilium/cilium/pkg/hive/health"
 	"github.com/cilium/cilium/pkg/hive/health/types"
 	"github.com/cilium/cilium/pkg/identity"
-	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/ipcache"
 	ipcacheTypes "github.com/cilium/cilium/pkg/ipcache/types"
 	"github.com/cilium/cilium/pkg/labels"
+	"github.com/cilium/cilium/pkg/labelsfilter"
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/node/addressing"
+	fakenode "github.com/cilium/cilium/pkg/node/fake"
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/source"
 	testidentity "github.com/cilium/cilium/pkg/testutils/identity"
+	fakewireguard "github.com/cilium/cilium/pkg/wireguard/fake"
+	wgTypes "github.com/cilium/cilium/pkg/wireguard/types"
 )
 
 type nodeEvent struct {
-	event  string
-	prefix netip.Prefix
+	event    string
+	prefix   netip.Prefix
+	metadata ipcache.IPMetadata
 }
 
 type ipcacheMock struct {
@@ -69,42 +78,50 @@ func AddrOrPrefixToIP(ip string) (netip.Prefix, error) {
 	return prefix, err
 }
 
-func (i *ipcacheMock) Upsert(ip string, hostIP net.IP, hostKey uint8, k8sMeta *ipcache.K8sMetadata, newIdentity ipcache.Identity) (bool, error) {
+func (i *ipcacheMock) Upsert(ip string, hostIP net.IP, hostKey uint8, k8sMeta *ipcache.K8sMetadata, newIdentity ipcache.Identity, aux ...ipcache.IPMetadata) (bool, error) {
 	addr, err := AddrOrPrefixToIP(ip)
 	if err != nil {
-		i.events <- nodeEvent{fmt.Sprintf("upsert failed: %s", err), addr}
+		i.events <- nodeEvent{fmt.Sprintf("upsert failed: %s", err), addr, aux}
 		return false, err
 	}
-	i.events <- nodeEvent{"upsert", addr}
+	i.events <- nodeEvent{"upsert", addr, aux}
 	return false, nil
 }
 
-func (i *ipcacheMock) Delete(ip string, source source.Source) bool {
+func (i *ipcacheMock) Delete(ip string, source source.Source, aux ...ipcache.IPMetadata) bool {
 	addr, err := AddrOrPrefixToIP(ip)
 	if err != nil {
-		i.events <- nodeEvent{fmt.Sprintf("delete failed: %s", err), addr}
+		i.events <- nodeEvent{fmt.Sprintf("delete failed: %s", err), addr, aux}
 		return false
 	}
-	i.events <- nodeEvent{"delete", addr}
+	i.events <- nodeEvent{"delete", addr, aux}
 	return false
 }
 
-func (i *ipcacheMock) GetMetadataSourceByPrefix(prefix netip.Prefix) source.Source {
+func (i *ipcacheMock) GetMetadataSourceByPrefix(prefix cmtypes.PrefixCluster) source.Source {
 	return source.Unspec
 }
-func (i *ipcacheMock) UpsertMetadata(prefix netip.Prefix, src source.Source, resource ipcacheTypes.ResourceID, aux ...ipcache.IPMetadata) {
-	i.Upsert(prefix.String(), nil, 0, nil, ipcache.Identity{})
-}
-func (i *ipcacheMock) OverrideIdentity(prefix netip.Prefix, identityLabels labels.Labels, src source.Source, resource ipcacheTypes.ResourceID) {
-	i.UpsertMetadata(prefix, src, resource)
+
+func (i *ipcacheMock) UpsertMetadata(prefix cmtypes.PrefixCluster, src source.Source, resource ipcacheTypes.ResourceID, aux ...ipcache.IPMetadata) {
+	i.Upsert(prefix.String(), nil, 0, nil, ipcache.Identity{}, aux...)
 }
 
-func (i *ipcacheMock) RemoveMetadata(prefix netip.Prefix, resource ipcacheTypes.ResourceID, aux ...ipcache.IPMetadata) {
-	i.Delete(prefix.String(), source.CustomResource)
+func (i *ipcacheMock) RemoveMetadata(prefix cmtypes.PrefixCluster, resource ipcacheTypes.ResourceID, aux ...ipcache.IPMetadata) {
+	i.Delete(prefix.String(), source.CustomResource, aux...)
 }
 
-func (i *ipcacheMock) RemoveIdentityOverride(prefix netip.Prefix, identityLabels labels.Labels, resource ipcacheTypes.ResourceID) {
-	i.Delete(prefix.String(), source.CustomResource)
+func (i *ipcacheMock) UpsertMetadataBatch(updates ...ipcache.MU) (revision uint64) {
+	for _, update := range updates {
+		i.UpsertMetadata(update.Prefix, update.Source, update.Resource, update.Metadata)
+	}
+	return 0
+}
+
+func (i *ipcacheMock) RemoveMetadataBatch(updates ...ipcache.MU) (revision uint64) {
+	for _, update := range updates {
+		i.RemoveMetadata(update.Prefix, update.Resource, update.Metadata)
+	}
+	return 0
 }
 
 type ipsetMock struct {
@@ -174,6 +191,7 @@ type signalNodeHandler struct {
 	NodeValidateImplementationEvent       chan nodeTypes.Node
 	NodeValidateImplementationEventError  error
 	EnableNodeValidateImplementationEvent bool
+	Stop                                  chan struct{}
 }
 
 func newSignalNodeHandler() *signalNodeHandler {
@@ -182,6 +200,7 @@ func newSignalNodeHandler() *signalNodeHandler {
 		NodeUpdateEvent:                 make(chan nodeTypes.Node, 10),
 		NodeDeleteEvent:                 make(chan nodeTypes.Node, 10),
 		NodeValidateImplementationEvent: make(chan nodeTypes.Node, 4096),
+		Stop:                            make(chan struct{}, 10),
 	}
 }
 
@@ -215,25 +234,16 @@ func (n *signalNodeHandler) AllNodeValidateImplementation() {
 
 func (n *signalNodeHandler) NodeValidateImplementation(node nodeTypes.Node) error {
 	if n.EnableNodeValidateImplementationEvent {
-		n.NodeValidateImplementationEvent <- node
+		select {
+		case <-n.Stop:
+		case n.NodeValidateImplementationEvent <- node:
+		}
 	}
 	return n.NodeValidateImplementationEventError
 }
 
-func (n *signalNodeHandler) NodeConfigurationChanged(config datapath.LocalNodeConfiguration) error {
-	return nil
-}
-
-func setup(tb testing.TB) {
-	node.SetTestLocalNodeStore()
-
-	tb.Cleanup(func() {
-		node.UnsetTestLocalNodeStore()
-	})
-}
-
 func TestNodeLifecycle(t *testing.T) {
-	setup(t)
+	logger := hivetest.Logger(t)
 
 	dp := newSignalNodeHandler()
 	dp.EnableNodeAddEvent = true
@@ -241,16 +251,19 @@ func TestNodeLifecycle(t *testing.T) {
 	dp.EnableNodeDeleteEvent = true
 	ipcacheMock := newIPcacheMock()
 	h, _ := cell.NewSimpleHealth()
-	mngr, err := New(&option.DaemonConfig{}, ipcacheMock, newIPSetMock(), nil, NewNodeMetrics(), h)
+	mngr, err := New(logger, &option.DaemonConfig{}, tunnel.Config{}, ipcacheMock, newIPSetMock(), nil, NewNodeMetrics(), h, nil, nil, nil, fakewireguard.Config{}, node.NewTestLocalNodeStore(node.LocalNode{}))
 	mngr.Subscribe(dp)
 	require.NoError(t, err)
 
-	n1 := nodeTypes.Node{Name: "node1", Cluster: "c1", IPAddresses: []nodeTypes.Address{
-		{
-			Type: addressing.NodeInternalIP,
-			IP:   net.ParseIP("10.0.0.1"),
+	n1 := nodeTypes.Node{
+		Name: "node1", Cluster: "c1", IPAddresses: []nodeTypes.Address{
+			{
+				Type: addressing.NodeInternalIP,
+				IP:   net.ParseIP("10.0.0.1"),
+			},
 		},
-	}}
+		Source: source.Unspec,
+	}
 	mngr.NodeUpdated(n1)
 
 	select {
@@ -264,12 +277,15 @@ func TestNodeLifecycle(t *testing.T) {
 		t.Errorf("timeout while waiting for NodeAdd() event for node1")
 	}
 
-	n2 := nodeTypes.Node{Name: "node2", Cluster: "c1", IPAddresses: []nodeTypes.Address{
-		{
-			Type: addressing.NodeInternalIP,
-			IP:   net.ParseIP("10.0.0.2"),
+	n2 := nodeTypes.Node{
+		Name: "node2", Cluster: "c1", IPAddresses: []nodeTypes.Address{
+			{
+				Type: addressing.NodeInternalIP,
+				IP:   net.ParseIP("10.0.0.2"),
+			},
 		},
-	}}
+		Source: source.Unspec,
+	}
 	mngr.NodeUpdated(n2)
 
 	select {
@@ -307,8 +323,111 @@ func TestNodeLifecycle(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestNodeLabels(t *testing.T) {
+	logger := hivetest.Logger(t)
+
+	dp := newSignalNodeHandler()
+	ipcacheMock := newIPcacheMock()
+	h, _ := cell.NewSimpleHealth()
+
+	nodeLabels := map[string]string{
+		"test-label":  "test-value",
+		"other-label": "other-value",
+	}
+	nodeTypes.SetName("localNode")
+	nLocal := nodeTypes.Node{
+		Name:    "localNode",
+		Cluster: "default",
+		Labels:  nodeLabels,
+		Source:  source.Local,
+	}
+	nRemote := nodeTypes.Node{
+		Name:    "remoteNode",
+		Cluster: "default",
+		Labels:  nodeLabels,
+		Source:  source.Unspec,
+	}
+
+	mngr, err := New(logger, &option.DaemonConfig{}, tunnel.Config{}, ipcacheMock, newIPSetMock(), nil, NewNodeMetrics(), h, nil, nil, nil, fakewireguard.Config{}, node.NewTestLocalNodeStore(node.LocalNode{Node: nLocal}))
+	mngr.Subscribe(dp)
+	require.NoError(t, err)
+	mngr.NodeUpdated(nRemote)
+
+	tests := []struct {
+		name               string
+		node               nodeTypes.Node
+		nodeSelectorLabels bool
+		nodeLabelPrefixes  []string
+		setupWanted        func() labels.Labels
+	}{{
+		name:               "Local node with node selector labels enabled",
+		node:               nLocal,
+		nodeSelectorLabels: true,
+		setupWanted: func() labels.Labels {
+			want := labels.NewFrom(labels.LabelHost)
+			want.MergeLabels(labels.Map2Labels(nodeLabels, labels.LabelSourceNode))
+			want.MergeLabels(labels.Map2Labels(map[string]string{
+				"io.cilium.k8s.policy.cluster": "default",
+			}, labels.LabelSourceK8s))
+			return want
+		},
+	}, {
+		name:               "Local node with node selector labels disabled",
+		node:               nLocal,
+		nodeSelectorLabels: false,
+		setupWanted: func() labels.Labels {
+			return labels.NewFrom(labels.LabelHost)
+		},
+	}, {
+		name:               "Remote node with node selector labels enabled",
+		node:               nRemote,
+		nodeSelectorLabels: true,
+		setupWanted: func() labels.Labels {
+			want := labels.NewFrom(labels.LabelRemoteNode)
+			want.MergeLabels(labels.Map2Labels(nodeLabels, labels.LabelSourceNode))
+			want.MergeLabels(labels.Map2Labels(map[string]string{
+				"io.cilium.k8s.policy.cluster": "default",
+			}, labels.LabelSourceK8s))
+			return want
+		},
+	}, {
+		name:               "Remote node with node selector labels disabled",
+		node:               nRemote,
+		nodeSelectorLabels: false,
+		setupWanted: func() labels.Labels {
+			return labels.NewFrom(labels.LabelRemoteNode)
+		},
+	}, {
+		name:               "Remote node with node selector labels enabled and filtered labels",
+		node:               nRemote,
+		nodeSelectorLabels: true,
+		nodeLabelPrefixes:  []string{"node:test-label"},
+		setupWanted: func() labels.Labels {
+			want := labels.NewFrom(labels.LabelRemoteNode)
+			want.MergeLabels(labels.Map2Labels(map[string]string{
+				"test-label": "test-value",
+			}, labels.LabelSourceNode))
+			want.MergeLabels(labels.Map2Labels(map[string]string{
+				"io.cilium.k8s.policy.cluster": "default",
+			}, labels.LabelSourceK8s))
+			return want
+		},
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.NoError(t, labelsfilter.ParseLabelPrefixCfg(logger, nil, tt.nodeLabelPrefixes, ""))
+			option.Config.EnableNodeSelectorLabels = tt.nodeSelectorLabels
+			option.Config.ClusterName = "default"
+			got := mngr.nodeIdentityLabels(tt.node)
+			want := tt.setupWanted()
+			assert.True(t, want.Equals(got), "Mismatched labels: want=%v got=%v", want, got)
+		})
+	}
+}
+
 func TestMultipleSources(t *testing.T) {
-	setup(t)
+	logger := hivetest.Logger(t)
 
 	dp := newSignalNodeHandler()
 	dp.EnableNodeAddEvent = true
@@ -316,7 +435,7 @@ func TestMultipleSources(t *testing.T) {
 	dp.EnableNodeDeleteEvent = true
 	ipcacheMock := newIPcacheMock()
 	h, _ := cell.NewSimpleHealth()
-	mngr, err := New(&option.DaemonConfig{}, ipcacheMock, newIPSetMock(), nil, NewNodeMetrics(), h)
+	mngr, err := New(logger, &option.DaemonConfig{}, tunnel.Config{}, ipcacheMock, newIPSetMock(), nil, NewNodeMetrics(), h, nil, nil, nil, fakewireguard.Config{}, node.NewTestLocalNodeStore(node.LocalNode{}))
 	require.NoError(t, err)
 	mngr.Subscribe(dp)
 	defer mngr.Stop(context.TODO())
@@ -397,20 +516,20 @@ func TestMultipleSources(t *testing.T) {
 
 func BenchmarkUpdateAndDeleteCycle(b *testing.B) {
 	ipcacheMock := newIPcacheMock()
-	dp := fakeTypes.NewNodeHandler()
+	dp := fakenode.NewHandler()
 	h, _ := cell.NewSimpleHealth()
-	mngr, err := New(&option.DaemonConfig{}, ipcacheMock, newIPSetMock(), nil, NewNodeMetrics(), h)
+	logger := hivetest.Logger(b)
+	mngr, err := New(logger, &option.DaemonConfig{}, tunnel.Config{}, ipcacheMock, newIPSetMock(), nil, NewNodeMetrics(), h, nil, nil, nil, fakewireguard.Config{}, node.NewTestLocalNodeStore(node.LocalNode{}))
 	require.NoError(b, err)
 	mngr.Subscribe(dp)
 	defer mngr.Stop(context.TODO())
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := 0; b.Loop(); i++ {
 		n := nodeTypes.Node{Name: fmt.Sprintf("%d", i), Source: source.Local}
 		mngr.NodeUpdated(n)
 	}
 
-	for i := 0; i < b.N; i++ {
+	for i := 0; b.Loop(); i++ {
 		n := nodeTypes.Node{Name: fmt.Sprintf("%d", i), Source: source.Local}
 		mngr.NodeDeleted(n)
 	}
@@ -418,19 +537,19 @@ func BenchmarkUpdateAndDeleteCycle(b *testing.B) {
 }
 
 func TestClusterSizeDependantInterval(t *testing.T) {
-	setup(t)
+	logger := hivetest.Logger(t)
 
 	ipcacheMock := newIPcacheMock()
-	dp := fakeTypes.NewNodeHandler()
+	dp := fakenode.NewHandler()
 	h, _ := cell.NewSimpleHealth()
-	mngr, err := New(&option.DaemonConfig{}, ipcacheMock, newIPSetMock(), nil, NewNodeMetrics(), h)
+	mngr, err := New(logger, &option.DaemonConfig{}, tunnel.Config{}, ipcacheMock, newIPSetMock(), nil, NewNodeMetrics(), h, nil, nil, nil, fakewireguard.Config{}, node.NewTestLocalNodeStore(node.LocalNode{}))
 	require.NoError(t, err)
 	mngr.Subscribe(dp)
 	defer mngr.Stop(context.TODO())
 
 	prevInterval := time.Nanosecond
 
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		n := nodeTypes.Node{Name: fmt.Sprintf("%d", i), Source: source.Local, IPAddresses: []nodeTypes.Address{
 			{
 				Type: addressing.NodeInternalIP,
@@ -448,7 +567,8 @@ func TestBackgroundSync(t *testing.T) {
 	signalNodeHandler.EnableNodeValidateImplementationEvent = true
 	ipcacheMock := newIPcacheMock()
 	h, _ := cell.NewSimpleHealth()
-	mngr, err := New(&option.DaemonConfig{}, ipcacheMock, newIPSetMock(), nil, NewNodeMetrics(), h)
+	logger := hivetest.Logger(t)
+	mngr, err := New(logger, &option.DaemonConfig{}, tunnel.Config{}, ipcacheMock, newIPSetMock(), nil, NewNodeMetrics(), h, nil, nil, nil, fakewireguard.Config{}, node.NewTestLocalNodeStore(node.LocalNode{}))
 	mngr.Subscribe(signalNodeHandler)
 	require.NoError(t, err)
 	defer mngr.Stop(context.TODO())
@@ -460,8 +580,6 @@ func TestBackgroundSync(t *testing.T) {
 
 	go func() {
 		nodeValidationsReceived := 0
-		timer, timerDone := inctimer.New()
-		defer timerDone()
 		for {
 			select {
 			case <-signalNodeHandler.NodeValidateImplementationEvent:
@@ -470,7 +588,7 @@ func TestBackgroundSync(t *testing.T) {
 					allNodeValidateCallsReceived.Done()
 					return
 				}
-			case <-timer.After(time.Second * 1):
+			case <-time.After(1 * time.Second):
 				t.Errorf("Timeout while waiting for NodeValidateImplementation() to be called")
 				allNodeValidateCallsReceived.Done()
 				return
@@ -478,7 +596,7 @@ func TestBackgroundSync(t *testing.T) {
 		}
 	}()
 
-	for i := 0; i < numNodes; i++ {
+	for i := range numNodes {
 		n := nodeTypes.Node{Name: fmt.Sprintf("%d", i), Source: source.Kubernetes, IPAddresses: []nodeTypes.Address{
 			{
 				Type: addressing.NodeInternalIP,
@@ -493,11 +611,34 @@ func TestBackgroundSync(t *testing.T) {
 	allNodeValidateCallsReceived.Wait()
 }
 
+func expectIPCacheUpdate(
+	t *testing.T, ipcacheMock *ipcacheMock,
+	eventType string, prefix netip.Prefix, metadata ...ipcache.IPMetadata,
+) {
+	t.Helper()
+
+	select {
+	case ev := <-ipcacheMock.events:
+		require.Equal(t, eventType, ev.event)
+		require.Equal(t, prefix, ev.prefix)
+		if len(metadata) > 0 {
+			// unpack outer metadata slice
+			require.IsType(t, []ipcache.IPMetadata{}, ev.metadata)
+			md := ev.metadata.([]ipcache.IPMetadata)
+
+			require.ElementsMatch(t, metadata, md)
+		}
+	case <-time.After(5 * time.Second):
+		t.Errorf("timeout while waiting for ipcache upsert for %s", prefix)
+	}
+}
+
 func TestIpcache(t *testing.T) {
 	ipcacheMock := newIPcacheMock()
 	dp := newSignalNodeHandler()
 	h, _ := cell.NewSimpleHealth()
-	mngr, err := New(&option.DaemonConfig{}, ipcacheMock, newIPSetMock(), nil, NewNodeMetrics(), h)
+	logger := hivetest.Logger(t)
+	mngr, err := New(logger, &option.DaemonConfig{}, tunnel.Config{}, ipcacheMock, newIPSetMock(), nil, NewNodeMetrics(), h, nil, nil, nil, fakewireguard.Config{}, node.NewTestLocalNodeStore(node.LocalNode{}))
 	require.NoError(t, err)
 	mngr.Subscribe(dp)
 	defer mngr.Stop(context.TODO())
@@ -510,29 +651,54 @@ func TestIpcache(t *testing.T) {
 			{Type: addressing.NodeInternalIP, IP: net.ParseIP("10.0.0.2")},
 			{Type: addressing.NodeExternalIP, IP: net.ParseIP("f00d::1")},
 		},
+
+		IPv4AllocCIDR:           cidr.MustParseCIDR("10.0.0.0/24"),
+		IPv4SecondaryAllocCIDRs: []*cidr.CIDR{cidr.MustParseCIDR("192.168.10.0/28")},
+		IPv6AllocCIDR:           cidr.MustParseCIDR("f00d::/96"),
+		IPv6SecondaryAllocCIDRs: []*cidr.CIDR{cidr.MustParseCIDR("cafe::/96")},
 	}
 	mngr.NodeUpdated(n1)
 
-	select {
-	case event := <-ipcacheMock.events:
-		require.Equal(t, nodeEvent{event: "upsert", prefix: netip.PrefixFrom(netip.MustParseAddr("1.1.1.1"), 32)}, event)
-	case <-time.After(5 * time.Second):
-		t.Errorf("timeout while waiting for ipcache upsert for IP 1.1.1.1")
-	}
+	// node IP addresses
+	expectIPCacheUpdate(t, ipcacheMock, "upsert", netip.PrefixFrom(netip.MustParseAddr("1.1.1.1"), 32))
+	expectIPCacheUpdate(t, ipcacheMock, "upsert", netip.PrefixFrom(netip.MustParseAddr("10.0.0.2"), 32))
+	expectIPCacheUpdate(t, ipcacheMock, "upsert", netip.PrefixFrom(netip.MustParseAddr("f00d::1"), 128))
 
-	select {
-	case event := <-ipcacheMock.events:
-		require.Equal(t, nodeEvent{event: "upsert", prefix: netip.PrefixFrom(netip.MustParseAddr("10.0.0.2"), 32)}, event)
-	case <-time.After(5 * time.Second):
-		t.Errorf("timeout while waiting for ipcache upsert for IP 10.0.0.2")
-	}
+	// node IPv4 allocation CIDRs
+	expectIPCacheUpdate(
+		t, ipcacheMock, "upsert", netip.MustParsePrefix("10.0.0.0/24"),
+		[]ipcache.IPMetadata{
+			worldLabelForPrefix(netip.PrefixFrom(netip.MustParseAddr("1.1.1.1"), 32)),
+			ipcacheTypes.TunnelPeer{Addr: netip.MustParseAddr("10.0.0.2")},
+			ipcacheTypes.EncryptKey(0),
+		},
+	)
+	expectIPCacheUpdate(
+		t, ipcacheMock, "upsert", netip.MustParsePrefix("192.168.10.0/28"),
+		[]ipcache.IPMetadata{
+			worldLabelForPrefix(netip.PrefixFrom(netip.MustParseAddr("1.1.1.1"), 32)),
+			ipcacheTypes.TunnelPeer{Addr: netip.MustParseAddr("10.0.0.2")},
+			ipcacheTypes.EncryptKey(0),
+		},
+	)
 
-	select {
-	case event := <-ipcacheMock.events:
-		require.Equal(t, nodeEvent{event: "upsert", prefix: netip.PrefixFrom(netip.MustParseAddr("f00d::1"), 128)}, event)
-	case <-time.After(5 * time.Second):
-		t.Errorf("timeout while waiting for ipcache upsert for IP f00d::1")
-	}
+	// node IPv6 allocation CIDRs
+	expectIPCacheUpdate(
+		t, ipcacheMock, "upsert", netip.MustParsePrefix("f00d::/96"),
+		[]ipcache.IPMetadata{
+			worldLabelForPrefix(netip.PrefixFrom(netip.MustParseAddr("f00d::1"), 128)),
+			ipcacheTypes.TunnelPeer{Addr: netip.MustParseAddr("10.0.0.2")},
+			ipcacheTypes.EncryptKey(0),
+		},
+	)
+	expectIPCacheUpdate(
+		t, ipcacheMock, "upsert", netip.MustParsePrefix("cafe::/96"),
+		[]ipcache.IPMetadata{
+			worldLabelForPrefix(netip.PrefixFrom(netip.MustParseAddr("f00d::1"), 128)),
+			ipcacheTypes.TunnelPeer{Addr: netip.MustParseAddr("10.0.0.2")},
+			ipcacheTypes.EncryptKey(0),
+		},
+	)
 
 	select {
 	case event := <-ipcacheMock.events:
@@ -540,28 +706,70 @@ func TestIpcache(t *testing.T) {
 	default:
 	}
 
+	// Update node by removing ExternalIPs and secondary PodCIDRs
+	n1 = *n1.DeepCopy()
+	n1.IPAddresses = slices.DeleteFunc(n1.IPAddresses, func(address nodeTypes.Address) bool {
+		return address.IP.Equal(net.ParseIP("f00d::1"))
+	})
+	n1.IPv4SecondaryAllocCIDRs = nil
+	n1.IPv6SecondaryAllocCIDRs = nil
+	mngr.NodeUpdated(n1)
+
+	expectIPCacheUpdate(t, ipcacheMock, "upsert", netip.PrefixFrom(netip.MustParseAddr("1.1.1.1"), 32))
+	expectIPCacheUpdate(t, ipcacheMock, "upsert", netip.PrefixFrom(netip.MustParseAddr("10.0.0.2"), 32))
+	expectIPCacheUpdate(
+		t, ipcacheMock, "upsert", netip.MustParsePrefix("10.0.0.0/24"),
+		[]ipcache.IPMetadata{
+			worldLabelForPrefix(netip.PrefixFrom(netip.MustParseAddr("1.1.1.1"), 32)),
+			ipcacheTypes.TunnelPeer{Addr: netip.MustParseAddr("10.0.0.2")},
+			ipcacheTypes.EncryptKey(0),
+		},
+	)
+	expectIPCacheUpdate(
+		t, ipcacheMock, "upsert", netip.MustParsePrefix("f00d::/96"),
+		[]ipcache.IPMetadata{
+			worldLabelForPrefix(netip.PrefixFrom(netip.MustParseAddr("f00d::1"), 128)),
+			ipcacheTypes.TunnelPeer{Addr: netip.MustParseAddr("10.0.0.2")},
+			ipcacheTypes.EncryptKey(0),
+		},
+	)
+
+	expectIPCacheUpdate(t, ipcacheMock, "delete", netip.PrefixFrom(netip.MustParseAddr("f00d::1"), 128))
+	expectIPCacheUpdate(t, ipcacheMock, "delete", netip.MustParsePrefix("192.168.10.0/28"),
+		[]ipcache.IPMetadata{
+			worldLabelForPrefix(netip.PrefixFrom(netip.MustParseAddr("1.1.1.1"), 32)),
+			ipcacheTypes.TunnelPeer{Addr: netip.MustParseAddr("10.0.0.2")},
+			ipcacheTypes.EncryptKey(0),
+		},
+	)
+	expectIPCacheUpdate(
+		t, ipcacheMock, "delete", netip.MustParsePrefix("cafe::/96"),
+		[]ipcache.IPMetadata{
+			worldLabelForPrefix(netip.PrefixFrom(netip.MustParseAddr("f00d::1"), 128)),
+			ipcacheTypes.TunnelPeer{Addr: netip.MustParseAddr("10.0.0.2")},
+			ipcacheTypes.EncryptKey(0),
+		},
+	)
+
 	mngr.NodeDeleted(n1)
 
-	select {
-	case event := <-ipcacheMock.events:
-		require.Equal(t, nodeEvent{event: "delete", prefix: netip.PrefixFrom(netip.MustParseAddr("1.1.1.1"), 32)}, event)
-	case <-time.After(5 * time.Second):
-		t.Errorf("timeout while waiting for ipcache delete for IP 1.1.1.1")
-	}
-
-	select {
-	case event := <-ipcacheMock.events:
-		require.Equal(t, nodeEvent{event: "delete", prefix: netip.PrefixFrom(netip.MustParseAddr("10.0.0.2"), 32)}, event)
-	case <-time.After(5 * time.Second):
-		t.Errorf("timeout while waiting for ipcache delete for IP 10.0.0.2")
-	}
-
-	select {
-	case event := <-ipcacheMock.events:
-		require.Equal(t, nodeEvent{event: "delete", prefix: netip.PrefixFrom(netip.MustParseAddr("f00d::1"), 128)}, event)
-	case <-time.After(5 * time.Second):
-		t.Errorf("timeout while waiting for ipcache delete for IP f00d::1")
-	}
+	expectIPCacheUpdate(t, ipcacheMock, "delete", netip.PrefixFrom(netip.MustParseAddr("1.1.1.1"), 32))
+	expectIPCacheUpdate(t, ipcacheMock, "delete", netip.PrefixFrom(netip.MustParseAddr("10.0.0.2"), 32))
+	expectIPCacheUpdate(
+		t, ipcacheMock, "delete", netip.MustParsePrefix("10.0.0.0/24"),
+		[]ipcache.IPMetadata{
+			worldLabelForPrefix(netip.PrefixFrom(netip.MustParseAddr("1.1.1.1"), 32)),
+			ipcacheTypes.TunnelPeer{Addr: netip.MustParseAddr("10.0.0.2")},
+			ipcacheTypes.EncryptKey(0),
+		},
+	)
+	expectIPCacheUpdate(t, ipcacheMock, "delete", netip.MustParsePrefix("f00d::/96"),
+		[]ipcache.IPMetadata{
+			worldLabelForPrefix(netip.PrefixFrom(netip.MustParseAddr("f00d::1"), 128)),
+			ipcacheTypes.TunnelPeer{Addr: netip.MustParseAddr("10.0.0.2")},
+			ipcacheTypes.EncryptKey(0),
+		},
+	)
 
 	select {
 	case event := <-ipcacheMock.events:
@@ -574,7 +782,8 @@ func TestIpcacheHealthIP(t *testing.T) {
 	ipcacheMock := newIPcacheMock()
 	dp := newSignalNodeHandler()
 	h, _ := cell.NewSimpleHealth()
-	mngr, err := New(&option.DaemonConfig{}, ipcacheMock, newIPSetMock(), nil, NewNodeMetrics(), h)
+	logger := hivetest.Logger(t)
+	mngr, err := New(logger, &option.DaemonConfig{}, tunnel.Config{}, ipcacheMock, newIPSetMock(), nil, NewNodeMetrics(), h, nil, nil, nil, fakewireguard.Config{}, node.NewTestLocalNodeStore(node.LocalNode{}))
 	require.NoError(t, err)
 	mngr.Subscribe(dp)
 	defer mngr.Stop(context.TODO())
@@ -590,26 +799,9 @@ func TestIpcacheHealthIP(t *testing.T) {
 	}
 	mngr.NodeUpdated(n1)
 
-	select {
-	case event := <-ipcacheMock.events:
-		require.Equal(t, nodeEvent{event: "upsert", prefix: netip.PrefixFrom(netip.MustParseAddr("1.1.1.1"), 32)}, event)
-	case <-time.After(5 * time.Second):
-		t.Errorf("timeout while waiting for ipcache upsert for IP 1.1.1.1")
-	}
-
-	select {
-	case event := <-ipcacheMock.events:
-		require.Equal(t, nodeEvent{event: "upsert", prefix: netip.PrefixFrom(netip.MustParseAddr("10.0.0.4"), 32)}, event)
-	case <-time.After(5 * time.Second):
-		t.Errorf("timeout while waiting for ipcache upsert for IP 10.0.0.4")
-	}
-
-	select {
-	case event := <-ipcacheMock.events:
-		require.Equal(t, nodeEvent{event: "upsert", prefix: netip.PrefixFrom(netip.MustParseAddr("f00d::4"), 128)}, event)
-	case <-time.After(5 * time.Second):
-		t.Errorf("timeout while waiting for ipcache upsert for IP f00d::4")
-	}
+	expectIPCacheUpdate(t, ipcacheMock, "upsert", netip.PrefixFrom(netip.MustParseAddr("1.1.1.1"), 32))
+	expectIPCacheUpdate(t, ipcacheMock, "upsert", netip.PrefixFrom(netip.MustParseAddr("10.0.0.4"), 32))
+	expectIPCacheUpdate(t, ipcacheMock, "upsert", netip.PrefixFrom(netip.MustParseAddr("f00d::4"), 128))
 
 	select {
 	case event := <-ipcacheMock.events:
@@ -619,26 +811,9 @@ func TestIpcacheHealthIP(t *testing.T) {
 
 	mngr.NodeDeleted(n1)
 
-	select {
-	case event := <-ipcacheMock.events:
-		require.Equal(t, nodeEvent{event: "delete", prefix: netip.PrefixFrom(netip.MustParseAddr("1.1.1.1"), 32)}, event)
-	case <-time.After(5 * time.Second):
-		t.Errorf("timeout while waiting for ipcache delete for IP 1.1.1.1")
-	}
-
-	select {
-	case event := <-ipcacheMock.events:
-		require.Equal(t, nodeEvent{event: "delete", prefix: netip.PrefixFrom(netip.MustParseAddr("10.0.0.4"), 32)}, event)
-	case <-time.After(5 * time.Second):
-		t.Errorf("timeout while waiting for ipcache delete for IP 10.0.0.4")
-	}
-
-	select {
-	case event := <-ipcacheMock.events:
-		require.Equal(t, nodeEvent{event: "delete", prefix: netip.PrefixFrom(netip.MustParseAddr("f00d::4"), 128)}, event)
-	case <-time.After(5 * time.Second):
-		t.Errorf("timeout while waiting for ipcache delete for IP f00d::4")
-	}
+	expectIPCacheUpdate(t, ipcacheMock, "delete", netip.PrefixFrom(netip.MustParseAddr("1.1.1.1"), 32))
+	expectIPCacheUpdate(t, ipcacheMock, "delete", netip.PrefixFrom(netip.MustParseAddr("10.0.0.4"), 32))
+	expectIPCacheUpdate(t, ipcacheMock, "delete", netip.PrefixFrom(netip.MustParseAddr("f00d::4"), 128))
 
 	select {
 	case event := <-ipcacheMock.events:
@@ -648,15 +823,14 @@ func TestIpcacheHealthIP(t *testing.T) {
 }
 
 func TestNodeEncryption(t *testing.T) {
-	setup(t)
+	logger := hivetest.Logger(t)
 
 	ipcacheMock := newIPcacheMock()
 	dp := newSignalNodeHandler()
 	h, _ := cell.NewSimpleHealth()
-	mngr, err := New(&option.DaemonConfig{
+	mngr, err := New(logger, &option.DaemonConfig{
 		EncryptNode: true,
-		EnableIPSec: true,
-	}, ipcacheMock, newIPSetMock(), nil, NewNodeMetrics(), h)
+	}, tunnel.Config{}, ipcacheMock, newIPSetMock(), nil, NewNodeMetrics(), h, nil, nil, nil, fakewireguard.Config{}, node.NewTestLocalNodeStore(node.LocalNode{}))
 	require.NoError(t, err)
 	mngr.Subscribe(dp)
 	defer mngr.Stop(context.TODO())
@@ -669,29 +843,54 @@ func TestNodeEncryption(t *testing.T) {
 			{Type: addressing.NodeInternalIP, IP: net.ParseIP("10.0.0.2")},
 			{Type: addressing.NodeExternalIP, IP: net.ParseIP("f00d::1")},
 		},
+		IPv4AllocCIDR:           cidr.MustParseCIDR("10.0.0.0/24"),
+		IPv4SecondaryAllocCIDRs: []*cidr.CIDR{cidr.MustParseCIDR("192.168.10.0/28")},
+		IPv6AllocCIDR:           cidr.MustParseCIDR("f00d::/96"),
+		IPv6SecondaryAllocCIDRs: []*cidr.CIDR{cidr.MustParseCIDR("cafe::/96")},
+		EncryptionKey:           42,
 	}
 	mngr.NodeUpdated(n1)
 
-	select {
-	case event := <-ipcacheMock.events:
-		require.Equal(t, nodeEvent{event: "upsert", prefix: netip.PrefixFrom(netip.MustParseAddr("1.1.1.1"), 32)}, event)
-	case <-time.After(5 * time.Second):
-		t.Errorf("timeout while waiting for ipcache upsert for IP 1.1.1.1")
-	}
+	// node IP addresses
+	expectIPCacheUpdate(t, ipcacheMock, "upsert", netip.PrefixFrom(netip.MustParseAddr("1.1.1.1"), 32))
+	expectIPCacheUpdate(t, ipcacheMock, "upsert", netip.PrefixFrom(netip.MustParseAddr("10.0.0.2"), 32))
+	expectIPCacheUpdate(t, ipcacheMock, "upsert", netip.PrefixFrom(netip.MustParseAddr("f00d::1"), 128))
 
-	select {
-	case event := <-ipcacheMock.events:
-		require.Equal(t, nodeEvent{event: "upsert", prefix: netip.PrefixFrom(netip.MustParseAddr("10.0.0.2"), 32)}, event)
-	case <-time.After(5 * time.Second):
-		t.Errorf("timeout while waiting for ipcache upsert for IP 10.0.0.2")
-	}
+	// node IPv4 allocation CIDRs
+	expectIPCacheUpdate(
+		t, ipcacheMock, "upsert", netip.MustParsePrefix("10.0.0.0/24"),
+		[]ipcache.IPMetadata{
+			worldLabelForPrefix(netip.PrefixFrom(netip.MustParseAddr("1.1.1.1"), 32)),
+			ipcacheTypes.TunnelPeer{Addr: netip.MustParseAddr("10.0.0.2")},
+			ipcacheTypes.EncryptKey(42),
+		},
+	)
+	expectIPCacheUpdate(
+		t, ipcacheMock, "upsert", netip.MustParsePrefix("192.168.10.0/28"),
+		[]ipcache.IPMetadata{
+			worldLabelForPrefix(netip.PrefixFrom(netip.MustParseAddr("1.1.1.1"), 32)),
+			ipcacheTypes.TunnelPeer{Addr: netip.MustParseAddr("10.0.0.2")},
+			ipcacheTypes.EncryptKey(42),
+		},
+	)
 
-	select {
-	case event := <-ipcacheMock.events:
-		require.Equal(t, nodeEvent{event: "upsert", prefix: netip.PrefixFrom(netip.MustParseAddr("f00d::1"), 128)}, event)
-	case <-time.After(5 * time.Second):
-		t.Errorf("timeout while waiting for ipcache upsert for IP f00d::1")
-	}
+	// node IPv6 allocation CIDRs
+	expectIPCacheUpdate(
+		t, ipcacheMock, "upsert", netip.MustParsePrefix("f00d::/96"),
+		[]ipcache.IPMetadata{
+			worldLabelForPrefix(netip.PrefixFrom(netip.MustParseAddr("f00d::1"), 128)),
+			ipcacheTypes.TunnelPeer{Addr: netip.MustParseAddr("10.0.0.2")},
+			ipcacheTypes.EncryptKey(42),
+		},
+	)
+	expectIPCacheUpdate(
+		t, ipcacheMock, "upsert", netip.MustParsePrefix("cafe::/96"),
+		[]ipcache.IPMetadata{
+			worldLabelForPrefix(netip.PrefixFrom(netip.MustParseAddr("f00d::1"), 128)),
+			ipcacheTypes.TunnelPeer{Addr: netip.MustParseAddr("10.0.0.2")},
+			ipcacheTypes.EncryptKey(42),
+		},
+	)
 
 	select {
 	case event := <-ipcacheMock.events:
@@ -701,26 +900,44 @@ func TestNodeEncryption(t *testing.T) {
 
 	mngr.NodeDeleted(n1)
 
-	select {
-	case event := <-ipcacheMock.events:
-		require.Equal(t, nodeEvent{event: "delete", prefix: netip.PrefixFrom(netip.MustParseAddr("1.1.1.1"), 32)}, event)
-	case <-time.After(5 * time.Second):
-		t.Errorf("timeout while waiting for ipcache delete for IP 1.1.1.1")
-	}
+	// node IP addresses
+	expectIPCacheUpdate(t, ipcacheMock, "delete", netip.PrefixFrom(netip.MustParseAddr("1.1.1.1"), 32))
+	expectIPCacheUpdate(t, ipcacheMock, "delete", netip.PrefixFrom(netip.MustParseAddr("10.0.0.2"), 32))
+	expectIPCacheUpdate(t, ipcacheMock, "delete", netip.PrefixFrom(netip.MustParseAddr("f00d::1"), 128))
 
-	select {
-	case event := <-ipcacheMock.events:
-		require.Equal(t, nodeEvent{event: "delete", prefix: netip.PrefixFrom(netip.MustParseAddr("10.0.0.2"), 32)}, event)
-	case <-time.After(5 * time.Second):
-		t.Errorf("timeout while waiting for ipcache delete for IP 10.0.0.2")
-	}
+	// node IPv4 allocation CIDRs
+	expectIPCacheUpdate(
+		t, ipcacheMock, "delete", netip.MustParsePrefix("10.0.0.0/24"),
+		[]ipcache.IPMetadata{
+			worldLabelForPrefix(netip.PrefixFrom(netip.MustParseAddr("1.1.1.1"), 32)),
+			ipcacheTypes.TunnelPeer{Addr: netip.MustParseAddr("10.0.0.2")},
+			ipcacheTypes.EncryptKey(42),
+		},
+	)
+	expectIPCacheUpdate(t, ipcacheMock, "delete", netip.MustParsePrefix("192.168.10.0/28"),
+		[]ipcache.IPMetadata{
+			worldLabelForPrefix(netip.PrefixFrom(netip.MustParseAddr("1.1.1.1"), 32)),
+			ipcacheTypes.TunnelPeer{Addr: netip.MustParseAddr("10.0.0.2")},
+			ipcacheTypes.EncryptKey(42),
+		},
+	)
 
-	select {
-	case event := <-ipcacheMock.events:
-		require.Equal(t, nodeEvent{event: "delete", prefix: netip.PrefixFrom(netip.MustParseAddr("f00d::1"), 128)}, event)
-	case <-time.After(5 * time.Second):
-		t.Errorf("timeout while waiting for ipcache delete for IP f00d::1")
-	}
+	// node IPv6 allocation CIDRs
+	expectIPCacheUpdate(t, ipcacheMock, "delete", netip.MustParsePrefix("f00d::/96"),
+		[]ipcache.IPMetadata{
+			worldLabelForPrefix(netip.PrefixFrom(netip.MustParseAddr("f00d::1"), 128)),
+			ipcacheTypes.TunnelPeer{Addr: netip.MustParseAddr("10.0.0.2")},
+			ipcacheTypes.EncryptKey(42),
+		},
+	)
+	expectIPCacheUpdate(
+		t, ipcacheMock, "delete", netip.MustParsePrefix("cafe::/96"),
+		[]ipcache.IPMetadata{
+			worldLabelForPrefix(netip.PrefixFrom(netip.MustParseAddr("f00d::1"), 128)),
+			ipcacheTypes.TunnelPeer{Addr: netip.MustParseAddr("10.0.0.2")},
+			ipcacheTypes.EncryptKey(42),
+		},
+	)
 
 	select {
 	case event := <-ipcacheMock.events:
@@ -731,25 +948,13 @@ func TestNodeEncryption(t *testing.T) {
 
 func TestNode(t *testing.T) {
 	ipcacheMock := newIPcacheMock()
-	ipcacheExpect := func(eventType, ipStr string) {
-		select {
-		case event := <-ipcacheMock.events:
-			b := 32
-			if strings.Contains(ipStr, ":") {
-				b = 128
-			}
-			require.Equal(t, nodeEvent{event: eventType, prefix: netip.PrefixFrom(netip.MustParseAddr(ipStr), b)}, event)
-		case <-time.After(5 * time.Second):
-			t.Errorf("timeout while waiting for ipcache upsert for IP %s", ipStr)
-		}
-	}
-
 	dp := newSignalNodeHandler()
 	dp.EnableNodeAddEvent = true
 	dp.EnableNodeUpdateEvent = true
 	dp.EnableNodeDeleteEvent = true
 	h, _ := cell.NewSimpleHealth()
-	mngr, err := New(&option.DaemonConfig{}, ipcacheMock, newIPSetMock(), nil, NewNodeMetrics(), h)
+	logger := hivetest.Logger(t)
+	mngr, err := New(logger, &option.DaemonConfig{}, tunnel.Config{}, ipcacheMock, newIPSetMock(), nil, NewNodeMetrics(), h, nil, nil, nil, fakewireguard.Config{}, node.NewTestLocalNodeStore(node.LocalNode{}))
 	require.NoError(t, err)
 	mngr.Subscribe(dp)
 	defer mngr.Stop(context.TODO())
@@ -784,10 +989,10 @@ func TestNode(t *testing.T) {
 		t.Errorf("timeout while waiting for NodeAdd() event for node1")
 	}
 
-	ipcacheExpect("upsert", "192.0.2.1")
-	ipcacheExpect("upsert", "2001:DB8::1")
-	ipcacheExpect("upsert", "192.0.2.2")
-	ipcacheExpect("upsert", "2001:DB8::2")
+	expectIPCacheUpdate(t, ipcacheMock, "upsert", netip.PrefixFrom(netip.MustParseAddr("192.0.2.1"), 32))
+	expectIPCacheUpdate(t, ipcacheMock, "upsert", netip.PrefixFrom(netip.MustParseAddr("2001:DB8::1"), 128))
+	expectIPCacheUpdate(t, ipcacheMock, "upsert", netip.PrefixFrom(netip.MustParseAddr("192.0.2.2"), 32))
+	expectIPCacheUpdate(t, ipcacheMock, "upsert", netip.PrefixFrom(netip.MustParseAddr("2001:DB8::2"), 128))
 
 	n1V2 := n1.DeepCopy()
 	n1V2.IPAddresses = []nodeTypes.Address{
@@ -816,14 +1021,14 @@ func TestNode(t *testing.T) {
 		t.Errorf("timeout while waiting for NodeUpdate() event for node2")
 	}
 
-	ipcacheExpect("upsert", "192.0.2.10")
-	ipcacheExpect("upsert", "2001:DB8::1")
-	ipcacheExpect("upsert", "192.0.2.20")
-	ipcacheExpect("upsert", "2001:DB8::20")
+	expectIPCacheUpdate(t, ipcacheMock, "upsert", netip.PrefixFrom(netip.MustParseAddr("192.0.2.10"), 32))
+	expectIPCacheUpdate(t, ipcacheMock, "upsert", netip.PrefixFrom(netip.MustParseAddr("2001:DB8::1"), 128))
+	expectIPCacheUpdate(t, ipcacheMock, "upsert", netip.PrefixFrom(netip.MustParseAddr("192.0.2.20"), 32))
+	expectIPCacheUpdate(t, ipcacheMock, "upsert", netip.PrefixFrom(netip.MustParseAddr("2001:DB8::20"), 128))
 
-	ipcacheExpect("delete", "192.0.2.1")
-	ipcacheExpect("delete", "192.0.2.2")
-	ipcacheExpect("delete", "2001:DB8::2")
+	expectIPCacheUpdate(t, ipcacheMock, "delete", netip.PrefixFrom(netip.MustParseAddr("192.0.2.1"), 32))
+	expectIPCacheUpdate(t, ipcacheMock, "delete", netip.PrefixFrom(netip.MustParseAddr("192.0.2.2"), 32))
+	expectIPCacheUpdate(t, ipcacheMock, "delete", netip.PrefixFrom(netip.MustParseAddr("2001:DB8::2"), 128))
 
 	select {
 	case event := <-ipcacheMock.events:
@@ -843,82 +1048,142 @@ func TestNodeManagerEmitStatus(t *testing.T) {
 	// Tests health reporting on node manager.
 	assert := assert.New(t)
 
+	var (
+		statusTable statedb.Table[types.Status]
+		db          *statedb.DB
+		nh1         *signalNodeHandler
+	)
+
 	baseBackgroundSyncInterval = 1 * time.Millisecond
-	fn := func(m *manager, sh hive.Shutdowner, statusTable statedb.Table[types.Status], db *statedb.DB) {
-		defer sh.Shutdown()
+	fn := func(m *manager, sh hive.Shutdowner, st statedb.Table[types.Status], d *statedb.DB, lifecycle cell.Lifecycle) {
 		m.nodes[nodeTypes.Identity{
 			Name:    "node1",
 			Cluster: "c1",
 		}] = &nodeEntry{node: nodeTypes.Node{Name: "node1", Cluster: "c1"}}
-		m.nodeHandlers = make(map[datapath.NodeHandler]struct{})
-		nh1 := newSignalNodeHandler()
+		m.nodeHandlers = make(map[node.Handler]struct{})
+		nh1 = newSignalNodeHandler()
 		nh1.EnableNodeValidateImplementationEvent = true
 		// By default this is a buffered channel, by making it a non-buffered
 		// channel we can sync up iterations of background sync.
 		nh1.NodeValidateImplementationEvent = make(chan nodeTypes.Node)
-		nh1.NodeValidateImplementationEventError = fmt.Errorf("test error")
 		m.nodeHandlers[nh1] = struct{}{}
 
-		done := make(chan struct{})
-		reattempt := make(chan struct{})
-		checkStatus := func(old statedb.Revision) (types.Status, <-chan struct{}, statedb.Revision) {
-			tx := db.ReadTxn()
+		statusTable = st
+		db = d
 
-			id := types.Identifier{
-				Module:    cell.FullModuleID{"node_manager"},
-				Component: []string{"background-sync"},
-			}
-			for {
-				ss, cur, watch, _ := statusTable.GetWatch(tx, health.PrimaryIndex.Query(id.HealthID()))
-				if cur != old {
-					return ss, watch, cur
-				}
-				<-watch
-			}
-		}
-		go func() {
-			status, watch, rev := checkStatus(99)
-			assert.Equal(types.Level(""), status.Level)
-			<-watch
-			status, watch, rev = checkStatus(rev)
-			assert.Equal(types.LevelDegraded, string(status.Level))
-			close(reattempt)
-			<-watch
-			status, _, _ = checkStatus(rev)
-			assert.Equal(types.LevelOK, string(status.Level))
-		}()
-		go func() {
-			<-nh1.NodeValidateImplementationEvent
-			<-reattempt
-			nh1.NodeValidateImplementationEventError = nil
-			<-nh1.NodeValidateImplementationEvent
-			close(done)
-		}()
-		// Start the manager
-		assert.NoError(m.Start(context.Background()))
-		<-done
+		lifecycle.Append(m)
 	}
+
 	ipcacheMock := newIPcacheMock()
-	config := &option.DaemonConfig{}
-	err := hive.New(
+	config := &option.DaemonConfig{
+		StateDir: t.TempDir(),
+	}
+	hive := hive.New(
 		cell.Provide(func() testParams {
 			return testParams{
 				Config:        config,
+				TunnelConf:    tunnel.Config{},
+				WgConf:        fakewireguard.Config{},
 				IPCache:       ipcacheMock,
 				IPSet:         newIPSetMock(),
 				NodeMetrics:   NewNodeMetrics(),
 				IPSetFilterFn: func(no *nodeTypes.Node) bool { return false },
 			}
 		}),
+		cell.Provide(tables.NewDeviceTable),                   // Provide statedb.RWTable[*tables.Device]
+		cell.Provide(statedb.RWTable[*tables.Device].ToTable), // Provide statedb.Table[*tables.Device] from RW table
 		cell.Module("node_manager", "Node Manager", cell.Provide(New)),
+		node.LocalNodeStoreTestCell,
+		cell.Provide(func() cmtypes.ClusterInfo { return cmtypes.ClusterInfo{} }),
 		cell.Invoke(fn),
-	).Run(hivetest.Logger(t))
+	)
+	l := hivetest.Logger(t, hivetest.LogLevel(slog.LevelDebug))
+	hive.Populate(l)
+
+	checkStatus := func() (types.Status, <-chan struct{}) {
+		id := types.Identifier{
+			Module:    cell.FullModuleID{"node_manager"},
+			Component: []string{"job-backgroundSync"},
+		}
+
+		rx := db.ReadTxn()
+		ss, _, watch, found := statusTable.GetWatch(rx, health.PrimaryIndex.Query(id.HealthID()))
+		if !found {
+			_, watch = statusTable.AllWatch(rx)
+		}
+
+		return ss, watch
+	}
+
+	err := hive.Start(l, context.Background())
 	assert.NoError(err)
+	defer hive.Stop(l, context.Background())
+
+	// Initially the status does not exist. When the job starts to run, the
+	// status will be "OK". Wait for the status to be "OK".
+	var (
+		status types.Status
+		watch  <-chan struct{}
+	)
+	for {
+		status, watch = checkStatus()
+		if status.Level == "" {
+			<-watch
+			continue
+		}
+
+		assert.Equal(types.LevelOK, string(status.Level))
+		break
+	}
+
+	// Unblock background sync by reading event. After this we expect the
+	// status to switch to "Degraded", due to the test error set below
+	nh1.NodeValidateImplementationEventError = fmt.Errorf("test error")
+	<-nh1.NodeValidateImplementationEvent
+	<-watch
+	status, watch = checkStatus()
+	assert.Equal(types.LevelDegraded, string(status.Level))
+
+	// Stop returning an error and unblock background sync by reading event. After
+	// this we expect the status to switch to "OK"
+	nh1.NodeValidateImplementationEventError = nil
+	<-nh1.NodeValidateImplementationEvent
+	<-watch
+	status, _ = checkStatus()
+	assert.Equal(types.LevelOK, string(status.Level))
+
+	for range cap(nh1.Stop) {
+		nh1.Stop <- struct{}{}
+	}
 }
+
+var _ cell.Health = (*mockHealth)(nil)
+
+type mockHealth struct {
+	ok chan struct{}
+}
+
+func (mh *mockHealth) OK(status string) {
+	mh.ok <- struct{}{}
+}
+
+func (mh *mockHealth) Degraded(reason string, err error) {
+}
+
+func (mh *mockHealth) Stopped(reason string) {
+}
+
+func (mh *mockHealth) NewScope(name string) cell.Health {
+	return mh
+}
+
+func (mh *mockHealth) Close() {}
 
 type testParams struct {
 	cell.Out
 	Config        *option.DaemonConfig
+	TunnelConf    tunnel.Config
+	WgConf        wgTypes.Config
 	IPCache       IPCache
 	IPSet         ipset.Manager
 	NodeMetrics   *nodeMetrics
@@ -927,22 +1192,21 @@ type testParams struct {
 
 type mockUpdater struct{}
 
-func (m *mockUpdater) UpdateIdentities(_, _ identity.IdentityMap, _ *sync.WaitGroup) {}
-
-type mockTriggerer struct{}
-
-func (m *mockTriggerer) UpdatePolicyMaps(ctx context.Context, wg *sync.WaitGroup) *sync.WaitGroup {
-	return wg
+func (m *mockUpdater) UpdateIdentities(_, _ identity.IdentityMap) <-chan struct{} {
+	out := make(chan struct{})
+	close(out)
+	return out
 }
 
 func TestNodeWithSameInternalIP(t *testing.T) {
+	logger := hivetest.Logger(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	allocator := testidentity.NewMockIdentityAllocator(nil)
 	ipcache := ipcache.NewIPCache(&ipcache.Configuration{
 		Context:           ctx,
+		Logger:            hivetest.Logger(t),
 		IdentityAllocator: allocator,
-		PolicyHandler:     &mockUpdater{},
-		DatapathHandler:   &mockTriggerer{},
+		IdentityUpdater:   &mockUpdater{},
 	})
 	defer cancel()
 	dp := newSignalNodeHandler()
@@ -950,9 +1214,9 @@ func TestNodeWithSameInternalIP(t *testing.T) {
 	dp.EnableNodeUpdateEvent = true
 	dp.EnableNodeDeleteEvent = true
 	h, _ := cell.NewSimpleHealth()
-	mngr, err := New(&option.DaemonConfig{
+	mngr, err := New(logger, &option.DaemonConfig{
 		LocalRouterIPv4: "169.254.4.6",
-	}, ipcache, newIPSetMock(), nil, NewNodeMetrics(), h)
+	}, tunnel.Config{}, ipcache, newIPSetMock(), nil, NewNodeMetrics(), h, nil, nil, nil, fakewireguard.Config{}, node.NewTestLocalNodeStore(node.LocalNode{}))
 	require.NoError(t, err)
 	mngr.Subscribe(dp)
 	defer mngr.Stop(context.TODO())
@@ -1026,6 +1290,7 @@ func TestNodeWithSameInternalIP(t *testing.T) {
 // when a node is updated or removed.
 // It is inspired from TestNode() in manager_test.go.
 func TestNodeIpset(t *testing.T) {
+	logger := hivetest.Logger(t)
 	ipsetExpect := func(ipsetMgr *ipsetMock, ip string, expected bool) {
 		setName := ipset.CiliumNodeIPSetV6
 		if v4 := net.ParseIP(ip).To4(); v4 != nil {
@@ -1049,10 +1314,10 @@ func TestNodeIpset(t *testing.T) {
 	dp.EnableNodeDeleteEvent = true
 	filter := func(no *nodeTypes.Node) bool { return no.Name != "node1" }
 	h, _ := cell.NewSimpleHealth()
-	mngr, err := New(&option.DaemonConfig{
+	mngr, err := New(logger, &option.DaemonConfig{
 		RoutingMode:          option.RoutingModeNative,
 		EnableIPv4Masquerade: true,
-	}, newIPcacheMock(), newIPSetMock(), filter, NewNodeMetrics(), h)
+	}, tunnel.Config{}, newIPcacheMock(), newIPSetMock(), filter, NewNodeMetrics(), h, nil, nil, nil, fakewireguard.Config{}, node.NewTestLocalNodeStore(node.LocalNode{}))
 	mngr.Subscribe(dp)
 	require.NoError(t, err)
 	defer mngr.Stop(context.TODO())
@@ -1172,107 +1437,191 @@ func TestNodeIpset(t *testing.T) {
 
 // Tests that the node manager calls delete on nodes to be pruned.
 func TestNodesStartupPruning(t *testing.T) {
-	n1 := nodeTypes.Node{Name: "node1", Cluster: "c1", IPAddresses: []nodeTypes.Address{
+	c1Node1 := nodeTypes.Node{Name: "node1", Cluster: "c1", IPAddresses: []nodeTypes.Address{
 		{
 			Type: addressing.NodeInternalIP,
 			IP:   net.ParseIP("10.0.0.1"),
 		},
 	}}
 
-	n2 := nodeTypes.Node{Name: "node2", Cluster: "c1", IPAddresses: []nodeTypes.Address{
+	c1Node2 := nodeTypes.Node{Name: "node2", Cluster: "c1", IPAddresses: []nodeTypes.Address{
 		{
 			Type: addressing.NodeInternalIP,
 			IP:   net.ParseIP("10.0.0.2"),
 		},
 	}}
 
-	n3 := nodeTypes.Node{Name: "node3", Cluster: "c2", IPAddresses: []nodeTypes.Address{
+	c1StaleNode := nodeTypes.Node{Name: "node3", Cluster: "c1", IPAddresses: []nodeTypes.Address{
 		{
 			Type: addressing.NodeInternalIP,
 			IP:   net.ParseIP("10.0.0.3"),
 		},
 	}}
 
-	// Create a nodes.json file from the above two nodes, simulating a previous instance of the agent.
-	tmp := t.TempDir()
-	path := filepath.Join(tmp, nodesFilename)
-	nf, err := os.Create(path)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		nf.Close()
-		os.Remove(path)
-	})
-	e := json.NewEncoder(nf)
-	require.NoError(t, e.Encode([]nodeTypes.Node{n3, n2, n1}))
-	require.NoError(t, nf.Sync())
-	require.NoError(t, nf.Close())
+	c2Node1 := nodeTypes.Node{Name: "node1", Cluster: "c2", IPAddresses: []nodeTypes.Address{
+		{
+			Type: addressing.NodeInternalIP,
+			IP:   net.ParseIP("10.0.0.4"),
+		},
+	}}
 
-	checkNodeFileMatches := func(path string, node nodeTypes.Node) {
-		// Wait until the file exists. The node deletion triggers the write, hence
-		// this shouldn't take long.
-		require.EventuallyWithT(t, func(c *assert.CollectT) {
-			assert.FileExists(c, path)
-		}, time.Second, 10*time.Millisecond)
-		nwf, err := os.Open(path)
+	c2StaleNode := nodeTypes.Node{Name: "node2", Cluster: "c2", IPAddresses: []nodeTypes.Address{
+		{
+			Type: addressing.NodeInternalIP,
+			IP:   net.ParseIP("10.0.0.5"),
+		},
+	}}
+
+	setupManager := func(t *testing.T, stateDir string) (*manager, *signalNodeHandler) {
+		logger := hivetest.Logger(t)
+
+		// Create a nodes.json file from the above two nodes, simulating a previous instance of the agent.
+		nodesFilePath := filepath.Join(stateDir, nodesFilename)
+		nf, err := os.Create(nodesFilePath)
 		require.NoError(t, err)
 		t.Cleanup(func() {
-			nwf.Close()
+			nf.Close()
+			os.Remove(nodesFilePath)
 		})
-		var nl []nodeTypes.Node
-		assert.NoError(t, json.NewDecoder(nwf).Decode(&nl))
-		assert.Len(t, nl, 1)
-		assert.Equal(t, node, nl[0])
-		require.NoError(t, os.Remove(path))
+		e := json.NewEncoder(nf)
+		require.NoError(t, e.Encode([]nodeTypes.Node{
+			c1Node1, c1Node2, c1StaleNode, c2Node1, c2StaleNode,
+		}))
+		require.NoError(t, nf.Sync())
+		require.NoError(t, nf.Close())
+
+		// Create a node manager and add only c1-node1 (local).
+		ipcacheMock := newIPcacheMock()
+		dp := newSignalNodeHandler()
+		dp.EnableNodeDeleteEvent = true
+		h, _ := cell.NewSimpleHealth()
+		mngr, err := New(logger, &option.DaemonConfig{
+			StateDir:    stateDir,
+			ClusterName: "c1",
+		}, tunnel.Config{}, ipcacheMock, newIPSetMock(), nil, NewNodeMetrics(), h, nil, nil, nil, fakewireguard.Config{}, node.NewTestLocalNodeStore(node.LocalNode{}))
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			mngr.Stop(context.TODO())
+		})
+		mngr.Subscribe(dp)
+		mngr.NodeUpdated(c1Node1)
+
+		// Load the nodes from disk.
+		mngr.restoreNodeCheckpoint()
+		require.NoError(t, mngr.initNodeCheckpointer(time.Microsecond))
+		// We remove our test file here to be able to tell once the nodemanager has
+		// written one itself.
+		require.NoError(t, os.Remove(nodesFilePath))
+
+		return mngr, dp
 	}
 
-	// Create a node manager and add only node1.
-	ipcacheMock := newIPcacheMock()
-	dp := newSignalNodeHandler()
-	dp.EnableNodeDeleteEvent = true
-	h, _ := cell.NewSimpleHealth()
-	mngr, err := New(&option.DaemonConfig{
-		StateDir:    tmp,
-		ClusterName: "c1",
-	}, ipcacheMock, newIPSetMock(), nil, NewNodeMetrics(), h)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		mngr.Stop(context.TODO())
+	checkNodeFileMatches := func(t *testing.T, stateDir string, nodes ...nodeTypes.Node) {
+		path := filepath.Join(stateDir, nodesFilename)
+
+		var prevBytes []byte
+
+		require.EventuallyWithT(t, func(c *assert.CollectT) {
+			checkpointBytes, err := os.ReadFile(path)
+			assert.NoError(c, err)
+
+			if bytes.Equal(checkpointBytes, prevBytes) {
+				c.FailNow()
+			}
+
+			prevBytes = checkpointBytes
+
+			var nl []nodeTypes.Node
+			assert.NoError(c, json.Unmarshal(checkpointBytes, &nl))
+			assert.ElementsMatch(c, nodes, nl)
+		}, time.Second*2, 100*time.Millisecond)
+	}
+
+	t.Run("cluster nodes synced first", func(t *testing.T) {
+		stateDir := t.TempDir()
+		mngr, dp := setupManager(t, stateDir)
+
+		// Simulate cluster initial listing.
+		// Add c1 node2 and declare cluster nodes synced.
+		// This should prune c1 node3 (since it's present in the file but not in our
+		// current view).
+		mngr.NodeUpdated(c1Node2)
+		mngr.NodeSync()
+
+		select {
+		case dn := <-dp.NodeDeleteEvent:
+			expectedNode := c1StaleNode
+			expectedNode.Source = source.Restored
+			assert.Equal(t, expectedNode, dn, "should have deleted stale node c1 node3 (with source=Restored)")
+		case <-time.After(time.Second * 5):
+			t.Fatal("should have received a node deletion event for stale node c1 node3")
+		}
+
+		checkNodeFileMatches(t, stateDir, c1Node1, c1Node2)
+
+		// Simulate initial cluster mesh sync. This should prune c2 node2 (since
+		// it's present in the file but not in our current view).
+		mngr.NodeUpdated(c2Node1)
+		mngr.MeshNodeSync()
+
+		select {
+		case dn := <-dp.NodeDeleteEvent:
+			expectedNode := c2StaleNode
+			expectedNode.Source = source.Restored
+			assert.Equal(t, expectedNode, dn, "should have deleted stale node c2 node2 (with source=Restored)")
+		case <-time.After(time.Second * 5):
+			t.Fatal("should have received a node deletion event for stale node c2 node2")
+		}
+
+		checkNodeFileMatches(t, stateDir, c1Node1, c1Node2, c2Node1)
+
+		assert.Equal(t, float64(2), mngr.metrics.EventsReceived.WithLabelValues("delete", string(source.Restored)).Get())
+		assert.Equal(t, float64(3), mngr.metrics.NumNodes.Get())
 	})
-	mngr.Subscribe(dp)
-	mngr.NodeUpdated(n1)
 
-	// Load the nodes from disk and initiate pruning. This should prune node 2
-	// (since it's present in the file but not in our current view).
-	mngr.restoreNodeCheckpoint()
-	require.NoError(t, mngr.initNodeCheckpointer(time.Microsecond))
-	// We remove our test file here to be able to tell once the nodemanager has
-	// written one itself.
-	require.NoError(t, os.Remove(path))
-	// Declare cluster nodes synced (but not clustermesh nodes)
-	mngr.NodeSync()
+	t.Run("meshed nodes synced first", func(t *testing.T) {
+		stateDir := t.TempDir()
+		mngr, dp := setupManager(t, stateDir)
 
-	select {
-	case dn := <-dp.NodeDeleteEvent:
-		n2r := n2
-		n2r.Source = source.Restored
-		assert.Equal(t, n2r, dn, "should have deleted node 2 and (with source=Restored)")
-	case <-time.After(time.Second * 5):
-		t.Fatal("should have received a node deletion event for node 2")
-	}
+		// Simulate clustermesh initial sync before cluster nodes are finished listing.
+		// Add c2 node1 and declare clustermesh nodes synced (but not cluster nodes).
+		// This should prune c2 node2 (since it's present in the file but not in our
+		// current view).
+		// Restored cluster nodes should not be pruned yet.
+		mngr.NodeUpdated(c2Node1)
+		mngr.MeshNodeSync()
 
-	checkNodeFileMatches(path, n1)
+		select {
+		case dn := <-dp.NodeDeleteEvent:
+			expectedNode := c2StaleNode
+			expectedNode.Source = source.Restored
+			assert.Equal(t, expectedNode, dn, "should have deleted stale node c2 node2 (with source=Restored)")
+		case <-time.After(time.Second * 5):
+			t.Fatal("should have received a node deletion event for stale node c2 node2")
+		}
 
-	// Allow pruning the clustermesh node.
-	mngr.MeshNodeSync()
+		// Checkpoint should have c1 node1 (local) and c2 node1 (meshed).
+		checkNodeFileMatches(t, stateDir, c1Node1, c2Node1)
 
-	select {
-	case dn := <-dp.NodeDeleteEvent:
-		n3r := n3
-		n3r.Source = source.Restored
-		assert.Equal(t, n3r, dn, "should have deleted node 3 and (with source=Restored)")
-	case <-time.After(time.Second * 5):
-		t.Fatal("should have received a node deletion event for node 3")
-	}
+		// Simulate cluster initial listing.
+		// Add c1 node2 and declare cluster nodes synced.
+		// This should prune c1 node3 (since it's present in the file but not in our
+		// current view).
+		mngr.NodeUpdated(c1Node2)
+		mngr.NodeSync()
 
-	checkNodeFileMatches(path, n1)
+		select {
+		case dn := <-dp.NodeDeleteEvent:
+			expectedNode := c1StaleNode
+			expectedNode.Source = source.Restored
+			assert.Equal(t, expectedNode, dn, "should have deleted stale node c1 node3 (with source=Restored)")
+		case <-time.After(time.Second * 5):
+			t.Fatal("should have received a node deletion event for stale node c1 node3")
+		}
+
+		checkNodeFileMatches(t, stateDir, c1Node1, c1Node2, c2Node1)
+
+		assert.Equal(t, float64(2), mngr.metrics.EventsReceived.WithLabelValues("delete", string(source.Restored)).Get())
+		assert.Equal(t, float64(3), mngr.metrics.NumNodes.Get())
+	})
 }

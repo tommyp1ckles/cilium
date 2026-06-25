@@ -1,17 +1,14 @@
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 /* Copyright Authors of Cilium */
 
-#include "common.h"
-
 #include <bpf/ctx/skb.h>
 #include <bpf/api.h>
+#include "common.h"
 
 #define ENABLE_IPV4
 #define ENABLE_NODEPORT
-#include <node_config.h>
+#include <bpf/config/node.h>
 
-#undef EVENTS_MAP
-#define EVENTS_MAP test_events_map
 #define DEBUG
 
 #include <lib/dbg.h>
@@ -77,7 +74,7 @@ __always_inline int mkpkt(void *dst, bool first)
 	memcpy(dst, tcp_data, sizeof(tcp_data));
 	dst += sizeof(tcp_data);
 
-	return dst - orig;
+	return (int)(dst - orig);
 }
 
 static char pkt[100];
@@ -113,7 +110,7 @@ int test_ct4_rst1_check(__maybe_unused struct __ctx_buff *ctx)
 		int l4_off;
 		struct ct_state ct_state = {};
 		struct ct_state ct_state_new = {};
-		__u16 proto;
+		__be16 proto;
 		__u32 monitor = 0;
 		int ret;
 
@@ -131,8 +128,7 @@ int test_ct4_rst1_check(__maybe_unused struct __ctx_buff *ctx)
 		switch (ret) {
 		case CT_NEW:
 			ct_state_new.node_port = ct_state.node_port;
-			ct_state_new.ifindex = ct_state.ifindex;
-			ret = ct_create4(get_ct_map4(&tuple), &CT_MAP_ANY4, &tuple, ctx,
+			ret = ct_create4(get_ct_map4(&tuple), &cilium_ct_any4_global, &tuple, ctx,
 					 CT_EGRESS, &ct_state_new, NULL);
 			break;
 
@@ -173,7 +169,7 @@ int test_ct4_rst1_check(__maybe_unused struct __ctx_buff *ctx)
 		struct iphdr *ip4;
 		int l3_off = ETH_HLEN;
 		int l4_off;
-		__u16 proto;
+		__be16 proto;
 		__u32 monitor = 0;
 
 		bpf_clear_meta(ctx);
@@ -206,7 +202,7 @@ int test_ct4_rst1_check(__maybe_unused struct __ctx_buff *ctx)
 		assert(entry);
 		assert(entry->rx_flags_seen == tcp_flags_to_u8(TCP_FLAG_SYN | TCP_FLAG_RST));
 
-		__u32 expires = entry->lifetime - bpf_ktime_get_sec();
+		__u32 expires = (__u32)(entry->lifetime - bpf_ktime_get_sec());
 
 		if (expires > 10)
 			test_fatal("Expiration is %ds even if RST flag was set", expires);

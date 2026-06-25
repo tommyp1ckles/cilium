@@ -5,160 +5,509 @@ package manager
 
 import (
 	"context"
-	"errors"
+	"fmt"
+	"net/netip"
 	"testing"
-	"time"
 
-	"github.com/google/go-cmp/cmp"
-	metallbk8s "go.universe.tf/metallb/pkg/k8s"
-	"go.universe.tf/metallb/pkg/k8s/types"
-	v1 "k8s.io/api/core/v1"
-	"k8s.io/client-go/util/workqueue"
+	"github.com/cilium/hive/hivetest"
+	"github.com/cilium/statedb"
+	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
-	"github.com/cilium/cilium/pkg/bgp/mock"
-	"github.com/cilium/cilium/pkg/lock"
-)
-
-const (
-	DefaultTimeout = 30 * time.Second
+	restapi "github.com/cilium/cilium/api/v1/server/restapi/bgp"
+	"github.com/cilium/cilium/pkg/bgp/gobgp"
+	"github.com/cilium/cilium/pkg/bgp/manager/instance"
+	"github.com/cilium/cilium/pkg/bgp/manager/reconciler"
+	"github.com/cilium/cilium/pkg/bgp/manager/tables"
+	"github.com/cilium/cilium/pkg/bgp/types"
+	v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 )
 
 var (
-	errTimeout = errors.New("timeout occurred before mock received event")
-	emptyEps   = metallbk8s.EpsOrSlices{
-		Type: metallbk8s.Eps,
+	testSingleIPv4Prefix = []netip.Prefix{
+		netip.MustParsePrefix("192.168.0.0/24"),
 	}
+	testSingleIPv6Prefix = []netip.Prefix{
+		netip.MustParsePrefix("2001:DB8::/32"),
+	}
+
+	testRouterASN         = 64125
+	testInvalidRouterASN  = 4126
+	testNeighborIP        = "5.6.7.8"
+	testInvalidNeighborIP = "1.2.3.4"
+
+	tableTypeLocRib       = "loc-rib"
+	tableTypeLocAdjRibOut = "adj-rib-out"
+	afiIPv4               = "ipv4"
+	afiIPv6               = "ipv6"
+	safiUnicast           = "unicast"
 )
 
-// TestManagerEventNoService confirms when the
-// manager is provided a service which does not exist
-// in the local service cache it plumbs the
-// correct call to the MetalLB Controller.
-func TestManagerEventNoService(t *testing.T) {
-	service, _, _, serviceID := mock.GenTestServicePairs()
+// TestGetRoutesLegacy tests GetRoutes API of the Manager.
+func TestGetRoutesLegacy(t *testing.T) {
 
-	ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
+	var table = []struct {
+		// name of the test case
+		name string
 
-	var rr struct {
-		lock.Mutex
-		name  string
-		srvRo *v1.Service
-		eps   metallbk8s.EpsOrSlices
-	}
+		// advertised prefixes
+		advertisedPrefixes []netip.Prefix
+		// expected prefixes
+		expectedPrefixes []netip.Prefix
 
-	mockCtrl := &mock.MockMetalLBController{
-		SetBalancer_: func(name string, srvRo *v1.Service, eps metallbk8s.EpsOrSlices) types.SyncState {
-			rr.Lock()
-			rr.name, rr.srvRo, rr.eps = name, srvRo, eps
-			rr.Unlock()
-			cancel()
-			return types.SyncStateSuccess
+		// GetRoutes params
+		routerASN *int64
+		tableType string
+		afi       string
+		safi      string
+		neighbor  *string
+
+		// non-nil if error is expected, nil if not
+		expectedErr error
+	}{
+		{
+			name:               "single IPv4 prefix - retrieve IPv4",
+			advertisedPrefixes: testSingleIPv4Prefix,
+			expectedPrefixes:   testSingleIPv4Prefix,
+			routerASN:          ptr.To[int64](int64(testRouterASN)),
+			tableType:          tableTypeLocRib,
+			afi:                afiIPv4,
+			safi:               safiUnicast,
+			neighbor:           nil,
+			expectedErr:        nil,
+		},
+		{
+			name:               "single IPv4 prefix - retrieve IPv6",
+			advertisedPrefixes: testSingleIPv4Prefix,
+			expectedPrefixes:   nil,
+			routerASN:          ptr.To[int64](int64(testRouterASN)),
+			tableType:          tableTypeLocRib,
+			afi:                afiIPv6,
+			safi:               safiUnicast,
+			neighbor:           nil,
+			expectedErr:        nil,
+		},
+		{
+			name:               "single IPv6 prefix - retrieve IPv6",
+			advertisedPrefixes: testSingleIPv6Prefix,
+			expectedPrefixes:   testSingleIPv6Prefix,
+			routerASN:          nil,
+			tableType:          tableTypeLocRib,
+			afi:                afiIPv6,
+			safi:               safiUnicast,
+			neighbor:           nil,
+			expectedErr:        nil,
+		},
+		{
+			name:               "mixed IPv4 & IPv6 prefixes - retrieve IPv6",
+			advertisedPrefixes: []netip.Prefix{testSingleIPv4Prefix[0], testSingleIPv6Prefix[0]},
+			routerASN:          nil,
+			expectedPrefixes:   testSingleIPv6Prefix,
+			tableType:          tableTypeLocRib,
+			afi:                afiIPv6,
+			safi:               safiUnicast,
+			neighbor:           nil,
+			expectedErr:        nil,
+		},
+		{
+			name:               "incorrect ASN",
+			advertisedPrefixes: testSingleIPv4Prefix,
+			expectedPrefixes:   nil,
+			routerASN:          ptr.To[int64](int64(testInvalidRouterASN)),
+			tableType:          tableTypeLocRib,
+			afi:                afiIPv4,
+			safi:               safiUnicast,
+			neighbor:           nil,
+			expectedErr:        fmt.Errorf(""),
+		},
+		{
+			name:               "unspecified neighbor for adj-rib-out",
+			advertisedPrefixes: testSingleIPv4Prefix,
+			expectedPrefixes:   nil, // nil as the neighbor never goes UP
+			routerASN:          nil,
+			tableType:          tableTypeLocAdjRibOut,
+			afi:                afiIPv4,
+			safi:               safiUnicast,
+			neighbor:           nil,
+			expectedErr:        nil,
+		},
+		{
+			name:               "valid neighbor",
+			advertisedPrefixes: testSingleIPv4Prefix,
+			expectedPrefixes:   nil, // nil as the neighbor never goes UP
+			routerASN:          nil,
+			tableType:          tableTypeLocAdjRibOut,
+			afi:                afiIPv4,
+			safi:               safiUnicast,
+			neighbor:           ptr.To[string](testNeighborIP),
+			expectedErr:        nil,
+		},
+		{
+			name:               "non-existing neighbor",
+			advertisedPrefixes: testSingleIPv4Prefix,
+			expectedPrefixes:   nil,
+			routerASN:          nil,
+			tableType:          tableTypeLocAdjRibOut,
+			afi:                afiIPv4,
+			safi:               safiUnicast,
+			neighbor:           ptr.To[string](testInvalidNeighborIP),
+			expectedErr:        fmt.Errorf(""),
 		},
 	}
 
-	// in this text return false indicating the service does not
-	// exist
-	mockIndexer := &mock.MockIndexer{
-		GetByKey_: func(key string) (item interface{}, exists bool, err error) {
-			return nil, false, nil
-		},
-	}
+	for _, tt := range table {
+		t.Run(tt.name, func(t *testing.T) {
+			// set up BGPRouterManager with one BGP server
+			srvParams := types.ServerParameters{
+				Global: types.BGPGlobal{
+					ASN:        uint32(testRouterASN),
+					RouterID:   "127.0.0.1",
+					ListenPort: -1,
+				},
+			}
+			testInstance, err := instance.NewBGPInstance(context.Background(), gobgp.NewRouterProvider(), hivetest.Logger(t), "test-instance", srvParams)
+			require.NoError(t, err)
 
-	mgr := &Manager{
-		controller: mockCtrl,
-		queue:      workqueue.New(),
-		indexer:    mockIndexer,
-	}
+			testInstance.Config = &v2.CiliumBGPNodeInstance{
+				LocalASN: ptr.To(int64(testRouterASN)),
+				Peers:    []v2.CiliumBGPNodePeer{},
+			}
+			brm := &BGPRouterManager{
+				BGPInstances: LocalInstanceMap{
+					testInstance.Name: testInstance,
+				},
+				running: true,
+			}
 
-	go mgr.run()
+			// add a neighbor
+			n := &types.Neighbor{
+				Address: netip.MustParseAddr(testNeighborIP),
+				ASN:     64100,
+			}
+			err = testInstance.Router.AddNeighbor(context.Background(), n)
+			require.NoError(t, err)
 
-	err := mgr.OnAddService(&service)
-	if err != nil {
-		t.Fatalf("OnAddService call failed: %v", err)
-	}
+			// advertise test-provided prefixes
+			for _, cidr := range tt.advertisedPrefixes {
+				_, err := testInstance.Router.AdvertisePath(context.Background(), types.PathRequest{
+					Path: types.MustNewPathForPrefix(cidr),
+				})
+				require.NoError(t, err)
+			}
 
-	<-ctx.Done()
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		t.Fatal(errTimeout)
-	}
+			// retrieve routes from server's local RIB and
+			routes, err := brm.GetRoutesLegacy(context.Background(), restapi.GetBgpRoutesParams{
+				RouterAsn: tt.routerASN,
+				TableType: tt.tableType,
+				Afi:       tt.afi,
+				Safi:      tt.safi,
+				Neighbor:  tt.neighbor,
+			})
+			if tt.expectedErr == nil {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
 
-	rr.Lock()
-	defer rr.Unlock()
-
-	if !cmp.Equal(rr.name, serviceID.String()) {
-		t.Fatal(cmp.Diff(rr.name, serviceID.String()))
-	}
-	if rr.srvRo != nil {
-		t.Fatal("expected srvRo to be nil")
-	}
-	if !cmp.Equal(rr.eps, emptyEps) {
-		t.Fatal(cmp.Diff(rr.eps, serviceID))
+			// ensure retrieved routes match expected prefixes
+			var retrievedPrefixes []netip.Prefix
+			for _, r := range routes {
+				retrievedPrefixes = append(retrievedPrefixes, netip.MustParsePrefix(r.Prefix))
+			}
+			require.Equal(t, tt.expectedPrefixes, retrievedPrefixes)
+		})
 	}
 }
 
-// TestManagerEvent confirms the Manager
-// performs the correct actions when an
-// event occurs.
-//
-// This code path effectively tests all event handling paths
-// since all events lead to a call to manager.process on the
-// happy path.
-func TestManagerEvent(t *testing.T) {
-	service, v1Service, _, serviceID := mock.GenTestServicePairs()
-
-	ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
-
-	var rr struct {
-		lock.Mutex
-		name  string
-		srvRo *v1.Service
-		eps   metallbk8s.EpsOrSlices
-	}
-
-	mockCtrl := &mock.MockMetalLBController{
-		SetBalancer_: func(name string, srvRo *v1.Service, eps metallbk8s.EpsOrSlices) types.SyncState {
-			rr.Lock()
-			rr.name, rr.srvRo, rr.eps = name, srvRo, eps
-			rr.Unlock()
-			cancel()
-			return types.SyncStateSuccess
+func TestStatedbReconcileErrors(t *testing.T) {
+	var tests = []struct {
+		name            string
+		instances       []*instance.BGPInstance
+		reconcilers     []reconciler.ConfigReconciler
+		initStatedb     []*tables.BGPReconcileError
+		expectedError   bool
+		expectedStatedb []*tables.BGPReconcileError
+	}{
+		{
+			name: "No reconciler error",
+			instances: []*instance.BGPInstance{
+				instance.NewFakeBGPInstanceWithName("instance-1"),
+				instance.NewFakeBGPInstanceWithName("instance-2"),
+			},
+			reconcilers: []reconciler.ConfigReconciler{
+				reconciler.NewFakeReconciler(reconciler.FakeReconcilerParams{
+					Name: "reconciler-1",
+					ReconcilerFunc: func(ctx context.Context, p reconciler.ReconcileParams) error {
+						return nil
+					},
+				}),
+				reconciler.NewFakeReconciler(reconciler.FakeReconcilerParams{
+					Name: "reconciler-2",
+					ReconcilerFunc: func(ctx context.Context, p reconciler.ReconcileParams) error {
+						return nil
+					},
+				}),
+			},
+			initStatedb:     []*tables.BGPReconcileError{},
+			expectedStatedb: []*tables.BGPReconcileError{},
+		},
+		{
+			name: "Both reconcilers return error, for two instances",
+			instances: []*instance.BGPInstance{
+				instance.NewFakeBGPInstanceWithName("instance-1"),
+				instance.NewFakeBGPInstanceWithName("instance-2"),
+			},
+			reconcilers: []reconciler.ConfigReconciler{
+				reconciler.NewFakeReconciler(reconciler.FakeReconcilerParams{
+					Name: "reconciler-1",
+					ReconcilerFunc: func(ctx context.Context, p reconciler.ReconcileParams) error {
+						return fmt.Errorf("reconciler-1 error")
+					},
+				}),
+				reconciler.NewFakeReconciler(reconciler.FakeReconcilerParams{
+					Name: "reconciler-2",
+					ReconcilerFunc: func(ctx context.Context, p reconciler.ReconcileParams) error {
+						return fmt.Errorf("reconciler-2 error")
+					},
+				}),
+			},
+			initStatedb:   []*tables.BGPReconcileError{},
+			expectedError: true,
+			expectedStatedb: []*tables.BGPReconcileError{
+				{
+					Instance: "instance-1",
+					ErrorID:  0,
+					Error:    "reconciler-1 error",
+				},
+				{
+					Instance: "instance-1",
+					ErrorID:  1,
+					Error:    "reconciler-2 error",
+				},
+				{
+					Instance: "instance-2",
+					ErrorID:  0,
+					Error:    "reconciler-1 error",
+				},
+				{
+					Instance: "instance-2",
+					ErrorID:  1,
+					Error:    "reconciler-2 error",
+				},
+			},
+		},
+		{
+			name: "Reconcilers recover from previous error condition",
+			instances: []*instance.BGPInstance{
+				instance.NewFakeBGPInstanceWithName("instance-1"),
+				instance.NewFakeBGPInstanceWithName("instance-2"),
+			},
+			reconcilers: []reconciler.ConfigReconciler{
+				reconciler.NewFakeReconciler(reconciler.FakeReconcilerParams{
+					Name: "reconciler-1",
+					ReconcilerFunc: func(ctx context.Context, p reconciler.ReconcileParams) error {
+						return nil
+					},
+				}),
+				reconciler.NewFakeReconciler(reconciler.FakeReconcilerParams{
+					Name: "reconciler-2",
+					ReconcilerFunc: func(ctx context.Context, p reconciler.ReconcileParams) error {
+						return nil
+					},
+				}),
+			},
+			initStatedb: []*tables.BGPReconcileError{
+				{
+					Instance: "instance-1",
+					ErrorID:  0,
+					Error:    "reconciler-1 error",
+				},
+				{
+					Instance: "instance-1",
+					ErrorID:  1,
+					Error:    "reconciler-2 error",
+				},
+				{
+					Instance: "instance-2",
+					ErrorID:  0,
+					Error:    "reconciler-1 error",
+				},
+				{
+					Instance: "instance-2",
+					ErrorID:  1,
+					Error:    "reconciler-2 error",
+				},
+			},
+			expectedStatedb: []*tables.BGPReconcileError{},
+			expectedError:   false,
+		},
+		{
+			name: "Maximum 5 errors allowed per instance",
+			instances: []*instance.BGPInstance{
+				instance.NewFakeBGPInstanceWithName("instance-1"),
+			},
+			reconcilers: []reconciler.ConfigReconciler{
+				reconciler.NewFakeReconciler(reconciler.FakeReconcilerParams{
+					Name: "reconciler-1",
+					ReconcilerFunc: func(ctx context.Context, p reconciler.ReconcileParams) error {
+						return fmt.Errorf("reconciler-1 error")
+					},
+				}),
+				reconciler.NewFakeReconciler(reconciler.FakeReconcilerParams{
+					Name: "reconciler-2",
+					ReconcilerFunc: func(ctx context.Context, p reconciler.ReconcileParams) error {
+						return fmt.Errorf("reconciler-2 error")
+					},
+				}),
+				reconciler.NewFakeReconciler(reconciler.FakeReconcilerParams{
+					Name: "reconciler-3",
+					ReconcilerFunc: func(ctx context.Context, p reconciler.ReconcileParams) error {
+						return fmt.Errorf("reconciler-3 error")
+					},
+				}),
+				reconciler.NewFakeReconciler(reconciler.FakeReconcilerParams{
+					Name: "reconciler-4",
+					ReconcilerFunc: func(ctx context.Context, p reconciler.ReconcileParams) error {
+						return fmt.Errorf("reconciler-4 error")
+					},
+				}),
+				reconciler.NewFakeReconciler(reconciler.FakeReconcilerParams{
+					Name: "reconciler-5",
+					ReconcilerFunc: func(ctx context.Context, p reconciler.ReconcileParams) error {
+						return fmt.Errorf("reconciler-5 error")
+					},
+				}),
+				reconciler.NewFakeReconciler(reconciler.FakeReconcilerParams{ // this error is not saved
+					Name: "reconciler-6",
+					ReconcilerFunc: func(ctx context.Context, p reconciler.ReconcileParams) error {
+						return fmt.Errorf("reconciler-6 error")
+					},
+				}),
+			},
+			initStatedb: []*tables.BGPReconcileError{},
+			expectedStatedb: []*tables.BGPReconcileError{
+				{
+					Instance: "instance-1",
+					ErrorID:  0,
+					Error:    "reconciler-1 error",
+				},
+				{
+					Instance: "instance-1",
+					ErrorID:  1,
+					Error:    "reconciler-2 error",
+				},
+				{
+					Instance: "instance-1",
+					ErrorID:  2,
+					Error:    "reconciler-3 error",
+				},
+				{
+					Instance: "instance-1",
+					ErrorID:  3,
+					Error:    "reconciler-4 error",
+				},
+				{
+					Instance: "instance-1",
+					ErrorID:  4,
+					Error:    "reconciler-5 error",
+				},
+			},
+			expectedError: true,
+		},
+		{
+			name: "abort reconcile error only logged once",
+			instances: []*instance.BGPInstance{
+				instance.NewFakeBGPInstanceWithName("instance-1"),
+			},
+			reconcilers: []reconciler.ConfigReconciler{
+				reconciler.NewFakeReconciler(reconciler.FakeReconcilerParams{
+					Name: "reconciler-1",
+					ReconcilerFunc: func(ctx context.Context, p reconciler.ReconcileParams) error {
+						return reconciler.ErrAbortReconcile // abort reconcile error
+					},
+				}),
+				reconciler.NewFakeReconciler(reconciler.FakeReconcilerParams{
+					Name: "reconciler-2",
+					ReconcilerFunc: func(ctx context.Context, p reconciler.ReconcileParams) error {
+						return fmt.Errorf("reconciler-2 error")
+					},
+				}),
+				reconciler.NewFakeReconciler(reconciler.FakeReconcilerParams{
+					Name: "reconciler-3",
+					ReconcilerFunc: func(ctx context.Context, p reconciler.ReconcileParams) error {
+						return fmt.Errorf("reconciler-3 error")
+					},
+				}),
+			},
+			initStatedb: []*tables.BGPReconcileError{},
+			expectedStatedb: []*tables.BGPReconcileError{
+				{
+					Instance: "instance-1",
+					ErrorID:  0,
+					Error:    reconciler.ErrAbortReconcile.Error(),
+				},
+			},
+			expectedError: true,
 		},
 	}
 
-	mockIndexer := &mock.MockIndexer{
-		GetByKey_: func(key string) (item interface{}, exists bool, err error) {
-			return &service, true, nil
-		},
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := statedb.New()
+			reconcileErrTbl, err := tables.NewBGPReconcileErrorTable(db)
+			require.NoError(t, err)
 
-	mgr := &Manager{
-		controller: mockCtrl,
-		queue:      workqueue.New(),
-		indexer:    mockIndexer,
-	}
+			testInstances := make(map[string]*instance.BGPInstance)
+			for _, inst := range tt.instances {
+				testInstances[inst.Name] = inst
+			}
 
-	go mgr.run()
+			m := BGPRouterManager{
+				BGPInstances:        testInstances,
+				ConfigReconcilers:   tt.reconcilers,
+				DB:                  db,
+				ReconcileErrorTable: reconcileErrTbl,
+				metrics:             NewBGPManagerMetrics(),
+			}
 
-	err := mgr.OnAddService(&service)
-	if err != nil {
-		t.Fatalf("OnAddService call failed: %v", err)
-	}
+			// init statedb with test data
+			txn := db.WriteTxn(m.ReconcileErrorTable)
+			for _, errObj := range tt.initStatedb {
+				_, _, err = m.ReconcileErrorTable.Insert(txn, errObj)
+				require.NoError(t, err)
+			}
+			txn.Commit()
 
-	<-ctx.Done()
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		t.Fatal(errTimeout)
-	}
+			// call reconcile for each instance
+			for _, inst := range tt.instances {
+				err = m.reconcileBGPConfig(
+					context.Background(),
+					inst,
+					&v2.CiliumBGPNodeInstance{
+						Name: inst.Name,
+					},
+					&v2.CiliumNode{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "node-1",
+						},
+					},
+				)
+				if tt.expectedError {
+					require.Error(t, err)
+				} else {
+					require.NoError(t, err)
+				}
+			}
 
-	rr.Lock()
-	defer rr.Unlock()
+			// check if the statedb is updated correctly
+			var runningStatedb []*tables.BGPReconcileError
+			iter := m.ReconcileErrorTable.All(db.ReadTxn())
+			for errObj := range iter {
+				runningStatedb = append(runningStatedb, errObj)
+			}
 
-	if !cmp.Equal(rr.name, serviceID.String()) {
-		t.Fatal(cmp.Diff(rr.name, serviceID.String()))
-	}
-	if !cmp.Equal(rr.srvRo, &v1Service) {
-		t.Fatal(cmp.Diff(rr.srvRo, &v1Service))
-	}
-	if !cmp.Equal(rr.eps, emptyEps) {
-		t.Fatal(cmp.Diff(rr.eps, emptyEps))
+			require.ElementsMatch(t, tt.expectedStatedb, runningStatedb)
+		})
 	}
 }

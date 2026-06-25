@@ -10,13 +10,15 @@ on:
     inputs:
       renovate_log_level_debug:
         type: boolean
-        description: "Rune Renovate With Debug Log Levels"
+        description: "Run Renovate With Debug Log Levels"
         default: true
 
 jobs:
   renovate:
     name: Run self-hosted Renovate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
       # we need special permission to be able to operate renovate (view, list,
       # create issues, PR, etc.) and we use a GitHub application with fine
@@ -31,16 +33,16 @@ jobs:
       # renovate clones the repository again in its container fs but it needs
       # the renovate configuration to start.
       - name: Checkout
-        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Self-hosted Renovate
-        uses: renovatebot/github-action@dd4d265eb8646cd04fc5f86ff8bc8d496d75a251 # v40.2.8
+        uses: renovatebot/github-action@693b9ef15eec82123529a37c782242f091365961 # v46.1.14
         env:
           # default to DEBUG log level, this is always useful
           LOG_LEVEL: ${{ github.event.inputs.renovate_log_level_debug == 'false' && 'INFO' || 'DEBUG' }}
         with:
           # renovate: datasource=github-releases depName=renovatebot/renovate
-          renovate-version: 38.72.1
+          renovate-version: 43.176.5
           docker-user: root
           docker-cmd-file: .github/actions/renovate/entrypoint.sh
           configurationFile: .github/renovate.json5

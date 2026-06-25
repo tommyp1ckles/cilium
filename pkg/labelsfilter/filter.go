@@ -6,6 +6,7 @@ package labelsfilter
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"regexp"
 	"strings"
@@ -13,12 +14,10 @@ import (
 	k8sConst "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/lock"
-	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 )
 
 var (
-	log                    = logging.DefaultLogger.WithField(logfields.LogSubsys, "labels-filter")
 	validLabelPrefixesMU   lock.RWMutex
 	validLabelPrefixes     *labelPrefixCfg // Label prefixes used to filter from all labels
 	validNodeLabelPrefixes *labelPrefixCfg
@@ -32,7 +31,7 @@ const (
 	reservedLabelsPattern = labels.LabelSourceReserved + ":.*"
 )
 
-// LabelPrefix is the cilium's representation of a container label.
+// LabelPrefix is Cilium's representation of a label prefix.
 // +k8s:deepcopy-gen=false
 // +k8s:openapi-gen=false
 // +deepequal-gen=false
@@ -80,10 +79,10 @@ func (p LabelPrefix) matches(l labels.Label) (bool, int) {
 // parseLabelPrefix returns a LabelPrefix created from the string label parameter.
 func parseLabelPrefix(label string) (*LabelPrefix, error) {
 	labelPrefix := LabelPrefix{}
-	i := strings.IndexByte(label, ':')
-	if i >= 0 {
-		labelPrefix.Source = label[:i]
-		labelPrefix.Prefix = label[i+1:]
+	before, after, found := strings.Cut(label, ":")
+	if found {
+		labelPrefix.Source = before
+		labelPrefix.Prefix = after
 	} else {
 		labelPrefix.Prefix = label
 	}
@@ -109,17 +108,20 @@ func parseLabelPrefix(label string) (*LabelPrefix, error) {
 // ParseLabelPrefixCfg parses valid label prefixes from a file and from a slice
 // of valid prefixes. Both are optional. If both are provided, both list are
 // appended together.
-func ParseLabelPrefixCfg(prefixes, nodePrefixes []string, file string) error {
+func ParseLabelPrefixCfg(logger *slog.Logger, prefixes, nodePrefixes []string, file string) error {
 	var cfg, nodeCfg *labelPrefixCfg
 	var err error
 	var fromCustomFile bool
 
 	// Use default label prefix if configuration file not provided
 	if file == "" {
-		log.Info("Parsing base label prefixes from default label list")
+		logger.Info("Parsing base label prefixes from default label list")
 		cfg = defaultLabelPrefixCfg()
 	} else {
-		log.Infof("Parsing base label prefixes from file %s", file)
+		logger.Info(
+			"Parsing base label prefixes from file",
+			logfields.File, file,
+		)
 		cfg, err = readLabelPrefixCfgFrom(file)
 		if err != nil {
 			return fmt.Errorf("unable to read label prefix file: %w", err)
@@ -128,9 +130,11 @@ func ParseLabelPrefixCfg(prefixes, nodePrefixes []string, file string) error {
 		fromCustomFile = true
 	}
 
-	//exhaustruct:ignore // Reading clean configuration, no need to initialize
 	nodeCfg = &labelPrefixCfg{}
-	log.Infof("Parsing node label prefixes from user inputs: %v", nodePrefixes)
+	logger.Info(
+		"Parsing node label prefixes from user inputs",
+		logfields.Prefix, nodePrefixes,
+	)
 	for _, label := range nodePrefixes {
 		if len(label) == 0 {
 			continue
@@ -147,7 +151,10 @@ func ParseLabelPrefixCfg(prefixes, nodePrefixes []string, file string) error {
 		nodeCfg.LabelPrefixes = append(nodeCfg.LabelPrefixes, p)
 	}
 
-	log.Infof("Parsing additional label prefixes from user inputs: %v", prefixes)
+	logger.Info(
+		"Parsing additional label prefixes from user inputs",
+		logfields.Prefix, prefixes,
+	)
 	for _, label := range prefixes {
 		if len(label) == 0 {
 			continue
@@ -174,22 +181,24 @@ func ParseLabelPrefixCfg(prefixes, nodePrefixes []string, file string) error {
 		}
 
 		if !found {
-			log.Errorf("'%s' needs to be included in the final label list for "+
-				"Cilium to work properly.", reservedLabelsPattern)
+			logger.Error(
+				fmt.Sprintf("'%s' needs to be included in the final label list for "+
+					"Cilium to work properly.", reservedLabelsPattern),
+			)
 		}
 	}
 
 	validLabelPrefixes = cfg
 	validNodeLabelPrefixes = nodeCfg
 
-	log.Info("Final label prefixes to be used for identity evaluation:")
+	logger.Info("Final label prefixes to be used for identity evaluation:")
 	for _, l := range validLabelPrefixes.LabelPrefixes {
-		log.Infof(" - %s", l)
+		logger.Info(fmt.Sprintf(" - %s", l))
 	}
 
-	log.Info("Final node label prefixes to be used for identity evaluation:")
+	logger.Info("Final node label prefixes to be used for identity evaluation:")
 	for _, l := range validNodeLabelPrefixes.LabelPrefixes {
-		log.Infof(" - %s", l)
+		logger.Info(fmt.Sprintf(" - %s", l))
 	}
 
 	return nil
@@ -203,7 +212,7 @@ type labelPrefixCfg struct {
 	LabelPrefixes []*LabelPrefix `json:"valid-prefixes"`
 	// whitelist if true, indicates that an inclusive rule has to match
 	// in order for the label to be considered
-	whitelist bool `exhaustruct:"optional"`
+	whitelist bool
 }
 
 // defaultLabelPrefixCfg returns a default LabelPrefixCfg using the latest
@@ -220,6 +229,7 @@ func defaultLabelPrefixCfg() *labelPrefixCfg {
 		regexp.QuoteMeta(k8sConst.PodNamespaceMetaLabels),               // include all namespace labels
 		regexp.QuoteMeta(k8sConst.AppKubernetes),                        // include app.kubernetes.io
 		regexp.QuoteMeta(k8sConst.PolicyLabelCluster),                   // include io.cilium.k8s.policy.cluster
+		regexp.QuoteMeta(k8sConst.PolicyLabelServiceAccount),            // include io.cilium.k8s.policy.serviceaccount
 		`!io\.kubernetes`,                                               // ignore all other io.kubernetes labels
 		`!kubernetes\.io`,                                               // ignore all other kubernetes.io labels
 		"!" + regexp.QuoteMeta(k8sConst.StatefulSetPodNameLabel),        // ignore statefulset.kubernetes.io/pod-name label
@@ -234,6 +244,7 @@ func defaultLabelPrefixCfg() *labelPrefixCfg {
 		`!controller-uid`,                                               // ignore controller-uid
 		`!annotation.*`,                                                 // ignore all annotation labels
 		`!etcd_node`,                                                    // ignore etcd_node label
+		`!topology\.kubernetes\.io`,                                     // ignore all topology.kubernetes.io labels
 	}
 
 	for _, e := range expressions {
@@ -260,7 +271,7 @@ func readLabelPrefixCfgFrom(fileName string) (*labelPrefixCfg, error) {
 		return nil, err
 	}
 	defer f.Close()
-	//exhaustruct:ignore // Reading clean configuration, no need to initialize
+
 	lpc := labelPrefixCfg{}
 	err = json.NewDecoder(f).Decode(&lpc)
 	if err != nil {

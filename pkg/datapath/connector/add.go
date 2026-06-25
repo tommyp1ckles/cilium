@@ -6,29 +6,42 @@ package connector
 import (
 	"crypto/sha256"
 	"fmt"
+	"slices"
 
+	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
 	"github.com/cilium/cilium/pkg/datapath/linux/sysctl"
-	"github.com/cilium/cilium/pkg/logging"
-	"github.com/cilium/cilium/pkg/logging/logfields"
 )
-
-var log = logging.DefaultLogger.WithField(logfields.LogSubsys, "endpoint-connector")
 
 const (
-	// hostInterfacePrefix is the Host interface prefix.
-	hostInterfacePrefix = "lxc"
+	// HostInterfacePrefix is the Host interface prefix.
+	HostInterfacePrefix = "lxc"
 	// temporaryInterfacePrefix is the temporary interface prefix while setting up libNetwork interface.
 	temporaryInterfacePrefix = "tmp"
+	// ciliumCNIAltName is the alternative interface name set on the peer (pod-side)
+	// end of every veth/netkit pair created by Cilium. Used to identify
+	// Cilium-owned interfaces.
+	ciliumCNIAltName = "cilium_cni"
 )
+
+// IsCiliumManagedLink returns true if the link was created by Cilium, identified
+// by the presence of the CniAltName(ifname) altname attribute.
+func IsCiliumManagedLink(link netlink.Link) bool {
+	return slices.Contains(link.Attrs().AltNames, CniAltName(link.Attrs().Name))
+}
+
+// CniAltName returns the altname for this `ifName`
+func CniAltName(ifName string) string {
+	return fmt.Sprintf("%s:%s", ciliumCNIAltName, ifName)
+}
 
 // Endpoint2IfName returns the host interface name for the given endpointID.
 func Endpoint2IfName(endpointID string) string {
 	sum := fmt.Sprintf("%x", sha256.Sum256([]byte(endpointID)))
 	// returned string length should be < unix.IFNAMSIZ
 	truncateLength := uint(unix.IFNAMSIZ - len(temporaryInterfacePrefix) - 1)
-	return hostInterfacePrefix + truncateString(sum, truncateLength)
+	return HostInterfacePrefix + truncateString(sum, truncateLength)
 }
 
 // Endpoint2TempIfName returns the temporary interface name for the given

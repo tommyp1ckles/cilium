@@ -25,10 +25,10 @@ type lxcObjects struct {
 	ToContainer   *ebpf.Program `ebpf:"cil_to_container"`
 	FromContainer *ebpf.Program `ebpf:"cil_from_container"`
 
-	PolicyProg *ebpf.Program `ebpf:"handle_policy"`
+	PolicyProg *ebpf.Program `ebpf:"cil_lxc_policy"`
 	PolicyMap  *ebpf.Map     `ebpf:"cilium_call_policy"`
 
-	EgressPolicyProg *ebpf.Program `ebpf:"handle_policy_egress"`
+	EgressPolicyProg *ebpf.Program `ebpf:"cil_lxc_policy_egress"`
 	EgressPolicyMap  *ebpf.Map     `ebpf:"cilium_egresscall_policy"`
 }
 
@@ -42,7 +42,7 @@ type hostObjects struct {
 	ToHost   *ebpf.Program `ebpf:"cil_to_host"`
 	FromHost *ebpf.Program `ebpf:"cil_from_host"`
 
-	PolicyProg *ebpf.Program `ebpf:"handle_lxc_traffic"`
+	PolicyProg *ebpf.Program `ebpf:"cil_host_policy"`
 	PolicyMap  *ebpf.Map     `ebpf:"cilium_call_policy"`
 }
 
@@ -82,24 +82,15 @@ func (o *overlayObjects) Close() {
 	bpfClose(o.FromOverlay, o.ToOverlay)
 }
 
-// networkObjects receives eBPF objects for attaching to IPsec interfaces.
-// Objects originate from bpf_network.c.
-type networkObjects struct {
-	FromNetwork *ebpf.Program `ebpf:"cil_from_network"`
-}
-
-func (o *networkObjects) Close() {
-	bpfClose(o.FromNetwork)
-}
-
 // wireguardObjects receives eBPF objects for attaching to Wireguard interfaces.
 // Objects originate from bpf_wireguard.c.
 type wireguardObjects struct {
-	ToWireguard *ebpf.Program `ebpf:"cil_to_wireguard"`
+	FromWireguard *ebpf.Program `ebpf:"cil_from_wireguard"`
+	ToWireguard   *ebpf.Program `ebpf:"cil_to_wireguard"`
 }
 
 func (o *wireguardObjects) Close() {
-	bpfClose(o.ToWireguard)
+	bpfClose(o.FromWireguard, o.ToWireguard)
 }
 
 func bpfClose(closers ...io.Closer) error {

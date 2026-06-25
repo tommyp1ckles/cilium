@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"regexp"
 
+	"github.com/cilium/hive/cell"
+
 	"github.com/cilium/cilium/pkg/defaults"
 )
 
@@ -77,6 +79,20 @@ func ValidateClusterName(name string) error {
 	return nil
 }
 
+func RegisterClusterInfoValidator(lc cell.Lifecycle, cinfo ClusterInfo) {
+	lc.Append(cell.Hook{
+		OnStart: func(cell.HookContext) error {
+			if err := cinfo.InitClusterIDMax(); err != nil {
+				return err
+			}
+			if err := cinfo.ValidateStrict(); err != nil {
+				return err
+			}
+			return nil
+		},
+	})
+}
+
 type CiliumClusterConfig struct {
 	ID uint32 `json:"id,omitempty"`
 
@@ -98,4 +114,16 @@ type CiliumClusterConfigCapabilities struct {
 	// Whether or not MCS-API ServiceExports is enabled by the cluster.
 	// Additionally a nil values means that it's not supported.
 	ServiceExportsEnabled *bool `json:"serviceExportsEnabled,omitempty"`
+
+	// EndpointSlicesExportMode describes whether service and endpoint slices
+	// resources are exported to support the transition to endpoint slices.
+	EndpointSlicesExportMode EndpointSlicesExportMode `json:"endpointSlicesExportMode,omitempty"`
 }
+
+type EndpointSlicesExportMode string
+
+const (
+	EndpointSlicesExportModeServicesOnly              EndpointSlicesExportMode = ""
+	EndpointSlicesExportModeServicesAndEndpointSlices EndpointSlicesExportMode = "services-and-endpointslices"
+	EndpointSlicesExportModeEndpointSlicesOnly        EndpointSlicesExportMode = "endpointslices-only"
+)

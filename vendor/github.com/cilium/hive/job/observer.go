@@ -6,20 +6,22 @@ package job
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
-	"sync"
 	"time"
+
+	"github.com/cilium/stream"
 
 	"github.com/cilium/hive"
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/internal"
-	"github.com/cilium/stream"
 )
 
-// AddObserver adds an observer job to the group. Observer jobs invoke the given `fn` for each item observed on
-// `observable`. If the `observable` completes, the job stops. The context given to the observable is also canceled
-// once the group stops.
+// Observer jobs invoke the given `fn` for each item observed on `observable`.
+// The Observer name must match regex "^[a-zA-Z][a-zA-Z0-9_\-]{0,100}$". If the `observable` completes, the job stops.
+// The context given to the observable is also canceled once the group stops.
 func Observer[T any](name string, fn ObserverFunc[T], observable stream.Observable[T], opts ...observerOpt[T]) Job {
+	name = sanitizeName(name)
 	if fn == nil {
 		panic("`fn` must not be nil")
 	}
@@ -40,6 +42,14 @@ type ObserverFunc[T any] func(ctx context.Context, event T) error
 
 type observerOpt[T any] func(*jobObserver[T])
 
+// WithObserverShutdown option configures an observer job to shutdown the whole
+// hive if the observer function returns a non-nil, non-context.Canceled error.
+func WithObserverShutdown[T any]() observerOpt[T] {
+	return func(jo *jobObserver[T]) {
+		jo.shutdownOnError = true
+	}
+}
+
 type jobObserver[T any] struct {
 	name string
 	fn   ObserverFunc[T]
@@ -50,17 +60,25 @@ type jobObserver[T any] struct {
 	observable stream.Observable[T]
 
 	// If not nil, call the shutdowner on error
-	shutdown hive.Shutdowner
+	shutdown        hive.Shutdowner
+	shutdownOnError bool
 }
 
-func (jo *jobObserver[T]) start(ctx context.Context, wg *sync.WaitGroup, health cell.Health, options options) {
-	defer wg.Done()
+func (jo *jobObserver[T]) info() string {
+	return fmt.Sprintf("%s (%s)", jo.name, internal.FuncNameAndLocation(jo.fn))
+}
 
+func (jo *jobObserver[T]) start(ctx context.Context, health cell.Health, options options) {
 	for _, opt := range jo.opts {
 		opt(jo)
 	}
 
+	if jo.shutdownOnError && options.shutdowner != nil {
+		jo.shutdown = options.shutdowner
+	}
+
 	jo.health = health.NewScope("observer-job-" + jo.name)
+	defer jo.health.Close()
 	reportTicker := time.NewTicker(10 * time.Second)
 	defer reportTicker.Stop()
 
@@ -68,15 +86,12 @@ func (jo *jobObserver[T]) start(ctx context.Context, wg *sync.WaitGroup, health 
 		"name", jo.name,
 		"func", internal.FuncNameAndLocation(jo.fn))
 
-	l.Debug("Observer job started")
 	jo.health.OK("Primed")
 	var msgCount uint64
 
 	done := make(chan struct{})
 
-	var (
-		err error
-	)
+	var err error
 	jo.observable.Observe(ctx, func(t T) {
 		start := time.Now()
 		err := jo.fn(ctx, t)
@@ -91,8 +106,12 @@ func (jo *jobObserver[T]) start(ctx context.Context, wg *sync.WaitGroup, health 
 				return
 			}
 
-			jo.health.Degraded("observer job errored", err)
-			l.Error("Observer job errored", "error", err)
+			msg := fmt.Sprintf("Observer job failed (duration %s)", duration)
+			jo.health.Degraded(msg, err)
+			l.Error("Observer job errored",
+				"error", err,
+				"duration", duration,
+			)
 
 			if options.metrics != nil {
 				options.metrics.JobError(jo.name, err)
@@ -120,10 +139,7 @@ func (jo *jobObserver[T]) start(ctx context.Context, wg *sync.WaitGroup, health 
 
 	<-done
 
-	jo.health.Stopped("observer job done")
-	if err != nil {
+	if err != nil && !errors.Is(err, context.Canceled) {
 		l.Error("Observer job stopped with an error", "error", err)
-	} else {
-		l.Debug("Observer job stopped")
 	}
 }

@@ -15,7 +15,6 @@ type Value struct {
 	Data        []byte
 	ModRevision uint64
 	LeaseID     int64
-	SessionID   string
 }
 
 // KeyValuePairs is a map of key=value pairs
@@ -59,4 +58,19 @@ func StateToCachePrefix(prefix string) string {
 		return strings.Replace(prefix, StatePrefix, CachePrefix, 1)
 	}
 	return prefix
+}
+
+// JoinKey joins any number of kvstore key elements into a single key, separating
+// them with slashes. Empty elements are ignored, duplicate and trailing slashes
+// are removed. It provides a similar behavior compared to [path.Key], without
+// applying the [path.Clean] normalizations that are not desired in this context,
+// given that `.` and `..` do not bear any special semantics in the kvstore keys.
+func JoinKey(elems ...string) string {
+	var key = strings.Join(elems, "/")
+
+	for strings.Contains(key, "//") {
+		key = strings.ReplaceAll(key, "//", "/")
+	}
+
+	return strings.TrimRight(key, "/")
 }

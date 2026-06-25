@@ -5,8 +5,11 @@ package gateway_api
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
@@ -14,37 +17,38 @@ import (
 
 	"github.com/cilium/cilium/operator/pkg/model"
 	"github.com/cilium/cilium/operator/pkg/model/translation"
+	"github.com/cilium/cilium/pkg/annotation"
 	ciliumv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
+	"github.com/cilium/cilium/pkg/shortener"
 )
 
 var _ translation.Translator = (*gatewayAPITranslator)(nil)
 
 const (
-	ciliumGatewayPrefix = "cilium-gateway-"
+	CiliumGatewayPrefix = "cilium-gateway-"
 	// Deprecated: owningGatewayLabel will be removed later in favour of gatewayNameLabel
-	owningGatewayLabel = "io.cilium.gateway/owning-gateway"
-	gatewayNameLabel   = "gateway.networking.k8s.io/gateway-name"
+	owningGatewayLabel    = "io.cilium.gateway/owning-gateway"
+	gatewayNameLabel      = "gateway.networking.k8s.io/gateway-name"
+	lbAlgorithmAnnotation = "service.cilium.io/lb-algorithm"
+	lbAlgorithmMaglev     = "maglev"
 )
 
 type gatewayAPITranslator struct {
 	cecTranslator translation.CECTranslator
-
-	hostNetworkEnabled    bool
-	externalTrafficPolicy string
+	cfg           translation.Config
 }
 
-func NewTranslator(cecTranslator translation.CECTranslator, hostNetworkEnabled bool, externalTrafficPolicy string) translation.Translator {
+func NewTranslator(cecTranslator translation.CECTranslator, cfg translation.Config) translation.Translator {
 	return &gatewayAPITranslator{
-		cecTranslator:         cecTranslator,
-		hostNetworkEnabled:    hostNetworkEnabled,
-		externalTrafficPolicy: externalTrafficPolicy,
+		cecTranslator: cecTranslator,
+		cfg:           cfg,
 	}
 }
 
-func (t *gatewayAPITranslator) Translate(m *model.Model) (*ciliumv2.CiliumEnvoyConfig, *corev1.Service, *corev1.Endpoints, error) {
+func (t *gatewayAPITranslator) Translate(m *model.Model) (*ciliumv2.CiliumEnvoyConfig, *corev1.Service, []*discoveryv1.EndpointSlice, error) {
 	listeners := m.GetListeners()
 	if len(listeners) == 0 || len(listeners[0].GetSources()) == 0 {
-		return nil, nil, nil, fmt.Errorf("model source can't be empty")
+		return nil, nil, nil, fmt.Errorf("model source can't be empty, %d listeners", len(listeners))
 	}
 
 	// source is the main object that is the source of the model.Model
@@ -55,7 +59,6 @@ func (t *gatewayAPITranslator) Translate(m *model.Model) (*ciliumv2.CiliumEnvoyC
 	// is the HTTPRoute.
 	var owner *model.FullyQualifiedResource
 
-	var ports []uint32
 	for _, l := range listeners {
 		sources := l.GetSources()
 		source = &sources[0]
@@ -66,7 +69,6 @@ func (t *gatewayAPITranslator) Translate(m *model.Model) (*ciliumv2.CiliumEnvoyC
 			owner = &sources[1]
 		}
 
-		ports = append(ports, l.GetPort())
 	}
 
 	if source == nil || source.Name == "" {
@@ -76,15 +78,19 @@ func (t *gatewayAPITranslator) Translate(m *model.Model) (*ciliumv2.CiliumEnvoyC
 	// generatedName is the name of the generated objects.
 	// for Gateways, this is "cilium-gateway-<servicename>"
 	// for GAMMA, this is just "<servicename>"
-	generatedName := ciliumGatewayPrefix + source.Name
+	generatedName := CiliumGatewayPrefix + source.Name
 
 	// TODO: remove this hack
 	if source.Kind == "Service" {
 		generatedName = source.Name
 	}
-	cec, err := t.cecTranslator.Translate(source.Namespace, generatedName, m)
-	if err != nil {
-		return nil, nil, nil, err
+	var cec *ciliumv2.CiliumEnvoyConfig
+	var err error
+	if m.IsHTTPListenerConfigured() || m.IsTLSPassthroughListenerConfigured() {
+		cec, err = t.cecTranslator.Translate(source.Namespace, shortener.ShortenK8sResourceName(generatedName), m)
+		if err != nil {
+			return nil, nil, nil, err
+		}
 	}
 
 	var allLabels, allAnnotations map[string]string
@@ -95,97 +101,335 @@ func (t *gatewayAPITranslator) Translate(m *model.Model) (*ciliumv2.CiliumEnvoyC
 		allLabels = mergeMap(allLabels, l.GetLabels())
 	}
 
-	if err = decorateCEC(cec, owner, allLabels, allAnnotations); err != nil {
-		return nil, nil, nil, err
+	if cec != nil {
+		if err = decorateCEC(cec, owner, allLabels, allAnnotations); err != nil {
+			return nil, nil, nil, err
+		}
 	}
 
-	ep := getEndpoints(*source, allLabels, allAnnotations)
-	lbSvc := getService(source, ports, allLabels, allAnnotations, t.externalTrafficPolicy)
-
-	if t.hostNetworkEnabled {
-		lbSvc.Spec.Type = corev1.ServiceTypeClusterIP
-		lbSvc.Spec.ExternalTrafficPolicy = corev1.ServiceExternalTrafficPolicy("")
-	}
-
-	return cec, lbSvc, ep, err
-}
-
-func getService(resource *model.FullyQualifiedResource, allPorts []uint32, labels, annotations map[string]string, externalTrafficPolicy string) *corev1.Service {
-	uniquePorts := map[uint32]struct{}{}
-	for _, p := range allPorts {
-		uniquePorts[p] = struct{}{}
-	}
-
-	ports := make([]corev1.ServicePort, 0, len(uniquePorts))
-	for p := range uniquePorts {
-		ports = append(ports, corev1.ServicePort{
-			Name:     fmt.Sprintf("port-%d", p),
-			Port:     int32(p),
-			Protocol: corev1.ProtocolTCP,
+	// Maglev is required for Cilium's datapath to honor backend weights.
+	// See cilium/cilium#46061.
+	if l4HasWeights(m.L4) {
+		allAnnotations = mergeMap(allAnnotations, map[string]string{
+			lbAlgorithmAnnotation: lbAlgorithmMaglev,
 		})
 	}
 
-	shortenName := model.Shorten(resource.Name)
+	servicePorts := t.toServicePorts(listeners)
+	lbSvc := t.desiredService(listeners[0].GetService(), source, servicePorts, allLabels, allAnnotations)
 
-	return &corev1.Service{
+	endpointSlices := t.desiredL4EndpointSlices(m.L4, source, lbSvc)
+	// L7 paths need a dummy EndpointSlice (see cilium/cilium#19262); L4 paths supply their own.
+	if len(endpointSlices) == 0 && (m.IsHTTPListenerConfigured() || m.IsTLSPassthroughListenerConfigured()) {
+		endpointSlices = t.desiredL7DummyEndpointSlice(source, allLabels, allAnnotations)
+	}
+
+	return cec, lbSvc, endpointSlices, nil
+}
+
+func l4HasWeights(listeners []model.L4Listener) bool {
+	for _, l := range listeners {
+		for _, route := range l.Routes {
+			for _, b := range route.Backends {
+				if b.Weight != nil {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func (t *gatewayAPITranslator) desiredService(params *model.Service, owner *model.FullyQualifiedResource,
+	servicePorts []corev1.ServicePort, labels, annotations map[string]string,
+) *corev1.Service {
+	if owner == nil {
+		return nil
+	}
+
+	shortenName := shortener.ShortenK8sResourceName(owner.Name)
+
+	res := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      model.Shorten(ciliumGatewayPrefix + resource.Name),
-			Namespace: resource.Namespace,
+			Name:      shortener.ShortenK8sResourceName(CiliumGatewayPrefix + owner.Name),
+			Namespace: owner.Namespace,
 			Labels: mergeMap(map[string]string{
 				owningGatewayLabel: shortenName,
 				gatewayNameLabel:   shortenName,
 			}, labels),
-			Annotations: annotations,
+			Annotations: t.toServiceAnnotations(annotations, params),
 			OwnerReferences: []metav1.OwnerReference{
 				{
 					APIVersion: gatewayv1beta1.GroupVersion.String(),
-					Kind:       resource.Kind,
-					Name:       resource.Name,
-					UID:        types.UID(resource.UID),
+					Kind:       owner.Kind,
+					Name:       owner.Name,
+					UID:        types.UID(owner.UID),
 					Controller: ptr.To(true),
 				},
 			},
 		},
 		Spec: corev1.ServiceSpec{
-			Type:                  corev1.ServiceTypeLoadBalancer,
-			ExternalTrafficPolicy: corev1.ServiceExternalTrafficPolicy(externalTrafficPolicy),
-			Ports:                 ports,
+			Ports:                         servicePorts,
+			Type:                          t.toServiceType(params),
+			ExternalTrafficPolicy:         t.toExternalTrafficPolicy(params),
+			LoadBalancerClass:             t.toLoadBalancerClass(params),
+			LoadBalancerSourceRanges:      t.toLoadBalancerSourceRanges(params),
+			IPFamilies:                    t.toIPFamilies(params),
+			IPFamilyPolicy:                t.toIPFamilyPolicy(params),
+			AllocateLoadBalancerNodePorts: t.toAllocateLoadBalancerNodePorts(params),
+			TrafficDistribution:           t.toTrafficDistribution(params),
+		},
+	}
+
+	return res
+}
+
+// toServicePorts returns a list of ServicePort objects from the given listeners.
+func (t *gatewayAPITranslator) toServicePorts(listeners []model.Listener) []corev1.ServicePort {
+	type portProtocols struct {
+		tcp bool
+		udp bool
+	}
+
+	byPort := map[uint32]portProtocols{}
+	for _, l := range listeners {
+		if l == nil {
+			continue
+		}
+		port := l.GetPort()
+		protos := byPort[port]
+		switch l.GetProtocol() {
+		case model.L4ProtocolUDP:
+			protos.udp = true
+		default:
+			protos.tcp = true
+		}
+		byPort[port] = protos
+	}
+
+	type portProtocol struct {
+		port  uint32
+		proto corev1.Protocol
+	}
+
+	entries := make([]portProtocol, 0, len(byPort))
+	for port, protos := range byPort {
+		if protos.tcp {
+			entries = append(entries, portProtocol{
+				port:  port,
+				proto: corev1.ProtocolTCP,
+			})
+		}
+		if protos.udp {
+			entries = append(entries, portProtocol{
+				port:  port,
+				proto: corev1.ProtocolUDP,
+			})
+		}
+	}
+
+	slices.SortFunc(entries, func(a, b portProtocol) int {
+		if a.port != b.port {
+			if a.port < b.port {
+				return -1
+			}
+			return 1
+		}
+		if a.proto == b.proto {
+			return 0
+		}
+		if a.proto == corev1.ProtocolTCP {
+			return -1
+		}
+		return 1
+	})
+
+	servicePorts := make([]corev1.ServicePort, 0, len(entries))
+	for _, entry := range entries {
+		name := fmt.Sprintf("port-%d", entry.port)
+		if entry.proto == corev1.ProtocolUDP {
+			name = fmt.Sprintf("port-%d-udp", entry.port)
+		}
+		servicePorts = append(servicePorts, corev1.ServicePort{
+			Name:     name,
+			Port:     int32(entry.port),
+			Protocol: entry.proto,
+		})
+	}
+
+	return servicePorts
+}
+
+// toServiceType returns the ServiceType from the given Service object.
+// If hostNetwork is enabled, it returns ServiceTypeNodePort. The default value is ServiceTypeLoadBalancer.
+func (t *gatewayAPITranslator) toServiceType(params *model.Service) corev1.ServiceType {
+	if t.cfg.HostNetworkConfig.Enabled {
+		return corev1.ServiceTypeNodePort
+	}
+	if params == nil {
+		return corev1.ServiceTypeLoadBalancer
+	}
+	return corev1.ServiceType(params.Type)
+}
+
+// toExternalTrafficPolicy returns the ExternalTrafficPolicy from the given Service object.
+// If hostNetwork is enabled, no external traffic policy is return.
+// The default value is the one from the configuration flag.
+func (t *gatewayAPITranslator) toExternalTrafficPolicy(params *model.Service) corev1.ServiceExternalTrafficPolicy {
+	if t.cfg.HostNetworkConfig.Enabled {
+		return corev1.ServiceExternalTrafficPolicy("")
+	}
+
+	if params == nil || len(params.ExternalTrafficPolicy) == 0 {
+		return corev1.ServiceExternalTrafficPolicy(t.cfg.ServiceConfig.ExternalTrafficPolicy)
+	}
+
+	return corev1.ServiceExternalTrafficPolicy(params.ExternalTrafficPolicy)
+}
+
+// toLoadBalancerClass returns the LoadBalancerClass from the given Service object.
+// Applicable for LoadBalancer type services only.
+func (t *gatewayAPITranslator) toLoadBalancerClass(params *model.Service) *string {
+	if params == nil || params.LoadBalancerClass == nil {
+		return nil
+	}
+	if t.toServiceType(params) != corev1.ServiceTypeLoadBalancer {
+		return nil
+	}
+	return params.LoadBalancerClass
+}
+
+// toLoadBalancerSourceRanges returns the LoadBalancerSourceRanges from the given Service object.
+// Applicable for LoadBalancer type services only.
+func (t *gatewayAPITranslator) toLoadBalancerSourceRanges(params *model.Service) []string {
+	if params == nil || params.LoadBalancerSourceRanges == nil {
+		return nil
+	}
+
+	// Only return the source ranges if the service type is LoadBalancer
+	if t.toServiceType(params) != corev1.ServiceTypeLoadBalancer {
+		return nil
+	}
+
+	return params.LoadBalancerSourceRanges
+}
+
+// toIPFamilies returns the IPFamilies from the given Service object.
+// The default value is the one from the configuration flags (e.g. IPv4 and IPv6 enabled).
+func (t *gatewayAPITranslator) toIPFamilies(params *model.Service) []corev1.IPFamily {
+	if params == nil || params.IPFamilies == nil {
+		if t.cfg.IPConfig.IPv4Enabled && t.cfg.IPConfig.IPv6Enabled {
+			return []corev1.IPFamily{corev1.IPv4Protocol, corev1.IPv6Protocol}
+		}
+
+		if t.cfg.IPConfig.IPv4Enabled {
+			return []corev1.IPFamily{corev1.IPv4Protocol}
+		}
+
+		if t.cfg.IPConfig.IPv6Enabled {
+			return []corev1.IPFamily{corev1.IPv6Protocol}
+		}
+		return nil
+	}
+
+	var families []corev1.IPFamily
+	for _, f := range params.IPFamilies {
+		families = append(families, corev1.IPFamily(f))
+	}
+
+	return families
+}
+
+// toIPFamilyPolicy returns the IPFamilyPolicy from the given Service object.
+func (t *gatewayAPITranslator) toIPFamilyPolicy(params *model.Service) *corev1.IPFamilyPolicy {
+	if params == nil || params.IPFamilyPolicy == nil {
+		if t.cfg.IPConfig.IPv4Enabled && t.cfg.IPConfig.IPv6Enabled {
+			return ptr.To(corev1.IPFamilyPolicyPreferDualStack)
+		}
+		return nil
+	}
+	return ptr.To(corev1.IPFamilyPolicy(*params.IPFamilyPolicy))
+}
+
+// toAllocateLoadBalancerNodePorts returns the AllocateLoadBalancerNodePorts from the given Service object.
+// Applicable for LoadBalancer type services only.
+func (t *gatewayAPITranslator) toAllocateLoadBalancerNodePorts(params *model.Service) *bool {
+	if params == nil || params.AllocateLoadBalancerNodePorts == nil {
+		return nil
+	}
+	if t.toServiceType(params) != corev1.ServiceTypeLoadBalancer {
+		return nil
+	}
+	return params.AllocateLoadBalancerNodePorts
+}
+
+// toTrafficDistribution returns the TrafficDistribution from the given Service object.
+func (t *gatewayAPITranslator) toTrafficDistribution(params *model.Service) *string {
+	if params == nil || params.TrafficDistribution == nil {
+		return nil
+	}
+	return params.TrafficDistribution
+}
+
+func (t *gatewayAPITranslator) desiredL7DummyEndpointSlice(owner *model.FullyQualifiedResource, labels, annotations map[string]string) []*discoveryv1.EndpointSlice {
+	if owner == nil {
+		return nil
+	}
+	shortedName := shortener.ShortenK8sResourceName(owner.Name)
+
+	return []*discoveryv1.EndpointSlice{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      shortener.ShortenK8sResourceName(CiliumGatewayPrefix + owner.Name),
+				Namespace: owner.Namespace,
+				Labels: mergeMap(map[string]string{
+					owningGatewayLabel:           shortedName,
+					gatewayNameLabel:             shortedName,
+					discoveryv1.LabelServiceName: shortener.ShortenK8sResourceName(CiliumGatewayPrefix + owner.Name),
+				}, labels),
+				Annotations: annotations,
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion: gatewayv1beta1.GroupVersion.String(),
+						Kind:       owner.Kind,
+						Name:       owner.Name,
+						UID:        types.UID(owner.UID),
+						Controller: ptr.To(true),
+					},
+				},
+			},
+			AddressType: discoveryv1.AddressTypeIPv4,
+			Endpoints: []discoveryv1.Endpoint{
+				{
+					// This dummy endpoint is required as agent refuses to push service entry
+					// to the lb map when the service has no backends.
+					// Related github issue https://github.com/cilium/cilium/issues/19262
+					Addresses: []string{"192.192.192.192"}, // dummy
+					// Ready must be explicit: K8s treats nil as ready, but some
+					// consumers (e.g. GKE NEG controller) require it set. See #44611.
+					Conditions: discoveryv1.EndpointConditions{
+						Ready: ptr.To(true),
+					},
+				},
+			},
+			Ports: []discoveryv1.EndpointPort{
+				{
+					Port: ptr.To[int32](9999), // dummy
+				},
+			},
 		},
 	}
 }
 
-func getEndpoints(resource model.FullyQualifiedResource, labels, annotations map[string]string) *corev1.Endpoints {
-	shortedName := model.Shorten(resource.Name)
-
-	return &corev1.Endpoints{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      model.Shorten(ciliumGatewayPrefix + resource.Name),
-			Namespace: resource.Namespace,
-			Labels: mergeMap(map[string]string{
-				owningGatewayLabel: shortedName,
-				gatewayNameLabel:   shortedName,
-			}, labels),
-			Annotations: annotations,
-			OwnerReferences: []metav1.OwnerReference{
-				{
-					APIVersion: gatewayv1beta1.GroupVersion.String(),
-					Kind:       resource.Kind,
-					Name:       resource.Name,
-					UID:        types.UID(resource.UID),
-					Controller: ptr.To(true),
-				},
-			},
-		},
-		Subsets: []corev1.EndpointSubset{
-			{
-				// This dummy endpoint is required as agent refuses to push service entry
-				// to the lb map when the service has no backends.
-				// Related github issue https://github.com/cilium/cilium/issues/19262
-				Addresses: []corev1.EndpointAddress{{IP: "192.192.192.192"}}, // dummy
-				Ports:     []corev1.EndpointPort{{Port: 9999}},               // dummy
-			},
-		},
+func (t *gatewayAPITranslator) toServiceAnnotations(annotations map[string]string, params *model.Service) map[string]string {
+	if params == nil {
+		return annotations
 	}
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[annotation.ServiceSourceRangesPolicy] = params.LoadBalancerSourceRangesPolicy
+	return annotations
 }
 
 func decorateCEC(cec *ciliumv2.CiliumEnvoyConfig, resource *model.FullyQualifiedResource, labels, annotations map[string]string) error {
@@ -208,7 +452,7 @@ func decorateCEC(cec *ciliumv2.CiliumEnvoyConfig, resource *model.FullyQualified
 		cec.Labels = make(map[string]string)
 	}
 	cec.Labels = mergeMap(cec.Labels, labels)
-	cec.Labels[gatewayNameLabel] = model.Shorten(resource.Name)
+	cec.Labels[gatewayNameLabel] = shortener.ShortenK8sResourceName(resource.Name)
 	cec.Annotations = mergeMap(cec.Annotations, annotations)
 
 	return nil
@@ -218,8 +462,6 @@ func mergeMap(left, right map[string]string) map[string]string {
 	if left == nil {
 		return right
 	}
-	for key, value := range right {
-		left[key] = value
-	}
+	maps.Copy(left, right)
 	return left
 }

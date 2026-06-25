@@ -10,14 +10,14 @@ import (
 	"net"
 	"sort"
 
-	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
+	"github.com/cilium/cilium/pkg/datapath/linux/safenetlink"
 	"github.com/cilium/cilium/pkg/ip"
 )
 
-func firstGlobalAddr(intf string, preferredIP net.IP, family int, preferPublic bool) (net.IP, error) {
+func firstGlobalAddr(intf string, preferredIP net.IP, family int) (net.IP, error) {
 	var link netlink.Link
 	var ipLen int
 	var err error
@@ -31,7 +31,7 @@ func firstGlobalAddr(intf string, preferredIP net.IP, family int, preferPublic b
 	}
 
 	if intf != "" && intf != "undefined" {
-		link, err = netlink.LinkByName(intf)
+		link, err = safenetlink.LinkByName(intf)
 		if err != nil {
 			link = nil
 		} else {
@@ -40,7 +40,7 @@ func firstGlobalAddr(intf string, preferredIP net.IP, family int, preferPublic b
 	}
 
 retryInterface:
-	addr, err := netlink.AddrList(link, family)
+	addr, err := safenetlink.AddrList(link, family)
 	if err != nil {
 		return nil, err
 	}
@@ -51,18 +51,8 @@ retryScope:
 	hasPreferred := false
 
 	for _, a := range addr {
-		if a.Scope > linkScopeMax {
-			continue
-		}
-		if ip.ListContainsIP(ipsToExclude, a.IP) {
-			continue
-		}
-		if len(a.IP) < ipLen {
-			continue
-		}
 		isPreferredIP := a.IP.Equal(preferredIP)
-		if a.Flags&unix.IFA_F_SECONDARY > 0 && !isPreferredIP {
-			// Skip secondary addresses if they're not the preferredIP
+		if !addrUsableAsNodeIP(a, isPreferredIP, ipsToExclude, linkScopeMax, ipLen) {
 			continue
 		}
 
@@ -78,10 +68,6 @@ retryScope:
 		if isPreferredIP {
 			hasPreferred = true
 		}
-	}
-
-	if hasPreferred && !preferPublic {
-		return preferredIP, nil
 	}
 
 	if len(ipsPublic) != 0 {
@@ -130,6 +116,25 @@ retryScope:
 	return nil, fmt.Errorf("No address found")
 }
 
+func addrUsableAsNodeIP(a netlink.Addr, isPreferredIP bool, ipsToExclude []net.IP, linkScopeMax, ipLen int) bool {
+	if a.Scope > linkScopeMax {
+		return false
+	}
+	if ip.ListContainsIP(ipsToExclude, a.IP) {
+		return false
+	}
+	if len(a.IP) < ipLen {
+		return false
+	}
+	if a.Flags&unix.IFA_F_SECONDARY > 0 && !isPreferredIP {
+		return false
+	}
+	if a.Flags&(unix.IFA_F_TENTATIVE|unix.IFA_F_DADFAILED) != 0 {
+		return false
+	}
+	return true
+}
+
 // firstGlobalV4Addr returns the first IPv4 global IP of an interface,
 // where the IPs are sorted in creation order (oldest to newest).
 //
@@ -139,8 +144,8 @@ retryScope:
 // IPs belonging to that interface are considered.
 //
 // If preferredIP is present in the IP list it is returned irrespective of
-// the sort order. However, if preferPublic is true and preferredIP is a
-// private IP, a public IP will be returned if it is assigned to the intf
+// the sort order. However, if preferredIP is a private IP, a public IP will
+// be returned if it is assigned to the intf
 //
 // Passing intf and preferredIP will only return preferredIP if it is in
 // the IPs that belong to intf.
@@ -154,46 +159,12 @@ retryScope:
 // universe scope again (and then falling back to reduced scope).
 //
 // In case none of the above helped, we bail out with error.
-func firstGlobalV4Addr(intf string, preferredIP net.IP, preferPublic bool) (net.IP, error) {
-	return firstGlobalAddr(intf, preferredIP, netlink.FAMILY_V4, preferPublic)
+func FirstGlobalV4Addr(intf string, preferredIP net.IP) (net.IP, error) {
+	return firstGlobalAddr(intf, preferredIP, netlink.FAMILY_V4)
 }
 
 // firstGlobalV6Addr returns first IPv6 global IP of an interface, see
 // firstGlobalV4Addr for more details.
-func firstGlobalV6Addr(intf string, preferredIP net.IP, preferPublic bool) (net.IP, error) {
-	return firstGlobalAddr(intf, preferredIP, netlink.FAMILY_V6, preferPublic)
-}
-
-// getCiliumHostIPsFromNetDev returns the first IPv4 link local and returns
-// it
-func getCiliumHostIPsFromNetDev(devName string) (ipv4GW, ipv6Router net.IP) {
-	hostDev, err := netlink.LinkByName(devName)
-	if err != nil {
-		return nil, nil
-	}
-	addrs, err := netlink.AddrList(hostDev, netlink.FAMILY_ALL)
-	if err != nil {
-		return nil, nil
-	}
-	for _, addr := range addrs {
-		if addr.IP.To4() != nil {
-			if addr.Scope == int(netlink.SCOPE_LINK) {
-				ipv4GW = addr.IP
-			}
-		} else {
-			if addr.Scope != int(netlink.SCOPE_LINK) {
-				ipv6Router = addr.IP
-			}
-		}
-	}
-
-	if ipv4GW != nil || ipv6Router != nil {
-		log.WithFields(logrus.Fields{
-			"ipv4":   ipv4GW,
-			"ipv6":   ipv6Router,
-			"device": devName,
-		}).Info("Restored router address from device")
-	}
-
-	return ipv4GW, ipv6Router
+func FirstGlobalV6Addr(intf string, preferredIP net.IP) (net.IP, error) {
+	return firstGlobalAddr(intf, preferredIP, netlink.FAMILY_V6)
 }

@@ -5,8 +5,6 @@ package annotation
 
 import (
 	"regexp"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -15,6 +13,9 @@ const (
 
 	// ConfigPrefix is the common prefix for configuration related annotations.
 	ConfigPrefix = "config.cilium.io"
+
+	// ClusterMeshPrefix is the common prefix for ClusterMesh related annotations.
+	ClusterMeshPrefix = "clustermesh.cilium.io"
 
 	// IngressPrefix is the common prefix for ingress related annotations.
 	IngressPrefix = "ingress.cilium.io"
@@ -36,6 +37,9 @@ const (
 
 	// CNIPrefix is the common prefix for CNI related annotations.
 	CNIPrefix = "cni.cilium.io"
+
+	// CECPrefix is the common prefix for CEC related annotations.
+	CECPrefix = "cec.cilium.io"
 
 	// PodAnnotationMAC is used to store the MAC address of the Pod.
 	PodAnnotationMAC = CNIPrefix + "/mac-address"
@@ -117,10 +121,36 @@ const (
 	ServiceAffinity      = ServicePrefix + "/affinity"
 	ServiceAffinityAlias = Prefix + "/service-affinity"
 
+	// CoreDNSAutoPatched is the annotation used to roll out CoreDNS once we
+	// we have patched its configuration to enabled MCS-API support.
+	CoreDNSAutoPatched = ClusterMeshPrefix + "/autoPatchedAt"
+
+	// SupportedIPFamilies is an internal annotation in MCS-API to track which
+	// ip families are used and supported by the local cluster
+	SupportedIPFamilies = ClusterMeshPrefix + "/supported-ip-families"
+
+	// ServiceLoadBalancingAlgorithm indicates which backend selection algorithm
+	// for a given Service to use. This annotation will override the default
+	// value set in bpf-lb-algorithm.
+	// Allowed values:
+	// - random
+	// - maglev
+	ServiceLoadBalancingAlgorithm = ServicePrefix + "/lb-algorithm"
+
+	// EndpointSliceWeight indicates the load-balancing weight to assign to all
+	// backends in an EndpointSlice. A weight of 0 marks the backends as being in
+	// maintenance.
+	EndpointSliceWeight = ServicePrefix + "/weight"
+
 	// ServiceNodeExposure is the label name used to mark a service to only a
 	// subset of the nodes which match the same value. For all other nodes, this
 	// service is ignored and not installed into their datapath.
 	ServiceNodeExposure = ServicePrefix + "/node"
+
+	// ServiceNodeSelectorExposure is the label name used to mark a service to only a
+	// subset of the nodes which match the label selector. For all other nodes, this
+	// service is ignored and not installed into their datapath.
+	ServiceNodeSelectorExposure = ServicePrefix + "/node-selector"
 
 	// ServiceTypeExposure is the annotation name used to mark what service type
 	// to provision (only single type is allowed; allowed types: "ClusterIP",
@@ -131,18 +161,81 @@ const (
 	// the latter two, one can set the annotation with the value "LoadBalancer".
 	ServiceTypeExposure = ServicePrefix + "/type"
 
-	// ProxyVisibility / ProxyVisibilityAlias is the annotation name used to
-	// indicate whether proxy visibility should be enabled for a given pod (i.e.,
-	// all traffic for the pod is redirected to the proxy for the given port /
-	// protocol in the annotation
-	ProxyVisibility      = PolicyPrefix + "/proxy-visibility"
-	ProxyVisibilityAlias = Prefix + ".proxy-visibility"
+	// ServiceSourceRangesPolicy is the annotation name used to specify the policy
+	// of the user-provided loadBalancerSourceRanges, meaning whether this CIDR
+	// list should act as an allow- or deny-list. Both "allow" or "deny" are
+	// possible values for this annotation.
+	ServiceSourceRangesPolicy = ServicePrefix + "/src-ranges-policy"
+
+	// ServiceProxyDelegation is the annotation name used to specify whether there
+	// should be delegation to a 3rd party proxy. Allowed values are "none" (default)
+	// and "delegate-if-local". The latter pushes all service packets to a user
+	// space proxy if the selected backend IP is the IP of the local node. If the
+	// selected backend IP is non-local then the BPF datapath forwards the packet
+	// back out again with the configured BPF load-balancing mechanism.
+	ServiceProxyDelegation = ServicePrefix + "/proxy-delegation"
+
+	// ServiceForwardingMode annotations determines the way packets are pushed to the
+	// remote backends.
+	// Allowed values are of type loadbalancer.SVCForwardingMode:
+	//  - dsr
+	//		use the configured DSR method
+	//  - snat
+	//		use SNAT so that reply traffic comes back
+	ServiceForwardingMode = ServicePrefix + "/forwarding-mode"
 
 	// NoTrack / NoTrackAlias is the annotation name used to store the port and
 	// protocol that we should bypass kernel conntrack for a given pod. This
 	// applies for both TCP and UDP connection. Current use case is NodeLocalDNS.
 	NoTrack      = PolicyPrefix + "/no-track-port"
 	NoTrackAlias = Prefix + ".no-track-port"
+
+	// DelegateSourceIPVerification is the namespace annotation that delegates
+	// source IP verification control for pods in the namespace to the namespace
+	// owner. This is a security gate that must be explicitly enabled by cluster
+	// administrators before namespace owners can modify pod-level source IP
+	// verification settings.
+	//
+	// Annotation: config.cilium.io/delegate-source-ip-verification
+	// Valid values: Any value accepted by strconv.ParseBool:
+	//   - Truthy: "1", "t", "T", "TRUE", "true", "True"
+	//   - Falsy:  "0", "f", "F", "FALSE", "false", "False"
+	//
+	// Behavior:
+	//   - Truthy value: Delegates source IP verification control to the namespace
+	//     owner via the disable-source-ip-verification pod annotation
+	//   - Falsy or omitted: Pods inherit global daemon configuration,
+	//     pod annotations are ignored
+	//
+	// SECURITY NOTE: This annotation should only be set by cluster administrators.
+	// Use Kubernetes RBAC to restrict namespace annotation modifications.
+	DelegateSourceIPVerification = ConfigPrefix + "/delegate-source-ip-verification"
+
+	// DisableSourceIPVerification controls source IP verification for the pod.
+	//
+	// Annotation: config.cilium.io/disable-source-ip-verification
+	// Valid values: Any value accepted by strconv.ParseBool:
+	//   - Truthy: "1", "t", "T", "TRUE", "true", "True"
+	//   - Falsy:  "0", "f", "F", "FALSE", "false", "False"
+	//
+	// Behavior:
+	//   - Truthy value: Disables source IP verification for this pod
+	//     (allows sending packets with different source IPs)
+	//   - Falsy value: Explicitly enables source IP verification
+	//     (overrides global config)
+	//   - Omitted or invalid: Inherits global daemon configuration
+	//
+	// IMPORTANT: This annotation is only effective when the namespace has the
+	// delegate-source-ip-verification annotation set to true. Without
+	// namespace permission, pod annotations are ignored and global config applies.
+	//
+	// Use cases: NAT gateways, proxies, load balancers, VPN endpoints,
+	// or any workload that needs to send packets with non-pod source IPs.
+	//
+	// SECURITY WARNING: Disabling source IP verification allows IP spoofing.
+	// Only use for trusted workloads. Changes to this annotation are logged
+	// at Warn level for audit purposes.
+	DisableSourceIPVerification = ConfigPrefix + "/disable-source-ip-verification"
 
 	// WireguardPubKey / WireguardPubKeyAlias is the annotation name used to store
 	// the WireGuard public key in the CiliumNode CRD that we need to use to encrypt
@@ -166,6 +259,18 @@ const (
 	// which workloads should allocate their IP from
 	IPAMIPv6PoolKey = IPAMPrefix + "/ipv6-pool"
 
+	// IPAMIgnore is the annotation used to make the Cilium operator IPAM logic
+	// ignore the given CiliumNode object
+	IPAMIgnore = IPAMPrefix + "/ignore"
+
+	// IPAMRequirePoolMatch is the annotation used to prevent fallback to the
+	// default pool when no pool selectors match. Can be set on pods or namespaces.
+	IPAMRequirePoolMatch = IPAMPrefix + "/require-pool-match"
+
+	// IPAMSkipMasquerade indicates whether the datapath should avoid masquerading
+	// connections from this IP pool when the cluster is in tunneling mode.
+	IPAMSkipMasquerade = IPAMPrefix + "/skip-masquerade"
+
 	LBIPAMIPsKey     = LBIPAMPrefix + "/ips"
 	LBIPAMIPKeyAlias = Prefix + "/lb-ipam-ips"
 
@@ -173,19 +278,34 @@ const (
 	LBIPAMSharingKeyAlias             = Prefix + "/lb-ipam-sharing-key"
 	LBIPAMSharingAcrossNamespace      = LBIPAMPrefix + "/sharing-cross-namespace"
 	LBIPAMSharingAcrossNamespaceAlias = Prefix + "/lb-ipam-sharing-cross-namespace"
+
+	CECInjectCiliumFilters      = CECPrefix + "/inject-cilium-filters"
+	CECIsL7LB                   = CECPrefix + "/is-l7lb"
+	CECUseOriginalSourceAddress = CECPrefix + "/use-original-source-address"
+
+	NoTrackHostPorts = NetworkPrefix + "/no-track-host-ports"
+
+	// GlobalNamespace is the annotation used to mark namespaces for global export in ClusterMesh.
+	GlobalNamespace = ClusterMeshPrefix + "/global"
+
+	// FIBTableID is the annotation used to specify the FIB table ID for egress routing.
+	FIBTableID = NetworkPrefix + "/fib-table-id"
 )
 
-var (
-	// CiliumPrefixRegex is a regex matching Cilium specific annotations.
-	CiliumPrefixRegex = regexp.MustCompile(`^([A-Za-z0-9]+\.)*cilium.io/`)
-)
+// CiliumPrefixRegex is a regex matching Cilium specific annotations.
+var CiliumPrefixRegex = regexp.MustCompile(`^([A-Za-z0-9]+\.)*cilium.io/`)
+
+type annotatedObject interface {
+	GetAnnotations() map[string]string
+}
 
 // Get returns the annotation value associated with the given key, or any of
 // the additional aliases if not found.
-func Get(obj metav1.Object, key string, aliases ...string) (value string, ok bool) {
+func Get(obj annotatedObject, key string, aliases ...string) (value string, ok bool) {
 	keys := append([]string{key}, aliases...)
+	annotations := obj.GetAnnotations()
 	for _, k := range keys {
-		if value, ok = obj.GetAnnotations()[k]; ok {
+		if value, ok = annotations[k]; ok {
 			return value, ok
 		}
 	}

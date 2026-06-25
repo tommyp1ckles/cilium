@@ -13,7 +13,7 @@ type clientEgressL7 struct{}
 
 func (t clientEgressL7) build(ct *check.ConnectivityTest, templates map[string]string) {
 	clientEgressL7Test(ct, templates, false)
-	if ct.Features[features.PortRanges].Enabled {
+	if ct.Features[features.L7PortRanges].Enabled {
 		clientEgressL7Test(ct, templates, true)
 	}
 }
@@ -28,11 +28,17 @@ func clientEgressL7Test(ct *check.ConnectivityTest, templates map[string]string,
 	// Test L7 HTTP introspection using an egress policy on the clients.
 	newTest(testName, ct).
 		WithFeatureRequirements(features.RequireEnabled(features.L7Proxy)).
-		WithCiliumPolicy(clientEgressOnlyDNSPolicyYAML). // DNS resolution only
-		WithCiliumPolicy(templates[templateName]).       // L7 allow policy with HTTP introspection
+		WithFeatureRequirements(features.RequireDisabled(features.RHEL)).
+		WithCiliumPolicy(templates["clientEgressOnlyDNSPolicyYAML"]). // DNS resolution only
+		WithCiliumPolicy(templates[templateName]).                    // L7 allow policy with HTTP introspection
 		WithScenarios(
 			tests.PodToPod(),
-			tests.PodToWorld(tests.WithRetryDestPort(80), tests.WithRetryPodLabel("other", "client")),
+			tests.PodToWorld(
+				ct.Params().ExternalTargetIPv6Capable,
+				false,
+				tests.WithRetryDestPort(80),
+				tests.WithRetryPodLabel("other", "client"),
+			),
 		).
 		WithExpectations(func(a *check.Action) (egress, ingress check.Result) {
 			if a.Source().HasLabel("other", "client") && // Only client2 is allowed to make HTTP calls.

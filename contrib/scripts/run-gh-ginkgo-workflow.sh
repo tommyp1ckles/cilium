@@ -196,7 +196,6 @@ run_tests() {
             --ginkgo.skip= \
             --ginkgo.seed=1679952881 \
             --ginkgo.v -- \
-            -cilium.provision=false \
             -cilium.image=quay.io/${quay_org}/cilium-ci \
             -cilium.tag=${commit_sha}  \
             -cilium.operator-image=quay.io/${quay_org}/operator \
@@ -204,7 +203,6 @@ run_tests() {
             -cilium.hubble-relay-image=quay.io/${quay_org}/hubble-relay-ci \
             -cilium.hubble-relay-tag=${commit_sha} \
             -cilium.kubeconfig=/root/.kube/config \
-            -cilium.provision-k8s=false \
             -cilium.operator-suffix=-ci \
             -cilium.holdEnvironment=true"
 }
@@ -267,7 +265,9 @@ if ! check_cmd ginkgo; then
     install_ginkgo
 fi
 
-yq="docker run --rm -v ${PWD}:/workdir --user $(id -u):$(id -g) mikefarah/yq:4.27.3"
+# renovate: datasource=docker
+YQ_IMAGE="docker.io/mikefarah/yq@sha256:495c1e1db2d653cce61a06da52cfca0c7d68d6249cc6e61b2a134d92c609c016" # 4.27.3
+yq="docker run --rm -v ${PWD}:/workdir --user $(id -u):$(id -g) $YQ_IMAGE"
 
 # Retrieve kernel and kubernetes image tags
 

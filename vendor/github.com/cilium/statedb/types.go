@@ -28,22 +28,6 @@ type Table[Obj any] interface {
 	// Useful for generic utilities that need access to the primary key.
 	PrimaryIndexer() Indexer[Obj]
 
-	// NumObjects returns the number of objects stored in the table.
-	NumObjects(ReadTxn) int
-
-	// Initialized returns true if in this ReadTxn (snapshot of the database)
-	// the registered initializers have all been completed. The returned
-	// watch channel will be closed when the table becomes initialized.
-	Initialized(ReadTxn) (bool, <-chan struct{})
-
-	// PendingInitializers returns the set of pending initializers that
-	// have not yet completed.
-	PendingInitializers(ReadTxn) []string
-
-	// Revision of the table. Constant for a read transaction, but
-	// increments in a write transaction on each Insert and Delete.
-	Revision(ReadTxn) Revision
-
 	// All returns a sequence of all objects in the table.
 	All(ReadTxn) iter.Seq2[Obj, Revision]
 
@@ -51,7 +35,7 @@ type Table[Obj any] interface {
 	// channel that is closed when the table changes.
 	AllWatch(ReadTxn) (iter.Seq2[Obj, Revision], <-chan struct{})
 
-	// List returns sequence of objects matching the given query.
+	// List returns a sequence of objects matching the given query.
 	List(ReadTxn, Query[Obj]) iter.Seq2[Obj, Revision]
 
 	// ListWatch returns an iterator for all objects matching the given query
@@ -62,16 +46,16 @@ type Table[Obj any] interface {
 	// Get returns the first matching object for the query.
 	Get(ReadTxn, Query[Obj]) (obj Obj, rev Revision, found bool)
 
-	// GetWatch return the first matching object and a watch channel
+	// GetWatch returns the first matching object and a watch channel
 	// that is closed if the query is invalidated.
 	GetWatch(ReadTxn, Query[Obj]) (obj Obj, rev Revision, watch <-chan struct{}, found bool)
 
 	// LowerBound returns an iterator for objects that have a key
-	// greater or equal to the query.
+	// greater than or equal to the query.
 	LowerBound(ReadTxn, Query[Obj]) iter.Seq2[Obj, Revision]
 
 	// LowerBoundWatch returns an iterator for objects that have a key
-	// greater or equal to the query. The returned watch channel is closed
+	// greater than or equal to the query. The returned watch channel is closed
 	// when anything in the table changes as more fine-grained notifications
 	// are not possible with a lower bound search.
 	LowerBoundWatch(ReadTxn, Query[Obj]) (seq iter.Seq2[Obj, Revision], watch <-chan struct{})
@@ -91,7 +75,19 @@ type Table[Obj any] interface {
 	//
 	// If an object is created and deleted before the observer has iterated
 	// over the creation then only the deletion is seen.
+	//
+	// If [ChangeIterator.Next] is called with a [WriteTxn] targeting the
+	// table being observed then only the changes prior to that [WriteTxn]
+	// are observed.
 	Changes(WriteTxn) (ChangeIterator[Obj], error)
+}
+
+// ByRevision constructs a revision query. Applicable to any table.
+func ByRevision[Obj any](rev uint64) Query[Obj] {
+	return Query[Obj]{
+		index: RevisionIndex,
+		key:   index.Uint64(rev),
+	}
 }
 
 // Change is either an update or a delete of an object. Used by Changes() and
@@ -116,9 +112,16 @@ type ChangeIterator[Obj any] interface {
 	// The returned sequence is a single-use sequence and subsequent calls will return
 	// an empty sequence.
 	//
-	// If the transaction given to Next is a WriteTxn the modifications made in the
-	// transaction are not observed, that is, only committed changes can be observed.
+	// If Next is called with a [WriteTxn] targeting the table being observed then only
+	// the changes made prior to that [WriteTxn] are observed, e.g. we can only observe
+	// committed changes.
 	Next(ReadTxn) (iter.Seq2[Change[Obj], Revision], <-chan struct{})
+
+	// Close the change iterator. Once all change iterators for a given table are closed
+	// deleted objects for that table are no longer set aside for the change iterators.
+	//
+	// Calling this method is optional as each iterator has a finalizer that closes it.
+	Close()
 }
 
 // RWTable provides methods for modifying the table under a write transaction
@@ -140,7 +143,7 @@ type RWTable[Obj any] interface {
 	//   cell.ProvidePrivate(NewMyTable), // RWTable
 	//   cell.Invoke(statedb.Register[statedb.RWTable[Foo])
 	//
-	//   // with anononymous function:
+	//   // with anonymous function:
 	//   cell.Provide(func(t statedb.RWTable[Foo]) statedb.Table[Foo] { return t })
 	//
 	//   // with ToTable:
@@ -157,6 +160,18 @@ type RWTable[Obj any] interface {
 	// Each inserted or updated object will be assigned a new unique
 	// revision.
 	Insert(WriteTxn, Obj) (oldObj Obj, hadOld bool, err error)
+
+	// InsertWatch inserts an object into the table. Returns the object that was
+	// replaced if there was one and a watch channel that closes when the
+	// object is modified again.
+	//
+	// Possible errors:
+	// - ErrTableNotLockedForWriting: table was not locked for writing
+	// - ErrTransactionClosed: the write transaction already committed or aborted
+	//
+	// Each inserted or updated object will be assigned a new unique
+	// revision.
+	InsertWatch(WriteTxn, Obj) (oldObj Obj, hadOld bool, watch <-chan struct{}, err error)
 
 	// Modify an existing object or insert a new object into the table. If an old object
 	// exists the [merge] function is called with the old and new objects.
@@ -182,10 +197,10 @@ type RWTable[Obj any] interface {
 	// Delete an object from the table. Returns the object that was
 	// deleted if there was one.
 	//
-	// If the table is being tracked for deletions via EventIterator()
+	// If the table is being tracked for deletions via Changes()
 	// the deleted object is inserted into a graveyard index and garbage
 	// collected when all delete trackers have consumed it. Each deleted
-	// object in the graveyard has unique revision allowing interleaved
+	// object in the graveyard has a unique revision, allowing interleaved
 	// iteration of updates and deletions.
 	//
 	// Possible errors:
@@ -202,8 +217,8 @@ type RWTable[Obj any] interface {
 	DeleteAll(WriteTxn) error
 
 	// CompareAndDelete compares the existing object's revision against the
-	// given revision and if equal it deletes the object. If object is not
-	// found 'hadOld' will be false and 'err' nil.
+	// given revision and if equal it deletes the object. If the object is
+	// not found, hadOld is false and err is nil.
 	//
 	// Possible errors:
 	// - ErrRevisionNotEqual: the object has mismatching revision
@@ -215,28 +230,46 @@ type RWTable[Obj any] interface {
 // TableMeta provides information about the table that is independent of
 // the object type (the 'Obj' constraint).
 type TableMeta interface {
-	Name() TableName // The name of the table
+	// Name returns the name of the table
+	Name() TableName
 
-	tableEntry() tableEntry
-	tablePos() int
-	setTablePos(int)
-	indexPos(string) int
-	tableKey() []byte                      // The radix key for the table in the root tree
-	primary() anyIndexer                   // The untyped primary indexer for the table
-	secondary() map[string]anyIndexer      // Secondary indexers (if any)
-	sortableMutex() internal.SortableMutex // The sortable mutex for locking the table for writing
-	anyChanges(txn WriteTxn) (anyChangeIterator, error)
-}
+	// Indexes returns the names of the indexes
+	Indexes() []string
 
-// Iterator for iterating objects returned from queries.
-type Iterator[Obj any] interface {
-	// Next returns the next object and its revision if ok is true, otherwise
-	// zero values to mean that the iteration has finished.
-	Next() (obj Obj, rev Revision, ok bool)
+	// NumObjects returns the number of objects stored in the table.
+	NumObjects(ReadTxn) int
+
+	// Initialized returns true if in this ReadTxn (snapshot of the database)
+	// the registered initializers have all been completed. The returned
+	// watch channel will be closed when the table becomes initialized.
+	Initialized(ReadTxn) (bool, <-chan struct{})
+
+	// PendingInitializers returns the set of pending initializers that
+	// have not yet completed.
+	PendingInitializers(ReadTxn) []string
+
+	// Revision of the table. Constant for a read transaction, but
+	// increments in a write transaction on each Insert and Delete.
+	Revision(ReadTxn) Revision
+
+	// Internal unexported methods used only internally.
+	tableInternal
 }
 
 type ReadTxn interface {
-	getTxn() *txn
+	indexReadTxn(meta TableMeta, indexPos int) (tableIndexReader, error)
+	mustIndexReadTxn(meta TableMeta, indexPos int) tableIndexReader
+	getTableEntry(meta TableMeta) *tableEntry
+
+	// root returns the database root. If this is a WriteTxn it returns
+	// the current modified root.
+	root() dbRoot
+
+	// committedRoot returns the committed database root. If this is a
+	// WriteTxn it returns the root snapshotted at the time the WriteTxn
+	// was constructed and thus does not reflect any changes made in the
+	// transaction.
+	committedRoot() dbRoot
 
 	// WriteJSON writes the contents of the database as JSON.
 	WriteJSON(w io.Writer, tables ...string) error
@@ -246,7 +279,7 @@ type WriteTxn interface {
 	// WriteTxn is always also a ReadTxn
 	ReadTxn
 
-	// Abort the current transaction. All changes are disgarded.
+	// Abort the current transaction. All changes are discarded.
 	// It is safe to call Abort() after calling Commit(), e.g.
 	// the following pattern is strongly encouraged to make sure
 	// write transactions are always completed:
@@ -261,6 +294,9 @@ type WriteTxn interface {
 	// This is a no-op if Abort() or Commit() has already been called.
 	// Returns a ReadTxn for reading the database at the time of commit.
 	Commit() ReadTxn
+
+	// unwrap returns the internal state
+	unwrap() *writeTxnState
 }
 
 type Query[Obj any] struct {
@@ -268,74 +304,26 @@ type Query[Obj any] struct {
 	key   index.Key
 }
 
-// ByRevision constructs a revision query. Applicable to any table.
-func ByRevision[Obj any](rev uint64) Query[Obj] {
-	return Query[Obj]{
-		index: RevisionIndex,
-		key:   index.Uint64(rev),
-	}
-}
-
-// Index implements the indexing of objects (FromObjects) and querying of objects from the index (FromKey)
-type Index[Obj any, Key any] struct {
-	Name       string
-	FromObject func(obj Obj) index.KeySet
-	FromKey    func(key Key) index.Key
-	Unique     bool
-}
-
-var _ Indexer[struct{}] = &Index[struct{}, bool]{}
-
-// The nolint:unused below are needed due to linter not seeing
-// the use-sites due to generics.
-
-//nolint:unused
-func (i Index[Key, Obj]) indexName() string {
-	return i.Name
-}
-
-//nolint:unused
-func (i Index[Obj, Key]) fromObject(obj Obj) index.KeySet {
-	return i.FromObject(obj)
-}
-
-//nolint:unused
-func (i Index[Obj, Key]) isUnique() bool {
-	return i.Unique
-}
-
-// Query constructs a query against this index from a key.
-func (i Index[Obj, Key]) Query(key Key) Query[Obj] {
-	return Query[Obj]{
-		index: i.Name,
-		key:   i.FromKey(key),
-	}
-}
-
-func (i Index[Obj, Key]) QueryFromObject(obj Obj) Query[Obj] {
-	return Query[Obj]{
-		index: i.Name,
-		key:   i.FromObject(obj).First(),
-	}
-}
-
-func (i Index[Obj, Key]) ObjectToKey(obj Obj) index.Key {
-	return i.FromObject(obj).First()
-}
-
-// Indexer is the "FromObject" subset of Index[Obj, Key]
-// without the 'Key' constraint.
 type Indexer[Obj any] interface {
-	indexName() string
-	isUnique() bool
-	fromObject(Obj) index.KeySet
-
-	ObjectToKey(Obj) index.Key
+	// QueryFromObject constructs a query from an object against the
+	// primary index.
 	QueryFromObject(Obj) Query[Obj]
+
+	// ObjectToKey returns the primary key of the object.
+	ObjectToKey(Obj) index.Key
+
+	// isIndexerOf is a marker method to constrain the indexer to the 'Obj'
+	// type which enforces that indexer of a wrong type is not used.
+	isIndexerOf(Obj)
+
+	isUnique() bool
+	indexName() string
+	fromString(string) (index.Key, error)
+	newTableIndex() tableIndex
 }
 
 // TableWritable is a constraint for objects that implement tabular
-// pretty-printing. Used in "cilium-dbg statedb" sub-commands.
+// pretty-printing. Used by the "db" script commands to render a table.
 type TableWritable interface {
 	// TableHeader returns the header columns that are independent of the
 	// object.
@@ -350,23 +338,22 @@ type TableWritable interface {
 //
 
 const (
-	PrimaryIndexPos = 0
-
 	reservedIndexPrefix       = "__"
 	RevisionIndex             = "__revision__"
-	RevisionIndexPos          = 1
+	RevisionIndexPos          = 0
 	GraveyardIndex            = "__graveyard__"
-	GraveyardIndexPos         = 2
+	GraveyardIndexPos         = 1
 	GraveyardRevisionIndex    = "__graveyard_revision__"
-	GraveyardRevisionIndexPos = 3
+	GraveyardRevisionIndexPos = 2
 
+	PrimaryIndexPos        = 3
 	SecondaryIndexStartPos = 4
 )
 
 // object is the format in which data is stored in the tables.
 type object struct {
-	revision uint64
 	data     any
+	revision uint64
 }
 
 // anyIndexer is an untyped indexer. The user-defined 'Index[Obj,Key]'
@@ -379,10 +366,10 @@ type anyIndexer struct {
 	// object with.
 	fromObject func(object) index.KeySet
 
-	// unique if true will index the object solely on the
-	// values returned by fromObject. If false the primary
-	// key of the object will be appended to the key.
-	unique bool
+	// fromString converts string into a key. Optional.
+	fromString func(string) (index.Key, error)
+
+	newTableIndex func() tableIndex
 
 	// pos is the position of the index in [tableEntry.indexes]
 	pos int
@@ -394,34 +381,102 @@ type anyDeleteTracker interface {
 	close()
 }
 
-type indexEntry struct {
-	tree   *part.Tree[object]
-	txn    *part.Txn[object]
-	unique bool
+type tableInternal interface {
+	tableEntry() *tableEntry
+	tablePos() int
+	setTablePos(int)
+	indexPos(string) int
+	getIndexer(name string) *anyIndexer
+	secondary() []anyIndexer               // Secondary indexers (if any)
+	sortableMutex() internal.SortableMutex // The sortable mutex for locking the table for writing
+	anyChanges(txn WriteTxn) (anyChangeIterator, error)
+	typeName() string                       // Returns the 'Obj' type as string
+	unmarshalYAML(data []byte) (any, error) // Unmarshal the data into 'Obj'
+	numDeletedObjects(txn ReadTxn) int      // Number of objects in graveyard
+	acquired(*writeTxnState)
+	released()
+	getAcquiredInfo() string
+	tableHeader() []string
+	tableRowAny(any) []string
 }
 
+// tableIndexIterator for iterating over keys and objects in an index.
+// This is not a straight up iter.Seq2 as this way we avoid a heap allocation
+// for a function closure.
+type tableIndexIterator interface {
+	All(yield func(key []byte, obj object) bool)
+}
+
+type tableIndexReader interface {
+	len() int
+	get(key index.Key) (object, <-chan struct{}, bool)
+	prefix(key index.Key) (tableIndexIterator, <-chan struct{})
+	lowerBound(key index.Key) (tableIndexIterator, <-chan struct{})
+	lowerBoundNext(key index.Key) (func() ([]byte, object, bool), <-chan struct{})
+	list(key index.Key) (tableIndexIterator, <-chan struct{})
+	all() (tableIndexIterator, <-chan struct{})
+	rootWatch() <-chan struct{}
+	objectToKey(obj object) index.Key
+}
+
+type tableIndex interface {
+	tableIndexReader
+	txn() (tableIndexTxn, bool)
+	commit() (idx tableIndex, txn tableIndexTxnNotify)
+}
+
+type tableIndexTxn interface {
+	tableIndex
+
+	insert(key index.Key, obj object) (old object, hadOld bool, watch <-chan struct{})
+	modify(key index.Key, obj object, mod func(old, new object) object) (old object, new object, hadOld bool, watch <-chan struct{})
+	delete(key index.Key) (old object, hadOld bool)
+	reindex(primaryKey index.Key, old object, new object)
+}
+
+type tableIndexTxnNotify interface {
+	notify()
+}
+
+type tableInitialization struct {
+	// watch channel which is closed when the table becomes initialized,
+	// e.g. when all [pending] initializers are marked done.
+	watch chan struct{}
+
+	// pending initializers.
+	pending []string
+}
+
+// tableEntry contains the table state. The database is a slice of
+// these table entries.
 type tableEntry struct {
-	meta                TableMeta
-	indexes             []indexEntry
-	deleteTrackers      *part.Tree[anyDeleteTracker]
-	revision            uint64
-	pendingInitializers []string
-	initialized         bool
-	initWatchChan       chan struct{}
+	// meta is the metadata about the table
+	meta TableMeta
+
+	// deleteTrackers are the open Changes() iterators for which
+	// we set aside deleted objects.
+	deleteTrackers *part.Tree[anyDeleteTracker]
+
+	// init if not nil marks the table as not initialized.
+	// When the last registered initializer is done this is
+	// set to nil and the [init.watch] is closed.
+	init *tableInitialization
+
+	// indexes are the table indexes that store the objects
+	indexes []tableIndex
+
+	// revision is the current table revision. It's the same
+	// as the revision of the last inserted object.
+	revision uint64
+
+	// locked marks the table locked for writes.
+	locked bool
 }
 
 func (t *tableEntry) numObjects() int {
-	indexEntry := t.indexes[t.meta.indexPos(RevisionIndex)]
-	if indexEntry.txn != nil {
-		return indexEntry.txn.Len()
-	}
-	return indexEntry.tree.Len()
+	return t.indexes[RevisionIndexPos].len()
 }
 
 func (t *tableEntry) numDeletedObjects() int {
-	indexEntry := t.indexes[t.meta.indexPos(GraveyardIndex)]
-	if indexEntry.txn != nil {
-		return indexEntry.txn.Len()
-	}
-	return indexEntry.tree.Len()
+	return t.indexes[GraveyardIndexPos].len()
 }

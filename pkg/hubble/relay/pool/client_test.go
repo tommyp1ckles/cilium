@@ -5,7 +5,6 @@ package pool
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -39,15 +38,13 @@ func TestGRPCClientConnBuilder_CertificateChange(t *testing.T) {
 		ca:   ca,
 	}
 	cb := GRPCClientConnBuilder{
-		DialTimeout: 5 * time.Second,
-		Options: []grpc.DialOption{
-			grpc.WithBlock(),
-			grpc.FailOnNonTempDialError(true),
-			grpc.WithReturnConnectionError(),
-		},
 		TLSConfig: fTLSb,
 	}
-	dir, err := os.MkdirTemp("", t.Name())
+	// on mac, the max length of a unix socket path is 104
+	// when using the test name as-is, we can hit:
+	//   listen unix /var/folders/3c/l4cz8jlx17s0fz5z5vcj26500000gn/T/TestGRPCClientConnBuilder_CertificateChange1112872806/relay.sock: bind: invalid argument
+	// therefore hardcode a smaller name to avoid issues
+	dir, err := os.MkdirTemp("", "testCertificateChange**")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 
@@ -61,7 +58,7 @@ func TestGRPCClientConnBuilder_CertificateChange(t *testing.T) {
 	clientConn, err := cb.ClientConn(fmt.Sprintf("unix://%s", list.Addr().String()), "foo.test.cilium.io")
 	require.NoError(t, err)
 	hc := healthpb.NewHealthClient(clientConn)
-	_, err = hc.Check(context.TODO(), nil)
+	_, err = hc.Check(t.Context(), nil)
 	require.NoError(t, err)
 
 	cert, ca = newTestCAandCert(t)
@@ -78,7 +75,7 @@ func TestGRPCClientConnBuilder_CertificateChange(t *testing.T) {
 	fTLSb.set(&cert, ca)
 
 	require.Eventually(t, func() bool {
-		_, err = hc.Check(context.TODO(), nil)
+		_, err = hc.Check(t.Context(), nil)
 		if err != nil {
 			t.Logf("Error %q conn state %q", err.Error(), clientConn.GetState().String())
 		}

@@ -11,7 +11,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -20,10 +20,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cilium/hive/cell"
 	"github.com/go-openapi/loads"
 	"github.com/go-openapi/runtime/middleware"
 	"github.com/go-openapi/swag"
-	"github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
 	"golang.org/x/net/netutil"
 
@@ -32,15 +32,12 @@ import (
 	"github.com/cilium/cilium/api/v1/server/restapi/daemon"
 	"github.com/cilium/cilium/api/v1/server/restapi/endpoint"
 	"github.com/cilium/cilium/api/v1/server/restapi/ipam"
-	"github.com/cilium/cilium/api/v1/server/restapi/metrics"
 	"github.com/cilium/cilium/api/v1/server/restapi/policy"
 	"github.com/cilium/cilium/api/v1/server/restapi/prefilter"
-	"github.com/cilium/cilium/api/v1/server/restapi/recorder"
 	"github.com/cilium/cilium/api/v1/server/restapi/service"
-	"github.com/cilium/hive/cell"
-
 	"github.com/cilium/cilium/pkg/api"
 	"github.com/cilium/cilium/pkg/hive"
+	"github.com/cilium/cilium/pkg/logging"
 )
 
 // Cell implements the cilium API REST API server when provided
@@ -63,62 +60,54 @@ type apiParams struct {
 
 	Spec *Spec
 
+	Logger *slog.Logger
+
 	Middleware middleware.Builder `name:"cilium-api-middleware" optional:"true"`
 
-	EndpointDeleteEndpointHandler        endpoint.DeleteEndpointHandler
-	EndpointDeleteEndpointIDHandler      endpoint.DeleteEndpointIDHandler
-	PolicyDeleteFqdnCacheHandler         policy.DeleteFqdnCacheHandler
-	IpamDeleteIpamIPHandler              ipam.DeleteIpamIPHandler
-	PolicyDeletePolicyHandler            policy.DeletePolicyHandler
-	PrefilterDeletePrefilterHandler      prefilter.DeletePrefilterHandler
-	RecorderDeleteRecorderIDHandler      recorder.DeleteRecorderIDHandler
-	ServiceDeleteServiceIDHandler        service.DeleteServiceIDHandler
-	BgpGetBgpPeersHandler                bgp.GetBgpPeersHandler
-	BgpGetBgpRoutePoliciesHandler        bgp.GetBgpRoutePoliciesHandler
-	BgpGetBgpRoutesHandler               bgp.GetBgpRoutesHandler
-	DaemonGetCgroupDumpMetadataHandler   daemon.GetCgroupDumpMetadataHandler
-	DaemonGetClusterNodesHandler         daemon.GetClusterNodesHandler
-	DaemonGetConfigHandler               daemon.GetConfigHandler
-	DaemonGetDebuginfoHandler            daemon.GetDebuginfoHandler
-	EndpointGetEndpointHandler           endpoint.GetEndpointHandler
-	EndpointGetEndpointIDHandler         endpoint.GetEndpointIDHandler
-	EndpointGetEndpointIDConfigHandler   endpoint.GetEndpointIDConfigHandler
-	EndpointGetEndpointIDHealthzHandler  endpoint.GetEndpointIDHealthzHandler
-	EndpointGetEndpointIDLabelsHandler   endpoint.GetEndpointIDLabelsHandler
-	EndpointGetEndpointIDLogHandler      endpoint.GetEndpointIDLogHandler
-	PolicyGetFqdnCacheHandler            policy.GetFqdnCacheHandler
-	PolicyGetFqdnCacheIDHandler          policy.GetFqdnCacheIDHandler
-	PolicyGetFqdnNamesHandler            policy.GetFqdnNamesHandler
-	DaemonGetHealthzHandler              daemon.GetHealthzHandler
-	PolicyGetIPHandler                   policy.GetIPHandler
-	PolicyGetIdentityHandler             policy.GetIdentityHandler
-	PolicyGetIdentityEndpointsHandler    policy.GetIdentityEndpointsHandler
-	PolicyGetIdentityIDHandler           policy.GetIdentityIDHandler
-	ServiceGetLrpHandler                 service.GetLrpHandler
-	DaemonGetMapHandler                  daemon.GetMapHandler
-	DaemonGetMapNameHandler              daemon.GetMapNameHandler
-	DaemonGetMapNameEventsHandler        daemon.GetMapNameEventsHandler
-	MetricsGetMetricsHandler             metrics.GetMetricsHandler
-	DaemonGetNodeIdsHandler              daemon.GetNodeIdsHandler
-	PolicyGetPolicyHandler               policy.GetPolicyHandler
-	PolicyGetPolicySelectorsHandler      policy.GetPolicySelectorsHandler
-	PrefilterGetPrefilterHandler         prefilter.GetPrefilterHandler
-	RecorderGetRecorderHandler           recorder.GetRecorderHandler
-	RecorderGetRecorderIDHandler         recorder.GetRecorderIDHandler
-	RecorderGetRecorderMasksHandler      recorder.GetRecorderMasksHandler
-	ServiceGetServiceHandler             service.GetServiceHandler
-	ServiceGetServiceIDHandler           service.GetServiceIDHandler
-	DaemonPatchConfigHandler             daemon.PatchConfigHandler
-	EndpointPatchEndpointIDHandler       endpoint.PatchEndpointIDHandler
-	EndpointPatchEndpointIDConfigHandler endpoint.PatchEndpointIDConfigHandler
-	EndpointPatchEndpointIDLabelsHandler endpoint.PatchEndpointIDLabelsHandler
-	PrefilterPatchPrefilterHandler       prefilter.PatchPrefilterHandler
-	IpamPostIpamHandler                  ipam.PostIpamHandler
-	IpamPostIpamIPHandler                ipam.PostIpamIPHandler
-	EndpointPutEndpointIDHandler         endpoint.PutEndpointIDHandler
-	PolicyPutPolicyHandler               policy.PutPolicyHandler
-	RecorderPutRecorderIDHandler         recorder.PutRecorderIDHandler
-	ServicePutServiceIDHandler           service.PutServiceIDHandler
+	EndpointDeleteEndpointHandler          endpoint.DeleteEndpointHandler
+	EndpointDeleteEndpointIDHandler        endpoint.DeleteEndpointIDHandler
+	PolicyDeleteFqdnCacheHandler           policy.DeleteFqdnCacheHandler
+	IpamDeleteIpamIPHandler                ipam.DeleteIpamIPHandler
+	PrefilterDeletePrefilterHandler        prefilter.DeletePrefilterHandler
+	BgpGetBgpPeersHandler                  bgp.GetBgpPeersHandler
+	BgpGetBgpRoutePoliciesHandler          bgp.GetBgpRoutePoliciesHandler
+	BgpGetBgpRoutesHandler                 bgp.GetBgpRoutesHandler
+	DaemonGetCgroupDumpMetadataHandler     daemon.GetCgroupDumpMetadataHandler
+	DaemonGetClusterNodesHandler           daemon.GetClusterNodesHandler
+	DaemonGetConfigHandler                 daemon.GetConfigHandler
+	DaemonGetDebuginfoHandler              daemon.GetDebuginfoHandler
+	EndpointGetEndpointHandler             endpoint.GetEndpointHandler
+	EndpointGetEndpointIDHandler           endpoint.GetEndpointIDHandler
+	EndpointGetEndpointIDConfigHandler     endpoint.GetEndpointIDConfigHandler
+	EndpointGetEndpointIDHealthzHandler    endpoint.GetEndpointIDHealthzHandler
+	EndpointGetEndpointIDLabelsHandler     endpoint.GetEndpointIDLabelsHandler
+	EndpointGetEndpointIDLogHandler        endpoint.GetEndpointIDLogHandler
+	PolicyGetFqdnCacheHandler              policy.GetFqdnCacheHandler
+	PolicyGetFqdnCacheIDHandler            policy.GetFqdnCacheIDHandler
+	PolicyGetFqdnNamesHandler              policy.GetFqdnNamesHandler
+	DaemonGetHealthzHandler                daemon.GetHealthzHandler
+	PolicyGetIPHandler                     policy.GetIPHandler
+	PolicyGetIdentityHandler               policy.GetIdentityHandler
+	PolicyGetIdentityEndpointsHandler      policy.GetIdentityEndpointsHandler
+	PolicyGetIdentityIDHandler             policy.GetIdentityIDHandler
+	ServiceGetLrpHandler                   service.GetLrpHandler
+	DaemonGetMapHandler                    daemon.GetMapHandler
+	DaemonGetMapNameHandler                daemon.GetMapNameHandler
+	DaemonGetMapNameEventsHandler          daemon.GetMapNameEventsHandler
+	DaemonGetNodeIdsHandler                daemon.GetNodeIdsHandler
+	PolicyGetPolicyHandler                 policy.GetPolicyHandler
+	PolicyGetPolicySelectorsHandler        policy.GetPolicySelectorsHandler
+	PolicyGetPolicySubjectSelectorsHandler policy.GetPolicySubjectSelectorsHandler
+	PrefilterGetPrefilterHandler           prefilter.GetPrefilterHandler
+	ServiceGetServiceHandler               service.GetServiceHandler
+	DaemonPatchConfigHandler               daemon.PatchConfigHandler
+	EndpointPatchEndpointIDHandler         endpoint.PatchEndpointIDHandler
+	EndpointPatchEndpointIDConfigHandler   endpoint.PatchEndpointIDConfigHandler
+	EndpointPatchEndpointIDLabelsHandler   endpoint.PatchEndpointIDLabelsHandler
+	PrefilterPatchPrefilterHandler         prefilter.PatchPrefilterHandler
+	IpamPostIpamHandler                    ipam.PostIpamHandler
+	IpamPostIpamIPHandler                  ipam.PostIpamIPHandler
+	EndpointPutEndpointIDHandler           endpoint.PutEndpointIDHandler
 }
 
 func newAPI(p apiParams) *restapi.CiliumAPIAPI {
@@ -130,10 +119,7 @@ func newAPI(p apiParams) *restapi.CiliumAPIAPI {
 	api.EndpointDeleteEndpointIDHandler = p.EndpointDeleteEndpointIDHandler
 	api.PolicyDeleteFqdnCacheHandler = p.PolicyDeleteFqdnCacheHandler
 	api.IpamDeleteIpamIPHandler = p.IpamDeleteIpamIPHandler
-	api.PolicyDeletePolicyHandler = p.PolicyDeletePolicyHandler
 	api.PrefilterDeletePrefilterHandler = p.PrefilterDeletePrefilterHandler
-	api.RecorderDeleteRecorderIDHandler = p.RecorderDeleteRecorderIDHandler
-	api.ServiceDeleteServiceIDHandler = p.ServiceDeleteServiceIDHandler
 	api.BgpGetBgpPeersHandler = p.BgpGetBgpPeersHandler
 	api.BgpGetBgpRoutePoliciesHandler = p.BgpGetBgpRoutePoliciesHandler
 	api.BgpGetBgpRoutesHandler = p.BgpGetBgpRoutesHandler
@@ -159,16 +145,12 @@ func newAPI(p apiParams) *restapi.CiliumAPIAPI {
 	api.DaemonGetMapHandler = p.DaemonGetMapHandler
 	api.DaemonGetMapNameHandler = p.DaemonGetMapNameHandler
 	api.DaemonGetMapNameEventsHandler = p.DaemonGetMapNameEventsHandler
-	api.MetricsGetMetricsHandler = p.MetricsGetMetricsHandler
 	api.DaemonGetNodeIdsHandler = p.DaemonGetNodeIdsHandler
 	api.PolicyGetPolicyHandler = p.PolicyGetPolicyHandler
 	api.PolicyGetPolicySelectorsHandler = p.PolicyGetPolicySelectorsHandler
+	api.PolicyGetPolicySubjectSelectorsHandler = p.PolicyGetPolicySubjectSelectorsHandler
 	api.PrefilterGetPrefilterHandler = p.PrefilterGetPrefilterHandler
-	api.RecorderGetRecorderHandler = p.RecorderGetRecorderHandler
-	api.RecorderGetRecorderIDHandler = p.RecorderGetRecorderIDHandler
-	api.RecorderGetRecorderMasksHandler = p.RecorderGetRecorderMasksHandler
 	api.ServiceGetServiceHandler = p.ServiceGetServiceHandler
-	api.ServiceGetServiceIDHandler = p.ServiceGetServiceIDHandler
 	api.DaemonPatchConfigHandler = p.DaemonPatchConfigHandler
 	api.EndpointPatchEndpointIDHandler = p.EndpointPatchEndpointIDHandler
 	api.EndpointPatchEndpointIDConfigHandler = p.EndpointPatchEndpointIDConfigHandler
@@ -177,9 +159,6 @@ func newAPI(p apiParams) *restapi.CiliumAPIAPI {
 	api.IpamPostIpamHandler = p.IpamPostIpamHandler
 	api.IpamPostIpamIPHandler = p.IpamPostIpamIPHandler
 	api.EndpointPutEndpointIDHandler = p.EndpointPutEndpointIDHandler
-	api.PolicyPutPolicyHandler = p.PolicyPutPolicyHandler
-	api.RecorderPutRecorderIDHandler = p.RecorderPutRecorderIDHandler
-	api.ServicePutServiceIDHandler = p.ServicePutServiceIDHandler
 
 	// Inject custom middleware if provided by Hive
 	if p.Middleware != nil {
@@ -187,6 +166,8 @@ func newAPI(p apiParams) *restapi.CiliumAPIAPI {
 			return p.Middleware(api.Context().APIHandler(builder))
 		}
 	}
+
+	api.Logger = p.Logger.Info
 
 	return api
 }
@@ -196,7 +177,7 @@ type serverParams struct {
 
 	Lifecycle  cell.Lifecycle
 	Shutdowner hive.Shutdowner
-	Logger     logrus.FieldLogger
+	Logger     *slog.Logger
 	Spec       *Spec
 	API        *restapi.CiliumAPIAPI
 }
@@ -307,7 +288,7 @@ func NewServer(api *restapi.CiliumAPIAPI) *Server {
 // ConfigureAPI configures the API and handlers.
 func (s *Server) ConfigureAPI() {
 	if s.api != nil {
-		s.handler = configureAPI(s.api)
+		s.handler = configureAPI(s.logger, s.api)
 	}
 }
 
@@ -354,17 +335,26 @@ type Server struct {
 
 	wg         sync.WaitGroup
 	shutdowner hive.Shutdowner
-	logger     logrus.FieldLogger
+	logger     *slog.Logger
 }
 
 // Logf logs message either via defined user logger or via system one if no user logger is defined.
 func (s *Server) Logf(f string, args ...interface{}) {
 	if s.logger != nil {
-		s.logger.Infof(f, args...)
+		s.logger.Info(fmt.Sprintf(f, args...))
 	} else if s.api != nil && s.api.Logger != nil {
-		s.api.Logger(f, args...)
+		s.api.Logger(fmt.Sprintf(f, args...))
 	} else {
-		log.Printf(f, args...)
+		slog.Info(fmt.Sprintf(f, args...))
+	}
+}
+
+// Debugf logs debug messages either via defined user logger or via system one if no user logger is defined.
+func (s *Server) Debugf(f string, args ...interface{}) {
+	if s.logger != nil {
+		s.logger.Debug(fmt.Sprintf(f, args...))
+	} else {
+		slog.Debug(fmt.Sprintf(f, args...))
 	}
 }
 
@@ -377,7 +367,7 @@ func (s *Server) Fatalf(f string, args ...interface{}) {
 		s.api.Logger(f, args...)
 		os.Exit(1)
 	} else {
-		log.Fatalf(f, args...)
+		logging.Fatal(slog.Default(), fmt.Sprintf(f, args...))
 	}
 }
 
@@ -390,7 +380,7 @@ func (s *Server) SetAPI(api *restapi.CiliumAPIAPI) {
 	}
 
 	s.api = api
-	s.handler = configureAPI(api)
+	s.handler = configureAPI(s.logger, api)
 }
 
 // GetAPI returns the configured API. Modifications on the API must be performed
@@ -450,7 +440,7 @@ func (s *Server) Start(cell.HookContext) (err error) {
 		configureServer(domainSocket, "unix", s.SocketPath)
 
 		if os.Getuid() == 0 {
-			err := api.SetDefaultPermissions(s.SocketPath)
+			err := api.SetDefaultPermissions(s.Debugf, s.SocketPath)
 			if err != nil {
 				return err
 			}

@@ -5,13 +5,16 @@ package clustermesh
 
 import (
 	"context"
-	"path"
-
-	"github.com/sirupsen/logrus"
+	"errors"
+	"log/slog"
+	"sync/atomic"
 
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/allocator"
 	"github.com/cilium/cilium/pkg/clustermesh/common"
+	"github.com/cilium/cilium/pkg/clustermesh/endpointslice"
+	"github.com/cilium/cilium/pkg/clustermesh/observer"
+	serviceStore "github.com/cilium/cilium/pkg/clustermesh/store"
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	"github.com/cilium/cilium/pkg/clustermesh/wait"
 	identityCache "github.com/cilium/cilium/pkg/identity/cache"
@@ -21,7 +24,13 @@ import (
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	nodeStore "github.com/cilium/cilium/pkg/node/store"
-	serviceStore "github.com/cilium/cilium/pkg/service/store"
+	"github.com/cilium/cilium/pkg/option"
+)
+
+var (
+	// ErrObserverNotRegistered is the error returned when referencing an observer
+	// which has not been registered.
+	ErrObserverNotRegistered = errors.New("observer not registered")
 )
 
 // remoteCluster implements the clustermesh business logic on top of
@@ -46,6 +55,7 @@ type remoteCluster struct {
 	// store is the shared store representing all nodes in the remote cluster
 	remoteNodes store.WatchStore
 
+	serviceModeV2 cmtypes.ServiceModeV2
 	// remoteServices is the shared store representing services in remote
 	// clusters
 	remoteServices store.WatchStore
@@ -62,17 +72,30 @@ type remoteCluster struct {
 
 	// remoteIdentityCache is a locally cached copy of the identity
 	// allocations in the remote cluster
-	remoteIdentityCache *allocator.RemoteCache
+	remoteIdentityCache allocator.RemoteIDCache
+
+	// observers are observers watching additional prefixes.
+	observers map[observer.Name]observer.Observer
 
 	// status is the function which fills the common part of the status.
 	status common.StatusFunc
 
 	storeFactory store.Factory
 
+	// registered represents whether the observers have been registered.
+	registered atomic.Bool
+
 	// synced tracks the initial synchronization with the remote cluster.
 	synced synced
 
-	log logrus.FieldLogger
+	log *slog.Logger
+
+	// featureMetrics will track which features are enabled with in clustermesh.
+	featureMetrics ClusterMeshMetrics
+
+	// featureMetricMaxClusters contains the max clusters defined for this
+	// clustermesh config.
+	featureMetricMaxClusters string
 }
 
 func (rc *remoteCluster) Run(ctx context.Context, backend kvstore.BackendOperations, config cmtypes.CiliumClusterConfig, ready chan<- error) {
@@ -87,6 +110,10 @@ func (rc *remoteCluster) Run(ctx context.Context, backend kvstore.BackendOperati
 		close(ready)
 		return
 	}
+
+	rc.featureMetrics.AddClusterMeshConfig(ClusterMeshMode(config, option.Config.IdentityAllocationMode), rc.featureMetricMaxClusters)
+
+	defer rc.featureMetrics.DelClusterMeshConfig(ClusterMeshMode(config, option.Config.IdentityAllocationMode), rc.featureMetricMaxClusters)
 
 	remoteIdentityCache, err := rc.remoteIdentityWatcher.WatchRemoteIdentities(rc.name, rc.clusterID, backend, config.Capabilities.Cached)
 	if err != nil {
@@ -103,29 +130,47 @@ func (rc *remoteCluster) Run(ctx context.Context, backend kvstore.BackendOperati
 	if config.Capabilities.SyncedCanaries {
 		mgr = rc.storeFactory.NewWatchStoreManager(backend, rc.name)
 	} else {
-		mgr = store.NewWatchStoreManagerImmediate(rc.name)
+		mgr = store.NewWatchStoreManagerImmediate(rc.log)
 	}
 
 	adapter := func(prefix string) string { return prefix }
 	if config.Capabilities.Cached {
 		adapter = kvstore.StateToCachePrefix
 	}
-
 	mgr.Register(adapter(nodeStore.NodeStorePrefix), func(ctx context.Context) {
-		rc.remoteNodes.Watch(ctx, backend, path.Join(adapter(nodeStore.NodeStorePrefix), rc.name))
+		rc.remoteNodes.Watch(ctx, backend, kvstore.JoinKey(adapter(nodeStore.NodeStorePrefix), rc.name))
 	})
 
-	mgr.Register(adapter(serviceStore.ServiceStorePrefix), func(ctx context.Context) {
-		rc.remoteServices.Watch(ctx, backend, path.Join(adapter(serviceStore.ServiceStorePrefix), rc.name))
-	})
-
+	if rc.serviceModeV2.ShouldWatchLegacyServices() &&
+		config.Capabilities.EndpointSlicesExportMode != cmtypes.EndpointSlicesExportModeEndpointSlicesOnly {
+		mgr.Register(adapter(serviceStore.ServiceStorePrefix), func(ctx context.Context) {
+			rc.remoteServices.Watch(ctx, backend, kvstore.JoinKey(adapter(serviceStore.ServiceStorePrefix), rc.name))
+		})
+	} else {
+		if rc.serviceModeV2.ShouldWatchLegacyServices() {
+			rc.log.Error("Remote cluster does not support legacy service resources while Cilium is configured to watch them. "+
+				"Global Services and MCS-API will not take into account any backends from this cluster!",
+				logfields.ClusterName, rc.name)
+		}
+		// Drain any existing services in case the remote cluster no longer supports them
+		rc.remoteServices.Drain()
+		// Mimic that services are synced if not enabled
+		rc.synced.services.Stop()
+	}
 	mgr.Register(adapter(ipcache.IPIdentitiesPath), func(ctx context.Context) {
 		rc.ipCacheWatcher.Watch(ctx, backend, rc.ipCacheWatcherOpts(&config)...)
 	})
 
 	mgr.Register(adapter(identityCache.IdentitiesPath), func(ctx context.Context) {
-		rc.remoteIdentityCache.Watch(ctx, func(context.Context) { rc.synced.identities.Done() })
+		rc.remoteIdentityCache.Watch(ctx, func(context.Context) { rc.synced.identitiesDone() })
 	})
+
+	for _, obs := range rc.observers {
+		obs.Register(mgr, backend, config)
+	}
+
+	rc.registered.Store(true)
+	defer rc.registered.Store(false)
 
 	close(ready)
 	mgr.Run(ctx)
@@ -133,6 +178,18 @@ func (rc *remoteCluster) Run(ctx context.Context, backend kvstore.BackendOperati
 
 func (rc *remoteCluster) Stop() {
 	rc.synced.Stop()
+}
+
+// RevokeCache performs a partial revocation of the remote cluster's cache, draining only remote
+// services. This prevents the agent from load-balancing to potentially stale service backends.
+// Other resources, besides extra observers that may also implement revocation, are left intact to
+// reduce churn and avoid disrupting existing connections like active IPsec security associations.
+func (rc *remoteCluster) RevokeCache(ctx context.Context) {
+	rc.remoteServices.Drain()
+
+	for _, obs := range rc.observers {
+		obs.Revoke()
+	}
 }
 
 func (rc *remoteCluster) Remove(context.Context) {
@@ -145,30 +202,57 @@ func (rc *remoteCluster) Remove(context.Context) {
 
 	rc.remoteIdentityWatcher.RemoveRemoteIdentities(rc.name)
 
+	for _, obs := range rc.observers {
+		obs.Drain()
+	}
+
 	rc.usedIDs.ReleaseClusterID(rc.clusterID)
 }
 
 func (rc *remoteCluster) Status() *models.RemoteCluster {
 	status := rc.status()
 
+	get := func(name observer.Name) observer.Status {
+		obs, ok := rc.observers[name]
+		if ok {
+			return obs.Status()
+		}
+		return observer.Status{}
+	}
+
 	rc.mutex.RLock()
 	defer rc.mutex.RUnlock()
 
 	status.NumNodes = int64(rc.remoteNodes.NumEntries())
 	status.NumSharedServices = int64(rc.remoteServices.NumEntries())
-	status.NumIdentities = int64(rc.remoteIdentityCache.NumEntries())
 	status.NumEndpoints = int64(rc.ipCacheWatcher.NumEntries())
 
 	status.Synced = &models.RemoteClusterSynced{
-		Nodes:      rc.remoteNodes.Synced(),
-		Services:   rc.remoteServices.Synced(),
-		Identities: rc.remoteIdentityCache.Synced(),
-		Endpoints:  rc.ipCacheWatcher.Synced(),
+		Nodes:     rc.remoteNodes.Synced(),
+		Services:  !rc.serviceModeV2.ShouldWatchLegacyServices() || rc.remoteServices.Synced(),
+		Endpoints: rc.ipCacheWatcher.Synced(),
+	}
+
+	if rc.remoteIdentityCache != nil {
+		status.NumIdentities = int64(rc.remoteIdentityCache.NumEntries())
+		status.Synced.Identities = rc.remoteIdentityCache.Synced()
+	}
+	if get(endpointslice.Name).Enabled {
+		status.Synced.EndpointSlices = new(get(endpointslice.Name).Synced)
 	}
 
 	status.Ready = status.Ready &&
 		status.Synced.Nodes && status.Synced.Services &&
 		status.Synced.Identities && status.Synced.Endpoints
+
+	// We mark the status as ready only after being sure that all observers
+	// have been registered, as at that point we expect that [status.Enabled]
+	// is set if the reflector is enabled for the current configuration.
+	status.Ready = status.Ready && rc.registered.Load()
+	for _, obs := range rc.observers {
+		var st = obs.Status()
+		status.Ready = status.Ready && (!st.Enabled || st.Synced)
+	}
 
 	return status
 }
@@ -185,13 +269,19 @@ func (rc *remoteCluster) onUpdateConfig(newConfig cmtypes.CiliumClusterConfig) e
 	// stale entries for a Cluster ID that has already been released, potentially
 	// leading to inconsistencies if the same ID is acquired again in the meanwhile.
 	if rc.clusterID != cmtypes.ClusterIDUnset {
-		rc.log.WithField(logfields.ClusterID, newConfig.ID).
-			Info("Remote Cluster ID changed: draining all known entries before reconnecting. ",
-				"Expect connectivity disruption towards this cluster")
+		rc.log.Info(
+			"Remote Cluster ID changed: draining all known entries before reconnecting. "+
+				"Expect connectivity disruption towards this cluster",
+			logfields.ClusterID, newConfig.ID,
+		)
 		rc.remoteNodes.Drain()
 		rc.remoteServices.Drain()
 		rc.ipCacheWatcher.Drain()
 		rc.remoteIdentityWatcher.RemoveRemoteIdentities(rc.name)
+
+		for _, obs := range rc.observers {
+			obs.Drain()
+		}
 	}
 
 	if err := rc.usedIDs.ReserveClusterID(newConfig.ID); err != nil {
@@ -221,10 +311,13 @@ func (rc *remoteCluster) ipCacheWatcherOpts(config *cmtypes.CiliumClusterConfig)
 
 type synced struct {
 	wait.SyncedCommon
-	services   *lock.StoppableWaitGroup
-	nodes      chan struct{}
-	ipcache    chan struct{}
-	identities *lock.StoppableWaitGroup
+	services       *lock.StoppableWaitGroup
+	nodes          chan struct{}
+	ipcache        chan struct{}
+	identities     *lock.StoppableWaitGroup
+	identitiesDone lock.DoneFunc
+
+	observers map[observer.Name]chan struct{}
 }
 
 func newSynced() synced {
@@ -233,15 +326,20 @@ func newSynced() synced {
 	// synced (as the callback is executed every time the etcd connection
 	// is restarted, differently from the other resource types).
 	idswg := lock.NewStoppableWaitGroup()
-	idswg.Add()
+	done := idswg.Add()
 	idswg.Stop()
 
 	return synced{
 		SyncedCommon: wait.NewSyncedCommon(),
-		services:     lock.NewStoppableWaitGroup(),
-		nodes:        make(chan struct{}),
-		ipcache:      make(chan struct{}),
-		identities:   idswg,
+		// Services can be disabled at runtime and will be immediately marked
+		// as sync if they are not watched. Thus, we use stoppable wait groups
+		// for similar reasons as for identities here.
+		services:       lock.NewStoppableWaitGroup(),
+		nodes:          make(chan struct{}),
+		ipcache:        make(chan struct{}),
+		identities:     idswg,
+		identitiesDone: done,
+		observers:      make(map[observer.Name]chan struct{}),
 	}
 }
 
@@ -267,4 +365,43 @@ func (s *synced) Services(ctx context.Context) error {
 // (i.e., node addresses, health, ingress, ...).
 func (s *synced) IPIdentities(ctx context.Context) error {
 	return s.Wait(ctx, s.ipcache, s.identities.WaitChannel(), s.nodes)
+}
+
+// ObserverSynced returns after that either the given named observer has
+// received the initial list of entries from the remote clusters, the
+// remote cluster is disconnected, or the given context is canceled.
+// It returns an error if the target observer is not registered.
+func (s *synced) Observer(ctx context.Context, name observer.Name) error {
+	wait, ok := s.observers[name]
+	if !ok {
+		return ErrObserverNotRegistered
+	}
+
+	return s.Wait(ctx, wait)
+}
+
+type ClusterMeshMetrics interface {
+	AddClusterMeshConfig(mode string, maxClusters string)
+	DelClusterMeshConfig(mode string, maxClusters string)
+}
+
+const (
+	ClusterMeshModeClusterMeshAPIServer       = "clustermesh-apiserver"
+	ClusterMeshModeETCD                       = "etcd"
+	ClusterMeshModeKVStoreMesh                = "kvstoremesh"
+	ClusterMeshModeClusterMeshAPIServerOrETCD = ClusterMeshModeClusterMeshAPIServer + "_or_" + ClusterMeshModeETCD
+)
+
+// ClusterMeshMode returns the mode of the local cluster.
+func ClusterMeshMode(rcc cmtypes.CiliumClusterConfig, identityMode string) string {
+	switch {
+	case rcc.Capabilities.Cached:
+		return ClusterMeshModeKVStoreMesh
+	case identityMode == option.IdentityAllocationModeCRD:
+		return ClusterMeshModeClusterMeshAPIServer
+	case identityMode == option.IdentityAllocationModeKVstore:
+		return ClusterMeshModeETCD
+	default:
+		return ClusterMeshModeClusterMeshAPIServerOrETCD
+	}
 }

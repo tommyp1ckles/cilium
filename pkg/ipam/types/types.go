@@ -5,9 +5,10 @@ package types
 
 import (
 	"fmt"
+	"maps"
 	"net/netip"
 
-	"github.com/cilium/cilium/pkg/cidr"
+	iputil "github.com/cilium/cilium/pkg/ip"
 	"github.com/cilium/cilium/pkg/lock"
 )
 
@@ -26,6 +27,9 @@ type Limits struct {
 	// HypervisorType tracks the instance's hypervisor type if available. Used to determine if features like prefix
 	// delegation are supported on an instance. Bare metal instances would have empty string.
 	HypervisorType string
+
+	// IsBareMetal tracks whether an instance is a bare metal instance or not
+	IsBareMetal bool
 }
 
 // AllocationIP is an IP which is available for allocation, or already
@@ -52,24 +56,6 @@ type AllocationIP struct {
 // AllocationMap is a map of allocated IPs indexed by IP
 type AllocationMap map[string]AllocationIP
 
-// IPAMPodCIDR is a pod CIDR
-//
-// +kubebuilder:validation:Format=cidr
-type IPAMPodCIDR string
-
-func (c *IPAMPodCIDR) ToPrefix() (*netip.Prefix, error) {
-	if c == nil {
-		return nil, fmt.Errorf("nil ipam cidr")
-	}
-
-	prefix, err := netip.ParsePrefix(string(*c))
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse ipam cidr %v: %w", c, err)
-	}
-
-	return &prefix, nil
-}
-
 // IPAMPoolAllocation describes an allocation of an IPAM pool from the operator to the
 // node. It contains the assigned PodCIDRs allocated from this pool
 type IPAMPoolAllocation struct {
@@ -78,10 +64,20 @@ type IPAMPoolAllocation struct {
 	// +kubebuilder:validation:MinLength=1
 	Pool string `json:"pool"`
 
+	// AllowFirstIP allows the first IP of each allocated CIDR to be used.
+	//
+	// +optional
+	AllowFirstIP bool `json:"allowFirstIP,omitempty"`
+
+	// AllowLastIP allows the last IP of each allocated CIDR to be used.
+	//
+	// +optional
+	AllowLastIP bool `json:"allowLastIP,omitempty"`
+
 	// CIDRs contains a list of pod CIDRs currently allocated from this pool
 	//
 	// +optional
-	CIDRs []IPAMPodCIDR `json:"cidrs,omitempty"`
+	CIDRs []iputil.Prefix `json:"cidrs,omitempty"`
 }
 
 type IPAMPoolRequest struct {
@@ -142,7 +138,7 @@ type IPAMSpec struct {
 	// When an IP is used, the IP will be added to Status.IPAM.Used
 	//
 	// +optional
-	PodCIDRs []string `json:"podCIDRs,omitempty"`
+	PodCIDRs []iputil.Prefix `json:"podCIDRs,omitempty"`
 
 	// MinAllocate is the minimum number of IPs that must be allocated when
 	// the node is first bootstrapped. It defines the minimum base socket
@@ -162,7 +158,7 @@ type IPAMSpec struct {
 	MaxAllocate int `json:"max-allocate,omitempty"`
 
 	// PreAllocate defines the number of IP addresses that must be
-	// available for allocation in the IPAMspec. It defines the buffer of
+	// available for allocation in the IPAMSpec. It defines the buffer of
 	// addresses available immediately without requiring cilium-operator to
 	// get involved.
 	//
@@ -178,6 +174,13 @@ type IPAMSpec struct {
 	//
 	// +kubebuilder:validation:Minimum=0
 	MaxAboveWatermark int `json:"max-above-watermark,omitempty"`
+
+	// StaticIPTags are used to determine the pool of IPs from which to
+	// attribute a static IP to the node. For example in AWS this is used to
+	// filter Elastic IP Addresses.
+	//
+	// +optional
+	StaticIPTags map[string]string `json:"static-ip-tags,omitempty"`
 }
 
 // IPReleaseStatus defines the valid states in IP release handshake
@@ -230,10 +233,15 @@ type IPAMStatus struct {
 	//
 	// +optional
 	ReleaseIPv6s map[string]IPReleaseStatus `json:"release-ipv6s,omitempty"`
+
+	// AssignedStaticIP is the static IP assigned to the node (ex: public Elastic IP address in AWS)
+	//
+	// +optional
+	AssignedStaticIP string `json:"assigned-static-ip,omitempty"`
 }
 
-// IPAMPoolRequest is a request from the agent to the operator, indicating how
-// may IPs it requires from a given pool
+// IPAMPoolDemand is a request from the agent to the operator, indicating how
+// many IPs it requires from a given pool
 type IPAMPoolDemand struct {
 	// IPv4Addrs contains the number of requested IPv4 addresses out of a given
 	// pool
@@ -290,6 +298,9 @@ func (t Tags) Match(required Tags) bool {
 }
 
 // Subnet is a representation of a subnet
+// +k8s:deepcopy-gen=false
+// +deepequal-gen=true
+// +deepequal-gen:private-method=true
 type Subnet struct {
 	// ID is the subnet ID
 	ID string
@@ -298,10 +309,12 @@ type Subnet struct {
 	Name string
 
 	// CIDR is the IPv4 CIDR associated with the subnet
-	CIDR *cidr.CIDR
+	// +deepequal-gen=false
+	CIDR netip.Prefix
 
 	// IPv6CIDR is the IPv6 CIDR associated with the subnet
-	IPv6CIDR *cidr.CIDR
+	// +deepequal-gen=false
+	IPv6CIDR netip.Prefix
 
 	// AvailabilityZone is the availability zone of the subnet
 	AvailabilityZone string
@@ -319,6 +332,42 @@ type Subnet struct {
 
 	// Tags is the tags of the subnet
 	Tags Tags
+}
+
+// DeepEqual compares two Subnet structs for equality.
+func (in *Subnet) DeepEqual(other *Subnet) bool {
+	if other == nil {
+		return false
+	}
+	// Manually compare netip.Prefix fields
+	if in.CIDR != other.CIDR {
+		return false
+	}
+	if in.IPv6CIDR != other.IPv6CIDR {
+		return false
+	}
+	// Call generated private method for other fields
+	return in.deepEqual(other)
+}
+
+// DeepCopyInto is a deepcopy function, copying the receiver, writing into out. in must be non-nil.
+func (in *Subnet) DeepCopyInto(out *Subnet) {
+	*out = *in
+	if in.Tags != nil {
+		in, out := &in.Tags, &out.Tags
+		*out = make(Tags, len(*in))
+		maps.Copy((*out), *in)
+	}
+}
+
+// DeepCopy is a deepcopy function, copying the receiver, creating a new Subnet.
+func (in *Subnet) DeepCopy() *Subnet {
+	if in == nil {
+		return nil
+	}
+	out := new(Subnet)
+	in.DeepCopyInto(out)
+	return out
 }
 
 // SubnetMap indexes subnets by subnet ID
@@ -351,17 +400,35 @@ type VirtualNetwork struct {
 	ID string
 
 	// PrimaryCIDR is the primary IPv4 CIDR
-	PrimaryCIDR string
+	PrimaryCIDR iputil.Prefix
 
 	// CIDRs is the list of secondary IPv4 CIDR ranges associated with the VPC
-	CIDRs []string
+	CIDRs []iputil.Prefix
 
 	// IPv6CIDRs is the list of IPv6 CIDR ranges associated with the VPC
-	IPv6CIDRs []string
+	IPv6CIDRs []iputil.Prefix
 }
 
 // VirtualNetworkMap indexes virtual networks by their ID
 type VirtualNetworkMap map[string]*VirtualNetwork
+
+// RouteTable is a representation of a route table but only for the purpose of
+// to check the subnets are in the same route table. It is not a full
+// representation of a route table.
+type RouteTable struct {
+	// ID is the ID of the route table
+	ID string
+
+	// VirtualNetworkID is the virtual network the route table is in
+	VirtualNetworkID string
+
+	// Subnets maps subnet IDs to their presence in this route table
+	// +deepequal-gen=false
+	Subnets map[string]struct{}
+}
+
+// RouteTableMap indexes route tables by their ID
+type RouteTableMap map[string]*RouteTable
 
 // PoolNotExists indicate that no such pool ID exists
 const PoolNotExists = PoolID("")
@@ -394,29 +461,8 @@ type Interface interface {
 	// InterfaceID must return the identifier of the interface
 	InterfaceID() string
 
-	// ForeachAddress must iterate over all addresses of the interface and
-	// call fn for each address
-	ForeachAddress(instanceID string, fn AddressIterator) error
-
 	// DeepCopyInterface returns a deep copy of the underlying interface type.
 	DeepCopyInterface() Interface
-}
-
-// InterfaceRevision is the configurationr revision of a network interface. It
-// consists of a revision hash representing the current configuration version
-// and the resource itself.
-//
-// +k8s:deepcopy-gen=false
-// +deepequal-gen=false
-type InterfaceRevision struct {
-	// Resource is the interface resource
-	Resource Interface
-
-	// Fingerprint is the fingerprint reprsenting the network interface
-	// configuration. It is typically implemented as the result of a hash
-	// function calculated off the resource. This field is optional, not
-	// all IPAM backends make use of fingerprints.
-	Fingerprint string
 }
 
 // Instance is the representation of an instance, typically a VM, subject to
@@ -425,9 +471,23 @@ type InterfaceRevision struct {
 // +k8s:deepcopy-gen=false
 // +deepequal-gen=false
 type Instance struct {
-	// interfaces is a map of all interfaces attached to the instance
+	// Interfaces is a map of all interfaces attached to the instance
 	// indexed by the interface ID
-	Interfaces map[string]InterfaceRevision
+	Interfaces map[string]Interface
+}
+
+// DeepCopy returns a deep copy
+func (i *Instance) DeepCopy() *Instance {
+	if i == nil {
+		return nil
+	}
+	c := &Instance{
+		Interfaces: map[string]Interface{},
+	}
+	for k, v := range i.Interfaces {
+		c.Interfaces[k] = v.DeepCopyInterface()
+	}
+	return c
 }
 
 // InstanceMap is the list of all instances indexed by instance ID
@@ -454,14 +514,14 @@ func (m *InstanceMap) UpdateInstance(instanceID string, instance *Instance) {
 // Update updates the definition of an interface for a particular instance. If
 // the interface is already known, the definition is updated, otherwise the
 // interface is added to the instance.
-func (m *InstanceMap) Update(instanceID string, iface InterfaceRevision) {
+func (m *InstanceMap) Update(instanceID string, iface Interface) {
 	m.mutex.Lock()
 	m.updateLocked(instanceID, iface)
 	m.mutex.Unlock()
 }
 
-func (m *InstanceMap) updateLocked(instanceID string, iface InterfaceRevision) {
-	if iface.Resource == nil {
+func (m *InstanceMap) updateLocked(instanceID string, iface Interface) {
+	if iface == nil {
 		return
 	}
 
@@ -472,61 +532,18 @@ func (m *InstanceMap) updateLocked(instanceID string, iface InterfaceRevision) {
 	}
 
 	if i.Interfaces == nil {
-		i.Interfaces = map[string]InterfaceRevision{}
+		i.Interfaces = map[string]Interface{}
 	}
 
-	i.Interfaces[iface.Resource.InterfaceID()] = iface
-}
-
-type Address interface{}
-
-// AddressIterator is the function called by the ForeachAddress iterator
-type AddressIterator func(instanceID, interfaceID, ip, poolID string, address Address) error
-
-func foreachAddress(instanceID string, instance *Instance, fn AddressIterator) error {
-	for _, rev := range instance.Interfaces {
-		if err := rev.Resource.ForeachAddress(instanceID, fn); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// ForeachAddress calls fn for each address on each interface attached to each
-// instance. If an instanceID is specified, the only the interfaces and
-// addresses of the specified instance are considered.
-//
-// The InstanceMap is read-locked throughout the iteration process, i.e., no
-// updates will occur. However, the address object given to the AddressIterator
-// will point to live data and must be deep copied if used outside of the
-// context of the iterator function.
-func (m *InstanceMap) ForeachAddress(instanceID string, fn AddressIterator) error {
-	m.mutex.RLock()
-	defer m.mutex.RUnlock()
-
-	if instanceID != "" {
-		if instance := m.data[instanceID]; instance != nil {
-			return foreachAddress(instanceID, instance, fn)
-		}
-		return fmt.Errorf("instance does not exist: %q", instanceID)
-	}
-
-	for instanceID, instance := range m.data {
-		if err := foreachAddress(instanceID, instance, fn); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	i.Interfaces[iface.InterfaceID()] = iface
 }
 
 // InterfaceIterator is the function called by the ForeachInterface iterator
-type InterfaceIterator func(instanceID, interfaceID string, iface InterfaceRevision) error
+type InterfaceIterator func(instanceID, interfaceID string, iface Interface) error
 
 func foreachInterface(instanceID string, instance *Instance, fn InterfaceIterator) error {
-	for _, rev := range instance.Interfaces {
-		if err := fn(instanceID, rev.Resource.InterfaceID(), rev); err != nil {
+	for _, iface := range instance.Interfaces {
+		if err := fn(instanceID, iface.InterfaceID(), iface); err != nil {
 			return err
 		}
 	}
@@ -561,28 +578,27 @@ func (m *InstanceMap) ForeachInterface(instanceID string, fn InterfaceIterator) 
 	return nil
 }
 
-// GetInterface returns returns a particular interface of an instance. The
+// GetInterface returns a particular interface of an instance. The
 // boolean indicates whether the interface was found or not.
-func (m *InstanceMap) GetInterface(instanceID, interfaceID string) (InterfaceRevision, bool) {
+func (m *InstanceMap) GetInterface(instanceID, interfaceID string) (Interface, bool) {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
 
 	if instance := m.data[instanceID]; instance != nil {
-		if rev, ok := instance.Interfaces[interfaceID]; ok {
-			return rev, true
+		if iface, ok := instance.Interfaces[interfaceID]; ok {
+			return iface, true
 		}
 	}
 
-	return InterfaceRevision{}, false
+	return nil, false
 }
 
 // DeepCopy returns a deep copy
 func (m *InstanceMap) DeepCopy() *InstanceMap {
 	c := NewInstanceMap()
-	m.ForeachInterface("", func(instanceID, interfaceID string, rev InterfaceRevision) error {
+	m.ForeachInterface("", func(instanceID, interfaceID string, iface Interface) error {
 		// c is not exposed yet, we can access it without locking it
-		rev.Resource = rev.Resource.DeepCopyInterface()
-		c.updateLocked(instanceID, rev)
+		c.updateLocked(instanceID, iface.DeepCopyInterface())
 		return nil
 	})
 	return c

@@ -8,63 +8,74 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/hivetest"
+	"github.com/cilium/statedb"
+	statedbReconciler "github.com/cilium/statedb/reconciler"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 
 	"github.com/cilium/cilium/api/v1/models"
+	"github.com/cilium/cilium/api/v1/server"
 	cnicell "github.com/cilium/cilium/daemon/cmd/cni"
 	fakecni "github.com/cilium/cilium/daemon/cmd/cni/fake"
+	"github.com/cilium/cilium/daemon/cmd/legacy"
 	"github.com/cilium/cilium/pkg/controller"
 	fakeDatapath "github.com/cilium/cilium/pkg/datapath/fake"
+	"github.com/cilium/cilium/pkg/datapath/linux/route/reconciler"
+	"github.com/cilium/cilium/pkg/datapath/neighbor"
 	"github.com/cilium/cilium/pkg/datapath/prefilter"
-	datapath "github.com/cilium/cilium/pkg/datapath/types"
-	"github.com/cilium/cilium/pkg/endpoint"
+	"github.com/cilium/cilium/pkg/dial"
+	endpointapi "github.com/cilium/cilium/pkg/endpoint/api"
+	endpointcreator "github.com/cilium/cilium/pkg/endpoint/creator"
+	"github.com/cilium/cilium/pkg/endpointmanager"
 	"github.com/cilium/cilium/pkg/envoy"
-	fqdnproxy "github.com/cilium/cilium/pkg/fqdn/proxy"
-	"github.com/cilium/cilium/pkg/fqdn/restore"
 	"github.com/cilium/cilium/pkg/hive"
-	"github.com/cilium/cilium/pkg/identity"
+	identitycell "github.com/cilium/cilium/pkg/identity/cache/cell"
+	"github.com/cilium/cilium/pkg/ipam"
+	ipcachetypes "github.com/cilium/cilium/pkg/ipcache/types"
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
+	k8sFakeClient "github.com/cilium/cilium/pkg/k8s/client/testutils"
 	k8sSynced "github.com/cilium/cilium/pkg/k8s/synced"
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/kvstore/store"
 	"github.com/cilium/cilium/pkg/labelsfilter"
-	ctmapgc "github.com/cilium/cilium/pkg/maps/ctmap/gc"
+	"github.com/cilium/cilium/pkg/loadbalancer"
+	"github.com/cilium/cilium/pkg/logging"
+	"github.com/cilium/cilium/pkg/maps/ctmap"
+	"github.com/cilium/cilium/pkg/maps/policymap"
+	"github.com/cilium/cilium/pkg/maps/subnet"
 	"github.com/cilium/cilium/pkg/metrics"
 	monitorAgent "github.com/cilium/cilium/pkg/monitor/agent"
-	monitorAPI "github.com/cilium/cilium/pkg/monitor/api"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
-	"github.com/cilium/cilium/pkg/promise"
-	"github.com/cilium/cilium/pkg/proxy"
+	policyAPI "github.com/cilium/cilium/pkg/policy/api"
+	policycell "github.com/cilium/cilium/pkg/policy/cell"
+	policyTypes "github.com/cilium/cilium/pkg/policy/types"
+	policyUtils "github.com/cilium/cilium/pkg/policy/utils"
 	"github.com/cilium/cilium/pkg/testutils"
 	testidentity "github.com/cilium/cilium/pkg/testutils/identity"
-	"github.com/cilium/cilium/pkg/types"
 )
 
 type DaemonSuite struct {
 	hive *hive.Hive
 	log  *slog.Logger
 
-	d *Daemon
-
 	// oldPolicyEnabled is the policy enforcement mode that was set before the test,
 	// as returned by policy.GetPolicyEnabled().
 	oldPolicyEnabled string
 
-	// Owners interface mock
-	OnGetPolicyRepository  func() *policy.Repository
-	OnGetNamedPorts        func() (npm types.NamedPortMultiMap)
-	OnQueueEndpointBuild   func(ctx context.Context, epID uint64) (func(), error)
-	OnGetCompilationLock   func() datapath.CompilationLock
-	OnSendNotification     func(typ monitorAPI.AgentNotifyMessage) error
-	OnGetCIDRPrefixLengths func() ([]int, []int)
+	identityAllocator  identitycell.CachingIdentityAllocator
+	policyRepository   policy.PolicyRepository
+	PolicyImporter     policycell.PolicyImporter
+	envoyXdsServer     envoy.XDSServer
+	endpointManager    endpointmanager.EndpointManager
+	endpointAPIManager endpointapi.EndpointAPIManager
+	endpointCreator    endpointcreator.EndpointCreator
+	ipamManager        *ipam.IPAM
 }
 
 func setupTestDirectories() string {
@@ -73,13 +84,13 @@ func setupTestDirectories() string {
 		panic("TempDir() failed.")
 	}
 
-	err = os.Mkdir(filepath.Join(tempRunDir, "globals"), 0777)
+	err = os.Mkdir(filepath.Join(tempRunDir, "globals"), 0o777)
 	if err != nil {
 		panic("Mkdir failed")
 	}
 
 	socketDir := envoy.GetSocketDir(tempRunDir)
-	err = os.MkdirAll(socketDir, 0700)
+	err = os.MkdirAll(socketDir, 0o700)
 	if err != nil {
 		panic("creating envoy socket directory failed")
 	}
@@ -94,51 +105,89 @@ func TestMain(m *testing.M) {
 		os.Exit(m.Run())
 	}
 
-	proxy.DefaultDNSProxy = fqdnproxy.MockFQDNProxy{}
-
 	time.Local = time.UTC
 
 	os.Exit(m.Run())
 }
 
-type dummyEpSyncher struct{}
-
-func (epSync *dummyEpSyncher) RunK8sCiliumEndpointSync(e *endpoint.Endpoint, h cell.Health) {
-}
-
-func (epSync *dummyEpSyncher) DeleteK8sCiliumEndpointSync(e *endpoint.Endpoint) {
-}
-
-func setupDaemonSuite(tb testing.TB) *DaemonSuite {
+func setupDaemonEtcdSuite(tb testing.TB) *DaemonSuite {
 	testutils.IntegrationTest(tb)
 
-	ds := &DaemonSuite{}
+	client := kvstore.SetupDummy(tb, kvstore.EtcdBackendName)
+
+	logOpts := []hivetest.LogOption{}
+	if os.Getenv("CILIUM_DEBUG") != "" {
+		logOpts = append(logOpts, hivetest.LogLevel(slog.LevelDebug))
+	}
+
+	ds := &DaemonSuite{
+		log: hivetest.Logger(tb, logOpts...),
+	}
 	ctx := context.Background()
 
 	ds.oldPolicyEnabled = policy.GetPolicyEnabled()
 	policy.SetPolicyEnabled(option.DefaultEnforcement)
 
-	var daemonPromise promise.Promise[*Daemon]
 	ds.hive = hive.New(
 		cell.Provide(
-			func() k8sClient.Clientset {
-				cs, _ := k8sClient.NewFakeClientset()
-				cs.Disable()
-				return cs
+			func() (_ statedbReconciler.Reconciler[*reconciler.DesiredRoute]) {
+				return nil
 			},
-			func() *option.DaemonConfig { return option.Config },
+			func(log *slog.Logger) (k8sClient.Clientset, k8sClient.Config) {
+				cs, _ := k8sFakeClient.NewFakeClientset(log)
+				cs.Disable()
+				return cs, cs.Config()
+			},
+			func() kvstore.Config { return kvstore.Config{KVStore: kvstore.EtcdBackendName} },
+			func() kvstore.Client { return client },
 			func() cnicell.CNIConfigManager { return &fakecni.FakeCNIConfigManager{} },
-			func() ctmapgc.Enabler { return ctmapgc.NewFake() },
+			func() ctmap.GCRunner { return ctmap.NewFakeGCRunner() },
+			func() policymap.Factory { return nil },
 			k8sSynced.RejectedCRDSyncPromise,
+			func() *loadbalancer.TestConfig {
+				return &loadbalancer.TestConfig{}
+			},
+			func() *server.Server { return nil },
+			func() statedb.RWTable[subnet.SubnetTableEntry] {
+				return nil
+			},
 		),
 		fakeDatapath.Cell,
+		neighbor.ForwardableIPCell,
+		reconciler.TableCell,
+		cell.Provide(neighbor.NewCommonTestConfig(true, false, 100)),
 		prefilter.Cell,
 		monitorAgent.Cell,
+		dial.ServiceResolverCell,
 		ControlPlane,
 		metrics.Cell,
 		store.Cell,
-		cell.Invoke(func(p promise.Promise[*Daemon]) {
-			daemonPromise = p
+		cell.Invoke(func(legacy.DaemonInitialization) {
+			// with dry-run enabled it's enough to depend on DaemonInitialization
+		}),
+		cell.Invoke(func(pi policycell.PolicyImporter) {
+			ds.PolicyImporter = pi
+		}),
+		cell.Invoke(func(envoyXdsServer envoy.XDSServer) {
+			ds.envoyXdsServer = envoyXdsServer
+		}),
+		cell.Invoke(func(endpointAPIManager endpointapi.EndpointAPIManager) {
+			ds.endpointAPIManager = endpointAPIManager
+		}),
+		cell.Invoke(func(identityAllocator identitycell.CachingIdentityAllocator) {
+			ds.identityAllocator = identityAllocator
+		}),
+		cell.Invoke(func(policyRepository policy.PolicyRepository) {
+			ds.policyRepository = policyRepository
+		}),
+		cell.Invoke(func(endpointCreator endpointcreator.EndpointCreator) {
+			ds.endpointCreator = endpointCreator
+		}),
+		cell.Invoke(func(ipamManager *ipam.IPAM) {
+			ds.ipamManager = ipamManager
+		}),
+		cell.Invoke(func(endpointManager endpointmanager.EndpointManager) {
+			ds.endpointManager = endpointManager
 		}),
 	)
 
@@ -150,23 +199,42 @@ func setupDaemonSuite(tb testing.TB) *DaemonSuite {
 	option.Config.RunDir = testRunDir
 	option.Config.StateDir = testRunDir
 
-	ds.log = hivetest.Logger(tb)
-	err := ds.hive.Start(ds.log, ctx)
-	require.Nil(tb, err)
+	oldWd, err := os.Getwd()
+	require.NoError(tb, err)
+	require.NoError(tb, os.Chdir(option.Config.StateDir))
 
-	ds.d, err = daemonPromise.Await(ctx)
-	require.Nil(tb, err)
+	hiveStarted := false
+	tb.Cleanup(func() {
+		controller.NewManager().RemoveAllAndWait()
 
-	kvstore.Client().DeletePrefix(ctx, kvstore.OperationalPath)
-	kvstore.Client().DeletePrefix(ctx, kvstore.BaseKeyPrefix)
+		// Restore the policy enforcement mode.
+		policy.SetPolicyEnabled(ds.oldPolicyEnabled)
 
-	ds.d.policy.GetSelectorCache().SetLocalIdentityNotifier(testidentity.NewDummyIdentityNotifier())
+		if hiveStarted {
+			err := ds.hive.Stop(ds.log, ctx)
+			require.NoError(tb, err)
+		}
 
-	ds.OnGetPolicyRepository = ds.d.GetPolicyRepository
-	ds.OnQueueEndpointBuild = nil
-	ds.OnGetCompilationLock = ds.d.GetCompilationLock
-	ds.OnSendNotification = ds.d.SendNotification
-	ds.OnGetCIDRPrefixLengths = nil
+		require.NoError(tb, os.Chdir(oldWd))
+
+		// It's helpful to keep the directories around if a test failed; only delete
+		// them if tests succeed.
+		if !tb.Failed() {
+			os.RemoveAll(option.Config.RunDir)
+		}
+	})
+
+	err = ds.hive.Start(ds.log, ctx)
+	require.NoError(tb, err)
+	hiveStarted = true
+
+	ds.policyRepository.GetSelectorCache().SetLocalIdentityNotifier(testidentity.NewDummyIdentityNotifier())
+
+	// Ensure that the identity allocator is synchronized before starting the
+	// actual tests, to prevent flakes caused by the goroutine started by
+	// [(*CachingIdentityAllocator).InitIdentityAllocator] still lingering
+	// around when the Hive gets stopped.
+	ds.identityAllocator.WaitForInitialGlobalIdentities(tb.Context())
 
 	// Reset the most common endpoint states before each test.
 	for _, s := range []string{
@@ -177,24 +245,6 @@ func setupDaemonSuite(tb testing.TB) *DaemonSuite {
 		metrics.EndpointStateCount.WithLabelValues(s).Set(0.0)
 	}
 
-	tb.Cleanup(func() {
-		controller.NewManager().RemoveAllAndWait()
-
-		// It's helpful to keep the directories around if a test failed; only delete
-		// them if tests succeed.
-		if !tb.Failed() {
-			os.RemoveAll(option.Config.RunDir)
-		}
-
-		// Restore the policy enforcement mode.
-		policy.SetPolicyEnabled(ds.oldPolicyEnabled)
-
-		err := ds.hive.Stop(ds.log, ctx)
-		require.Nil(tb, err)
-
-		ds.d.Close()
-	})
-
 	return ds
 }
 
@@ -203,118 +253,50 @@ func (ds *DaemonSuite) setupConfigOptions() {
 	// run.
 	mockCmd := &cobra.Command{}
 	ds.hive.RegisterFlags(mockCmd.Flags())
-	InitGlobalFlags(mockCmd, ds.hive.Viper())
-	option.Config.Populate(ds.hive.Viper())
+	InitGlobalFlags(ds.log, mockCmd, ds.hive.Viper())
+	if err := mockCmd.Flags().Set("envoy-policy-restore-timeout", "100ms"); err != nil {
+		panic("setting envoy-policy-restore-timeout failed")
+	}
+	option.Config.Populate(ds.log, ds.hive.Viper())
+	option.Config.PopulateEnableCiliumNodeCRD(ds.log, ds.hive.Viper())
+	if option.Config.Debug {
+		logging.SetLogLevel(slog.LevelDebug)
+	}
 	option.Config.IdentityAllocationMode = option.IdentityAllocationModeKVstore
 	option.Config.DryMode = true
 	option.Config.Opts = option.NewIntOptions(&option.DaemonMutableOptionLibrary)
+	for _, grp := range option.Config.DebugVerbose {
+		switch grp {
+		case argDebugVerboseEnvoy:
+			envoy.EnableTracing()
+		case argDebugVerbosePolicy:
+			option.Config.Opts.SetBool(option.DebugPolicy, true)
+		case argDebugVerboseTagged:
+			option.Config.Opts.SetBool(option.DebugTagged, true)
+		}
+	}
 	// GetConfig the default labels prefix filter
-	err := labelsfilter.ParseLabelPrefixCfg(nil, nil, "")
+	err := labelsfilter.ParseLabelPrefixCfg(ds.log, nil, nil, "")
 	if err != nil {
 		panic("ParseLabelPrefixCfg() failed")
 	}
 	option.Config.Opts.SetBool(option.DropNotify, true)
 	option.Config.Opts.SetBool(option.TraceNotify, true)
 	option.Config.Opts.SetBool(option.PolicyVerdictNotify, true)
-
-	// Disable the replacement, as its initialization function execs bpftool
-	// which requires root privileges. This would require marking the test suite
-	// as privileged.
-	option.Config.KubeProxyReplacement = option.KubeProxyReplacementFalse
 }
 
-type DaemonEtcdSuite struct {
-	DaemonSuite
+// convenience wrapper that adds a single policy
+func (ds *DaemonSuite) policyImport(rules policyAPI.Rules) {
+	ds.updatePolicy(&policyTypes.PolicyUpdate{
+		Rules:    policyUtils.RulesToPolicyEntries(rules),
+		Resource: ipcachetypes.ResourceID("policy"),
+	})
 }
 
-func setupDaemonEtcdSuite(tb testing.TB) *DaemonEtcdSuite {
-	testutils.IntegrationTest(tb)
-	kvstore.SetupDummy(tb, "etcd")
-
-	ds := setupDaemonSuite(tb)
-	return &DaemonEtcdSuite{
-		DaemonSuite: *ds,
-	}
-}
-
-func TestMinimumWorkerThreadsIsSet(t *testing.T) {
-	require.Equal(t, true, numWorkerThreads() >= 2)
-	require.Equal(t, true, numWorkerThreads() >= runtime.NumCPU())
-}
-
-func (ds *DaemonSuite) GetPolicyRepository() *policy.Repository {
-	if ds.OnGetPolicyRepository != nil {
-		return ds.OnGetPolicyRepository()
-	}
-	panic("GetPolicyRepository should not have been called")
-}
-
-func (ds *DaemonSuite) GetNamedPorts() (npm types.NamedPortMultiMap) {
-	if ds.OnGetNamedPorts != nil {
-		return ds.OnGetNamedPorts()
-	}
-	panic("GetNamedPorts should not have been called")
-}
-
-func (ds *DaemonSuite) QueueEndpointBuild(ctx context.Context, epID uint64) (func(), error) {
-	if ds.OnQueueEndpointBuild != nil {
-		return ds.OnQueueEndpointBuild(ctx, epID)
-	}
-
-	return nil, nil
-}
-
-func (ds *DaemonSuite) GetCompilationLock() datapath.CompilationLock {
-	if ds.OnGetCompilationLock != nil {
-		return ds.OnGetCompilationLock()
-	}
-	panic("GetCompilationLock should not have been called")
-}
-
-func (ds *DaemonSuite) SendNotification(msg monitorAPI.AgentNotifyMessage) error {
-	if ds.OnSendNotification != nil {
-		return ds.OnSendNotification(msg)
-	}
-	panic("SendNotification should not have been called")
-}
-
-func (ds *DaemonSuite) GetCIDRPrefixLengths() ([]int, []int) {
-	if ds.OnGetCIDRPrefixLengths != nil {
-		return ds.OnGetCIDRPrefixLengths()
-	}
-	panic("GetCIDRPrefixLengths should not have been called")
-}
-
-func (ds *DaemonSuite) Loader() datapath.Loader {
-	return ds.d.loader
-}
-
-func (ds *DaemonSuite) Orchestrator() datapath.Orchestrator {
-	return ds.d.orchestrator
-}
-
-func (ds *DaemonSuite) BandwidthManager() datapath.BandwidthManager {
-	return ds.d.bwManager
-}
-
-func (ds *DaemonSuite) IPTablesManager() datapath.IptablesManager {
-	return ds.d.iptablesManager
-}
-
-func (ds *DaemonSuite) GetDNSRules(epID uint16) restore.DNSRules {
-	return nil
-}
-
-func (ds *DaemonSuite) RemoveRestoredDNSRules(epID uint16) {}
-
-func (ds *DaemonSuite) AddIdentity(id *identity.Identity) {}
-
-func (ds *DaemonSuite) RemoveIdentity(id *identity.Identity) {}
-
-func (ds *DaemonSuite) RemoveOldAddNewIdentity(old, new *identity.Identity) {}
-
-func TestMemoryMap(t *testing.T) {
-	pid := os.Getpid()
-	m := memoryMap(pid)
-	require.NotEqual(t, "", m)
+// convenience wrapper that synchronously performs a policy update
+func (ds *DaemonSuite) updatePolicy(upd *policyTypes.PolicyUpdate) {
+	dc := make(chan uint64, 1)
+	upd.DoneChan = dc
+	ds.PolicyImporter.UpdatePolicy(upd)
+	<-dc
 }

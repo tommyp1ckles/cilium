@@ -26,6 +26,10 @@ const (
 	ciliumSPIREServerConfigMapName     = defaults.SPIREServerConfigMapName
 	ciliumSPIREAgentConfigMapName      = defaults.SPIREAgentConfigMapName
 	clustermeshApiserverDeploymentName = defaults.ClusterMeshDeploymentName
+	clustermeshCertgenCronJobName      = "clustermesh-apiserver-generate-certs"
+	gkeConfigMapsName                  = "gke-config-maps"
+	gkeHubbleConfigMap                 = "cilium-hubble-config"
+	gkeOverrideConfigMap               = "cilium-config-emergency-override"
 	hubbleContainerName                = "hubble"
 	hubbleDaemonSetName                = "hubble"
 	ciliumEnvoyDaemonSetName           = "cilium-envoy"
@@ -33,8 +37,6 @@ const (
 	ciliumEnvoyConfigMapName           = defaults.EnvoyConfigMapName
 	hubbleRelayConfigMapName           = defaults.RelayConfigMapName
 	hubbleRelayContainerName           = defaults.RelayContainerName
-	hubbleRelayDeploymentName          = defaults.RelayDeploymentName
-	hubbleUIDeploymentName             = defaults.HubbleUIDeploymentName
 	hubbleGenerateCertsCronJob         = defaults.HubbleGenerateCertsCronJobName
 	spireServerContainerName           = "spire-server"
 	redacted                           = "XXXXXX"
@@ -44,11 +46,6 @@ const (
 	awsNodeDaemonSetFileName                 = "aws-node-daemonset-<ts>.yaml"
 	ciliumBugtoolFileName                    = "cilium-bugtool-%s-<ts>.tar.gz"
 	ciliumBPGPeeringPoliciesFileName         = "ciliumbgppeeringpolicies-<ts>.yaml"
-	ciliumBPGClusterConfigsFileName          = "ciliumbgpclusterconfigs-<ts>.yaml"
-	ciliumBPGPeerConfigsFileName             = "ciliumbgppeerconfigs-<ts>.yaml"
-	ciliumBPGAdvertisementsFileName          = "ciliumbgpadvertisements-<ts>.yaml"
-	ciliumBPGNodeConfigsFileName             = "ciliumbgpnodeconfigs-<ts>.yaml"
-	ciliumBPGNodeConfigOverridesFileName     = "ciliumbgpnodeconfigoverrides-<ts>.yaml"
 	ciliumClusterWideNetworkPoliciesFileName = "ciliumclusterwidenetworkpolicies-<ts>.yaml"
 	ciliumClusterwideEnvoyConfigsFileName    = "ciliumclusterwideenvoyconfigs-<ts>.yaml"
 	ciliumConfigMapFileName                  = "cilium-configmap-<ts>.yaml"
@@ -62,17 +59,15 @@ const (
 	ciliumSPIREServerConfigMapFileName       = "cilium-spire-server-configmap-<ts>.yaml"
 	ciliumSPIREServerEntriesFileName         = "cilium-spire-server-entries-%s-<ts>.json"
 	ciliumIngressesFileName                  = "ciliumingresses-<ts>.yaml"
-	ciliumEgressNATPoliciesFileName          = "ciliumegressnatpolicies-<ts>.yaml"
 	ciliumEgressGatewayPoliciesFileName      = "ciliumegressgatewaypolicies-<ts>.yaml"
 	ciliumEndpointsFileName                  = "ciliumendpoints-<ts>.yaml"
 	ciliumEndpointSlicesFileName             = "ciliumendpointslices-<ts>.yaml"
 	ciliumEnvoyConfigsFileName               = "ciliumenvoyconfigs-<ts>.yaml"
 	ciliumEtcdSecretFileName                 = "cilium-etcd-secrets-secret-<ts>.yaml"
-	ciliumExternalWorkloadFileName           = "ciliumexternalworkload-<ts>.yaml"
 	ciliumIdentitiesFileName                 = "ciliumidentities-<ts>.yaml"
 	ciliumCIDRGroupsFileName                 = "ciliumcidrgroups-<ts>.yaml"
+	ciliumL2AnnouncementPoliciesFileName     = "ciliuml2announcementpolicies-<ts>.yaml"
 	ciliumLocalRedirectPoliciesFileName      = "ciliumlocalredirectpolicies-<ts>.yaml"
-	ciliumLoadBalancerIPPoolsFileName        = "ciliumloadbalancerippools-<ts>.yaml"
 	ciliumLogsFileName                       = "logs-%s-%s-<ts>.log"
 	ciliumPreviousLogsFileName               = "logs-%s-%s-<ts>-prev.log"
 	ciliumNetworkPoliciesFileName            = "ciliumnetworkpolicies-<ts>.yaml"
@@ -81,12 +76,18 @@ const (
 	ciliumOperatorDeploymentFileName         = "cilium-operator-deployment-<ts>.yaml"
 	ciliumPodIPPoolsFileName                 = "ciliumpodippools-<ts>.yaml"
 	clustermeshApiserverDeploymentFileName   = "clustermesh-apiserver-deployment-<ts>.yaml"
+	clustermeshCertgenCronJobFileName        = "clustermesh-generate-certs-cronjob-<ts>.yaml"
+	clustermeshCertManagerCertsFileName      = "clustermesh-certificates-<ts>.yaml"
 	metricsFileName                          = "metrics-%s-%s-<ts>.txt"
 	cniConfigMapFileName                     = "cni-configmap-<ts>.yaml"
 	cniConfigFileName                        = "cniconf-%s-%s-<ts>.txt"
 	eniconfigsFileName                       = "aws-eniconfigs-<ts>.yaml"
 	ciliumHelmMetadataFileName               = "cilium-helm-metadata-<ts>.yaml"
 	ciliumHelmValuesFileName                 = "cilium-helm-values-<ts>.yaml"
+	tetragonHelmMetadataFileName             = "tetragon-helm-metadata-<ts>.yaml"
+	tetragonHelmValuesFileName               = "tetragon-helm-values-<ts>.yaml"
+	gkeCiliumHubbleConfigFileName            = "gke-cilium-hubble-config-<ts>.yaml"
+	gkeCiliumOverrideConfigFileName          = "gke-cilium-override-config-<ts>.yaml"
 	gopsFileName                             = "gops-%s-%s-<ts>-%s.txt"
 	hubbleDaemonsetFileName                  = "hubble-daemonset-<ts>.yaml"
 	hubbleFlowsFileName                      = "hubble-flows-%s-<ts>.json"
@@ -97,10 +98,13 @@ const (
 	hubbleGenerateCertsCronJobFileName       = "hubble-generate-certs-cronjob-<ts>.yaml"
 	hubbleCertificatesFileName               = "hubble-certificates-<ts>.yaml"
 	kubernetesEndpointsFileName              = "k8s-endpoints-<ts>.yaml"
+	kubernetesEndpointSlicesFileName         = "k8s-endpointslices-<ts>.yaml"
 	kubernetesEventsFileName                 = "k8s-events-<ts>.yaml"
 	kubernetesEventsTableFileName            = "k8s-events-<ts>.html"
 	kubernetesLeasesFileName                 = "k8s-leases-<ts>.yaml"
 	kubernetesMetricsFileName                = "k8s-metrics-<ts>.yaml"
+	kubernetesTopNodesFileName               = "k8s-node-memory-cpu-usage-<ts>.txt"
+	kubernetesTopPodsFileName                = "k8s-pod-memory-cpu-usage-<ts>.txt"
 	kubernetesNamespacesFileName             = "k8s-namespaces-<ts>.yaml"
 	kubernetesNetworkPoliciesFileName        = "k8s-networkpolicies-<ts>.yaml"
 	kubernetesNodesFileName                  = "k8s-nodes-<ts>.yaml"
@@ -117,15 +121,17 @@ const (
 	grpcRoutesFileName                       = "gatewayapi-grpcroutes-<ts>.yaml"
 	tcpRoutesFileName                        = "gatewayapi-tcroutes-<ts>.yaml"
 	udpRoutesFileName                        = "gatewayapi-udproutes-<ts>.yaml"
+	backendTLSPoliciesFileName               = "gatewayapi-backendtlspolicies-<ts>.yaml"
 	referenceGrantsFileName                  = "gatewayapi-referencegrants-<ts>.yaml"
+	ciliumGatewayClassConfigsFileName        = "ciliumgatewayclassconfigs-<ts>.yaml"
 	ingressClassesFileName                   = "ingressclasses-<ts>.yaml"
+	k8sResourceFileName                      = "%s-<ts>.yaml"
 )
 
 const (
 	ciliumBugtoolCommand = "cilium-bugtool"
 	dirMode              = 0700
 	fileMode             = 0600
-	gopsCommand          = "/bin/gops"
 	gopsPID              = "1"
 	rmCommand            = "rm"
 	timeFormat           = "20060102-150405"
@@ -187,6 +193,12 @@ var (
 		Version:  "v1beta1",
 	}
 
+	backendTLSPolicy = schema.GroupVersionResource{
+		Group:    "gateway.networking.k8s.io",
+		Resource: "backendtlspolicies",
+		Version:  "v1",
+	}
+
 	httpRoute = schema.GroupVersionResource{
 		Group:    "gateway.networking.k8s.io",
 		Resource: "httproutes",
@@ -215,5 +227,11 @@ var (
 		Group:    "gateway.networking.k8s.io",
 		Resource: "grpcroutes",
 		Version:  "v1alpha2",
+	}
+
+	ciliumGatewayClassConfig = schema.GroupVersionResource{
+		Group:    "cilium.io",
+		Resource: "ciliumgatewayclassconfigs",
+		Version:  "v2alpha1",
 	}
 )

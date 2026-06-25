@@ -4,7 +4,6 @@
 package tcp
 
 import (
-	"context"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -18,7 +17,18 @@ import (
 
 func TestTcpHandler_Init(t *testing.T) {
 	registry := prometheus.NewRegistry()
-	opts := api.Options{"sourceContext": "namespace", "destinationContext": "namespace"}
+	opts := &api.MetricConfig{
+		ContextOptionConfigs: []*api.ContextOptionConfig{
+			{
+				Name:   "sourceContext",
+				Values: []string{"namespace"},
+			},
+			{
+				Name:   "destinationContext",
+				Values: []string{"namespace"},
+			},
+		},
+	}
 
 	tcpHandler := &tcpHandler{}
 
@@ -47,14 +57,25 @@ func TestTcpHandler(t *testing.T) {
 
 	for _, tc := range supportedFlags {
 		registry := prometheus.NewRegistry()
-		opts := api.Options{"sourceContext": "namespace", "destinationContext": "namespace"}
+		opts := &api.MetricConfig{
+			ContextOptionConfigs: []*api.ContextOptionConfig{
+				{
+					Name:   "sourceContext",
+					Values: []string{"namespace"},
+				},
+				{
+					Name:   "destinationContext",
+					Values: []string{"namespace"},
+				},
+			},
+		}
 
 		tcpHandler := &tcpHandler{}
 		require.NoError(t, tcpHandler.Init(registry, opts))
 
 		t.Run("ProcessSupportedFlagsFlow_"+tc.name, func(t *testing.T) {
 			flow := buildFlow(tc.flags)
-			_ = tcpHandler.ProcessFlow(context.TODO(), flow)
+			_ = tcpHandler.ProcessFlow(t.Context(), flow)
 
 			metricFamilies, err := registry.Gather()
 			require.NoError(t, err)
@@ -77,7 +98,7 @@ func TestTcpHandler(t *testing.T) {
 			assert.Equal(t, 1., *metric.Counter.Value)
 
 			//send another flow with same labels
-			tcpHandler.ProcessFlow(context.TODO(), flow)
+			tcpHandler.ProcessFlow(t.Context(), flow)
 			metricFamilies, _ = registry.Gather()
 			metric = metricFamilies[0].Metric[0]
 			assert.Equal(t, 2., *metric.Counter.Value)
@@ -100,14 +121,25 @@ func TestTcpHandler(t *testing.T) {
 
 	for _, tc := range unsupportedFlags {
 		registry := prometheus.NewRegistry()
-		opts := api.Options{"sourceContext": "namespace", "destinationContext": "namespace"}
+		opts := &api.MetricConfig{
+			ContextOptionConfigs: []*api.ContextOptionConfig{
+				{
+					Name:   "sourceContext",
+					Values: []string{"namespace"},
+				},
+				{
+					Name:   "destinationContext",
+					Values: []string{"namespace"},
+				},
+			},
+		}
 
 		tcpHandler := &tcpHandler{}
 		require.NoError(t, tcpHandler.Init(registry, opts))
 
 		t.Run("ProcessUnsupportedFlagsFlow_"+tc.name, func(t *testing.T) {
 			flow := buildFlow(tc.flags)
-			_ = tcpHandler.ProcessFlow(context.TODO(), flow)
+			_ = tcpHandler.ProcessFlow(t.Context(), flow)
 
 			metricFamilies, err := registry.Gather()
 			require.NoError(t, err)

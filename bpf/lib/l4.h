@@ -55,28 +55,28 @@ static __always_inline int l4_modify_port(struct __ctx_buff *ctx, int l4_off,
 					  int off, struct csum_offset *csum_off,
 					  __be16 port, __be16 old_port)
 {
-	if (csum_l4_replace(ctx, l4_off, csum_off, old_port, port, sizeof(port)) < 0)
-		return DROP_CSUM_L4;
-
 	if (ctx_store_bytes(ctx, l4_off + off, &port, sizeof(port), 0) < 0)
 		return DROP_WRITE_ERROR;
+
+	if (csum_l4_replace(ctx, l4_off, csum_off, old_port, port, sizeof(port)) < 0)
+		return DROP_CSUM_L4;
 
 	return 0;
 }
 
-static __always_inline int l4_load_port(struct __ctx_buff *ctx, int off,
+static __always_inline int l4_load_port(const struct __ctx_buff *ctx, int off,
 					__be16 *port)
 {
 	return ctx_load_bytes(ctx, off, port, sizeof(__be16));
 }
 
-static __always_inline int l4_load_ports(struct __ctx_buff *ctx, int off,
+static __always_inline int l4_load_ports(const struct __ctx_buff *ctx, int off,
 					 __be16 *ports)
 {
 	return ctx_load_bytes(ctx, off, ports, 2 * sizeof(__be16));
 }
 
-static __always_inline int l4_load_tcp_flags(struct __ctx_buff *ctx, int l4_off,
+static __always_inline int l4_load_tcp_flags(const struct __ctx_buff *ctx, int l4_off,
 					     union tcp_flags *flags)
 {
 	return ctx_load_bytes(ctx, l4_off + 12, flags, 2);

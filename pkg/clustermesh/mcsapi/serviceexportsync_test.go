@@ -14,13 +14,15 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	mcsapiv1alpha1 "sigs.k8s.io/mcs-api/pkg/apis/v1alpha1"
+	mcsapiv1beta1 "sigs.k8s.io/mcs-api/pkg/apis/v1beta1"
 
-	"github.com/cilium/cilium/daemon/k8s"
 	"github.com/cilium/cilium/pkg/clustermesh/mcsapi/types"
-	"github.com/cilium/cilium/pkg/clustermesh/operator"
+	mcsapitypes "github.com/cilium/cilium/pkg/clustermesh/mcsapi/types"
+	cmnamespace "github.com/cilium/cilium/pkg/clustermesh/namespace"
+	envoyCfg "github.com/cilium/cilium/pkg/envoy/config"
 	"github.com/cilium/cilium/pkg/hive"
-	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
+	"github.com/cilium/cilium/pkg/k8s"
+	k8sFakeClient "github.com/cilium/cilium/pkg/k8s/client/testutils"
 	"github.com/cilium/cilium/pkg/k8s/resource"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
@@ -31,12 +33,20 @@ import (
 
 var (
 	exportTime            = metav1.Now().Rfc3339Copy()
-	serviceExportFixtures = []*mcsapiv1alpha1.ServiceExport{
+	serviceExportFixtures = []*mcsapiv1beta1.ServiceExport{
 		{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:              "basic",
 				Namespace:         "default",
 				CreationTimestamp: exportTime,
+			},
+			Spec: mcsapiv1beta1.ServiceExportSpec{
+				ExportedAnnotations: map[string]string{
+					"my-annotation": "test",
+				},
+				ExportedLabels: map[string]string{
+					"my-label": "test",
+				},
 			},
 		},
 		{
@@ -50,6 +60,13 @@ var (
 			ObjectMeta: metav1.ObjectMeta{
 				Name:              "remove-service",
 				Namespace:         "default",
+				CreationTimestamp: exportTime,
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              "non-global-svc",
+				Namespace:         "non-global-ns",
 				CreationTimestamp: exportTime,
 			},
 		},
@@ -84,6 +101,16 @@ var (
 				Namespace: "default",
 			},
 		},
+		{
+			ObjectMeta: slim_metav1.ObjectMeta{
+				Name:      "non-global-svc",
+				Namespace: "non-global-ns",
+			},
+			Spec: slim_corev1.ServiceSpec{
+				Ports:           []slim_corev1.ServicePort{{Name: "http", Port: 80}},
+				SessionAffinity: slim_corev1.ServiceAffinityNone,
+			},
+		},
 	}
 )
 
@@ -99,24 +126,36 @@ func Test_mcsServiceExportSync_Reconcile(t *testing.T) {
 		cancel()
 	}()
 
-	var clientset k8sClient.Clientset
 	var services resource.Resource[*slim_corev1.Service]
-	var serviceExports resource.Resource[*mcsapiv1alpha1.ServiceExport]
+	var serviceExports resource.Resource[*mcsapiv1beta1.ServiceExport]
+	var namespaces resource.Resource[*slim_corev1.Namespace]
+	var namespaceManager cmnamespace.Manager
 	hive := hive.New(
-		k8sClient.FakeClientCell,
-		k8s.ResourcesCell,
+		k8sFakeClient.FakeClientCell(),
+		cell.Group( // k8s resources (importing 'operator/k8s' would cause a cycle)
+			cell.Config(k8s.DefaultConfig),
+			cell.Provide(k8s.DefaultServiceWatchConfig),
+			cell.Provide(
+				k8s.ServiceResource,
+				k8s.NamespaceResource,
+			),
+		),
+		cell.Config(envoyCfg.SecretSyncConfig{}),
 		cell.Provide(ServiceExportResource),
-		cell.Provide(func() operator.MCSAPIConfig {
-			return operator.MCSAPIConfig{ClusterMeshEnableMCSAPI: true}
+		cell.Provide(func() mcsapitypes.MCSAPIConfig {
+			return mcsapitypes.MCSAPIConfig{EnableMCSAPI: true}
 		}),
+		cmnamespace.Cell,
 		cell.Invoke(func(
-			cs k8sClient.Clientset,
 			svc resource.Resource[*slim_corev1.Service],
-			svcExport resource.Resource[*mcsapiv1alpha1.ServiceExport],
+			svcExport resource.Resource[*mcsapiv1beta1.ServiceExport],
+			ns resource.Resource[*slim_corev1.Namespace],
+			nsMgr cmnamespace.Manager,
 		) {
-			clientset = cs
 			services = svc
 			serviceExports = svcExport
+			namespaces = ns
+			namespaceManager = nsMgr
 		}),
 	)
 	tlog := hivetest.Logger(t)
@@ -129,6 +168,27 @@ func Test_mcsServiceExportSync_Reconcile(t *testing.T) {
 	require.NoError(t, err)
 	serviceExportStore, err := serviceExports.Store(ctx)
 	require.NoError(t, err)
+	namespaceStore, err := namespaces.Store(ctx)
+	require.NoError(t, err)
+
+	// Create the default namespace (global by default)
+	defaultNs := &slim_corev1.Namespace{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name: "default",
+		},
+	}
+	require.NoError(t, namespaceStore.CacheStore().Add(defaultNs))
+
+	// Create a non-global namespace (with explicit global=false annotation)
+	nonGlobalNs := &slim_corev1.Namespace{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name: "non-global-ns",
+			Annotations: map[string]string{
+				"clustermesh.cilium.io/global": "false",
+			},
+		},
+	}
+	require.NoError(t, namespaceStore.CacheStore().Add(nonGlobalNs))
 
 	// Create initial state
 	for _, svc := range serviceFixtures {
@@ -138,12 +198,13 @@ func Test_mcsServiceExportSync_Reconcile(t *testing.T) {
 		require.NoError(t, serviceExportStore.CacheStore().Add(svcExport))
 	}
 
-	kvstore.SetupDummy(t, "etcd")
+	client := kvstore.SetupDummy(t, "etcd")
 
 	clusterName := "cluster1"
-	storeFactory := store.NewFactory(store.MetricsProvider())
-	kvs := storeFactory.NewSyncStore(
-		clusterName, kvstore.Client(), types.ServiceExportStorePrefix)
+	storeFactory := store.NewFactory(hivetest.Logger(t), store.MetricsProvider())
+	kvs := storeFactory.NewSyncStore(clusterName, client, types.ServiceExportStorePrefix)
+	go kvs.Run(ctx)
+
 	require.NoError(t, kvs.UpsertKey(ctx, &types.MCSAPIServiceSpec{
 		Cluster:                 clusterName,
 		Name:                    "remove-service",
@@ -156,22 +217,39 @@ func Test_mcsServiceExportSync_Reconcile(t *testing.T) {
 		Namespace:               "default",
 		ExportCreationTimestamp: exportTime,
 	}))
-	go StartSynchronizingServiceExports(ctx, ServiceExportSyncParameters{
-		ClusterName:             "cluster1",
-		ClusterMeshEnableMCSAPI: true,
-		Clientset:               clientset,
-		ServiceExports:          serviceExports,
-		Services:                services,
-		store:                   kvs,
-		skipCrdCheck:            true,
-		SyncCallback:            func(_ context.Context) {},
-	})
+	require.NoError(t, kvs.UpsertKey(ctx, &types.MCSAPIServiceSpec{
+		Cluster:                 clusterName,
+		Name:                    "non-global-svc",
+		Namespace:               "non-global-ns",
+		ExportCreationTimestamp: exportTime,
+	}))
+
+	var synced = make(chan struct{})
+	kvs.Synced(ctx, func(ctx context.Context) { close(synced) })
+
+	// Wait for the entries to appear in etcd.
+	select {
+	case <-synced:
+	case <-ctx.Done():
+		require.FailNow(t, "Expected entries did not appear in etcd")
+	}
+
+	go (&serviceExportSync{
+		logger:           hivetest.Logger(t),
+		clusterName:      clusterName,
+		enabled:          true,
+		store:            kvs,
+		serviceExports:   serviceExports,
+		services:         services,
+		namespaceManager: namespaceManager,
+		namespaces:       namespaces,
+	}).loop(ctx)
 
 	t.Run("Test basic case", func(t *testing.T) {
 		name := "basic"
 		require.EventuallyWithT(t, func(c *assert.CollectT) {
 			storeKey := "cilium/state/serviceexports/v1/cluster1/default/" + name
-			v, err := kvstore.Client().Get(ctx, storeKey)
+			v, err := client.Get(ctx, storeKey)
 			assert.NoError(c, err)
 			mcsAPISvcSpec := types.MCSAPIServiceSpec{}
 			assert.NoError(c, mcsAPISvcSpec.Unmarshal("", v))
@@ -182,8 +260,10 @@ func Test_mcsServiceExportSync_Reconcile(t *testing.T) {
 			if len(mcsAPISvcSpec.Ports) == 1 {
 				assert.Equal(c, "my-port-1", mcsAPISvcSpec.Ports[0].Name)
 			}
+			assert.Equal(c, map[string]string{"my-annotation": "test"}, mcsAPISvcSpec.Annotations)
+			assert.Equal(c, map[string]string{"my-label": "test"}, mcsAPISvcSpec.Labels)
 			assert.True(c, exportTime.Equal(&mcsAPISvcSpec.ExportCreationTimestamp), "Export time should be equal")
-			assert.Equal(c, mcsapiv1alpha1.ClusterSetIP, mcsAPISvcSpec.Type)
+			assert.Equal(c, mcsapiv1beta1.ClusterSetIP, mcsAPISvcSpec.Type)
 		}, timeout, tick, "MCSAPIServiceSpec is not correctly synced")
 	})
 
@@ -191,12 +271,12 @@ func Test_mcsServiceExportSync_Reconcile(t *testing.T) {
 		name := "headless"
 		require.EventuallyWithT(t, func(c *assert.CollectT) {
 			storeKey := "cilium/state/serviceexports/v1/cluster1/default/" + name
-			v, err := kvstore.Client().Get(ctx, storeKey)
+			v, err := client.Get(ctx, storeKey)
 			assert.NoError(c, err)
 			mcsAPISvcSpec := types.MCSAPIServiceSpec{}
 			assert.NoError(c, mcsAPISvcSpec.Unmarshal("", v))
 			assert.True(c, exportTime.Equal(&mcsAPISvcSpec.ExportCreationTimestamp), "Export time should be equal")
-			assert.Equal(c, mcsapiv1alpha1.Headless, mcsAPISvcSpec.Type)
+			assert.Equal(c, mcsapiv1beta1.Headless, mcsAPISvcSpec.Type)
 		}, timeout, tick, "MCSAPIServiceSpec is not correctly synced")
 	})
 
@@ -204,7 +284,7 @@ func Test_mcsServiceExportSync_Reconcile(t *testing.T) {
 		name := "remove-service"
 		require.EventuallyWithT(t, func(c *assert.CollectT) {
 			storeKey := "cilium/state/serviceexports/v1/cluster1/default/" + name
-			v, err := kvstore.Client().Get(ctx, storeKey)
+			v, err := client.Get(ctx, storeKey)
 			assert.NoError(c, err)
 			assert.Empty(c, string(v))
 		}, timeout, tick, "MCSAPIServiceSpec is not correctly synced")
@@ -214,9 +294,18 @@ func Test_mcsServiceExportSync_Reconcile(t *testing.T) {
 		name := "remove-service-export"
 		require.EventuallyWithT(t, func(c *assert.CollectT) {
 			storeKey := "cilium/state/serviceexports/v1/cluster1/default/" + name
-			v, err := kvstore.Client().Get(ctx, storeKey)
+			v, err := client.Get(ctx, storeKey)
 			assert.NoError(c, err)
 			assert.Empty(c, string(v))
 		}, timeout, tick, "MCSAPIServiceSpec is not correctly synced")
+	})
+
+	t.Run("Test remove service export in non-global namespace", func(t *testing.T) {
+		require.EventuallyWithT(t, func(c *assert.CollectT) {
+			storeKey := "cilium/state/serviceexports/v1/cluster1/non-global-ns/non-global-svc"
+			v, err := client.Get(ctx, storeKey)
+			assert.NoError(c, err)
+			assert.Empty(c, string(v), "ServiceExport in non-global namespace should be removed")
+		}, timeout, tick, "MCSAPIServiceSpec in non-global namespace is not correctly removed")
 	})
 }

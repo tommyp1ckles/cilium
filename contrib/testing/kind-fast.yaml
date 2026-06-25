@@ -11,6 +11,17 @@ extraVolumes:
   hostPath:
     path: /cilium-binaries/var/lib/cilium/bpf
     type: Directory
+- name: hubble-cli-binary
+  hostPath:
+    path: /cilium-binaries/hubble
+    type: File
+- name: cilium-bugtool-binary
+  hostPath:
+    path: /cilium-binaries/cilium-bugtool
+    type: File
+envoy:
+  image:
+    useDigest: false
 extraVolumeMounts:
 - name: cilium-dbg-binary
   mountPath: /usr/bin/cilium-dbg
@@ -20,6 +31,12 @@ extraVolumeMounts:
   readOnly: true
 - name: cilium-c-files
   mountPath: /var/lib/cilium/bpf
+- name: hubble-cli-binary
+  mountPath: /usr/bin/hubble
+  readOnly: true
+- name: cilium-bugtool-binary
+  mountPath: /usr/bin/cilium-bugtool
+  readOnly: true
 operator:
   extraVolumeMounts:
   - mountPath: /usr/bin/cilium-operator-generic
@@ -52,3 +69,9 @@ clustermesh:
       pullPolicy: IfNotPresent
 image:
   pullPolicy: IfNotPresent
+
+cni:
+  # Set a dummy path, as we don't want the init-container to override the
+  # binary we directly copied to the node. But we still want the configuration
+  # to be created, which is also controlled by `cni.install`.
+  binPath: /opt/dummy/

@@ -6,7 +6,7 @@
 #include <linux/if_ether.h>
 #include <linux/byteorder.h>
 
-#define __section_entry	__section("xdp")
+#define PROG_TYPE			"xdp"
 
 #define __ctx_buff			xdp_md
 #define __ctx_is			__ctx_xdp
@@ -195,7 +195,7 @@ l4_csum_replace(const struct xdp_md *ctx, __u64 off, __u32 from, __u32 to,
 	int ret;
 
 	if (unlikely(flags & ~(BPF_F_MARK_MANGLED_0 | BPF_F_PSEUDO_HDR |
-			       BPF_F_HDR_FIELD_MASK)))
+			       BPF_F_HDR_FIELD_MASK | BPF_F_IPV6)))
 		return -EINVAL;
 	if (unlikely(size != 0 && size != 2))
 		return -EINVAL;
@@ -343,7 +343,7 @@ static __always_inline __maybe_unused int
 ctx_redirect(const struct xdp_md *ctx, int ifindex, const __u32 flags)
 {
 	if ((__u32)ifindex == ctx->ingress_ifindex)
-		return XDP_TX;
+		return CTX_ACT_TX;
 
 	return redirect(ifindex, flags);
 }
@@ -354,7 +354,7 @@ ctx_redirect_peer(const struct xdp_md *ctx __maybe_unused,
 		  const __u32 flags __maybe_unused)
 {
 	/* bpf_redirect_peer() is available only in TC BPF. */
-	return -ENOTSUP;
+	__throw_build_bug();
 }
 
 #ifdef HAVE_XDP_GET_BUFF_LEN
@@ -386,7 +386,7 @@ ctx_full_len(const struct xdp_md *ctx)
 static __always_inline __maybe_unused __u32
 ctx_wire_len(const struct xdp_md *ctx)
 {
-	return ctx_full_len(ctx);
+	return (__u32)ctx_full_len(ctx);
 }
 
 struct {
@@ -433,7 +433,7 @@ ctx_load_and_clear_meta(const struct xdp_md *ctx __maybe_unused, const __u64 off
 	return 0;
 }
 
-static __always_inline __maybe_unused __u16
+static __always_inline __maybe_unused __be16
 ctx_get_protocol(const struct xdp_md *ctx)
 {
 	void *data_end = ctx_data_end(ctx);

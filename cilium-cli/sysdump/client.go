@@ -12,6 +12,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -32,13 +33,14 @@ type KubernetesClient interface {
 	DeletePod(ctx context.Context, namespace, name string, opts metav1.DeleteOptions) error
 	ExecInPod(ctx context.Context, namespace, pod, container string, command []string) (bytes.Buffer, error)
 	ExecInPodWithStderr(ctx context.Context, namespace, pod, container string, command []string) (bytes.Buffer, bytes.Buffer, error)
+	ExecInPodWithWriters(connCtx, killCmdCtx context.Context, namespace, pod, container string, command []string, stdout, stderr io.Writer) error
 	GetConfigMap(ctx context.Context, namespace, name string, opts metav1.GetOptions) (*corev1.ConfigMap, error)
 	GetNamespace(ctx context.Context, namespace string, options metav1.GetOptions) (*corev1.Namespace, error)
 	GetDaemonSet(ctx context.Context, namespace, name string, opts metav1.GetOptions) (*appsv1.DaemonSet, error)
 	GetStatefulSet(ctx context.Context, namespace, name string, opts metav1.GetOptions) (*appsv1.StatefulSet, error)
 	GetDeployment(ctx context.Context, namespace, name string, opts metav1.GetOptions) (*appsv1.Deployment, error)
 	GetCronJob(ctx context.Context, namespace, name string, opts metav1.GetOptions) (*batchv1.CronJob, error)
-	GetLogs(ctx context.Context, namespace, name, container string, opts corev1.PodLogOptions) (string, error)
+	GetLogs(ctx context.Context, namespace, name, container string, opts corev1.PodLogOptions, out io.Writer) error
 	GetPodsTable(ctx context.Context) (*metav1.Table, error)
 	ProxyGet(ctx context.Context, namespace, name, url string) (string, error)
 	ProxyTCP(ctx context.Context, namespace, name string, port uint16, handler func(io.ReadWriteCloser) error) error
@@ -47,7 +49,6 @@ type KubernetesClient interface {
 	GetVersion(ctx context.Context) (string, error)
 	GetHelmMetadata(ctx context.Context, releaseName string, namespace string) (string, error)
 	GetHelmValues(ctx context.Context, releaseName string, namespace string) (string, error)
-	ListCiliumBGPPeeringPolicies(ctx context.Context, opts metav1.ListOptions) (*ciliumv2alpha1.CiliumBGPPeeringPolicyList, error)
 	ListCiliumBGPClusterConfigs(ctx context.Context, opts metav1.ListOptions) (*ciliumv2alpha1.CiliumBGPClusterConfigList, error)
 	ListCiliumBGPPeerConfigs(ctx context.Context, opts metav1.ListOptions) (*ciliumv2alpha1.CiliumBGPPeerConfigList, error)
 	ListCiliumBGPAdvertisements(ctx context.Context, opts metav1.ListOptions) (*ciliumv2alpha1.CiliumBGPAdvertisementList, error)
@@ -61,16 +62,17 @@ type KubernetesClient interface {
 	ListCiliumEndpoints(ctx context.Context, namespace string, options metav1.ListOptions) (*ciliumv2.CiliumEndpointList, error)
 	ListCiliumEndpointSlices(ctx context.Context, options metav1.ListOptions) (*ciliumv2alpha1.CiliumEndpointSliceList, error)
 	ListCiliumEnvoyConfigs(ctx context.Context, namespace string, options metav1.ListOptions) (*ciliumv2.CiliumEnvoyConfigList, error)
-	ListCiliumExternalWorkloads(ctx context.Context, options metav1.ListOptions) (*ciliumv2.CiliumExternalWorkloadList, error)
-	ListCiliumLoadBalancerIPPools(ctx context.Context, opts metav1.ListOptions) (*ciliumv2alpha1.CiliumLoadBalancerIPPoolList, error)
+	ListCiliumL2AnnouncementPolicies(ctx context.Context, options metav1.ListOptions) (*ciliumv2alpha1.CiliumL2AnnouncementPolicyList, error)
 	ListCiliumLocalRedirectPolicies(ctx context.Context, namespace string, options metav1.ListOptions) (*ciliumv2.CiliumLocalRedirectPolicyList, error)
 	ListCiliumNetworkPolicies(ctx context.Context, namespace string, opts metav1.ListOptions) (*ciliumv2.CiliumNetworkPolicyList, error)
 	ListCiliumNodes(ctx context.Context) (*ciliumv2.CiliumNodeList, error)
-	ListCiliumNodeConfigs(ctx context.Context, namespace string, opts metav1.ListOptions) (*ciliumv2alpha1.CiliumNodeConfigList, error)
+	ListCiliumNodeConfigs(ctx context.Context, namespace string, opts metav1.ListOptions) (*ciliumv2.CiliumNodeConfigList, error)
 	ListCiliumPodIPPools(ctx context.Context, opts metav1.ListOptions) (*ciliumv2alpha1.CiliumPodIPPoolList, error)
 	ListDaemonSet(ctx context.Context, namespace string, o metav1.ListOptions) (*appsv1.DaemonSetList, error)
+	ListDeployment(ctx context.Context, namespace string, o metav1.ListOptions) (*appsv1.DeploymentList, error)
 	ListEvents(ctx context.Context, o metav1.ListOptions) (*corev1.EventList, error)
 	ListEndpoints(ctx context.Context, o metav1.ListOptions) (*corev1.EndpointsList, error)
+	ListEndpointSlices(ctx context.Context, o metav1.ListOptions) (*discoveryv1.EndpointSliceList, error)
 	ListIngressClasses(ctx context.Context, o metav1.ListOptions) (*networkingv1.IngressClassList, error)
 	ListIngresses(ctx context.Context, o metav1.ListOptions) (*networkingv1.IngressList, error)
 	ListNamespaces(ctx context.Context, o metav1.ListOptions) (*corev1.NamespaceList, error)

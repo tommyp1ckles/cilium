@@ -6,6 +6,7 @@ package cli
 import (
 	"context"
 	"os"
+	"os/signal"
 
 	"github.com/spf13/cobra"
 
@@ -37,19 +38,19 @@ func newCmdPortForwardCommand() *cobra.Command {
 		Use:   "port-forward",
 		Short: "Forward the relay port to the local machine",
 		Long:  ``,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			params.Context = contextName
-			params.Namespace = namespace
-			ctx := context.Background()
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt, os.Kill)
+			defer cancel()
 
-			if err := params.RelayPortForwardCommand(ctx, k8sClient); err != nil {
+			params.Namespace = RootParams.Namespace
+			if err := params.RelayPortForwardCommand(ctx, RootK8sClient); err != nil {
 				fatalf("Unable to port forward: %s", err)
 			}
 			return nil
 		},
 	}
 
-	cmd.Flags().IntVar(&params.PortForward, "port-forward", 4245, "Local port to forward to")
+	cmd.Flags().IntVar(&params.PortForward, "port-forward", 4245, "Local port to forward to. 0 will select a random port.")
 
 	return cmd
 }
@@ -62,18 +63,19 @@ func newCmdUI() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ui",
 		Short: "Open the Hubble UI",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			params.Context = contextName
-			params.Namespace = namespace
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt, os.Kill)
+			defer cancel()
 
-			if err := params.UIPortForwardCommand(); err != nil {
+			params.Namespace = RootParams.Namespace
+			if err := params.UIPortForwardCommand(ctx, RootK8sClient); err != nil {
 				fatalf("Unable to port forward: %s", err)
 			}
 			return nil
 		},
 	}
 
-	cmd.Flags().IntVar(&params.UIPortForward, "port-forward", 12000, "Local port to use for the port forward")
+	cmd.Flags().IntVar(&params.UIPortForward, "port-forward", 12000, "Local port to forward to. 0 will select a random port.")
 	cmd.Flags().BoolVar(&params.UIOpenBrowser, "open-browser", true, "When --open-browser=false is supplied, cilium Hubble UI will not open the browser")
 
 	return cmd
@@ -95,10 +97,10 @@ func newCmdHubbleEnableWithHelm() *cobra.Command {
 		Short: "Enable Hubble observability using Helm",
 		Long:  ``,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			params.Namespace = namespace
-			params.HelmReleaseName = helmReleaseName
+			params.Namespace = RootParams.Namespace
+			params.HelmReleaseName = RootParams.HelmReleaseName
 			ctx := context.Background()
-			if err := hubble.EnableWithHelm(ctx, k8sClient, params); err != nil {
+			if err := hubble.EnableWithHelm(ctx, RootK8sClient, params); err != nil {
 				fatalf("Unable to enable Hubble: %s", err)
 			}
 			return nil
@@ -119,10 +121,10 @@ func newCmdHubbleDisableWithHelm() *cobra.Command {
 		Short: "Disable Hubble observability using Helm",
 		Long:  ``,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			params.Namespace = namespace
-			params.HelmReleaseName = helmReleaseName
+			params.Namespace = RootParams.Namespace
+			params.HelmReleaseName = RootParams.HelmReleaseName
 			ctx := context.Background()
-			if err := hubble.DisableWithHelm(ctx, k8sClient, params); err != nil {
+			if err := hubble.DisableWithHelm(ctx, RootK8sClient, params); err != nil {
 				fatalf("Unable to disable Hubble:  %s", err)
 			}
 			return nil

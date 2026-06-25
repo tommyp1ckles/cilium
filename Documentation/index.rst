@@ -77,13 +77,12 @@ get started and experiment with Cilium.
    network/bgp-toc
    network/ebpf/index
    network/clustermesh/index
-   network/external-toc
    network/egress-gateway-toc
    network/servicemesh/index
    network/vtep
    network/l2-announcements
    network/node-ipam
-   network/pod-mac-address
+   network/pod-annotations
    network/multicast
 
 .. toctree::
@@ -134,6 +133,7 @@ get started and experiment with Cilium.
    contributing/docs/index
    api
    grpcapi
+   sdpapi
    internals/index
 
 .. toctree::
@@ -149,6 +149,7 @@ get started and experiment with Cilium.
 
 .. toctree::
    :maxdepth: 2
-   :caption: BPF and XDP Reference Guide
+   :caption: Reference Guides
 
-   bpf/index
+   reference-guides/bpf/index
+   reference-guides/xfrm/index

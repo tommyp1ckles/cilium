@@ -13,10 +13,7 @@ import (
 )
 
 func TestGlobalServiceExportCache(t *testing.T) {
-	metrics := NewMetrics()
-	globalServiceExports := NewGlobalServiceExportCache(
-		metrics.TotalGlobalServiceExports.WithLabelValues("foo"),
-	)
+	globalServiceExports := NewGlobalServiceExportCache()
 
 	globalServiceExports.OnUpdate(&mcsapitypes.MCSAPIServiceSpec{
 		Cluster:   "cluster1",
@@ -30,7 +27,7 @@ func TestGlobalServiceExportCache(t *testing.T) {
 		Namespace: "default",
 	})
 	require.EqualValues(t, 1, globalServiceExports.Size())
-	require.EqualValues(t, []string{"reset"}, globalServiceExports.GetServiceExportsName("default"))
+	require.Equal(t, []string{"reset"}, globalServiceExports.GetServiceExportsName("default"))
 	require.Len(t, globalServiceExports.GetServiceExportByCluster(types.NamespacedName{
 		Namespace: "default",
 		Name:      "reset",
@@ -38,7 +35,7 @@ func TestGlobalServiceExportCache(t *testing.T) {
 	require.Nil(t, globalServiceExports.GetServiceExportByCluster(types.NamespacedName{
 		Namespace: "default",
 		Name:      "unknown",
-	}), 1)
+	}))
 
 	require.True(t, globalServiceExports.OnDelete(&mcsapitypes.MCSAPIServiceSpec{
 		Cluster:   "cluster1",
@@ -52,7 +49,7 @@ func TestGlobalServiceExportCache(t *testing.T) {
 		Namespace: "default",
 	}))
 	require.EqualValues(t, 0, globalServiceExports.Size(), "should have no global service exports")
-	require.Len(t, globalServiceExports.cache, 0, "Cache should be fully reset")
+	require.Empty(t, globalServiceExports.cache, "Cache should be fully reset")
 
 	// Initial state
 	globalServiceExports.OnUpdate(&mcsapitypes.MCSAPIServiceSpec{

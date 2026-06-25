@@ -14,7 +14,7 @@ import (
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:resource:categories={cilium},singular="ciliumcidrgroup",path="ciliumcidrgroups",scope="Cluster",shortName={ccg}
 // +kubebuilder:object:root=true
-// +kubebuilder:storageversion
+// +kubebuilder:deprecatedversion
 // +deepequal-gen=false
 
 // CiliumCIDRGroup is a list of external CIDRs (i.e: CIDRs selecting peers
@@ -24,6 +24,7 @@ type CiliumCIDRGroup struct {
 	// +deepequal-gen=false
 	metav1.TypeMeta `json:",inline"`
 	// +deepequal-gen=false
+	// +kubebuilder:validation:Optional
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
 	// +kubebuilder:validation:Required

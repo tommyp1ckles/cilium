@@ -8,243 +8,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cilium/hive/hivetest"
+	"github.com/stretchr/testify/assert"
+
 	"github.com/cilium/cilium/pkg/testutils"
 )
-
-func TestSystemConfigProbes(t *testing.T) {
-	testCases := []struct {
-		systemConfig SystemConfig
-		expectErr    bool
-	}{
-		{
-			systemConfig: SystemConfig{
-				ConfigBpf:           "y",
-				ConfigBpfSyscall:    "y",
-				ConfigNetSchIngress: "y",
-				ConfigNetClsBpf:     "y",
-				ConfigNetClsAct:     "y",
-				ConfigBpfJit:        "y",
-				ConfigHaveEbpfJit:   "y",
-				ConfigCgroupBpf:     "y",
-				ConfigLwtunnelBpf:   "y",
-				ConfigBpfEvents:     "y",
-			},
-			expectErr: false,
-		},
-		{
-			systemConfig: SystemConfig{
-				ConfigBpf:           "y",
-				ConfigBpfSyscall:    "y",
-				ConfigNetSchIngress: "m",
-				ConfigNetClsBpf:     "m",
-				ConfigNetClsAct:     "y",
-				ConfigBpfJit:        "y",
-				ConfigHaveEbpfJit:   "y",
-				ConfigCgroupBpf:     "y",
-				ConfigLwtunnelBpf:   "y",
-				ConfigBpfEvents:     "y",
-			},
-			expectErr: false,
-		},
-		// Disable options which generate errors
-		{
-			systemConfig: SystemConfig{
-				ConfigBpf:           "n",
-				ConfigBpfSyscall:    "n",
-				ConfigNetSchIngress: "n",
-				ConfigNetClsBpf:     "n",
-				ConfigNetClsAct:     "n",
-				ConfigBpfJit:        "n",
-				ConfigHaveEbpfJit:   "n",
-				ConfigCgroupBpf:     "n",
-				ConfigLwtunnelBpf:   "n",
-				ConfigBpfEvents:     "n",
-			},
-			expectErr: true,
-		},
-		{
-			systemConfig: SystemConfig{
-				ConfigBpf:           "n",
-				ConfigBpfSyscall:    "y",
-				ConfigNetSchIngress: "y",
-				ConfigNetClsBpf:     "y",
-				ConfigNetClsAct:     "y",
-				ConfigBpfJit:        "y",
-				ConfigHaveEbpfJit:   "y",
-				ConfigCgroupBpf:     "y",
-				ConfigLwtunnelBpf:   "y",
-				ConfigBpfEvents:     "y",
-			},
-			expectErr: true,
-		},
-		{
-			systemConfig: SystemConfig{
-				ConfigBpf:           "y",
-				ConfigBpfSyscall:    "n",
-				ConfigNetSchIngress: "y",
-				ConfigNetClsBpf:     "y",
-				ConfigNetClsAct:     "y",
-				ConfigBpfJit:        "y",
-				ConfigHaveEbpfJit:   "y",
-				ConfigCgroupBpf:     "y",
-				ConfigLwtunnelBpf:   "y",
-				ConfigBpfEvents:     "y",
-			},
-			expectErr: true,
-		},
-		{
-			systemConfig: SystemConfig{
-				ConfigBpf:           "y",
-				ConfigBpfSyscall:    "y",
-				ConfigNetSchIngress: "n",
-				ConfigNetClsBpf:     "y",
-				ConfigNetClsAct:     "y",
-				ConfigBpfJit:        "y",
-				ConfigHaveEbpfJit:   "y",
-				ConfigCgroupBpf:     "y",
-				ConfigLwtunnelBpf:   "y",
-				ConfigBpfEvents:     "y",
-			},
-			expectErr: true,
-		},
-		{
-			systemConfig: SystemConfig{
-				ConfigBpf:           "y",
-				ConfigBpfSyscall:    "y",
-				ConfigNetSchIngress: "y",
-				ConfigNetClsBpf:     "n",
-				ConfigNetClsAct:     "y",
-				ConfigBpfJit:        "y",
-				ConfigHaveEbpfJit:   "y",
-				ConfigCgroupBpf:     "y",
-				ConfigLwtunnelBpf:   "y",
-				ConfigBpfEvents:     "y",
-			},
-			expectErr: true,
-		},
-		{
-			systemConfig: SystemConfig{
-				ConfigBpf:           "y",
-				ConfigBpfSyscall:    "y",
-				ConfigNetSchIngress: "y",
-				ConfigNetClsBpf:     "y",
-				ConfigNetClsAct:     "n",
-				ConfigBpfJit:        "y",
-				ConfigHaveEbpfJit:   "y",
-				ConfigCgroupBpf:     "y",
-				ConfigLwtunnelBpf:   "y",
-				ConfigBpfEvents:     "y",
-			},
-			expectErr: true,
-		},
-		{
-			systemConfig: SystemConfig{
-				ConfigBpf:           "y",
-				ConfigBpfSyscall:    "y",
-				ConfigNetSchIngress: "y",
-				ConfigNetClsBpf:     "y",
-				ConfigNetClsAct:     "y",
-				ConfigBpfJit:        "n",
-				ConfigHaveEbpfJit:   "y",
-				ConfigCgroupBpf:     "y",
-				ConfigLwtunnelBpf:   "y",
-				ConfigBpfEvents:     "y",
-			},
-			expectErr: true,
-		},
-		{
-			systemConfig: SystemConfig{
-				ConfigBpf:           "y",
-				ConfigBpfSyscall:    "y",
-				ConfigNetSchIngress: "y",
-				ConfigNetClsBpf:     "y",
-				ConfigNetClsAct:     "y",
-				ConfigBpfJit:        "y",
-				ConfigHaveEbpfJit:   "n",
-				ConfigCgroupBpf:     "y",
-				ConfigLwtunnelBpf:   "y",
-				ConfigBpfEvents:     "y",
-			},
-			expectErr: true,
-		},
-		// Disable options which generate warnings
-		{
-			systemConfig: SystemConfig{
-				ConfigBpf:           "y",
-				ConfigBpfSyscall:    "y",
-				ConfigNetSchIngress: "y",
-				ConfigNetClsBpf:     "y",
-				ConfigNetClsAct:     "y",
-				ConfigBpfJit:        "y",
-				ConfigHaveEbpfJit:   "y",
-				ConfigCgroupBpf:     "n",
-				ConfigLwtunnelBpf:   "n",
-				ConfigBpfEvents:     "n",
-			},
-			expectErr: false,
-		},
-		{
-			systemConfig: SystemConfig{
-				ConfigBpf:           "y",
-				ConfigBpfSyscall:    "y",
-				ConfigNetSchIngress: "y",
-				ConfigNetClsBpf:     "y",
-				ConfigNetClsAct:     "y",
-				ConfigBpfJit:        "y",
-				ConfigHaveEbpfJit:   "y",
-				ConfigCgroupBpf:     "n",
-				ConfigLwtunnelBpf:   "y",
-				ConfigBpfEvents:     "y",
-			},
-			expectErr: false,
-		},
-		{
-			systemConfig: SystemConfig{
-				ConfigBpf:           "y",
-				ConfigBpfSyscall:    "y",
-				ConfigNetSchIngress: "y",
-				ConfigNetClsBpf:     "y",
-				ConfigNetClsAct:     "y",
-				ConfigBpfJit:        "y",
-				ConfigHaveEbpfJit:   "y",
-				ConfigCgroupBpf:     "y",
-				ConfigLwtunnelBpf:   "n",
-				ConfigBpfEvents:     "y",
-			},
-			expectErr: false,
-		},
-		{
-			systemConfig: SystemConfig{
-				ConfigBpf:           "y",
-				ConfigBpfSyscall:    "y",
-				ConfigNetSchIngress: "y",
-				ConfigNetClsBpf:     "y",
-				ConfigNetClsAct:     "y",
-				ConfigBpfJit:        "y",
-				ConfigHaveEbpfJit:   "y",
-				ConfigCgroupBpf:     "y",
-				ConfigLwtunnelBpf:   "y",
-				ConfigBpfEvents:     "n",
-			},
-			expectErr: false,
-		},
-	}
-	for _, tc := range testCases {
-		manager := &ProbeManager{
-			features: Features{SystemConfig: tc.systemConfig},
-		}
-		err := manager.SystemConfigProbes()
-		if tc.expectErr {
-			if err == nil {
-				t.Error("unexpected nil error")
-			}
-		} else {
-			if err != nil {
-				t.Error(err)
-			}
-		}
-	}
-}
 
 func TestWriteFeatureHeader(t *testing.T) {
 	testCases := []struct {
@@ -288,59 +56,98 @@ func TestWriteFeatureHeader(t *testing.T) {
 	}
 }
 
-func TestExecuteSystemConfigProbes(t *testing.T) {
+func TestPrivilegedExecuteHeaderProbes(t *testing.T) {
 	testutils.PrivilegedTest(t)
 
-	if err := NewProbeManager().SystemConfigProbes(); err != nil {
-		t.Error(err)
-	}
-}
-
-func TestExecuteHeaderProbes(t *testing.T) {
-	testutils.PrivilegedTest(t)
-
-	if ExecuteHeaderProbes() == nil {
+	if ExecuteHeaderProbes(hivetest.Logger(t)) == nil {
 		t.Error("expected probes to not be nil")
 	}
 }
 
-func TestOuterSourceIPProbe(t *testing.T) {
-	testutils.PrivilegedTest(t)
-	testutils.SkipOnOldKernel(t, "5.19", "source IP support in struct bpf_tunnel_key")
-
-	if err := HaveOuterSourceIPSupport(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestSKBAdjustRoomL2RoomMACSupportProbe(t *testing.T) {
+func TestPrivilegedSKBAdjustRoomL2RoomMACSupportProbe(t *testing.T) {
 	testutils.PrivilegedTest(t)
 	testutils.SkipOnOldKernel(t, "5.2", "BPF_ADJ_ROOM_MAC mode support in bpf_skb_adjust_room")
-
-	if err := HaveSKBAdjustRoomL2RoomMACSupport(); err != nil {
-		t.Fatal(err)
-	}
+	assert.NoError(t, HaveSKBAdjustRoomL2RoomMACSupport(hivetest.Logger(t)))
 }
 
 func TestIPv6Support(t *testing.T) {
-	if err := HaveIPv6Support(); err != nil {
-		t.Fatal(err)
-	}
+	assert.NoError(t, HaveIPv6Support())
 }
 
-func TestHaveDeadCodeElimSupport(t *testing.T) {
+func TestPrivilegedHaveBPF(t *testing.T) {
 	testutils.PrivilegedTest(t)
-
-	if err := HaveDeadCodeElim(); err != nil {
-		t.Fatal(err)
-	}
+	assert.NoError(t, HaveBPF())
 }
 
-func TestHaveTCX(t *testing.T) {
+func TestPrivilegedHaveBPFJIT(t *testing.T) {
+	testutils.PrivilegedTest(t)
+	assert.NoError(t, HaveBPFJIT())
+}
+
+func TestPrivilegedHaveDeadCodeElimSupport(t *testing.T) {
+	testutils.PrivilegedTest(t)
+	assert.NoError(t, HaveDeadCodeElim())
+}
+
+func TestPrivilegedHaveTCBPF(t *testing.T) {
+	testutils.PrivilegedTest(t)
+	assert.NoError(t, HaveTCBPF())
+}
+
+func TestPrivilegedHaveTCX(t *testing.T) {
 	testutils.PrivilegedTest(t)
 	testutils.SkipOnOldKernel(t, "6.6", "tcx bpf_link")
+	assert.NoError(t, HaveTCX())
+}
 
-	if err := HaveTCX(); err != nil {
-		t.Fatal(err)
-	}
+func TestPrivilegedHaveNetkit(t *testing.T) {
+	testutils.PrivilegedTest(t)
+	testutils.SkipOnOldKernel(t, "6.7", "netkit bpf_link")
+	assert.NoError(t, HaveNetkit())
+}
+
+func TestPrivilegedHaveNetkitScrub(t *testing.T) {
+	testutils.PrivilegedTest(t)
+	testutils.SkipOnOldKernel(t, "6.13", "netkit scrub")
+	assert.NoError(t, HaveNetkitScrub())
+}
+
+func TestPrivilegedHaveNetkitTunableBufferMargins(t *testing.T) {
+	testutils.PrivilegedTest(t)
+	testutils.SkipOnOldKernel(t, "6.18", "netkit tbm")
+	assert.NoError(t, HaveNetkitTunableBufferMargins())
+}
+
+func TestPrivilegedHaveFibLookupSkipNeigh(t *testing.T) {
+	testutils.PrivilegedTest(t)
+	testutils.SkipOnOldKernel(t, "6.6", "BPF_FIB_LOOKUP_SKIP_NEIGH")
+	assert.NoError(t, HaveFibLookupSkipNeigh())
+}
+
+func TestBIGTCPIPv4(t *testing.T) {
+	testutils.SkipOnOldKernel(t, "6.3", "BIG TCP IPv4")
+	assert.NoError(t, HaveBIGTCPIPv4())
+}
+
+func TestBIGTCPIPv6(t *testing.T) {
+	testutils.SkipOnOldKernel(t, "5.19", "BIG TCP IPv6")
+	assert.NoError(t, HaveBIGTCPIPv6())
+}
+
+func TestPrivilegedBIGTCPTunnel(t *testing.T) {
+	testutils.PrivilegedTest(t)
+	testutils.SkipOnOldKernel(t, "6.20", "BIG TCP for UDP tunnels")
+	assert.NoError(t, HaveBIGTCPTunnel())
+}
+
+func TestPrivilegedHaveFibLookupTBID(t *testing.T) {
+	testutils.PrivilegedTest(t)
+	testutils.SkipOnOldKernel(t, "6.5", "BPF_FIB_LOOKUP_TBID")
+	assert.NoError(t, HaveFibLookupTbid())
+}
+
+func TestPrivilegedHaveFibLookupSrc(t *testing.T) {
+	testutils.PrivilegedTest(t)
+	testutils.SkipOnOldKernel(t, "6.7", "BPF_FIB_LOOKUP_SRC")
+	assert.NoError(t, HaveFibLookupSrc())
 }

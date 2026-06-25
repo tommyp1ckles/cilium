@@ -13,7 +13,7 @@ import (
 // +kubebuilder:resource:categories={cilium,ciliumbgp},singular="ciliumbgpnodeconfig",path="ciliumbgpnodeconfigs",scope="Cluster",shortName={cbgpnode}
 // +kubebuilder:printcolumn:JSONPath=".metadata.creationTimestamp",name="Age",type=date
 // +kubebuilder:subresource:status
-// +kubebuilder:storageversion
+// +kubebuilder:deprecatedversion
 
 // CiliumBGPNodeConfig is node local configuration for BGP agent. Name of the object should be node name.
 // This resource will be created by Cilium operator and is read-only for the users.
@@ -21,14 +21,17 @@ type CiliumBGPNodeConfig struct {
 	// +deepequal-gen=false
 	metav1.TypeMeta `json:",inline"`
 	// +deepequal-gen=false
+	// +kubebuilder:validation:Required
 	metav1.ObjectMeta `json:"metadata"`
 
 	// Spec is the specification of the desired behavior of the CiliumBGPNodeConfig.
+	//
+	// +kubebuilder:validation:Required
 	Spec CiliumBGPNodeSpec `json:"spec"`
 
 	// Status is the most recently observed status of the CiliumBGPNodeConfig.
 	// +kubebuilder:validation:Optional
-	Status CiliumBGPNodeStatus `json:"status"`
+	Status CiliumBGPNodeStatus `json:"status,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -115,7 +118,7 @@ type CiliumBGPNodePeer struct {
 	// Supports extended 32bit ASNs
 	//
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=4294967295
 	PeerASN *int64 `json:"peerASN,omitempty"`
 
@@ -141,6 +144,14 @@ type CiliumBGPNodeStatus struct {
 	// +listType=map
 	// +listMapKey=name
 	BGPInstances []CiliumBGPNodeInstanceStatus `json:"bgpInstances,omitempty"`
+
+	// The current conditions of the CiliumBGPNodeConfig
+	//
+	// +kubebuilder:validation:Optional
+	// +listType=map
+	// +listMapKey=type
+	// +deepequal-gen=false
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 type CiliumBGPNodeInstanceStatus struct {
@@ -237,3 +248,7 @@ type BGPFamilyRouteCount struct {
 	// +kubebuilder:validation:Optional
 	Advertised *int32 `json:"advertised,omitempty"`
 }
+
+const (
+	BGPInstanceConditionReconcileError = "cilium.io/BGPReconcileError"
+)

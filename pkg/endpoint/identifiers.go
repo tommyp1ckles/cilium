@@ -7,16 +7,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/cilium/cilium/pkg/endpoint/id"
+	endpointtypes "github.com/cilium/cilium/pkg/endpoint/types"
 )
-
-// GetContainerName returns the name of the container for the endpoint.
-func (e *Endpoint) GetContainerName() string {
-	cn := e.containerName.Load()
-	if cn == nil {
-		return ""
-	}
-	return *cn
-}
 
 // GetK8sPodName returns the name of the pod if the endpoint represents a
 // Kubernetes pod
@@ -47,7 +39,7 @@ func (e *Endpoint) GetK8sNamespaceAndPodName() string {
 // for this endpoint (without the namespace)
 // Returns an empty string if the endpoint does not belong to a pod.
 func (e *Endpoint) GetK8sCEPName() string {
-	if cepName, ok := e.properties[PropertyCEPName]; ok {
+	if cepName, ok := e.properties[endpointtypes.PropertyCEPName]; ok {
 		cepNameStr, ok := cepName.(string)
 		if ok {
 			return cepNameStr
@@ -105,14 +97,9 @@ func (e *Endpoint) GetShortContainerID() string {
 
 }
 
-func (e *Endpoint) GetDockerEndpointID() string {
-	// const after creation
-	return e.dockerEndpointID
-}
-
 // Identifiers fetches the set of attributes that uniquely identify the endpoint.
 func (e *Endpoint) Identifiers() id.Identifiers {
-	refs := make(id.Identifiers, 8)
+	refs := make(id.Identifiers, 7)
 	if cniID := e.GetCNIAttachmentID(); cniID != "" {
 		refs[id.CNIAttachmentIdPrefix] = cniID
 	}
@@ -121,20 +108,12 @@ func (e *Endpoint) Identifiers() id.Identifiers {
 		refs[id.ContainerIdPrefix] = e.GetContainerID()
 	}
 
-	if e.dockerEndpointID != "" {
-		refs[id.DockerEndpointPrefix] = e.dockerEndpointID
-	}
-
 	if e.IPv4.IsValid() {
 		refs[id.IPv4Prefix] = e.IPv4.String()
 	}
 
 	if e.IPv6.IsValid() {
 		refs[id.IPv6Prefix] = e.IPv6.String()
-	}
-
-	if !e.disableLegacyIdentifiers && e.GetContainerName() != "" {
-		refs[id.ContainerNamePrefix] = e.GetContainerName()
 	}
 
 	if podName := e.GetK8sNamespaceAndPodName(); !e.disableLegacyIdentifiers && podName != "" {

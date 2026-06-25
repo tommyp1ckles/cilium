@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-
-	"github.com/cilium/cilium/pkg/kvstore"
 )
 
 var (
@@ -29,9 +27,9 @@ var kvstoreSetCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		setupKvstore(ctx)
+		client := setupKvstore(ctx, log)
 
-		err := kvstore.Client().Update(ctx, key, []byte(value), false)
+		err := client.Update(ctx, key, []byte(value), false)
 		if err != nil {
 			Fatalf("Unable to set key: %s", err)
 		}

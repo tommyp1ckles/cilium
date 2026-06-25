@@ -8,6 +8,7 @@ import (
 	"reflect"
 
 	"github.com/cilium/cilium/pkg/completion"
+	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/proxy/endpoint"
 	"github.com/cilium/cilium/pkg/revert"
@@ -15,17 +16,13 @@ import (
 
 // EndpointProxy defines any L7 proxy with which an Endpoint must interact.
 type EndpointProxy interface {
-	CreateOrUpdateRedirect(ctx context.Context, l4 policy.ProxyPolicy, id string, localEndpoint endpoint.EndpointUpdater, wg *completion.WaitGroup) (proxyPort uint16, err error, finalizeFunc revert.FinalizeFunc, revertFunc revert.RevertFunc)
-	RemoveRedirect(id string, wg *completion.WaitGroup) (error, revert.FinalizeFunc, revert.RevertFunc)
-	UpdateNetworkPolicy(ep endpoint.EndpointUpdater, vis *policy.VisibilityPolicy, policy *policy.L4Policy, ingressPolicyEnforced, egressPolicyEnforced bool, wg *completion.WaitGroup) (error, func() error)
+	CreateOrUpdateRedirect(ctx context.Context, l4 policy.ProxyPolicy, id string, epID uint16, wg *completion.WaitGroup) (proxyPort uint16, err error, revertFunc revert.RevertFunc)
+	RemoveRedirect(id string)
+	UpdateSDP(rules map[identity.NumericIdentity]policy.SelectorPolicy)
+	UpdateNetworkPolicy(ep endpoint.EndpointUpdater, policy *policy.EndpointPolicy, wg *completion.WaitGroup) (error, revert.RevertFunc, revert.FinalizeFunc)
 	RemoveNetworkPolicy(ep endpoint.EndpointInfoSource)
-}
-
-// SetProxy sets the proxy for this endpoint.
-func (e *Endpoint) SetProxy(p EndpointProxy) {
-	e.unconditionalLock()
-	defer e.unlock()
-	e.proxy = p
+	GetListenerProxyPort(listener string) uint16
+	IsSDPEnabled() bool
 }
 
 func (e *Endpoint) removeNetworkPolicy() {
@@ -43,19 +40,31 @@ func (e *Endpoint) IsProxyDisabled() bool {
 type FakeEndpointProxy struct{}
 
 // CreateOrUpdateRedirect does nothing.
-func (f *FakeEndpointProxy) CreateOrUpdateRedirect(ctx context.Context, l4 policy.ProxyPolicy, id string, localEndpoint endpoint.EndpointUpdater, wg *completion.WaitGroup) (proxyPort uint16, err error, finalizeFunc revert.FinalizeFunc, revertFunc revert.RevertFunc) {
+func (f *FakeEndpointProxy) CreateOrUpdateRedirect(ctx context.Context, l4 policy.ProxyPolicy, id string, epid uint16, wg *completion.WaitGroup) (proxyPort uint16, err error, revertFunc revert.RevertFunc) {
 	return
 }
 
 // RemoveRedirect does nothing.
-func (f *FakeEndpointProxy) RemoveRedirect(id string, wg *completion.WaitGroup) (error, revert.FinalizeFunc, revert.RevertFunc) {
-	return nil, nil, nil
+func (f *FakeEndpointProxy) RemoveRedirect(id string) {
 }
 
 // UpdateNetworkPolicy does nothing.
-func (f *FakeEndpointProxy) UpdateNetworkPolicy(ep endpoint.EndpointUpdater, vis *policy.VisibilityPolicy, policy *policy.L4Policy, ingressPolicyEnforced, egressPolicyEnforced bool, wg *completion.WaitGroup) (error, func() error) {
-	return nil, nil
+func (f *FakeEndpointProxy) UpdateNetworkPolicy(ep endpoint.EndpointUpdater, policy *policy.EndpointPolicy, wg *completion.WaitGroup) (error, revert.RevertFunc, revert.FinalizeFunc) {
+	return nil, nil, nil
 }
 
 // RemoveNetworkPolicy does nothing.
 func (f *FakeEndpointProxy) RemoveNetworkPolicy(ep endpoint.EndpointInfoSource) {}
+
+func (f *FakeEndpointProxy) UpdateSDP(rules map[identity.NumericIdentity]policy.SelectorPolicy) {
+}
+
+// GetListenerProxyPort does nothing.
+func (f *FakeEndpointProxy) GetListenerProxyPort(listener string) uint16 {
+	return 0
+}
+
+// IsSDPEnabled returns false for fake proxy.
+func (f *FakeEndpointProxy) IsSDPEnabled() bool {
+	return false
+}

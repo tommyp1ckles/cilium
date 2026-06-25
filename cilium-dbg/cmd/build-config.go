@@ -10,13 +10,15 @@ import (
 	"strings"
 
 	"github.com/cilium/hive/cell"
-	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
 	"github.com/cilium/cilium/pkg/hive"
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
 	k8sConsts "github.com/cilium/cilium/pkg/k8s/constants"
+	"github.com/cilium/cilium/pkg/k8s/hostfirewallbypass"
+	"github.com/cilium/cilium/pkg/logging"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option/resolver"
 )
 
@@ -29,6 +31,7 @@ var buildConfigCell = cell.Module(
 
 var buildConfigHive = hive.New(
 	k8sClient.Cell,
+	hostfirewallbypass.Cell,
 	buildConfigCell,
 	cell.Invoke(func(*buildConfig) {}),
 )
@@ -38,9 +41,9 @@ var buildConfigCmd = &cobra.Command{
 	Use:   "build-config --node-name $K8S_NODE_NAME",
 	Short: "Resolve all of the configuration sources that apply to this node",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("Running")
-		if err := buildConfigHive.Run(slog.Default()); err != nil {
-			Fatalf("Build config failed: %v\n", err)
+		log.Info("Running")
+		if err := buildConfigHive.Run(log); err != nil {
+			logging.Fatal(log, "Build config failed", logfields.Error, err)
 		}
 	},
 }
@@ -85,12 +88,12 @@ var defaultBuildConfigCfg = buildConfigCfg{
 
 type buildConfig struct {
 	cfg        buildConfigCfg
-	log        logrus.FieldLogger
+	log        *slog.Logger
 	client     k8sClient.Clientset
 	shutdowner hive.Shutdowner
 }
 
-func newBuildConfig(lc cell.Lifecycle, cfg buildConfigCfg, log logrus.FieldLogger, client k8sClient.Clientset, shutdowner hive.Shutdowner) (*buildConfig, error) {
+func newBuildConfig(lc cell.Lifecycle, cfg buildConfigCfg, log *slog.Logger, client k8sClient.Clientset, shutdowner hive.Shutdowner) (*buildConfig, error) {
 	if cfg.Dest == "" {
 		return nil, fmt.Errorf("--dest is required")
 	}
@@ -155,7 +158,7 @@ func (bc *buildConfig) onStart(ctx cell.HookContext) error {
 		sources = append(sources, source)
 	}
 
-	config, err := resolver.ResolveConfigurations(ctx, bc.client, bc.cfg.NodeName, sources, bc.cfg.AllowConfigKeys, bc.cfg.DenyConfigKeys)
+	config, err := resolver.ResolveConfigurations(ctx, bc.log, bc.client, bc.cfg.NodeName, sources, bc.cfg.AllowConfigKeys, bc.cfg.DenyConfigKeys)
 	if err != nil {
 		return fmt.Errorf("failed to resolve configurations: %w", err)
 	}
@@ -164,7 +167,7 @@ func (bc *buildConfig) onStart(ctx cell.HookContext) error {
 		return fmt.Errorf("failed to create config directory %s: %w", bc.cfg.Dest, err)
 	}
 
-	if err := resolver.WriteConfigurations(ctx, bc.cfg.Dest, config); err != nil {
+	if err := resolver.WriteConfigurations(ctx, bc.log, bc.cfg.Dest, config); err != nil {
 		return fmt.Errorf("failed to write configurations to %s: %w", bc.cfg.Dest, err)
 	}
 

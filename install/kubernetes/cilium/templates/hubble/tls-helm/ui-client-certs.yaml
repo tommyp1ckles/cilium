@@ -8,9 +8,19 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: hubble-ui-client-certs
-  namespace: {{ .Release.Namespace }}
-  {{- with .Values.hubble.annotations }}
+  namespace: {{ include "cilium.namespace" . }}
+
+  labels:
+  {{- with .Values.commonLabels }}
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+    cilium.io/helm-template-non-idempotent: "true"
+
   annotations:
+  {{- with .Values.hubble.annotations }}
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.nonIdempotentAnnotations }}
     {{- toYaml . | nindent 4 }}
   {{- end }}
 type: kubernetes.io/tls

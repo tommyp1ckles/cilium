@@ -31,7 +31,7 @@ func get(t *testing.T) *NetNS {
 	return newNetNS(orig)
 }
 
-func TestNetNSUnchangedAfterCreate(t *testing.T) {
+func TestPrivilegedNetNSUnchangedAfterCreate(t *testing.T) {
 	testutils.PrivilegedTest(t)
 	lock(t)
 
@@ -49,7 +49,7 @@ func TestNetNSUnchangedAfterCreate(t *testing.T) {
 	assert.True(t, equal(orig, after))
 }
 
-func TestNetNSSet(t *testing.T) {
+func TestPrivilegedNetNSSet(t *testing.T) {
 	testutils.PrivilegedTest(t)
 	lock(t)
 
@@ -70,7 +70,7 @@ func TestNetNSSet(t *testing.T) {
 	assert.True(t, equal(ns, after))
 }
 
-func TestNetNSClose(t *testing.T) {
+func TestPrivilegedNetNSClose(t *testing.T) {
 	testutils.PrivilegedTest(t)
 	lock(t)
 
@@ -80,10 +80,10 @@ func TestNetNSClose(t *testing.T) {
 	assert.NoError(t, ns.Close())
 
 	assert.Nil(t, ns.f)
-	assert.Equal(t, ns.FD(), -1)
+	assert.Equal(t, -1, ns.FD())
 }
 
-func TestNetNSDo(t *testing.T) {
+func TestPrivilegedNetNSDo(t *testing.T) {
 	testutils.PrivilegedTest(t)
 	lock(t)
 

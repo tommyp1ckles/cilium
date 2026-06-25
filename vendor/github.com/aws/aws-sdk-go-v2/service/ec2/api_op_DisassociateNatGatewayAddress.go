@@ -25,7 +25,7 @@ import (
 // EIPs). As the existing connections drain out, the EIPs (and the corresponding
 // private IP addresses mapped to them) are released.
 //
-// [Edit secondary IP address associations]: https://docs.aws.amazon.com/vpc/latest/userguide/vpc-nat-gateway.html#nat-gateway-edit-secondary
+// [Edit secondary IP address associations]: https://docs.aws.amazon.com/vpc/latest/userguide/nat-gateway-working-with.html#nat-gateway-edit-secondary
 func (c *Client) DisassociateNatGatewayAddress(ctx context.Context, params *DisassociateNatGatewayAddressInput, optFns ...func(*Options)) (*DisassociateNatGatewayAddressOutput, error) {
 	if params == nil {
 		params = &DisassociateNatGatewayAddressInput{}
@@ -114,13 +114,16 @@ func (c *Client) addOperationDisassociateNatGatewayAddressMiddlewares(stack *mid
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
+	if err = addRetry(stack, options, c); err != nil {
 		return err
 	}
 	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
 	if err = addRecordResponseTiming(stack); err != nil {
+		return err
+	}
+	if err = addSpanRetryLoop(stack, options); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -135,10 +138,10 @@ func (c *Client) addOperationDisassociateNatGatewayAddressMiddlewares(stack *mid
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
-	if err = addTimeOffsetBuild(stack, c); err != nil {
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
-	if err = addUserAgentRetryMode(stack, options); err != nil {
+	if err = addCredentialSource(stack, options); err != nil {
 		return err
 	}
 	if err = addOpDisassociateNatGatewayAddressValidationMiddleware(stack); err != nil {
@@ -160,6 +163,15 @@ func (c *Client) addOperationDisassociateNatGatewayAddressMiddlewares(stack *mid
 		return err
 	}
 	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptBeforeRetryLoop(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptAttempt(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil

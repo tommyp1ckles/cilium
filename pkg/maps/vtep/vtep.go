@@ -5,36 +5,40 @@ package vtep
 
 import (
 	"fmt"
-	"net"
-	"sync"
+	"log/slog"
+	"net/netip"
 
-	"github.com/sirupsen/logrus"
+	"golang.org/x/sys/unix"
 
 	"github.com/cilium/cilium/pkg/bpf"
-	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/ebpf"
-	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/mac"
+	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/types"
 )
-
-var log = logging.DefaultLogger.WithField(logfields.LogSubsys, "map-vtep")
 
 const (
 	// MaxEntries is the maximum number of keys that can be present in the
 	// VTEP map.
 	MaxEntries = defaults.MaxVTEPDevices
 
-	// Name is the canonical name for the VTEP map on the filesystem.
-	Name = "cilium_vtep_map"
+	// MapName is the canonical name for the VTEP map on the filesystem.
+	MapName = "cilium_vtep_map"
 )
+
+// Map provides access to the eBPF map vtep.
+type Map interface {
+	Update(newCIDR netip.Prefix, newTunnelEndpoint netip.Addr, vtepMAC mac.MAC) error
+	Delete(tunnelEndpoint netip.Addr) error
+	Dump(hash map[string][]string) error
+}
 
 // Key implements the bpf.MapKey interface.
 //
-// Must be in sync with struct vtep_key in <bpf/lib/common.h>
+// Must be in sync with struct vtep_key in <bpf/lib/vtep.h>
 type Key struct {
 	IP types.IPv4 `align:"vtep_ip"`
 }
@@ -45,13 +49,17 @@ func (k Key) String() string {
 
 func (k *Key) New() bpf.MapKey { return &Key{} }
 
-// NewKey returns an Key based on the provided IP address and mask.
-func NewKey(ip net.IP) Key {
+// newKey returns an Key based on the provided IP address and mask.
+func newKey(addr netip.Addr) Key {
 	result := Key{}
 
-	if ip4 := ip.To4(); ip4 != nil {
-		ip4.Mask(net.IPMask(option.Config.VtepCidrMask))
-		copy(result.IP[:], ip4)
+	if addr.Is4() {
+		ip4 := addr.As4()
+		maskBytes := option.Config.VtepCidrMask.As4()
+		for i := range ip4 {
+			ip4[i] &= maskBytes[i]
+		}
+		result.IP = ip4
 	}
 
 	return result
@@ -73,41 +81,30 @@ func (v *VtepEndpointInfo) String() string {
 func (v *VtepEndpointInfo) New() bpf.MapValue { return &VtepEndpointInfo{} }
 
 // Map represents an VTEP BPF map.
-type Map struct {
-	bpf.Map
+type vtepMap struct {
+	logger *slog.Logger
+	bpfMap *bpf.Map
 }
 
-// NewMap instantiates a Map.
-func NewMap(name string) *Map {
-	return &Map{
-		Map: *bpf.NewMap(
-			name,
-			ebpf.Hash,
-			&Key{},
-			&VtepEndpointInfo{},
-			MaxEntries,
-			0,
-		).WithCache().WithPressureMetric().
-			WithEvents(option.Config.GetEventBufferConfig(name)),
+func (m *vtepMap) init() error {
+	if err := m.bpfMap.OpenOrCreate(); err != nil {
+		return fmt.Errorf("failed to init bpf map: %w", err)
 	}
+
+	return nil
 }
 
-var (
-	// VtepMAP is a mapping of all VTEP endpoint MAC, IPs
-	vtepMAP     *Map
-	vtepMapInit = &sync.Once{}
-)
+func (m *vtepMap) close() error {
+	if err := m.bpfMap.Close(); err != nil {
+		return fmt.Errorf("failed to close bpf map: %w", err)
+	}
 
-func VtepMap() *Map {
-	vtepMapInit.Do(func() {
-		vtepMAP = NewMap(Name)
-	})
-	return vtepMAP
+	return nil
 }
 
 // Function to update vtep map with VTEP CIDR
-func UpdateVTEPMapping(newCIDR *cidr.CIDR, newTunnelEndpoint net.IP, vtepMAC mac.MAC) error {
-	key := NewKey(newCIDR.IP)
+func (m *vtepMap) Update(newCIDR netip.Prefix, newTunnelEndpoint netip.Addr, vtepMAC mac.MAC) error {
+	key := newKey(newCIDR.Addr())
 
 	mac, err := vtepMAC.Uint64()
 	if err != nil {
@@ -115,17 +112,47 @@ func UpdateVTEPMapping(newCIDR *cidr.CIDR, newTunnelEndpoint net.IP, vtepMAC mac
 	}
 
 	value := VtepEndpointInfo{
-		VtepMAC: mac,
+		VtepMAC:        mac,
+		TunnelEndpoint: newTunnelEndpoint.As4(),
 	}
 
-	ip4 := newTunnelEndpoint.To4()
-	copy(value.TunnelEndpoint[:], ip4)
+	m.logger.Debug(
+		"Updating vtep map entry",
+		logfields.V4Prefix, newCIDR.Addr(),
+		logfields.MACAddr, vtepMAC,
+		logfields.Endpoint, newTunnelEndpoint,
+	)
 
-	log.WithFields(logrus.Fields{
-		logfields.V4Prefix: newCIDR.IP,
-		logfields.MACAddr:  vtepMAC,
-		logfields.Endpoint: newTunnelEndpoint,
-	}).Debug("Updating vtep map entry")
+	return m.bpfMap.Update(&key, &value)
+}
 
-	return VtepMap().Update(&key, &value)
+func (m *vtepMap) Delete(tunnelEndpoint netip.Addr) error {
+	key := newKey(tunnelEndpoint)
+	return m.bpfMap.Delete(&key)
+}
+
+func (m *vtepMap) Dump(hash map[string][]string) error {
+	return m.bpfMap.Dump(hash)
+}
+
+func newMap(logger *slog.Logger, registry *metrics.Registry) *vtepMap {
+	return &vtepMap{
+		bpfMap: bpf.NewMap(
+			MapName,
+			ebpf.Hash,
+			&Key{},
+			&VtepEndpointInfo{},
+			MaxEntries,
+			unix.BPF_F_RDONLY_PROG,
+		).WithCache().WithPressureMetric(registry).
+			WithEvents(option.Config.GetEventBufferConfig(MapName)),
+		logger: logger,
+	}
+}
+
+// LoadVTEPMap loads the pre-initialized vtep map for access.
+// This should only be used from components which aren't capable of using hive - mainly the Cilium CLI.
+// It needs to initialized beforehand via the Cilium Agent.
+func LoadVTEPMap(logger *slog.Logger) Map {
+	return newMap(logger, nil)
 }

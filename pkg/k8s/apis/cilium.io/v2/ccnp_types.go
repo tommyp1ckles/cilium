@@ -5,7 +5,7 @@ package v2
 
 import (
 	"fmt"
-	"reflect"
+	"log/slog"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -21,6 +21,7 @@ import (
 // +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type=='Valid')].status",name="Valid",type=string
 // +kubebuilder:subresource:status
 // +kubebuilder:storageversion
+// +kubebuilder:validation:XValidation:rule="has(self.spec) || has(self.specs)",message="spec or specs must be provided"
 
 // CiliumClusterwideNetworkPolicy is a Kubernetes third-party resource with an
 // modified version of CiliumNetworkPolicy which is cluster scoped rather than
@@ -29,12 +30,17 @@ type CiliumClusterwideNetworkPolicy struct {
 	// +deepequal-gen=false
 	metav1.TypeMeta `json:",inline"`
 	// +deepequal-gen=false
+	// +kubebuilder:validation:Required
 	metav1.ObjectMeta `json:"metadata"`
 
 	// Spec is the desired Cilium specific rule specification.
+	//
+	// +kubebuilder:validation:Optional
 	Spec *api.Rule `json:"spec,omitempty"`
 
 	// Specs is a list of desired Cilium specific rule specification.
+	//
+	// +kubebuilder:validation:Optional
 	Specs api.Rules `json:"specs,omitempty"`
 
 	// Status is the status of the Cilium policy rule.
@@ -44,7 +50,7 @@ type CiliumClusterwideNetworkPolicy struct {
 	// field does not exist in the structure.
 	//
 	// +kubebuilder:validation:Optional
-	Status CiliumNetworkPolicyStatus `json:"status"`
+	Status CiliumNetworkPolicyStatus `json:"status,omitempty"`
 }
 
 // DeepEqual compares 2 CCNPs while ignoring the LastAppliedConfigAnnotation
@@ -60,16 +66,6 @@ func (r *CiliumClusterwideNetworkPolicy) SetDerivedPolicyStatus(derivativePolicy
 		r.Status.DerivativePolicies = map[string]CiliumNetworkPolicyNodeStatus{}
 	}
 	r.Status.DerivativePolicies[derivativePolicyName] = status
-}
-
-// AnnotationsEquals returns true if ObjectMeta.Annotations of each
-// CiliumClusterwideNetworkPolicy are equivalent (i.e., they contain equivalent key-value
-// pairs).
-func (r *CiliumClusterwideNetworkPolicy) AnnotationsEquals(o *CiliumClusterwideNetworkPolicy) bool {
-	if o == nil {
-		return r == nil
-	}
-	return reflect.DeepEqual(r.ObjectMeta.Annotations, o.ObjectMeta.Annotations)
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -88,7 +84,7 @@ type CiliumClusterwideNetworkPolicyList struct {
 
 // Parse parses a CiliumClusterwideNetworkPolicy and returns a list of cilium
 // policy rules.
-func (r *CiliumClusterwideNetworkPolicy) Parse() (api.Rules, error) {
+func (r *CiliumClusterwideNetworkPolicy) Parse(logger *slog.Logger, clusterName string) (api.Rules, error) {
 	if r.ObjectMeta.Name == "" {
 		return nil, NewErrParse("CiliumClusterwideNetworkPolicy must have name")
 	}
@@ -106,16 +102,15 @@ func (r *CiliumClusterwideNetworkPolicy) Parse() (api.Rules, error) {
 		if err := r.Spec.Sanitize(); err != nil {
 			return nil, NewErrParse(fmt.Sprintf("Invalid CiliumClusterwideNetworkPolicy spec: %s", err))
 		}
-		cr := k8sCiliumUtils.ParseToCiliumRule("", name, uid, r.Spec)
+		cr := k8sCiliumUtils.ParseToCiliumRule(logger, clusterName, "", name, uid, r.Spec)
 		retRules = append(retRules, cr)
 	}
 	if r.Specs != nil {
 		for _, rule := range r.Specs {
 			if err := rule.Sanitize(); err != nil {
 				return nil, NewErrParse(fmt.Sprintf("Invalid CiliumClusterwideNetworkPolicy specs: %s", err))
-
 			}
-			cr := k8sCiliumUtils.ParseToCiliumRule("", name, uid, rule)
+			cr := k8sCiliumUtils.ParseToCiliumRule(logger, clusterName, "", name, uid, rule)
 			retRules = append(retRules, cr)
 		}
 	}

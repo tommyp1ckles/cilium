@@ -6,7 +6,6 @@ package loader
 import (
 	"context"
 	"fmt"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,14 +13,14 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
+	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/require"
 	"github.com/vishvananda/netlink"
 
 	"github.com/cilium/cilium/pkg/bpf"
+	"github.com/cilium/cilium/pkg/datapath/linux/safenetlink"
 	"github.com/cilium/cilium/pkg/datapath/loader/metrics"
-	"github.com/cilium/cilium/pkg/datapath/tables"
 	"github.com/cilium/cilium/pkg/defaults"
-	"github.com/cilium/cilium/pkg/maps/callsmap"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/testutils"
 )
@@ -36,7 +35,7 @@ var (
 func initEndpoint(tb testing.TB, ep *testutils.TestEndpoint) {
 	testutils.PrivilegedTest(tb)
 
-	require.Nil(tb, rlimit.RemoveMemlock())
+	require.NoError(tb, rlimit.RemoveMemlock())
 
 	ep.State = tb.TempDir()
 	for _, iface := range []string{ep.InterfaceName(), defaults.SecondHostDevice} {
@@ -102,57 +101,54 @@ func testReloadDatapath(t *testing.T, ep *testutils.TestEndpoint) {
 	require.NoError(t, err)
 }
 
-// TestCompileOrLoadDefaultEndpoint checks that the datapath can be compiled
+// TestPrivilegedCompileOrLoadDefaultEndpoint checks that the datapath can be compiled
 // and loaded.
-func TestCompileOrLoadDefaultEndpoint(t *testing.T) {
-	ep := testutils.NewTestEndpoint()
+func TestPrivilegedCompileOrLoadDefaultEndpoint(t *testing.T) {
+	ep := testutils.NewTestEndpoint(t)
 	initEndpoint(t, &ep)
 	testReloadDatapath(t, &ep)
 }
 
-// TestCompileOrLoadHostEndpoint is the same as
+// TestPrivilegedCompileOrLoadHostEndpoint is the same as
 // TestCompileAndLoadDefaultEndpoint, but for the host endpoint.
-func TestCompileOrLoadHostEndpoint(t *testing.T) {
-
-	callsmap.HostMapName = fmt.Sprintf("test_%s", callsmap.MapName)
-	callsmap.NetdevMapName = fmt.Sprintf("test_%s", callsmap.MapName)
-
-	hostEp := testutils.NewTestHostEndpoint()
+func TestPrivilegedCompileOrLoadHostEndpoint(t *testing.T) {
+	hostEp := testutils.NewTestHostEndpoint(t)
 	initEndpoint(t, &hostEp)
 
 	testReloadDatapath(t, &hostEp)
 }
 
-// TestReload compiles and attaches the datapath.
-func TestReload(t *testing.T) {
+// TestPrivilegedReload compiles and attaches the datapath.
+func TestPrivilegedReload(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout)
 	defer cancel()
 
-	ep := testutils.NewTestEndpoint()
+	ep := testutils.NewTestEndpoint(t)
 	initEndpoint(t, &ep)
 
 	dirInfo := getEpDirs(&ep)
-	err := compileDatapath(ctx, dirInfo, false, log)
+	logger := hivetest.Logger(t)
+	err := compileDatapath(ctx, logger, dirInfo, false)
 	require.NoError(t, err)
 
-	l, err := netlink.LinkByName(ep.InterfaceName())
+	l, err := safenetlink.LinkByName(ep.InterfaceName())
 	require.NoError(t, err)
 
 	objPath := fmt.Sprintf("%s/%s", dirInfo.Output, endpointObj)
 	tmp := testutils.TempBPFFS(t)
 
-	for range 2 {
-		spec, err := bpf.LoadCollectionSpec(objPath)
-		require.NoError(t, err)
+	spec, err := ebpf.LoadCollectionSpec(objPath)
+	require.NoError(t, err)
 
-		coll, commit, err := bpf.LoadCollection(spec, &bpf.CollectionOptions{
+	for range 2 {
+		coll, commit, err := bpf.LoadCollection(logger, spec, &bpf.CollectionOptions{
 			CollectionOptions: ebpf.CollectionOptions{Maps: ebpf.MapOptions{PinPath: tmp}},
 		})
 		require.NoError(t, err)
 
-		require.NoError(t, attachSKBProgram(l, coll.Programs[symbolFromEndpoint],
+		require.NoError(t, attachSKBProgram(logger, l, coll.Programs[symbolFromEndpoint],
 			symbolFromEndpoint, tmp, netlink.HANDLE_MIN_INGRESS, true))
-		require.NoError(t, attachSKBProgram(l, coll.Programs[symbolToEndpoint],
+		require.NoError(t, attachSKBProgram(logger, l, coll.Programs[symbolToEndpoint],
 			symbolToEndpoint, tmp, netlink.HANDLE_MIN_EGRESS, true))
 
 		require.NoError(t, commit())
@@ -186,71 +182,20 @@ func testCompileFailure(t *testing.T, ep *testutils.TestEndpoint) {
 	require.Error(t, err)
 }
 
-// TestCompileFailureDefaultEndpoint attempts to compile then cancels the
+// TestPrivilegedCompileFailureDefaultEndpoint attempts to compile then cancels the
 // context and ensures that the failure paths may be hit.
-func TestCompileFailureDefaultEndpoint(t *testing.T) {
-	ep := testutils.NewTestEndpoint()
+func TestPrivilegedCompileFailureDefaultEndpoint(t *testing.T) {
+	ep := testutils.NewTestEndpoint(t)
 	initEndpoint(t, &ep)
 	testCompileFailure(t, &ep)
 }
 
-// TestCompileFailureHostEndpoint is the same as
-// TestCompileFailureDefaultEndpoint, but for the host endpoint.
-func TestCompileFailureHostEndpoint(t *testing.T) {
-	hostEp := testutils.NewTestHostEndpoint()
+// TestPrivilegedCompileFailureHostEndpoint is the same as
+// TestPrivilegedCompileFailureDefaultEndpoint, but for the host endpoint.
+func TestPrivilegedCompileFailureHostEndpoint(t *testing.T) {
+	hostEp := testutils.NewTestHostEndpoint(t)
 	initEndpoint(t, &hostEp)
 	testCompileFailure(t, &hostEp)
-}
-
-func TestBPFMasqAddrs(t *testing.T) {
-	old4 := option.Config.EnableIPv4Masquerade
-	option.Config.EnableIPv4Masquerade = true
-	old6 := option.Config.EnableIPv4Masquerade
-	option.Config.EnableIPv6Masquerade = true
-	t.Cleanup(func() {
-		option.Config.EnableIPv4Masquerade = old4
-		option.Config.EnableIPv6Masquerade = old6
-	})
-
-	masq4, masq6 := bpfMasqAddrs("test", &localNodeConfig)
-	require.Equal(t, masq4.IsValid(), false)
-	require.Equal(t, masq6.IsValid(), false)
-
-	newConfig := localNodeConfig
-	newConfig.NodeAddresses = []tables.NodeAddress{
-		{
-			Addr:       netip.MustParseAddr("1.0.0.1"),
-			NodePort:   true,
-			Primary:    true,
-			DeviceName: "test",
-		},
-		{
-			Addr:       netip.MustParseAddr("1000::1"),
-			NodePort:   true,
-			Primary:    true,
-			DeviceName: "test",
-		},
-		{
-			Addr:       netip.MustParseAddr("2.0.0.2"),
-			NodePort:   false,
-			Primary:    true,
-			DeviceName: tables.WildcardDeviceName,
-		},
-		{
-			Addr:       netip.MustParseAddr("2000::2"),
-			NodePort:   false,
-			Primary:    true,
-			DeviceName: tables.WildcardDeviceName,
-		},
-	}
-
-	masq4, masq6 = bpfMasqAddrs("test", &newConfig)
-	require.Equal(t, masq4.String(), "1.0.0.1")
-	require.Equal(t, masq6.String(), "1000::1")
-
-	masq4, masq6 = bpfMasqAddrs("unknown", &newConfig)
-	require.Equal(t, masq4.String(), "2.0.0.2")
-	require.Equal(t, masq6.String(), "2000::2")
 }
 
 // BenchmarkCompileOnly benchmarks the just the entire compilation process.
@@ -260,10 +205,10 @@ func BenchmarkCompileOnly(b *testing.B) {
 
 	dirInfo := getDirs(b)
 	option.Config.Debug = true
+	logger := hivetest.Logger(b)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if err := compileDatapath(ctx, dirInfo, false, log); err != nil {
+	for b.Loop() {
+		if err := compileDatapath(ctx, logger, dirInfo, false); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -271,30 +216,31 @@ func BenchmarkCompileOnly(b *testing.B) {
 
 // BenchmarkReplaceDatapath compiles the datapath program, then benchmarks only
 // the loading of the program into the kernel.
-func BenchmarkReplaceDatapath(b *testing.B) {
+func BenchmarkPrivilegedReplaceDatapath(b *testing.B) {
 	ctx, cancel := context.WithTimeout(context.Background(), benchTimeout)
 	defer cancel()
 
 	tmp := testutils.TempBPFFS(b)
 
-	ep := testutils.NewTestEndpoint()
+	ep := testutils.NewTestEndpoint(b)
 	initEndpoint(b, &ep)
 
 	dirInfo := getEpDirs(&ep)
 
-	if err := compileDatapath(ctx, dirInfo, false, log); err != nil {
+	logger := hivetest.Logger(b)
+	if err := compileDatapath(ctx, logger, dirInfo, false); err != nil {
 		b.Fatal(err)
 	}
 
 	objPath := fmt.Sprintf("%s/%s", dirInfo.Output, endpointObj)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		spec, err := bpf.LoadCollectionSpec(objPath)
-		if err != nil {
-			b.Fatal(err)
-		}
 
-		coll, commit, err := bpf.LoadCollection(spec, &bpf.CollectionOptions{
+	spec, err := ebpf.LoadCollectionSpec(objPath)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	for b.Loop() {
+		coll, commit, err := bpf.LoadCollection(logger, spec, &bpf.CollectionOptions{
 			CollectionOptions: ebpf.CollectionOptions{Maps: ebpf.MapOptions{PinPath: tmp}},
 		})
 		if err != nil {

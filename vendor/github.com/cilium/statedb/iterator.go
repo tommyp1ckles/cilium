@@ -9,7 +9,6 @@ import (
 	"slices"
 
 	"github.com/cilium/statedb/index"
-	"github.com/cilium/statedb/part"
 )
 
 // Collect creates a slice of objects out of the iterator.
@@ -45,7 +44,7 @@ func Filter[Obj any](seq iter.Seq2[Obj, Revision], keep func(Obj) bool) iter.Seq
 // ToSeq takes a Seq2 and produces a Seq with the first element of the pair.
 func ToSeq[A, B any](seq iter.Seq2[A, B]) iter.Seq[A] {
 	return func(yield func(A) bool) {
-		for x, _ := range seq {
+		for x := range seq {
 			if !yield(x) {
 				break
 			}
@@ -53,74 +52,44 @@ func ToSeq[A, B any](seq iter.Seq2[A, B]) iter.Seq[A] {
 	}
 }
 
-// partSeq returns a sequence of objects from a part Iterator.
-func partSeq[Obj any](iter *part.Iterator[object]) iter.Seq2[Obj, Revision] {
-	return func(yield func(Obj, Revision) bool) {
-		// Iterate over a clone of the original iterator to allow the sequence to be iterated
-		// from scratch multiple times.
-		it := iter.Clone()
-		for {
-			_, iobj, ok := it.Next()
-			if !ok {
-				break
-			}
-			if !yield(iobj.data.(Obj), iobj.revision) {
+// Values takes a Seq2 and produces a Seq with the second element of the pair.
+func Values[A, B any](seq iter.Seq2[A, B]) iter.Seq[B] {
+	return func(yield func(B) bool) {
+		for _, x := range seq {
+			if !yield(x) {
 				break
 			}
 		}
 	}
 }
 
-// nonUniqueSeq returns a sequence of objects for a non-unique index.
-// Non-unique indexes work by concatenating the secondary key with the
-// primary key and then prefix searching for the items:
-//
-//	<secondary><primary><secondary length>
-//	^^^^^^^^^^^
-//
-// Since the primary key can be of any length and we're prefix searching,
-// we need to iterate over all objects matching the prefix and only emitting
-// those which have the correct secondary key length.
-// For example if we search for the key "aaaa", then we might have the following
-// matches (_ is just delimiting, not part of the key):
-//
-//	aaaa_bbb4
-//	aaa_abab3
-//	aaaa_ccc4
-//
-// We yield "aaaa_bbb4", skip "aaa_abab3" and yield "aaaa_ccc4".
-func nonUniqueSeq[Obj any](iter *part.Iterator[object], searchKey []byte) iter.Seq2[Obj, Revision] {
+func Just[A any](x A) iter.Seq[A] {
+	return func(yield func(A) bool) {
+		yield(x)
+	}
+}
+
+func Just2[A, B any](a A, b B) iter.Seq2[A, B] {
+	return func(yield func(A, B) bool) {
+		yield(a, b)
+	}
+}
+
+func objSeq[Obj any](iter tableIndexIterator) iter.Seq2[Obj, Revision] {
 	return func(yield func(Obj, Revision) bool) {
-		// Clone the iterator to allow multiple iterations over the sequence.
-		it := iter.Clone()
-		for {
-			key, iobj, ok := it.Next()
-			if !ok {
-				break
-			}
-
-			_, secondary := decodeNonUniqueKey(key)
-
-			// The secondary key doesn't match the search key. Since the primary
-			// key length can vary, we need to continue the prefix search.
-			if len(secondary) != len(searchKey) {
-				continue
-			}
-
-			if !yield(iobj.data.(Obj), iobj.revision) {
-				break
-			}
-		}
+		iter.All(func(_ []byte, iobj object) bool {
+			return yield(iobj.data.(Obj), iobj.revision)
+		})
 	}
 }
 
 // iterator adapts the "any" object iterator to a typed object.
 type iterator[Obj any] struct {
-	iter interface{ Next() ([]byte, object, bool) }
+	next func() ([]byte, object, bool)
 }
 
-func (it *iterator[Obj]) Next() (obj Obj, revision uint64, ok bool) {
-	_, iobj, ok := it.iter.Next()
+func (it iterator[Obj]) Next() (obj Obj, revision uint64, ok bool) {
+	_, iobj, ok := it.next()
 	if ok {
 		obj = iobj.data.(Obj)
 		revision = iobj.revision
@@ -128,29 +97,29 @@ func (it *iterator[Obj]) Next() (obj Obj, revision uint64, ok bool) {
 	return
 }
 
-func NewDualIterator[Obj any](left, right Iterator[Obj]) *DualIterator[Obj] {
-	return &DualIterator[Obj]{
+func newDualIterator[Obj any](left, right *iterator[Obj]) *dualIterator[Obj] {
+	return &dualIterator[Obj]{
 		left:  iterState[Obj]{iter: left},
 		right: iterState[Obj]{iter: right},
 	}
 }
 
 type iterState[Obj any] struct {
-	iter Iterator[Obj]
+	iter *iterator[Obj]
 	obj  Obj
 	rev  Revision
 	ok   bool
 }
 
-// DualIterator allows iterating over two iterators in revision order.
+// dualIterator allows iterating over two iterators in revision order.
 // Meant to be used for combined iteration of LowerBound(ByRevision)
 // and Deleted().
-type DualIterator[Obj any] struct {
+type dualIterator[Obj any] struct {
 	left  iterState[Obj]
 	right iterState[Obj]
 }
 
-func (it *DualIterator[Obj]) Next() (obj Obj, revision uint64, fromLeft, ok bool) {
+func (it *dualIterator[Obj]) next() (obj Obj, revision uint64, fromLeft, ok bool) {
 	// Advance the iterators
 	if !it.left.ok && it.left.iter != nil {
 		it.left.obj, it.left.rev, it.left.ok = it.left.iter.Next()
@@ -192,26 +161,26 @@ type changeIterator[Obj any] struct {
 	revision       Revision
 	deleteRevision Revision
 	dt             *deleteTracker[Obj]
-	iter           *DualIterator[Obj]
+	iter           *dualIterator[Obj]
 	watch          <-chan struct{}
 }
 
 func (it *changeIterator[Obj]) refresh(txn ReadTxn) {
-	// Instead of indexReadTxn() we look up directly here so we don't
-	// refresh from mutated indexes in case [txn] is a WriteTxn. This
-	// is important as the WriteTxn may be aborted and thus revisions will
-	// reset back and watermarks bumped from here would be invalid.
-	itxn := txn.getTxn()
-	indexEntry := itxn.root[it.table.tablePos()].indexes[RevisionIndexPos]
-	indexTxn := indexReadTxn{indexEntry.tree, indexEntry.unique}
-	updateIter := &iterator[Obj]{indexTxn.LowerBound(index.Uint64(it.revision + 1))}
-	deleteIter := it.dt.deleted(itxn, it.deleteRevision+1)
-	it.iter = NewDualIterator(deleteIter, updateIter)
+	tableEntry := txn.committedRoot()[it.table.tablePos()]
+	if it.iter != nil && tableEntry.locked {
+		var obj Obj
+		panic(fmt.Sprintf("Table[%T].Changes().Next() called with the target table locked. This is not supported.", obj))
+	}
+	indexEntry := tableEntry.indexes[RevisionIndexPos]
+	updated, _ := indexEntry.lowerBoundNext(index.Uint64(it.revision + 1))
+	updateIter := &iterator[Obj]{updated}
+	deleteIter := it.dt.deleted(txn, it.deleteRevision+1)
+	it.iter = newDualIterator(deleteIter, updateIter)
 
 	// It is enough to watch the revision index and not the graveyard since
 	// any object that is inserted into the graveyard will be deleted from
 	// the revision index.
-	it.watch = indexTxn.RootWatch()
+	it.watch = indexEntry.rootWatch()
 }
 
 func (it *changeIterator[Obj]) Next(txn ReadTxn) (seq iter.Seq2[Change[Obj], Revision], watch <-chan struct{}) {
@@ -242,7 +211,7 @@ func (it *changeIterator[Obj]) Next(txn ReadTxn) (seq iter.Seq2[Change[Obj], Rev
 		if it.iter == nil {
 			return
 		}
-		for obj, rev, deleted, ok := it.iter.Next(); ok; obj, rev, deleted, ok = it.iter.Next() {
+		for obj, rev, deleted, ok := it.iter.next(); ok; obj, rev, deleted, ok = it.iter.next() {
 			if deleted {
 				it.deleteRevision = rev
 				it.dt.mark(rev)
@@ -282,7 +251,8 @@ func (it *changeIterator[Obj]) nextAny(txn ReadTxn) (iter.Seq2[Change[any], Revi
 	}, watch
 }
 
-func (it *changeIterator[Obj]) close() {
+func (it *changeIterator[Obj]) Close() {
+	it.iter = nil
 	if it.dt != nil {
 		it.dt.close()
 	}

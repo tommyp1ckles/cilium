@@ -16,19 +16,18 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
-	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	"github.com/cilium/cilium/operator/pkg/gateway-api/helpers"
 )
 
 // HTTPRouteInput is used to implement the Input interface for HTTPRoute
 type HTTPRouteInput struct {
-	Ctx       context.Context
-	Logger    *slog.Logger
-	Client    client.Client
-	Grants    *gatewayv1beta1.ReferenceGrantList
-	HTTPRoute *gatewayv1.HTTPRoute
+	Ctx            context.Context
+	Logger         *slog.Logger
+	Client         client.Client
+	Grants         *gatewayv1.ReferenceGrantList
+	HTTPRoute      *gatewayv1.HTTPRoute
+	ControllerName string
 
 	gateways      map[gatewayv1.ParentReference]*gatewayv1.Gateway
 	gammaServices map[gatewayv1.ParentReference]*corev1.Service
@@ -56,7 +55,7 @@ func (h *HTTPRouteInput) SetAllParentCondition(condition metav1.Condition) {
 	}
 }
 
-func (h *HTTPRouteInput) mergeStatusConditions(parentRef gatewayv1alpha2.ParentReference, updates []metav1.Condition) {
+func (h *HTTPRouteInput) mergeStatusConditions(parentRef gatewayv1.ParentReference, updates []metav1.Condition) {
 	index := -1
 	for i, parent := range h.HTTPRoute.Status.RouteStatus.Parents {
 		if reflect.DeepEqual(parent.ParentRef, parentRef) {
@@ -65,17 +64,17 @@ func (h *HTTPRouteInput) mergeStatusConditions(parentRef gatewayv1alpha2.ParentR
 		}
 	}
 	if index != -1 {
-		h.HTTPRoute.Status.RouteStatus.Parents[index].Conditions = merge(h.HTTPRoute.Status.RouteStatus.Parents[index].Conditions, updates...)
+		h.HTTPRoute.Status.RouteStatus.Parents[index].Conditions = helpers.MergeConditions(h.HTTPRoute.Status.RouteStatus.Parents[index].Conditions, updates...)
 		return
 	}
-	h.HTTPRoute.Status.RouteStatus.Parents = append(h.HTTPRoute.Status.RouteStatus.Parents, gatewayv1alpha2.RouteParentStatus{
+	h.HTTPRoute.Status.RouteStatus.Parents = append(h.HTTPRoute.Status.RouteStatus.Parents, gatewayv1.RouteParentStatus{
 		ParentRef:      parentRef,
-		ControllerName: controllerName,
+		ControllerName: gatewayv1.GatewayController(h.ControllerName),
 		Conditions:     updates,
 	})
 }
 
-func (h *HTTPRouteInput) GetGrants() []gatewayv1beta1.ReferenceGrant {
+func (h *HTTPRouteInput) GetGrants() []gatewayv1.ReferenceGrant {
 	return h.Grants.Items
 }
 
@@ -165,7 +164,11 @@ func (h *HTTPRouteInput) Log() *slog.Logger {
 	return h.Logger
 }
 
-// HTTPRouteRule is used to implement the GenericRule interface for TLSRoute
+func (h *HTTPRouteInput) GetValidProtocols() []gatewayv1.ProtocolType {
+	return []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType}
+}
+
+// HTTPRouteRule is used to implement the GenericRule interface for HTTPRoute
 type HTTPRouteRule struct {
 	Rule gatewayv1.HTTPRouteRule
 }
@@ -186,4 +189,20 @@ func (t *HTTPRouteRule) GetBackendRefs() []gatewayv1.BackendRef {
 		}
 	}
 	return refs
+}
+
+// Validates the HTTPRoute header
+func (r *HTTPRouteInput) ValidateHeaderModifier() error {
+	for _, backendref := range r.HTTPRoute.Spec.Rules {
+		for _, f := range backendref.Filters {
+			if f.Type == gatewayv1.HTTPRouteFilterRequestHeaderModifier {
+				for _, set := range f.RequestHeaderModifier.Set {
+					if set.Name == "Host" {
+						return fmt.Errorf("Invalid HTTPRoute header: %q", set.Name)
+					}
+				}
+			}
+		}
+	}
+	return nil
 }

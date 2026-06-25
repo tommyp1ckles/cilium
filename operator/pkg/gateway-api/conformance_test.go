@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/gateway-api/pkg/features"
 
 	"github.com/cilium/cilium/pkg/testutils"
+	"github.com/cilium/cilium/pkg/time"
 )
 
 var (
@@ -43,16 +44,16 @@ func TestConformance(t *testing.T) {
 	testutils.GatewayAPIConformanceTest(t)
 	var skipTests []string
 	options := conformance.DefaultOptions(t)
-	var usableNetworkAddresses []v1.GatewayAddress
-	var unusableNetworkAddresses []v1.GatewayAddress
+	var usableNetworkAddresses []v1.GatewaySpecAddress
+	var unusableNetworkAddresses []v1.GatewaySpecAddress
 	usableAddresses := os.Getenv(usableNetworkAddressesEnv)
 	if usableAddresses == "" {
 		t.Logf("Set %s to run this test", features.SupportGatewayStaticAddresses)
 		skipTests = append(skipTests, string(features.SupportGatewayStaticAddresses))
 	} else {
-		var addressType = v1.IPAddressType
-		for _, value := range strings.Split(usableAddresses, ",") {
-			usableNetworkAddresses = append(usableNetworkAddresses, v1.GatewayAddress{
+		addressType := v1.IPAddressType
+		for value := range strings.SplitSeq(usableAddresses, ",") {
+			usableNetworkAddresses = append(usableNetworkAddresses, v1.GatewaySpecAddress{
 				Type:  &addressType,
 				Value: value,
 			})
@@ -63,14 +64,20 @@ func TestConformance(t *testing.T) {
 		t.Logf("Set %s to run this test", features.SupportGatewayStaticAddresses)
 		skipTests = append(skipTests, string(features.SupportGatewayStaticAddresses))
 	} else {
-		var addressType = v1.IPAddressType
-		for _, value := range strings.Split(unusableAddresses, ",") {
-			unusableNetworkAddresses = append(unusableNetworkAddresses, v1.GatewayAddress{
+		addressType := v1.IPAddressType
+		for value := range strings.SplitSeq(unusableAddresses, ",") {
+			unusableNetworkAddresses = append(unusableNetworkAddresses, v1.GatewaySpecAddress{
 				Type:  &addressType,
 				Value: value,
 			})
 		}
 	}
+	// TODO: Run MeshGRPCRouteWeight once it is deflaked upstream. See
+	//       GH-42456 for details.
+	skipTests = append(skipTests, "MeshGRPCRouteWeight")
+	skipTests = append(skipTests, "MeshHTTPRouteMatching")  // same here
+	skipTests = append(skipTests, "MeshHTTPRouteNamedRule") // same here
+	options.TimeoutConfig.DefaultPollInterval = 1 * time.Second
 	options.UnusableNetworkAddresses = unusableNetworkAddresses
 	options.UsableNetworkAddresses = usableNetworkAddresses
 	options.SkipTests = append(options.SkipTests, skipTests...)

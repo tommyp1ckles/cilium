@@ -4,19 +4,19 @@
 package observer
 
 import (
-	"context"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	flowpb "github.com/cilium/cilium/api/v1/flow"
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/node/types"
+	"github.com/cilium/cilium/pkg/time"
 )
 
 func Test_LocalNodeWatcher(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	localNode := node.LocalNode{
 		Node: types.Node{
@@ -29,6 +29,7 @@ func Test_LocalNodeWatcher(t *testing.T) {
 				"topology.kubernetes.io/zone":   "us-west-2d",
 			},
 		},
+		Local: &node.LocalNodeInfo{},
 	}
 	localNodeLabelSlice := []string{
 		"kubernetes.io/arch=amd64",
@@ -46,6 +47,7 @@ func Test_LocalNodeWatcher(t *testing.T) {
 				"kubernetes.io/hostname": "kind-kind",
 			},
 		},
+		Local: &node.LocalNodeInfo{},
 	}
 	updatedNodeLabelSlice := []string{
 		"kubernetes.io/arch=arm64",
@@ -54,10 +56,11 @@ func Test_LocalNodeWatcher(t *testing.T) {
 	}
 
 	var watcher *LocalNodeWatcher
+	store := node.NewTestLocalNodeStore(localNode)
 
 	t.Run("NewLocalNodeWatcher", func(t *testing.T) {
 		var err error
-		watcher, err = NewLocalNodeWatcher(ctx, node.NewTestLocalNodeStore(localNode))
+		watcher, err = NewLocalNodeWatcher(ctx, store)
 		require.NoError(t, err)
 		require.NotNil(t, watcher)
 	})
@@ -71,12 +74,22 @@ func Test_LocalNodeWatcher(t *testing.T) {
 	})
 
 	t.Run("update", func(t *testing.T) {
-		watcher.update(updatedNode)
-		var flow flowpb.Flow
-		stop, err := watcher.OnDecodedFlow(ctx, &flow)
-		require.False(t, stop)
-		require.NoError(t, err)
-		require.Equal(t, updatedNodeLabelSlice, flow.GetNodeLabels())
+		store.Update(func(ln *node.LocalNode) {
+			*ln = updatedNode
+		})
+		require.EventuallyWithT(
+			t,
+			func(c *assert.CollectT) {
+				var flow flowpb.Flow
+				stop, err := watcher.OnDecodedFlow(ctx, &flow)
+				if assert.False(c, stop) {
+					assert.NoError(c, err)
+					assert.Equal(c, updatedNodeLabelSlice, flow.GetNodeLabels(), "node labels mismatch")
+				}
+			},
+			10*time.Second,
+			10*time.Millisecond,
+		)
 	})
 
 	t.Run("complete", func(t *testing.T) {

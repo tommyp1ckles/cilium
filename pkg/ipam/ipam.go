@@ -4,21 +4,25 @@
 package ipam
 
 import (
-	"net"
+	"fmt"
+	"log/slog"
+	"net/netip"
 
-	"github.com/sirupsen/logrus"
+	"github.com/cilium/hive/job"
+	"github.com/cilium/statedb"
+	"go4.org/netipx"
 
 	agentK8s "github.com/cilium/cilium/daemon/k8s"
-	"github.com/cilium/cilium/pkg/datapath/types"
+	"github.com/cilium/cilium/pkg/datapath/linux/sysctl"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
+	"github.com/cilium/cilium/pkg/ipam/podippool"
+	"github.com/cilium/cilium/pkg/ipmasq"
 	"github.com/cilium/cilium/pkg/k8s/client"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
 )
-
-var log = logging.DefaultLogger.WithField(logfields.LogSubsys, "ipam")
 
 // Family is the type describing all address families support by the IP
 // allocation manager
@@ -30,8 +34,8 @@ const (
 )
 
 // DeriveFamily derives the address family of an IP
-func DeriveFamily(ip net.IP) Family {
-	if ip.To4() == nil {
+func DeriveFamily(addr netip.Addr) Family {
+	if addr.Is6() {
 		return IPv6
 	}
 	return IPv4
@@ -66,22 +70,50 @@ type Metadata interface {
 	GetIPPoolForPod(owner string, family Family) (pool string, err error)
 }
 
-// NewIPAM returns a new IP address manager
-func NewIPAM(nodeAddressing types.NodeAddressing, c *option.DaemonConfig, nodeDiscovery Owner, localNodeStore *node.LocalNodeStore, k8sEventReg K8sEventRegister, node agentK8s.LocalCiliumNodeResource, mtuConfig MtuConfiguration, clientset client.Clientset, metadata Metadata) *IPAM {
-	return &IPAM{
-		nodeAddressing:   nodeAddressing,
-		config:           c,
-		owner:            map[Pool]map[string]string{},
-		expirationTimers: map[timerKey]expirationTimer{},
-		excludedIPs:      map[string]string{},
+// NewIPAMParams contains the parameters for creating a new IPAM instance.
+type NewIPAMParams struct {
+	Logger         *slog.Logger
+	NodeAddressing node.Addressing
+	AgentConfig    *option.DaemonConfig
+	NodeDiscovery  Owner
+	LocalNodeStore *node.LocalNodeStore
+	K8sEventReg    K8sEventRegister
+	NodeResource   agentK8s.LocalCiliumNodeResource
+	MTUConfig      MtuConfiguration
+	Clientset      client.Clientset
+	Metadata       Metadata
+	Sysctl         sysctl.Sysctl
+	IPMasqAgent    *ipmasq.IPMasqAgent
 
-		k8sEventReg:    k8sEventReg,
-		localNodeStore: localNodeStore,
-		nodeResource:   node,
-		mtuConfig:      mtuConfig,
-		clientset:      clientset,
-		nodeDiscovery:  nodeDiscovery,
-		metadata:       metadata,
+	JobGroup job.Group
+
+	DB                        *statedb.DB
+	PodIPPools                statedb.Table[podippool.LocalPodIPPool]
+	OnlyMasqueradeDefaultPool bool
+}
+
+// NewIPAM returns a new IP address manager
+func NewIPAM(params NewIPAMParams) *IPAM {
+	return &IPAM{
+		logger:                    params.Logger,
+		config:                    params.AgentConfig,
+		nodeAddressing:            params.NodeAddressing,
+		owner:                     map[Pool]map[string]string{},
+		expirationTimers:          map[timerKey]expirationTimer{},
+		excludedIPs:               map[string]string{},
+		k8sEventReg:               params.K8sEventReg,
+		localNodeStore:            params.LocalNodeStore,
+		nodeResource:              params.NodeResource,
+		mtuConfig:                 params.MTUConfig,
+		clientset:                 params.Clientset,
+		nodeDiscovery:             params.NodeDiscovery,
+		metadata:                  params.Metadata,
+		sysctl:                    params.Sysctl,
+		ipMasqAgent:               params.IPMasqAgent,
+		jg:                        params.JobGroup,
+		db:                        params.DB,
+		podIPPools:                params.PodIPPools,
+		onlyMasqueradeDefaultPool: params.OnlyMasqueradeDefaultPool,
 	}
 }
 
@@ -91,47 +123,91 @@ func NewIPAM(nodeAddressing types.NodeAddressing, c *option.DaemonConfig, nodeDi
 func (ipam *IPAM) ConfigureAllocator() {
 	switch ipam.config.IPAMMode() {
 	case ipamOption.IPAMKubernetes, ipamOption.IPAMClusterPool:
-		log.WithFields(logrus.Fields{
-			logfields.V4Prefix: ipam.nodeAddressing.IPv4().AllocationCIDR(),
-			logfields.V6Prefix: ipam.nodeAddressing.IPv6().AllocationCIDR(),
-		}).Infof("Initializing %s IPAM", ipam.config.IPAMMode())
+		ipam.logger.Info(
+			"Initializing IPAM",
+			logfields.Mode, ipam.config.IPAMMode(),
+			logfields.V4Prefix, ipam.nodeAddressing.IPv4().AllocationCIDR(),
+			logfields.V6Prefix, ipam.nodeAddressing.IPv6().AllocationCIDR(),
+		)
 
 		if ipam.config.IPv6Enabled() {
-			ipam.IPv6Allocator = newHostScopeAllocator(ipam.nodeAddressing.IPv6().AllocationCIDR().IPNet)
+			prefix, ok := netipx.FromStdIPNet(ipam.nodeAddressing.IPv6().AllocationCIDR().IPNet)
+			if !ok {
+				logging.Fatal(ipam.logger, "Invalid IPv6 allocation CIDR")
+			}
+			ipam.ipv6Allocator = newHostScopeAllocator(prefix)
 		}
 
 		if ipam.config.IPv4Enabled() {
-			ipam.IPv4Allocator = newHostScopeAllocator(ipam.nodeAddressing.IPv4().AllocationCIDR().IPNet)
+			prefix, ok := netipx.FromStdIPNet(ipam.nodeAddressing.IPv4().AllocationCIDR().IPNet)
+			if !ok {
+				logging.Fatal(ipam.logger, "Invalid IPv4 allocation CIDR")
+			}
+			ipam.ipv4Allocator = newHostScopeAllocator(prefix)
 		}
 	case ipamOption.IPAMMultiPool:
-		log.Info("Initializing MultiPool IPAM")
-		manager := newMultiPoolManager(ipam.config, ipam.nodeResource, ipam.nodeDiscovery, ipam.clientset.CiliumV2().CiliumNodes())
+		ipam.logger.Info("Initializing MultiPool IPAM")
+		v4Allocator, v6Allocator := newMultiPoolAllocators(MultiPoolAllocatorParams{
+			Logger:                    ipam.logger,
+			IPv4Enabled:               ipam.config.IPv4Enabled(),
+			IPv6Enabled:               ipam.config.IPv6Enabled(),
+			CiliumNodeUpdateRate:      ipam.config.IPAMCiliumNodeUpdateRate,
+			PreAllocPools:             ipam.config.IPAMMultiPoolPreAllocation,
+			Node:                      ipam.nodeResource,
+			LocalNodeStore:            ipam.localNodeStore,
+			CNClient:                  ipam.clientset.CiliumV2().CiliumNodes(),
+			JobGroup:                  ipam.jg,
+			DB:                        ipam.db,
+			PodIPPools:                ipam.podIPPools,
+			OnlyMasqueradeDefaultPool: ipam.onlyMasqueradeDefaultPool,
+		})
 
 		if ipam.config.IPv6Enabled() {
-			ipam.IPv6Allocator = manager.Allocator(IPv6)
+			ipam.ipv6Allocator = v6Allocator
 		}
 		if ipam.config.IPv4Enabled() {
-			ipam.IPv4Allocator = manager.Allocator(IPv4)
+			ipam.ipv4Allocator = v4Allocator
 		}
-	case ipamOption.IPAMCRD, ipamOption.IPAMENI, ipamOption.IPAMAzure, ipamOption.IPAMAlibabaCloud:
-		log.Info("Initializing CRD-based IPAM")
+	case ipamOption.IPAMENI:
+		ipam.logger.Info("Initializing ENI multi-pool IPAM")
+		startENIDeviceConfigurator(ipam.logger, ipam.jg, ipam.nodeResource, ipam.mtuConfig, ipam.sysctl)
+		v4Allocator, v6Allocator := newENIMultiPoolAllocators(ENIMultiPoolAllocatorParams{
+			Logger:               ipam.logger,
+			IPv4Enabled:          ipam.config.IPv4Enabled(),
+			IPv6Enabled:          ipam.config.IPv6Enabled(),
+			CiliumNodeUpdateRate: ipam.config.IPAMCiliumNodeUpdateRate,
+			Node:                 ipam.nodeResource,
+			LocalNodeStore:       ipam.localNodeStore,
+			CNClient:             ipam.clientset.CiliumV2().CiliumNodes(),
+			JobGroup:             ipam.jg,
+			Conf:                 ipam.config,
+			IPMasqAgent:          ipam.ipMasqAgent,
+		})
 		if ipam.config.IPv6Enabled() {
-			ipam.IPv6Allocator = newCRDAllocator(IPv6, ipam.config, ipam.nodeDiscovery, ipam.localNodeStore, ipam.clientset, ipam.k8sEventReg, ipam.mtuConfig)
+			ipam.ipv6Allocator = v6Allocator
+		}
+		if ipam.config.IPv4Enabled() {
+			ipam.ipv4Allocator = v4Allocator
+		}
+	case ipamOption.IPAMCRD, ipamOption.IPAMAzure, ipamOption.IPAMAlibabaCloud:
+		ipam.logger.Info("Initializing CRD-based IPAM")
+		if ipam.config.IPv6Enabled() {
+			ipam.ipv6Allocator = newCRDAllocator(ipam.logger, IPv6, ipam.config, ipam.nodeDiscovery, ipam.localNodeStore, ipam.clientset, ipam.k8sEventReg, ipam.mtuConfig, ipam.sysctl, ipam.ipMasqAgent)
 		}
 
 		if ipam.config.IPv4Enabled() {
-			ipam.IPv4Allocator = newCRDAllocator(IPv4, ipam.config, ipam.nodeDiscovery, ipam.localNodeStore, ipam.clientset, ipam.k8sEventReg, ipam.mtuConfig)
+			ipam.ipv4Allocator = newCRDAllocator(ipam.logger, IPv4, ipam.config, ipam.nodeDiscovery, ipam.localNodeStore, ipam.clientset, ipam.k8sEventReg, ipam.mtuConfig, ipam.sysctl, ipam.ipMasqAgent)
 		}
 	case ipamOption.IPAMDelegatedPlugin:
-		log.Info("Initializing no-op IPAM since we're using a CNI delegated plugin")
+		ipam.logger.Info("Initializing no-op IPAM since we're using a CNI delegated plugin")
 		if ipam.config.IPv6Enabled() {
-			ipam.IPv6Allocator = &noOpAllocator{}
+			ipam.ipv6Allocator = &noOpAllocator{}
 		}
 		if ipam.config.IPv4Enabled() {
-			ipam.IPv4Allocator = &noOpAllocator{}
+			ipam.ipv4Allocator = &noOpAllocator{}
 		}
 	default:
-		log.Fatalf("Unknown IPAM backend %s", ipam.config.IPAMMode())
+		logging.Fatal(ipam.logger, fmt.Sprintf("Unknown IPAM backend %s", ipam.config.IPAMMode()))
 	}
 }
 
@@ -145,7 +221,7 @@ func (ipam *IPAM) getIPOwner(ip string, pool Pool) string {
 }
 
 // registerIPOwner registers a new owner for an IP in a particular pool.
-func (ipam *IPAM) registerIPOwner(ip net.IP, owner string, pool Pool) {
+func (ipam *IPAM) registerIPOwner(ip netip.Addr, owner string, pool Pool) {
 	if _, ok := ipam.owner[pool]; !ok {
 		ipam.owner[pool] = make(map[string]string)
 	}
@@ -153,7 +229,7 @@ func (ipam *IPAM) registerIPOwner(ip net.IP, owner string, pool Pool) {
 }
 
 // releaseIPOwner releases ip from pool and returns the previous owner.
-func (ipam *IPAM) releaseIPOwner(ip net.IP, pool Pool) string {
+func (ipam *IPAM) releaseIPOwner(ip netip.Addr, pool Pool) string {
 	var owner string
 	if m, ok := ipam.owner[pool]; ok {
 		ipStr := ip.String()
@@ -169,14 +245,14 @@ func (ipam *IPAM) releaseIPOwner(ip net.IP, pool Pool) string {
 // ExcludeIP ensures that a certain IP is never allocated. It is preferred to
 // use this method instead of allocating the IP as the allocation block can
 // change and suddenly cover the IP to be excluded.
-func (ipam *IPAM) ExcludeIP(ip net.IP, owner string, pool Pool) {
+func (ipam *IPAM) ExcludeIP(ip netip.Addr, owner string, pool Pool) {
 	ipam.allocatorMutex.Lock()
 	ipam.excludedIPs[pool.String()+":"+ip.String()] = owner
 	ipam.allocatorMutex.Unlock()
 }
 
 // isIPExcluded is used to check if a particular IP is excluded from being allocated.
-func (ipam *IPAM) isIPExcluded(ip net.IP, pool Pool) (string, bool) {
+func (ipam *IPAM) isIPExcluded(ip netip.Addr, pool Pool) (string, bool) {
 	owner, ok := ipam.excludedIPs[pool.String()+":"+ip.String()]
 	return owner, ok
 }

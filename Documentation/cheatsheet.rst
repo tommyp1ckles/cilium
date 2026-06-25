@@ -107,7 +107,6 @@ Check the status of the agent
 
     $ cilium-dbg status
     KVStore:                Ok         Etcd: 172.17.0.3:4001
-    ContainerRuntime:       Ok
     Kubernetes:             Disabled
     Cilium:                 Ok         OK
     NodeMonitor:            Listening for events on 2 CPUs with 64x4096 of shared memory
@@ -123,7 +122,6 @@ Get a detailed status of the agent:
 
     $ cilium-dbg status --all-controllers --all-health --all-redirects
     KVStore:                Ok         Etcd: 172.17.0.3:4001
-    ContainerRuntime:       Ok
     Kubernetes:             Disabled
     Cilium:                 Ok         OK
     NodeMonitor:            Listening for events on 2 CPUs with 64x4096 of shared memory
@@ -148,29 +146,11 @@ Get the current agent configuration
 
     cilium-dbg config
 
-Policy management
------------------
-
-
-Importing a Cilium Network Policy
-
-.. code-block:: shell-session
-
-    cilium-dbg policy import my-policy.json
-
-
 Get list of all imported policy rules
 
 .. code-block:: shell-session
 
     cilium-dbg policy get
-
-Remove all policies
-
-.. code-block:: shell-session
-
-    cilium-dbg policy delete --all
-
 
 Monitoring
 ~~~~~~~~~~~
@@ -283,22 +263,8 @@ Or you can get the loadbalancer information using bpf list
     cilium-dbg bpf lb list
 
 
-Add a new loadbalancer
-
-.. code-block:: shell-session
-
-    cilium-dbg service update --frontend 127.0.0.1:80 \
-        --backends 127.0.0.2:90,127.0.0.3:90 \
-        --id 20
-
 eBPF
 ----
-
-List node tunneling mapping information
-
-.. code-block:: shell-session
-
-    cilium-dbg bpf tunnel list
 
 Checking logs for verifier issue
 
@@ -310,7 +276,7 @@ List connection tracking entries:
 
 .. code-block:: shell-session
 
-    sudo cilium-dbg bpf ct list global
+    sudo cilium-dbg bpf ct list
 
 Flush connection tracking entries:
 
@@ -381,4 +347,3 @@ resource can be used.
     5766=ingress
     51796=none
     40355=none
-

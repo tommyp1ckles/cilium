@@ -4,20 +4,26 @@
 package envoy
 
 import (
-	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
-	"github.com/cilium/cilium/pkg/time"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 )
+
+type envoyVersionChecker struct {
+	logger        *slog.Logger
+	externalEnvoy bool
+	adminClient   *EnvoyAdminClient
+}
 
 // requiredEnvoyVersionSHA is set during build
 // Running Envoy version will be checked against `requiredEnvoyVersionSHA`.
 // By default, cilium-agent will fail to start if there is a version mismatch.
 var requiredEnvoyVersionSHA string
 
-func checkEnvoyVersion(envoyVersionFunc func() (string, error)) error {
-	envoyVersion, err := envoyVersionFunc()
+func (r *envoyVersionChecker) checkEnvoyVersion() error {
+	envoyVersion, err := r.getEnvoyVersion()
 	if err != nil {
 		return fmt.Errorf("failed to retrieve Envoy version: %w", err)
 	}
@@ -27,29 +33,26 @@ func checkEnvoyVersion(envoyVersionFunc func() (string, error)) error {
 		return fmt.Errorf("envoy version %s does not match with required version %s", envoyVersion, requiredEnvoyVersionSHA)
 	}
 
-	log.Debugf("Envoy: Envoy version %s is matching required version %s", envoyVersion, requiredEnvoyVersionSHA)
+	r.logger.Debug("Envoy: Envoy version is matching required version",
+		logfields.Version, envoyVersion,
+		logfields.Expected, requiredEnvoyVersionSHA,
+	)
 
 	return nil
 }
 
-func getRemoteEnvoyVersion(envoyAdminClient *EnvoyAdminClient) (string, error) {
-	const versionRetryAttempts = 20
-	const versionRetryWait = 500 * time.Millisecond
-
-	// Retry is necessary because Envoy might not be ready yet
-	for i := 0; i <= versionRetryAttempts; i++ {
-		envoyVersion, err := envoyAdminClient.GetEnvoyVersion()
-		if err != nil {
-			if i < versionRetryAttempts {
-				log.Info("Envoy: Unable to retrieve Envoy version - retry")
-				time.Sleep(versionRetryWait)
-				continue
-			}
-			return "", fmt.Errorf("failed to retrieve Envoy version: %w", err)
-		}
-
-		return envoyVersion, nil
+func (r *envoyVersionChecker) getEnvoyVersion() (string, error) {
+	if r.externalEnvoy {
+		return r.getRemoteEnvoyVersion()
+	} else {
+		return getStandaloneEnvoyVersion()
 	}
+}
 
-	return "", errors.New("failed to retrieve Envoy version")
+func (r *envoyVersionChecker) getRemoteEnvoyVersion() (string, error) {
+	envoyVersion, err := r.adminClient.GetEnvoyVersion()
+	if err != nil {
+		return "", fmt.Errorf("failed to retrieve Envoy version: %w", err)
+	}
+	return envoyVersion, nil
 }

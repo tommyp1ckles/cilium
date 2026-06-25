@@ -18,11 +18,11 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
+	"go.yaml.in/yaml/v3"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	"gopkg.in/yaml.v3"
 
 	flowpb "github.com/cilium/cilium/api/v1/flow"
 	observerpb "github.com/cilium/cilium/api/v1/observer"
@@ -33,6 +33,7 @@ import (
 	"github.com/cilium/cilium/hubble/pkg/logger"
 	hubprinter "github.com/cilium/cilium/hubble/pkg/printer"
 	hubtime "github.com/cilium/cilium/hubble/pkg/time"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	monitorAPI "github.com/cilium/cilium/pkg/monitor/api"
 )
 
@@ -44,10 +45,11 @@ var protocols = []string{
 	"sctp",
 	"tcp",
 	"udp",
+	"vrrp",
+	"igmp",
 	// L7
 	"dns",
 	"http",
-	"kafka",
 }
 
 var verdicts = []string{
@@ -61,9 +63,8 @@ var verdicts = []string{
 }
 
 // flowEventTypes are the valid event types supported by observe. This corresponds
-// to monitorAPI.MessageTypeNames, excluding MessageTypeNameAgent,
-// MessageTypeNameDebug and MessageTypeNameRecCapture. These excluded message
-// types are not supported by `hubble observe flows` but have separate
+// to monitorAPI.MessageTypeNames, excluding MessageTypeNameAgent and MessageTypeNameDebug.
+// These excluded message types are not supported by `hubble observe flows` but have separate
 // sub-commands.
 var flowEventTypes = []string{
 	monitorAPI.MessageTypeNameCapture,
@@ -85,12 +86,14 @@ var flowEventTypeSubtypes = map[string][]string{
 		monitorAPI.TraceObservationPoints[monitorAPI.TraceFromOverlay],
 		monitorAPI.TraceObservationPoints[monitorAPI.TraceFromProxy],
 		monitorAPI.TraceObservationPoints[monitorAPI.TraceFromStack],
+		monitorAPI.TraceObservationPoints[monitorAPI.TraceFromCrypto],
 		monitorAPI.TraceObservationPoints[monitorAPI.TraceToLxc],
 		monitorAPI.TraceObservationPoints[monitorAPI.TraceToHost],
 		monitorAPI.TraceObservationPoints[monitorAPI.TraceToNetwork],
 		monitorAPI.TraceObservationPoints[monitorAPI.TraceToOverlay],
 		monitorAPI.TraceObservationPoints[monitorAPI.TraceToProxy],
 		monitorAPI.TraceObservationPoints[monitorAPI.TraceToStack],
+		monitorAPI.TraceObservationPoints[monitorAPI.TraceToCrypto],
 	},
 	monitorAPI.MessageTypeNameL7:            nil,
 	monitorAPI.MessageTypeNamePolicyVerdict: nil,
@@ -141,6 +144,9 @@ func getFlowFiltersYAML(req *observerpb.GetFlowsRequest) (string, error) {
 // GetHubbleClientFunc is primarily used to mock out the hubble client in some unit tests.
 var GetHubbleClientFunc = func(ctx context.Context, vp *viper.Viper) (client observerpb.ObserverClient, cleanup func() error, err error) {
 	if otherOpts.inputFile != "" {
+		if vp.GetBool(config.KeyPortForward) {
+			return nil, nil, fmt.Errorf("cannot use --input-file and --auto-port-forward together")
+		}
 		var f *os.File
 		if otherOpts.inputFile == "-" {
 			// read flows from stdin
@@ -155,15 +161,15 @@ var GetHubbleClientFunc = func(ctx context.Context, vp *viper.Viper) (client obs
 			}
 			cleanup = f.Close
 		}
-		client = NewIOReaderObserver(f)
+		client = NewIOReaderObserver(logger.Logger, f)
 		return client, cleanup, nil
 	}
 	// read flows from a hubble server
-	hubbleConn, err := conn.New(ctx, vp.GetString(config.KeyServer), vp.GetDuration(config.KeyTimeout))
+	hubbleConn, err := conn.NewWithFlags(ctx, vp)
 	if err != nil {
 		return nil, nil, err
 	}
-	logger.Logger.Debug("connected to Hubble API", "server", config.KeyServer)
+	logger.Logger.Debug("connected to Hubble API", logfields.Server, config.KeyServer)
 	cleanup = hubbleConn.Close
 	client = observerpb.NewObserverClient(hubbleConn)
 	return client, cleanup, nil
@@ -325,7 +331,7 @@ func newFlowsCmdHelper(usage cmdUsage, vp *viper.Viper, ofilter *flowFilter) *co
 			}
 			defer cleanup()
 
-			logger.Logger.Debug("Sending GetFlows request", "request", req)
+			logger.Logger.Debug("Sending GetFlows request", logfields.Request, req)
 			if err := getFlows(ctx, client, req); err != nil {
 				msg := err.Error()
 				// extract custom error message from failed grpc call
@@ -352,8 +358,14 @@ func newFlowsCmdHelper(usage cmdUsage, vp *viper.Viper, ofilter *flowFilter) *co
 		"node-label", ofilter,
 		`Show only flows observed on nodes matching the given label filter (e.g. "key1=value1", "io.cilium/egress-gateway")`))
 	filterFlags.Var(filterVar(
+		"from-cluster", ofilter,
+		"Show all flows originating from endpoints known to be in the given cluster name"))
+	filterFlags.Var(filterVar(
 		"cluster", ofilter,
 		`Show all flows which match the cluster names (e.g. "test-cluster", "prod-*")`))
+	filterFlags.Var(filterVar(
+		"to-cluster", ofilter,
+		"Show all flows destined to endpoints known to be in the given cluster name"))
 	filterFlags.Var(filterVar(
 		"protocol", ofilter,
 		`Show only flows which match the given L4/L7 flow protocol (e.g. "udp", "http")`))
@@ -408,6 +420,10 @@ func newFlowsCmdHelper(usage cmdUsage, vp *viper.Viper, ofilter *flowFilter) *co
 	filterFlags.Var(filterVar(
 		"trace-id", ofilter,
 		"Show only flows which match this trace ID"))
+
+	filterFlags.Var(filterVar(
+		"ip-trace-id", ofilter,
+		"Show only flows which match this IP trace ID"))
 
 	filterFlags.Var(filterVar(
 		"from-fqdn", ofilter,
@@ -535,6 +551,18 @@ func newFlowsCmdHelper(usage cmdUsage, vp *viper.Viper, ofilter *flowFilter) *co
 	filterFlags.Var(filterVar(
 		"interface", ofilter,
 		"Show all flows observed at the given interface name (e.g. eth0)"))
+	filterFlags.Var(filterVar(
+		"encrypted", ofilter,
+		"Show only encrypted flows (WireGuard/IPsec)"))
+	filterFlags.Var(filterVar(
+		"unencrypted", ofilter,
+		"Show only unencrypted flows"))
+	filterFlags.Var(filterVar(
+		"reply", ofilter,
+		"Show only reply flows"))
+	filterFlags.Var(filterVar(
+		"not-reply", ofilter,
+		"Show only non-reply flows"))
 
 	rawFilterFlags.StringArray(allowlistFlag, []string{}, "Specify allowlist as JSON encoded FlowFilters")
 	rawFilterFlags.StringArray(denylistFlag, []string{}, "Specify denylist as JSON encoded FlowFilters")
@@ -640,6 +668,10 @@ func newFlowsCmdHelper(usage cmdUsage, vp *viper.Viper, ofilter *flowFilter) *co
 	}
 	// default value for when the flag is on the command line without any options
 	flowsCmd.Flags().Lookup("not").NoOptDefVal = "true"
+	flowsCmd.Flags().Lookup("encrypted").NoOptDefVal = "true"
+	flowsCmd.Flags().Lookup("unencrypted").NoOptDefVal = "true"
+	flowsCmd.Flags().Lookup("reply").NoOptDefVal = "true"
+	flowsCmd.Flags().Lookup("not-reply").NoOptDefVal = "true"
 	template.RegisterFlagSets(flowsCmd, flagSets...)
 	return flowsCmd
 }
@@ -680,11 +712,11 @@ func handleFlowArgs(writer io.Writer, ofilter *flowFilter, debug bool) (err erro
 		return fmt.Errorf("invalid output format: %s", formattingOpts.output)
 	}
 	if !jsonOut {
-		if len(experimentalOpts.fieldMask) > 0 {
+		if len(maskOpts.fieldMask) > 0 {
 			return fmt.Errorf("%s output format is not compatible with custom field mask", formattingOpts.output)
 		}
-		if experimentalOpts.useDefaultMasks {
-			experimentalOpts.fieldMask = defaults.FieldMask
+		if maskOpts.useDefaultMasks {
+			maskOpts.fieldMask = defaults.FieldMask
 		}
 	}
 
@@ -702,6 +734,9 @@ func handleFlowArgs(writer io.Writer, ofilter *flowFilter, debug bool) (err erro
 	}
 	if formattingOpts.nodeName {
 		opts = append(opts, hubprinter.WithNodeName())
+	}
+	if formattingOpts.policyNames {
+		opts = append(opts, hubprinter.WithPolicyNames())
 	}
 	printer = hubprinter.New(opts...)
 	return nil
@@ -819,14 +854,12 @@ func getFlowsRequest(ofilter *flowFilter, allowlist []string, denylist []string)
 		First:     first,
 	}
 
-	if len(experimentalOpts.fieldMask) > 0 {
-		fm, err := fieldmaskpb.New(&flowpb.Flow{}, experimentalOpts.fieldMask...)
+	if len(maskOpts.fieldMask) > 0 {
+		fm, err := fieldmaskpb.New(&flowpb.Flow{}, maskOpts.fieldMask...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to construct field mask: %w", err)
 		}
-		req.Experimental = &observerpb.GetFlowsRequest_Experimental{
-			FieldMask: fm,
-		}
+		req.FieldMask = fm
 	}
 
 	return req, nil

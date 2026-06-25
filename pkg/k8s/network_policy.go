@@ -5,17 +5,21 @@ package k8s
 
 import (
 	"fmt"
+	"log/slog"
+	"maps"
+	"slices"
 
 	"github.com/cilium/cilium/pkg/annotation"
+	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	k8sConst "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 	k8sCiliumUtils "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/utils"
 	slim_networkingv1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/networking/v1"
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	k8sUtils "github.com/cilium/cilium/pkg/k8s/utils"
 	"github.com/cilium/cilium/pkg/labels"
-	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/policy/api"
+	"github.com/cilium/cilium/pkg/policy/types"
 )
 
 const (
@@ -32,9 +36,9 @@ var (
 // GetPolicyLabelsv1 extracts the name of np. It uses the name  from the Cilium
 // annotation if present. If the policy's annotations do not contain
 // the Cilium annotation, the policy's name field is used instead.
-func GetPolicyLabelsv1(np *slim_networkingv1.NetworkPolicy) labels.LabelArray {
+func GetPolicyLabelsv1(logger *slog.Logger, np *slim_networkingv1.NetworkPolicy) labels.LabelArray {
 	if np == nil {
-		log.Warningf("unable to extract policy labels because provided NetworkPolicy is nil")
+		logger.Warn("unable to extract policy labels because provided NetworkPolicy is nil")
 		return nil
 	}
 
@@ -53,99 +57,119 @@ func GetPolicyLabelsv1(np *slim_networkingv1.NetworkPolicy) labels.LabelArray {
 	return k8sCiliumUtils.GetPolicyLabels(ns, policyName, policyUID, resourceTypeNetworkPolicy)
 }
 
-func parseNetworkPolicyPeer(namespace string, peer *slim_networkingv1.NetworkPolicyPeer) *api.EndpointSelector {
+func isPodSelectorSelectingCluster(podSelector *slim_metav1.LabelSelector) bool {
+	if podSelector == nil {
+		return false
+	}
+	if podSelector.MatchLabels[k8sConst.PolicyLabelCluster] != "" {
+		return true
+	}
+	for _, expr := range podSelector.MatchExpressions {
+		if expr.Key == k8sConst.PolicyLabelCluster {
+			return true
+		}
+	}
+
+	return false
+}
+
+func processNamespaceSelector(ns *slim_metav1.LabelSelector) *slim_metav1.LabelSelector {
+	namespaceSelector := &slim_metav1.LabelSelector{
+		MatchLabels: make(map[string]string, len(ns.MatchLabels)),
+	}
+	// We use our own special label prefix for namespace metadata,
+	// thus we need to prefix that prefix to all NamespaceSelector.MatchLabels
+	for k, v := range ns.MatchLabels {
+		namespaceSelector.MatchLabels[policy.JoinPath(k8sConst.PodNamespaceMetaLabels, k)] = v
+	}
+
+	// We use our own special label prefix for namespace metadata,
+	// thus we need to prefix that prefix to all NamespaceSelector.MatchLabels
+	for _, matchExp := range ns.MatchExpressions {
+		lsr := slim_metav1.LabelSelectorRequirement{
+			Key:      policy.JoinPath(k8sConst.PodNamespaceMetaLabels, matchExp.Key),
+			Operator: matchExp.Operator,
+		}
+		if matchExp.Values != nil {
+			lsr.Values = make([]string, len(matchExp.Values))
+			copy(lsr.Values, matchExp.Values)
+		}
+		namespaceSelector.MatchExpressions =
+			append(namespaceSelector.MatchExpressions, lsr)
+	}
+
+	// Empty namespace selector selects all namespaces (i.e., a namespace
+	// label exists).
+	if len(namespaceSelector.MatchLabels) == 0 && len(namespaceSelector.MatchExpressions) == 0 {
+		namespaceSelector.MatchExpressions = []slim_metav1.LabelSelectorRequirement{allowAllNamespacesRequirement}
+	}
+
+	return namespaceSelector
+}
+
+func parseNetworkPolicyPeer(clusterName, namespace string, peer *slim_networkingv1.NetworkPolicyPeer) types.Selectors {
 	if peer == nil {
 		return nil
 	}
 
-	var retSel *api.EndpointSelector
-
-	if peer.NamespaceSelector != nil {
-		namespaceSelector := &slim_metav1.LabelSelector{
-			MatchLabels: make(map[string]string, len(peer.NamespaceSelector.MatchLabels)),
-		}
-		// We use our own special label prefix for namespace metadata,
-		// thus we need to prefix that prefix to all NamespaceSelector.MatchLabels
-		for k, v := range peer.NamespaceSelector.MatchLabels {
-			namespaceSelector.MatchLabels[policy.JoinPath(k8sConst.PodNamespaceMetaLabels, k)] = v
-		}
-
-		// We use our own special label prefix for namespace metadata,
-		// thus we need to prefix that prefix to all NamespaceSelector.MatchLabels
-		for _, matchExp := range peer.NamespaceSelector.MatchExpressions {
-			lsr := slim_metav1.LabelSelectorRequirement{
-				Key:      policy.JoinPath(k8sConst.PodNamespaceMetaLabels, matchExp.Key),
-				Operator: matchExp.Operator,
-			}
-			if matchExp.Values != nil {
-				lsr.Values = make([]string, len(matchExp.Values))
-				copy(lsr.Values, matchExp.Values)
-			}
-			namespaceSelector.MatchExpressions =
-				append(namespaceSelector.MatchExpressions, lsr)
-		}
-
-		// Empty namespace selector selects all namespaces (i.e., a namespace
-		// label exists).
-		if len(namespaceSelector.MatchLabels) == 0 && len(namespaceSelector.MatchExpressions) == 0 {
-			namespaceSelector.MatchExpressions = []slim_metav1.LabelSelectorRequirement{allowAllNamespacesRequirement}
-		}
-
-		selector := api.NewESFromK8sLabelSelector(labels.LabelSourceK8sKeyPrefix, namespaceSelector, peer.PodSelector)
-		retSel = &selector
-	} else if peer.PodSelector != nil {
-		podSelector := parsePodSelector(peer.PodSelector, namespace)
-		selector := api.NewESFromK8sLabelSelector(labels.LabelSourceK8sKeyPrefix, podSelector)
-		retSel = &selector
+	if peer.IPBlock != nil {
+		return types.ToSelectors(ipBlockToCIDRRule(peer.IPBlock))
 	}
 
-	return retSel
+	// peer should not be mutated in this function
+	podSelector := peer.PodSelector.DeepCopy()
+	if podSelector == nil {
+		podSelector = &slim_metav1.LabelSelector{}
+	}
+
+	// The PodSelector should only reflect to the configured cluster unless the selector
+	// explicitly targets another cluster already.
+	if clusterName != cmtypes.PolicyAnyCluster && !isPodSelectorSelectingCluster(podSelector) {
+		if podSelector.MatchLabels == nil {
+			podSelector.MatchLabels = map[string]slim_metav1.MatchLabelsValue{}
+		}
+		podSelector.MatchLabels[k8sConst.PolicyLabelCluster] = clusterName
+	}
+
+	if peer.NamespaceSelector != nil {
+		namespaceSelector := processNamespaceSelector(peer.NamespaceSelector)
+		es := api.NewESFromK8sLabelSelector(labels.LabelSourceK8sKeyPrefix, namespaceSelector, podSelector)
+		return types.Selectors{types.NewLabelSelector(es)}
+	}
+
+	podSelector = parsePodSelector(podSelector, namespace)
+	es := api.NewESFromK8sLabelSelector(labels.LabelSourceK8sKeyPrefix, podSelector)
+	return types.Selectors{types.NewLabelSelector(es)}
 }
 
 func hasV1PolicyType(pTypes []slim_networkingv1.PolicyType, typ slim_networkingv1.PolicyType) bool {
-	for _, pType := range pTypes {
-		if pType == typ {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(pTypes, typ)
 }
 
 // ParseNetworkPolicy parses a k8s NetworkPolicy. Returns a list of
 // Cilium policy rules that can be added, along with an error if there was an
 // error sanitizing the rules.
-func ParseNetworkPolicy(np *slim_networkingv1.NetworkPolicy) (api.Rules, error) {
-
+func ParseNetworkPolicy(logger *slog.Logger, clusterName string, np *slim_networkingv1.NetworkPolicy) (types.PolicyEntries, error) {
 	if np == nil {
 		return nil, fmt.Errorf("cannot parse NetworkPolicy because it is nil")
 	}
 
-	ingresses := []api.IngressRule{}
-	egresses := []api.EgressRule{}
+	ingresses := types.PolicyEntries{}
+	egresses := types.PolicyEntries{}
 
 	// Since we know that the object NetworkPolicy is namespace scoped we assign
 	// namespace to default namespace if the field is empty in the object.
 	namespace := k8sUtils.ExtractNamespaceOrDefault(&np.ObjectMeta)
 
 	for _, iRule := range np.Spec.Ingress {
-		fromRules := []api.IngressRule{}
+		fromRules := types.PolicyEntries{}
 		if len(iRule.From) > 0 {
 			for _, rule := range iRule.From {
-				ingress := api.IngressRule{}
-				endpointSelector := parseNetworkPolicyPeer(namespace, &rule)
-
-				if endpointSelector != nil {
-					ingress.FromEndpoints = append(ingress.FromEndpoints, *endpointSelector)
-				} else {
-					// No label-based selectors were in NetworkPolicyPeer.
-					log.WithField(logfields.K8sNetworkPolicyName, np.Name).Debug("NetworkPolicyPeer does not have PodSelector or NamespaceSelector")
+				ingress := &types.PolicyEntry{
+					Ingress: true,
+					Tier:    types.Normal,
+					L3:      parseNetworkPolicyPeer(clusterName, namespace, &rule),
 				}
-
-				// Parse CIDR-based parts of rule.
-				if rule.IPBlock != nil {
-					ingress.FromCIDRSet = append(ingress.FromCIDRSet, ipBlockToCIDRRule(rule.IPBlock))
-				}
-
 				fromRules = append(fromRules, ingress)
 			}
 		} else {
@@ -153,17 +177,22 @@ func ParseNetworkPolicy(np *slim_networkingv1.NetworkPolicy) (api.Rules, error) 
 			//   From []NetworkPolicyPeer
 			//   If this field is empty or missing, this rule matches all
 			//   sources (traffic not restricted by source).
-			ingress := api.IngressRule{}
-			ingress.FromEndpoints = append(ingress.FromEndpoints, api.WildcardEndpointSelector)
-
+			ingress := &types.PolicyEntry{
+				Ingress: true,
+				Tier:    types.Normal,
+				L3:      types.WildcardSelectors,
+			}
 			fromRules = append(fromRules, ingress)
 		}
 
 		// We apply the ports to all rules generated from the From section
 		if len(iRule.Ports) > 0 {
-			toPorts := parsePorts(iRule.Ports)
+			toPorts, err := parsePorts(iRule.Ports)
+			if err != nil {
+				return nil, err
+			}
 			for i := range fromRules {
-				fromRules[i].ToPorts = toPorts
+				fromRules[i].L4 = toPorts
 			}
 		}
 
@@ -171,24 +200,15 @@ func ParseNetworkPolicy(np *slim_networkingv1.NetworkPolicy) (api.Rules, error) 
 	}
 
 	for _, eRule := range np.Spec.Egress {
-		toRules := []api.EgressRule{}
+		toRules := types.PolicyEntries{}
 
 		if len(eRule.To) > 0 {
 			for _, rule := range eRule.To {
-				egress := api.EgressRule{}
-				if rule.NamespaceSelector != nil || rule.PodSelector != nil {
-					endpointSelector := parseNetworkPolicyPeer(namespace, &rule)
-
-					if endpointSelector != nil {
-						egress.ToEndpoints = append(egress.ToEndpoints, *endpointSelector)
-					} else {
-						log.WithField(logfields.K8sNetworkPolicyName, np.Name).Debug("NetworkPolicyPeer does not have PodSelector or NamespaceSelector")
-					}
+				egress := &types.PolicyEntry{
+					Ingress: false,
+					Tier:    types.Normal,
+					L3:      parseNetworkPolicyPeer(clusterName, namespace, &rule),
 				}
-				if rule.IPBlock != nil {
-					egress.ToCIDRSet = append(egress.ToCIDRSet, ipBlockToCIDRRule(rule.IPBlock))
-				}
-
 				toRules = append(toRules, egress)
 			}
 		} else {
@@ -196,17 +216,22 @@ func ParseNetworkPolicy(np *slim_networkingv1.NetworkPolicy) (api.Rules, error) 
 			//   To []NetworkPolicyPeer
 			//   If this field is empty or missing, this rule matches all
 			//   destinations (traffic not restricted by destination)
-			egress := api.EgressRule{}
-			egress.ToEndpoints = append(egress.ToEndpoints, api.WildcardEndpointSelector)
-
+			egress := &types.PolicyEntry{
+				Ingress: false,
+				Tier:    types.Normal,
+				L3:      types.WildcardSelectors,
+			}
 			toRules = append(toRules, egress)
 		}
 
 		// We apply the ports to all rules generated from the To section
 		if len(eRule.Ports) > 0 {
-			toPorts := parsePorts(eRule.Ports)
+			toPorts, err := parsePorts(eRule.Ports)
+			if err != nil {
+				return nil, err
+			}
 			for i := range toRules {
-				toRules[i].ToPorts = toPorts
+				toRules[i].L4 = toPorts
 			}
 		}
 
@@ -214,7 +239,7 @@ func ParseNetworkPolicy(np *slim_networkingv1.NetworkPolicy) (api.Rules, error) 
 	}
 
 	// Convert the k8s default-deny model to the Cilium default-deny model
-	//spec:
+	// spec:
 	//  podSelector: {}
 	//  policyTypes:
 	//	  - Ingress
@@ -223,41 +248,36 @@ func ParseNetworkPolicy(np *slim_networkingv1.NetworkPolicy) (api.Rules, error) 
 	if len(ingresses) == 0 &&
 		(hasV1PolicyType(np.Spec.PolicyTypes, slim_networkingv1.PolicyTypeIngress) ||
 			!hasV1PolicyType(np.Spec.PolicyTypes, slim_networkingv1.PolicyTypeEgress)) {
-		ingresses = []api.IngressRule{{}}
+		ingresses = types.PolicyEntries{{Ingress: true, Tier: types.Normal}}
 	}
 
 	// Convert the k8s default-deny model to the Cilium default-deny model
-	//spec:
+	// spec:
 	//  podSelector: {}
 	//  policyTypes:
 	//	  - Egress
 	if len(egresses) == 0 && hasV1PolicyType(np.Spec.PolicyTypes, slim_networkingv1.PolicyTypeEgress) {
-		egresses = []api.EgressRule{{}}
+		egresses = types.PolicyEntries{{Ingress: false, Tier: types.Normal}}
 	}
 
 	podSelector := parsePodSelector(&np.Spec.PodSelector, namespace)
 
-	// The next patch will pass the UID.
-	rule := api.NewRule().
-		WithEndpointSelector(api.NewESFromK8sLabelSelector(labels.LabelSourceK8sKeyPrefix, podSelector)).
-		WithLabels(GetPolicyLabelsv1(np)).
-		WithIngressRules(ingresses).
-		WithEgressRules(egresses)
-
-	if err := rule.Sanitize(); err != nil {
-		return nil, err
+	rules := append(ingresses, egresses...)
+	for _, r := range rules {
+		r.Verdict = types.Allow // all k8s Network Policies are allow rules
+		r.DefaultDeny = true
+		r.Subject = types.NewLabelSelector(api.NewESFromK8sLabelSelector(labels.LabelSourceK8sKeyPrefix, podSelector))
+		r.Labels = GetPolicyLabelsv1(logger, np)
 	}
 
-	return api.Rules{rule}, nil
+	return rules, nil
 }
 
 func parsePodSelector(podSelectorIn *slim_metav1.LabelSelector, namespace string) *slim_metav1.LabelSelector {
 	podSelector := &slim_metav1.LabelSelector{
 		MatchLabels: make(map[string]slim_metav1.MatchLabelsValue, len(podSelectorIn.MatchLabels)),
 	}
-	for k, v := range podSelectorIn.MatchLabels {
-		podSelector.MatchLabels[k] = v
-	}
+	maps.Copy(podSelector.MatchLabels, podSelectorIn.MatchLabels)
 	// The PodSelector should only reflect to the same namespace
 	// the policy is being stored, thus we add the namespace to
 	// the MatchLabels map.
@@ -288,12 +308,16 @@ func ipBlockToCIDRRule(block *slim_networkingv1.IPBlock) api.CIDRRule {
 }
 
 // parsePorts converts list of K8s NetworkPolicyPorts to Cilium PortRules.
-func parsePorts(ports []slim_networkingv1.NetworkPolicyPort) []api.PortRule {
+func parsePorts(ports []slim_networkingv1.NetworkPolicyPort) ([]api.PortRule, error) {
 	portRules := []api.PortRule{}
 	for _, port := range ports {
 		protocol := api.ProtoTCP
 		if port.Protocol != nil {
-			protocol, _ = api.ParseL4Proto(string(*port.Protocol))
+			var err error
+			protocol, err = api.ParseL4Proto(string(*port.Protocol))
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		portStr := "0"
@@ -314,5 +338,5 @@ func parsePorts(ports []slim_networkingv1.NetworkPolicyPort) []api.PortRule {
 		portRules = append(portRules, portRule)
 	}
 
-	return portRules
+	return portRules, nil
 }

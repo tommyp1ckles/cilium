@@ -11,7 +11,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/cache"
 
-	operatorOption "github.com/cilium/cilium/operator/option"
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
 	"github.com/cilium/cilium/pkg/k8s/informer"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
@@ -32,30 +31,28 @@ var (
 	UnmanagedPodStore cache.Store
 )
 
-func UnmanagedPodsInit(ctx context.Context, wg *sync.WaitGroup, clientset k8sClient.Clientset) {
+func UnmanagedPodsInit(ctx context.Context, wg *sync.WaitGroup, clientset k8sClient.Clientset, podRestartSelector string) {
 	var unmanagedPodInformer cache.Controller
 	UnmanagedPodStore, unmanagedPodInformer = informer.NewInformer(
 		k8sUtils.ListerWatcherWithModifier(
 			k8sUtils.ListerWatcherFromTyped[*slim_corev1.PodList](clientset.Slim().CoreV1().Pods("")),
 			func(options *metav1.ListOptions) {
 				options.FieldSelector = "status.phase=Running"
-				options.LabelSelector = operatorOption.Config.PodRestartSelector
+				options.LabelSelector = podRestartSelector
 			}),
 		&slim_corev1.Pod{},
 		0,
 		cache.ResourceEventHandlerFuncs{},
 		TransformToUnmanagedPod,
 	)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		unmanagedPodInformer.Run(ctx.Done())
-	}()
+	})
 
 	cache.WaitForCacheSync(ctx.Done(), unmanagedPodInformer.HasSynced)
 }
 
-func TransformToUnmanagedPod(obj interface{}) (interface{}, error) {
+func TransformToUnmanagedPod(obj any) (any, error) {
 	switch concreteObj := obj.(type) {
 	case *slim_corev1.Pod:
 		p := &slim_corev1.Pod{

@@ -4,15 +4,18 @@
 package linux
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 
 	"k8s.io/apimachinery/pkg/util/sets"
 
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/idpool"
+	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/maps/nodemap"
 	"github.com/cilium/cilium/pkg/node"
@@ -31,7 +34,12 @@ func (n *linuxNodeHandler) GetNodeIP(nodeID uint16) string {
 	// Check for local node ID explicitly as local node IPs are not in our maps!
 	if nodeID == 0 {
 		// Returns local node's IPv4 address if available, IPv6 address otherwise.
-		return node.GetCiliumEndpointNodeIP()
+		ln, err := n.localNodeStore.Get(context.Background())
+		if err != nil {
+			logging.Fatal(n.log, "failed to retrieve local node")
+		}
+
+		return node.GetCiliumEndpointNodeIP(ln)
 	}
 
 	// Otherwise, return one of the IPs matching the given ID.
@@ -50,9 +58,12 @@ func (n *linuxNodeHandler) GetNodeID(nodeIP net.IP) (uint16, bool) {
 }
 
 func (n *linuxNodeHandler) getNodeIDForIP(nodeIP net.IP) (uint16, bool) {
-	localNodeV4 := node.GetIPv4()
-	localNodeV6 := node.GetIPv6()
-	if localNodeV4.Equal(nodeIP) || localNodeV6.Equal(nodeIP) {
+	ln, err := n.localNodeStore.Get(context.Background())
+	if err != nil {
+		logging.Fatal(n.log, "failed to retrieve local node")
+	}
+
+	if ln.GetNodeIP(false).Equal(nodeIP) || ln.GetNodeIP(true).Equal(nodeIP) {
 		return 0, true
 	}
 
@@ -88,7 +99,7 @@ func (n *linuxNodeHandler) allocateIDForNode(oldNode *nodeTypes.Node, node *node
 	// Perform an SPI refresh opportunistically.
 	// This avoids the scenario where the agent may have been down and didn't
 	// catch a NodeDelete event, leaving a stale IP address in the map.
-	var SPIChanged bool = true
+	var SPIChanged = true
 	if oldNode != nil {
 		SPIChanged = (oldNode.EncryptionKey != node.EncryptionKey)
 	}
@@ -124,7 +135,10 @@ func (n *linuxNodeHandler) allocateIDForNode(oldNode *nodeTypes.Node, node *node
 			// allocate a fresh ID, unmap the IPs of this node, and try again.
 			for _, addr := range node.IPAddresses {
 				if err := n.unmapNodeID(addr.IP.String()); err != nil {
-					n.log.Error("Failed to unmap stale nodeID mapping", logfields.IPAddr, ip, logfields.Error, err)
+					n.log.Error("Failed to unmap stale nodeID mapping",
+						logfields.IPAddr, ip,
+						logfields.Error, err,
+					)
 				}
 			}
 
@@ -138,7 +152,7 @@ func (n *linuxNodeHandler) allocateIDForNode(oldNode *nodeTypes.Node, node *node
 				logfields.SPI, node.EncryptionKey,
 			)
 			errs = errors.Join(errs,
-				fmt.Errorf("failed to map IP %q with node ID %q: %w", nodeID, nodeID, err))
+				fmt.Errorf("failed to map IP %s with node ID %d: %w", ip, nodeID, err))
 		}
 	}
 	return nodeID, errs
@@ -156,7 +170,8 @@ func (n *linuxNodeHandler) deallocateIDForNode(oldNode *nodeTypes.Node) error {
 		id := n.nodeIDsByIPs[addr.IP.String()]
 		if nodeID != id {
 			n.log.Error("Found two node IDs for the same node",
-				"first", id, "second", nodeID,
+				logfields.First, id,
+				logfields.Second, nodeID,
 				logfields.NodeName, oldNode.Name,
 				logfields.IPAddr, addr.IP,
 			)
@@ -202,9 +217,9 @@ func (n *linuxNodeHandler) deallocateNodeIDLocked(nodeID uint16, nodeIPs map[str
 // Node Manager and in the corresponding BPF map. If any of those map updates
 // fail, both are cancelled and the function returns an error.
 func (n *linuxNodeHandler) mapNodeID(ip string, id uint16, SPI uint8) error {
-	nodeIP := net.ParseIP(ip)
-	if nodeIP == nil {
-		return fmt.Errorf("invalid node IP %s", ip)
+	nodeIP, err := netip.ParseAddr(ip)
+	if err != nil {
+		return fmt.Errorf("invalid node IP %s: %w", ip, err)
 	}
 
 	if err := n.nodeMap.Update(nodeIP, id, SPI); err != nil {
@@ -227,9 +242,9 @@ func (n *linuxNodeHandler) unmapNodeID(ip string) error {
 	if _, exists := n.nodeIDsByIPs[ip]; !exists {
 		return fmt.Errorf("cannot remove IP %s from node ID map as it doesn't exist", ip)
 	}
-	nodeIP := net.ParseIP(ip)
-	if nodeIP == nil {
-		return fmt.Errorf("invalid node IP %s", ip)
+	nodeIP, err := netip.ParseAddr(ip)
+	if err != nil {
+		return fmt.Errorf("invalid node IP %s: %w", ip, err)
 	}
 
 	if err := n.nodeMap.Delete(nodeIP); err != nil {

@@ -4,17 +4,14 @@
 package cmd
 
 import (
-	"fmt"
 	"os"
-	"regexp"
-	"slices"
 	"strings"
-	"text/tabwriter"
 
+	"github.com/cilium/hive/shell"
 	"github.com/spf13/cobra"
 
-	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/command"
+	"github.com/cilium/cilium/pkg/hive"
 )
 
 var matchPattern string
@@ -23,51 +20,16 @@ var matchPattern string
 var MetricsListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all metrics",
-	Run: func(cmd *cobra.Command, args []string) {
-		res, err := client.Metrics.GetMetrics(nil)
-		if err != nil {
-			Fatalf("Cannot get metrics list: %s", err)
-		}
-
-		re, err := regexp.Compile(matchPattern)
-		if err != nil {
-			Fatalf("Cannot compile regex: %s", err)
-		}
-
-		metrics := make([]*models.Metric, 0, len(res.Payload))
-		for _, metric := range res.Payload {
-			if re.MatchString(metric.Name) {
-				metrics = append(metrics, metric)
-			}
-		}
-
+	RunE: func(cmd *cobra.Command, args []string) error {
+		format := "table"
 		if command.OutputOption() {
-			if err := command.PrintOutput(metrics); err != nil {
-				os.Exit(1)
-			}
-			return
+			format = strings.ToLower(command.OutputOptionString())
 		}
-
-		w := tabwriter.NewWriter(os.Stdout, 5, 0, 3, ' ', 0)
-
-		fmt.Fprintln(w, "Metric\tLabels\tValue")
-		for _, metric := range metrics {
-			label := ""
-			if len(metric.Labels) > 0 {
-				labelArray := []string{}
-				keys := make([]string, 0, len(metric.Labels))
-				for k := range metric.Labels {
-					keys = append(keys, k)
-				}
-				slices.Sort(keys)
-				for _, k := range keys {
-					labelArray = append(labelArray, fmt.Sprintf(`%s="%s"`, k, metric.Labels[k]))
-				}
-				label = strings.Join(labelArray, " ")
-			}
-			fmt.Fprintf(w, "%s\t%s\t%f\n", metric.Name, label, metric.Value)
+		cfg := hive.DefaultShellConfig
+		if err := cfg.Parse(cmd.Flags()); err != nil {
+			return err
 		}
-		w.Flush()
+		return shell.ShellExchange(cfg, os.Stdout, "metrics --format=%s '%s'", format, matchPattern)
 	},
 }
 
@@ -75,4 +37,5 @@ func init() {
 	MetricsCmd.AddCommand(MetricsListCmd)
 	MetricsListCmd.Flags().StringVarP(&matchPattern, "match-pattern", "p", "", "Show only metrics whose names match matchpattern")
 	command.AddOutputOption(MetricsListCmd)
+	hive.DefaultShellConfig.Flags(MetricsListCmd.Flags())
 }

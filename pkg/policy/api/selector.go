@@ -8,32 +8,36 @@ import (
 	"fmt"
 	"strings"
 
-	k8sLbls "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/labels"
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
-	validation "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1/validation"
 	"github.com/cilium/cilium/pkg/labels"
-	"github.com/cilium/cilium/pkg/logging"
-	"github.com/cilium/cilium/pkg/logging/logfields"
-	"github.com/cilium/cilium/pkg/metrics"
 )
-
-var log = logging.DefaultLogger.WithField(logfields.LogSubsys, "policy-api")
 
 // EndpointSelector is a wrapper for k8s LabelSelector.
 type EndpointSelector struct {
 	*slim_metav1.LabelSelector `json:",inline"`
-
-	// requirements provides a cache for a k8s-friendly format of the
-	// LabelSelector, which allows more efficient matching in Matches().
-	//
-	// Kept as a pointer to allow EndpointSelector to be used as a map key.
-	requirements *k8sLbls.Requirements `json:"-"`
 
 	// cachedLabelSelectorString is the cached representation of the
 	// LabelSelector for this EndpointSelector. It is populated when
 	// EndpointSelectors are created via `NewESFromMatchRequirements`. It is
 	// immutable after its creation.
 	cachedLabelSelectorString string `json:"-"`
+
+	// Generated indicates whether the rule was generated based on other rules
+	// or provided by user
+	Generated bool `json:"-"`
+}
+
+func (n EndpointSelector) SelectorKey() string {
+	// Use pre-computed string when available
+	if n.cachedLabelSelectorString != "" {
+		return n.cachedLabelSelectorString
+	}
+	return n.LabelSelector.String()
+}
+
+// Used for `omitzero` json tag.
+func (n *EndpointSelector) IsZero() bool {
+	return n.LabelSelector == nil
 }
 
 // LabelSelectorString returns a user-friendly string representation of
@@ -47,7 +51,7 @@ func (n *EndpointSelector) LabelSelectorString() string {
 
 // String returns a string representation of EndpointSelector.
 func (n EndpointSelector) String() string {
-	j, _ := n.MarshalJSON()
+	j, _ := json.Marshal(n.LabelSelector)
 	return string(j)
 }
 
@@ -60,54 +64,7 @@ func (n EndpointSelector) CachedString() string {
 // UnmarshalJSON unmarshals the endpoint selector from the byte array.
 func (n *EndpointSelector) UnmarshalJSON(b []byte) error {
 	n.LabelSelector = &slim_metav1.LabelSelector{}
-	err := json.Unmarshal(b, n.LabelSelector)
-	if err != nil {
-		return err
-	}
-	if n.MatchLabels != nil {
-		ml := map[string]string{}
-		for k, v := range n.MatchLabels {
-			ml[labels.GetExtendedKeyFrom(k)] = v
-		}
-		n.MatchLabels = ml
-	}
-	if n.MatchExpressions != nil {
-		newMatchExpr := make([]slim_metav1.LabelSelectorRequirement, len(n.MatchExpressions))
-		for i, v := range n.MatchExpressions {
-			v.Key = labels.GetExtendedKeyFrom(v.Key)
-			newMatchExpr[i] = v
-		}
-		n.MatchExpressions = newMatchExpr
-	}
-	n.requirements = labelSelectorToRequirements(n.LabelSelector)
-	n.cachedLabelSelectorString = n.LabelSelector.String()
-	return nil
-}
-
-// MarshalJSON returns a JSON representation of the byte array.
-func (n EndpointSelector) MarshalJSON() ([]byte, error) {
-	ls := slim_metav1.LabelSelector{}
-
-	if n.LabelSelector == nil {
-		return json.Marshal(ls)
-	}
-
-	if n.MatchLabels != nil {
-		newLabels := map[string]string{}
-		for k, v := range n.MatchLabels {
-			newLabels[labels.GetCiliumKeyFrom(k)] = v
-		}
-		ls.MatchLabels = newLabels
-	}
-	if n.MatchExpressions != nil {
-		newMatchExpr := make([]slim_metav1.LabelSelectorRequirement, len(n.MatchExpressions))
-		for i, v := range n.MatchExpressions {
-			v.Key = labels.GetCiliumKeyFrom(v.Key)
-			newMatchExpr[i] = v
-		}
-		ls.MatchExpressions = newMatchExpr
-	}
-	return json.Marshal(ls)
+	return json.Unmarshal(b, n.LabelSelector)
 }
 
 // HasKeyPrefix checks if the endpoint selector contains the given key prefix in
@@ -154,30 +111,6 @@ func (n EndpointSelector) GetMatch(key string) ([]string, bool) {
 	return nil, false
 }
 
-// labelSelectorToRequirements turns a kubernetes Selector into a slice of
-// requirements equivalent to the selector. These are cached internally in the
-// EndpointSelector to speed up Matches().
-//
-// This validates the labels, which can be expensive (and may fail..)
-// If there's an error, the selector will be nil and the Matches()
-// implementation will refuse to match any labels.
-func labelSelectorToRequirements(labelSelector *slim_metav1.LabelSelector) *k8sLbls.Requirements {
-	selector, err := slim_metav1.LabelSelectorAsSelector(labelSelector)
-	if err != nil {
-		metrics.PolicyChangeTotal.WithLabelValues(metrics.LabelValueOutcomeFail).Inc()
-		log.WithError(err).WithField(logfields.EndpointLabelSelector,
-			logfields.Repr(labelSelector)).Error("unable to construct selector in label selector")
-		return nil
-	}
-	metrics.PolicyChangeTotal.WithLabelValues(metrics.LabelValueOutcomeSuccess).Inc()
-
-	requirements, selectable := selector.Requirements()
-	if !selectable {
-		return nil
-	}
-	return &requirements
-}
-
 // NewESFromLabels creates a new endpoint selector from the given labels.
 func NewESFromLabels(lbls ...labels.Label) EndpointSelector {
 	ml := map[string]string{}
@@ -201,18 +134,8 @@ func NewESFromMatchRequirements(matchLabels map[string]string, reqs []slim_metav
 	}
 	return EndpointSelector{
 		LabelSelector:             labelSelector,
-		requirements:              labelSelectorToRequirements(labelSelector),
 		cachedLabelSelectorString: labelSelector.String(),
 	}
-}
-
-// SyncRequirementsWithLabelSelector ensures that the requirements within the
-// specified EndpointSelector are in sync with the LabelSelector. This is
-// because the LabelSelector has publicly accessible fields, which can be
-// updated without concurrently updating the requirements, so the two fields can
-// become out of sync.
-func (n *EndpointSelector) SyncRequirementsWithLabelSelector() {
-	n.requirements = labelSelectorToRequirements(n.LabelSelector)
 }
 
 // newReservedEndpointSelector returns a selector that matches on all
@@ -254,7 +177,7 @@ func NewESFromK8sLabelSelector(srcPrefix string, lss ...*slim_metav1.LabelSelect
 				matchLabels = map[string]string{}
 			}
 			for k, v := range ls.MatchLabels {
-				matchLabels[srcPrefix+k] = v
+				matchLabels[labels.NewSourceEncodedLabelKey(srcPrefix, k)] = v
 			}
 		}
 		if ls.MatchExpressions != nil {
@@ -262,7 +185,7 @@ func NewESFromK8sLabelSelector(srcPrefix string, lss ...*slim_metav1.LabelSelect
 				matchExpressions = make([]slim_metav1.LabelSelectorRequirement, 0, len(ls.MatchExpressions))
 			}
 			for _, v := range ls.MatchExpressions {
-				v.Key = srcPrefix + v.Key
+				v.Key = labels.NewSourceEncodedLabelKey(srcPrefix, v.Key)
 				matchExpressions = append(matchExpressions, v)
 			}
 		}
@@ -276,7 +199,6 @@ func (n *EndpointSelector) AddMatch(key, value string) {
 		n.MatchLabels = map[string]string{}
 	}
 	n.MatchLabels[key] = value
-	n.requirements = labelSelectorToRequirements(n.LabelSelector)
 	n.cachedLabelSelectorString = n.LabelSelector.String()
 }
 
@@ -287,33 +209,7 @@ func (n *EndpointSelector) AddMatchExpression(key string, op slim_metav1.LabelSe
 		Operator: op,
 		Values:   values,
 	})
-
-	// Update cache of the EndopintSelector from the embedded label selector.
-	// This is to make sure we have updates caches containing the required selectors.
-	n.requirements = labelSelectorToRequirements(n.LabelSelector)
 	n.cachedLabelSelectorString = n.LabelSelector.String()
-}
-
-// Matches returns true if the endpoint selector Matches the `lblsToMatch`.
-// Returns always true if the endpoint selector contains the reserved label for
-// "all".
-func (n *EndpointSelector) Matches(lblsToMatch k8sLbls.Labels) bool {
-	// Try to update cached requirements for this EndpointSelector if possible.
-	if n.requirements == nil {
-		n.requirements = labelSelectorToRequirements(n.LabelSelector)
-		// Nil indicates that requirements failed validation in some way,
-		// so we cannot parse the labels for matching purposes; thus, we cannot
-		// match if labels cannot be parsed, so return false.
-		if n.requirements == nil {
-			return false
-		}
-	}
-	for _, req := range *n.requirements {
-		if !req.Matches(lblsToMatch) {
-			return false
-		}
-	}
-	return true
 }
 
 // IsWildcard returns true if the endpoint selector selects all endpoints.
@@ -322,31 +218,16 @@ func (n *EndpointSelector) IsWildcard() bool {
 		len(n.LabelSelector.MatchLabels)+len(n.LabelSelector.MatchExpressions) == 0
 }
 
-// ConvertToLabelSelectorRequirementSlice converts the MatchLabels and
-// MatchExpressions within the specified EndpointSelector into a list of
-// LabelSelectorRequirements.
-func (n *EndpointSelector) ConvertToLabelSelectorRequirementSlice() []slim_metav1.LabelSelectorRequirement {
-	requirements := make([]slim_metav1.LabelSelectorRequirement, 0, len(n.MatchExpressions)+len(n.MatchLabels))
-	// Append already existing match expressions.
-	requirements = append(requirements, n.MatchExpressions...)
-	// Convert each MatchLables to LabelSelectorRequirement.
-	for key, value := range n.MatchLabels {
-		requirementFromMatchLabels := slim_metav1.LabelSelectorRequirement{
-			Key:      key,
-			Operator: slim_metav1.LabelSelectorOpIn,
-			Values:   []string{value},
-		}
-		requirements = append(requirements, requirementFromMatchLabels)
-	}
-	return requirements
-}
-
-// sanitize returns an error if the EndpointSelector's LabelSelector is invalid.
-func (n *EndpointSelector) sanitize() error {
-	errList := validation.ValidateLabelSelector(n.LabelSelector, validation.LabelSelectorValidationOptions{AllowInvalidLabelValueInSelector: false}, nil)
+func (n *EndpointSelector) Sanitize() error {
+	errList := labels.ValidateLabelSelector(n.LabelSelector, labels.LabelSelectorValidationOptions{AllowInvalidLabelValueInSelector: false}, nil)
 	if len(errList) > 0 {
 		return fmt.Errorf("invalid label selector: %w", errList.ToAggregate())
 	}
+
+	es := NewESFromK8sLabelSelector(labels.LabelSourceAnyKeyPrefix, n.LabelSelector)
+	n.cachedLabelSelectorString = es.cachedLabelSelectorString
+	n.LabelSelector = es.LabelSelector
+
 	return nil
 }
 
@@ -361,18 +242,6 @@ func (s EndpointSelectorSlice) Less(i, j int) bool {
 	strJ := s[j].LabelSelectorString()
 
 	return strings.Compare(strI, strJ) < 0
-}
-
-// Matches returns true if any of the EndpointSelectors in the slice match the
-// provided labels
-func (s EndpointSelectorSlice) Matches(ctx labels.LabelArray) bool {
-	for _, selector := range s {
-		if selector.Matches(ctx) {
-			return true
-		}
-	}
-
-	return false
 }
 
 // SelectsAllEndpoints returns whether the EndpointSelectorSlice selects all

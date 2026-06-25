@@ -22,7 +22,7 @@ default_pod_subnet=""
 default_service_subnet=""
 default_agent_port_prefix="234"
 default_operator_port_prefix="235"
-default_network="kind-cilium"
+default_network="${KIND_EXPERIMENTAL_DOCKER_NETWORK:-kind-cilium}"
 default_apiserver_addr="127.0.0.1"
 default_apiserver_port=0 # kind will randomly select
 default_kubeconfig=""
@@ -88,7 +88,7 @@ v4_prefix_secondary="192.168.0.0/16"
 v4_range_secondary="192.168.0.0/24"
 v6_prefix="fc00:c111::/64"
 v6_prefix_secondary="fc00:c112::/64"
-CILIUM_ROOT="$(git rev-parse --show-toplevel)"
+CILIUM_ROOT="$(realpath $(dirname ${BASH_SOURCE[0]:-$0})/../..)"
 
 have_kind() {
     [[ -n "$(command -v kind)" ]]
@@ -236,6 +236,19 @@ kubeadmConfigPatches:
     apiServer:
       extraArgs:
         "v": "3"
+    controllerManager:
+      extraArgs:
+        authorization-always-allow-paths: /healthz,/readyz,/livez,/metrics
+        bind-address: 0.0.0.0
+    scheduler:
+      extraArgs:
+        authorization-always-allow-paths: /healthz,/readyz,/livez,/metrics
+        bind-address: 0.0.0.0
+  - |
+    kind: InitConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        container-log-max-size: "10M"
 EOF
 
 if [ "${secondary_network_flag}" = true ]; then
@@ -253,9 +266,9 @@ if [ "${secondary_network_flag}" = true ]; then
 fi
 
 if [ "${xdp}" = true ]; then
-  if ! [ -f "${CILIUM_ROOT}/test/l4lb/bpf_xdp_veth_host.o" ]; then
-    pushd "${CILIUM_ROOT}/test/l4lb/" > /dev/null
-    clang -O2 -Wall --target=bpf -c bpf_xdp_veth_host.c -o bpf_xdp_veth_host.o
+  if ! [ -f "${CILIUM_ROOT}/test/bpf/xdp.o" ]; then
+    pushd "${CILIUM_ROOT}/test/bpf/" > /dev/null
+    clang -O2 -Wall --target=bpf -c xdp.c -o xdp.o
     popd > /dev/null
   fi
 
@@ -264,7 +277,7 @@ if [ "${xdp}" = true ]; then
 
     # Attach a dummy XDP prog to the host side of the veth so that XDP_TX in the
     # pod side works.
-    sudo ip link set dev "${ifc}" xdp obj "${CILIUM_ROOT}/test/l4lb/bpf_xdp_veth_host.o"
+    sudo ip link set dev "${ifc}" xdp obj "${CILIUM_ROOT}/test/bpf/xdp.o"
 
     # Disable TX and RX csum offloading, as veth does not support it. Otherwise,
     # the forwarded packets by the LB to the worker node will have invalid csums.
@@ -280,8 +293,8 @@ NewCoreFile=$(kubectl get cm -n kube-system coredns -o jsonpath='{.data.Corefile
 kubectl patch configmap/coredns -n kube-system --type merge -p '{"data":{"Corefile": "'"$NewCoreFile"'"}}'
 
 set +e
-kubectl taint nodes --all node-role.kubernetes.io/control-plane-
-kubectl taint nodes --all node-role.kubernetes.io/master-
+kubectl taint nodes --all node-role.kubernetes.io/control-plane- 2>/dev/null
+kubectl taint nodes --all node-role.kubernetes.io/master- 2>/dev/null
 set -e
 
 # Set start of unprivileged port range to 1024

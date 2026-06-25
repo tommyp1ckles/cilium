@@ -8,13 +8,13 @@ import (
 	"slices"
 	"testing"
 
-	envoy_config_cluster_v3 "github.com/cilium/proxy/go/envoy/config/cluster/v3"
-	envoy_config_core_v3 "github.com/cilium/proxy/go/envoy/config/core/v3"
-	envoy_config_listener "github.com/cilium/proxy/go/envoy/config/listener/v3"
-	envoy_config_route_v3 "github.com/cilium/proxy/go/envoy/config/route/v3"
-	envoy_http_connection_manager_v3 "github.com/cilium/proxy/go/envoy/extensions/filters/network/http_connection_manager/v3"
-	envoy_transport_sockets_tls_v3 "github.com/cilium/proxy/go/envoy/extensions/transport_sockets/tls/v3"
-	matcherv3 "github.com/cilium/proxy/go/envoy/type/matcher/v3"
+	envoy_config_cluster_v3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
+	envoy_config_core_v3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	envoy_config_listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
+	envoy_config_route_v3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
+	envoy_http_connection_manager_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
+	envoy_transport_sockets_tls_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
+	matcherv3 "github.com/envoyproxy/go-control-plane/envoy/type/matcher/v3"
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -148,7 +148,8 @@ func TestSharedIngressTranslator_getBackendServices(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			i := &cecTranslator{}
-			res := i.getBackendServices(tt.args.m)
+			res, err := i.desiredBackendServices(tt.args.m)
+			require.NoError(t, err)
 			require.Equal(t, tt.want, res)
 		})
 	}
@@ -233,14 +234,94 @@ func TestSharedIngressTranslator_getServices(t *testing.T) {
 					},
 				},
 			},
+			// port not included: TLS passthrough listener has no routes.
 			want: []*ciliumv2.ServiceListener{
 				{
 					Name:      "cilium-ingress",
 					Namespace: "kube-system",
 					Ports: []uint16{
 						80,
-						443,
 					},
+				},
+			},
+		},
+		{
+			name: "multi-port HTTPS (Gateway API)",
+			fields: fields{
+				name:      "cilium-ingress",
+				namespace: "default",
+			},
+			model: multiPortHTTPSModel,
+			want: []*ciliumv2.ServiceListener{
+				{
+					Name:      "cilium-ingress",
+					Namespace: "default",
+					Ports:     []uint16{80},
+					Listener:  "listener",
+				},
+				{
+					Name:      "cilium-ingress",
+					Namespace: "default",
+					Ports:     []uint16{443},
+					Listener:  "listener-443",
+				},
+				{
+					Name:      "cilium-ingress",
+					Namespace: "default",
+					Ports:     []uint16{50051},
+					Listener:  "listener-50051",
+				},
+			},
+		},
+		{
+			name: "catch-all HTTPS with multi-port TLS passthrough",
+			fields: fields{
+				name:      "cilium-ingress",
+				namespace: "default",
+			},
+			model: &model.Model{
+				HTTP: []model.HTTPListener{
+					{
+						Port:     443,
+						Hostname: "*",
+						TLS: []model.TLSSecret{
+							{Name: "example-tls", Namespace: "default"},
+						},
+					},
+				},
+				TLSPassthrough: []model.TLSPassthroughListener{
+					{
+						Port: 50051,
+						Routes: []model.TLSPassthroughRoute{
+							{Hostnames: []string{"api.example.test"}},
+						},
+					},
+					{
+						Port: 9443,
+						Routes: []model.TLSPassthroughRoute{
+							{Hostnames: []string{"api.example.test"}},
+						},
+					},
+				},
+			},
+			want: []*ciliumv2.ServiceListener{
+				{
+					Name:      "cilium-ingress",
+					Namespace: "default",
+					Ports:     []uint16{443},
+					Listener:  "listener-443",
+				},
+				{
+					Name:      "cilium-ingress",
+					Namespace: "default",
+					Ports:     []uint16{9443},
+					Listener:  "listener-9443",
+				},
+				{
+					Name:      "cilium-ingress",
+					Namespace: "default",
+					Ports:     []uint16{50051},
+					Listener:  "listener-50051",
 				},
 			},
 		},
@@ -249,7 +330,8 @@ func TestSharedIngressTranslator_getServices(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			i := &cecTranslator{}
-			got := i.getServicesWithPorts(tt.fields.namespace, tt.fields.name, tt.model)
+			got, err := i.desiredServicesWithPorts(tt.fields.namespace, tt.fields.name, tt.model)
+			require.NoError(t, err)
 			require.Equal(t, tt.want, got)
 		})
 	}
@@ -257,10 +339,14 @@ func TestSharedIngressTranslator_getServices(t *testing.T) {
 
 func TestSharedIngressTranslator_getListenerProxy(t *testing.T) {
 	i := &cecTranslator{
-		secretsNamespace: "cilium-secrets",
-		useProxyProtocol: true,
+		Config: Config{
+			SecretsNamespace: "cilium-secrets",
+			ListenerConfig: ListenerConfig{
+				UseProxyProtocol: true,
+			},
+		},
 	}
-	res := i.getListener(&model.Model{
+	res, err := i.desiredEnvoyListener(&model.Model{
 		HTTP: []model.HTTPListener{
 			{
 				TLS: []model.TLSSecret{
@@ -272,9 +358,11 @@ func TestSharedIngressTranslator_getListenerProxy(t *testing.T) {
 			},
 		},
 	})
+	require.NoError(t, err)
 	require.Len(t, res, 1)
+
 	listener := &envoy_config_listener.Listener{}
-	err := proto.Unmarshal(res[0].GetValue(), listener)
+	err = proto.Unmarshal(res[0].GetValue(), listener)
 	require.NoError(t, err)
 
 	listenerNames := []string{}
@@ -287,10 +375,12 @@ func TestSharedIngressTranslator_getListenerProxy(t *testing.T) {
 
 func TestSharedIngressTranslator_getListener(t *testing.T) {
 	i := &cecTranslator{
-		secretsNamespace: "cilium-secrets",
+		Config: Config{
+			SecretsNamespace: "cilium-secrets",
+		},
 	}
 
-	res := i.getListener(&model.Model{
+	res, err := i.desiredEnvoyListener(&model.Model{
 		HTTP: []model.HTTPListener{
 			{
 				TLS: []model.TLSSecret{
@@ -302,10 +392,11 @@ func TestSharedIngressTranslator_getListener(t *testing.T) {
 			},
 		},
 	})
+	require.NoError(t, err)
 	require.Len(t, res, 1)
 
 	listener := &envoy_config_listener.Listener{}
-	err := proto.Unmarshal(res[0].GetValue(), listener)
+	err = proto.Unmarshal(res[0].GetValue(), listener)
 	require.NoError(t, err)
 
 	require.Len(t, listener.ListenerFilters, 1)
@@ -338,7 +429,7 @@ func TestSharedIngressTranslator_getListener(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Len(t, downStreamTLS.CommonTlsContext.TlsCertificateSdsSecretConfigs, 1)
-	require.Equal(t, downStreamTLS.CommonTlsContext.TlsCertificateSdsSecretConfigs[0].GetName(), "cilium-secrets/dummy-namespace-dummy-secret")
+	require.Equal(t, "cilium-secrets/dummy-namespace-dummy-secret", downStreamTLS.CommonTlsContext.TlsCertificateSdsSecretConfigs[0].GetName())
 	require.Nil(t, downStreamTLS.CommonTlsContext.TlsCertificateSdsSecretConfigs[0].GetSdsConfig())
 }
 
@@ -401,10 +492,11 @@ func TestSharedIngressTranslator_getClusters(t *testing.T) {
 		i := &cecTranslator{}
 
 		t.Run(tt.name, func(t *testing.T) {
-			res := i.getClusters(tt.args.m)
+			res, err := i.desiredEnvoyCluster(tt.args.m)
+			require.NoError(t, err)
 			require.Len(t, res, len(tt.expected))
 
-			for i := 0; i < len(tt.expected); i++ {
+			for i := range tt.expected {
 				cluster := &envoy_config_cluster_v3.Cluster{}
 				err := proto.Unmarshal(res[i].GetValue(), cluster)
 				require.NoError(t, err)
@@ -461,8 +553,10 @@ func TestGetEnvoyHTTPRouteConfiguration_VirtualHostSorted(t *testing.T) {
 		},
 	}
 
-	res1 := defT.getEnvoyHTTPRouteConfiguration(&model.Model{HTTP: l1})
-	res2 := defT.getEnvoyHTTPRouteConfiguration(&model.Model{HTTP: l2})
+	res1, err1 := defT.desiredEnvoyHTTPRouteConfiguration(&model.Model{HTTP: l1})
+	res2, err2 := defT.desiredEnvoyHTTPRouteConfiguration(&model.Model{HTTP: l2})
+	require.NoError(t, err1)
+	require.NoError(t, err2)
 
 	diffOutput := cmp.Diff(res1, res2, protocmp.Transform())
 	if len(diffOutput) != 0 {
@@ -538,13 +632,21 @@ func TestSharedIngressTranslator_getEnvoyHTTPRouteConfiguration(t *testing.T) {
 			},
 			expectedRouteConfigs: multipleRouteHostnamesExpectedConfig,
 		},
+		{
+			name: "multi-port HTTPS (Gateway API)",
+			args: args{
+				m: multiPortHTTPSModel,
+			},
+			expectedRouteConfigs: multiPortHTTPSExpectedRouteConfigs,
+		},
 	}
 
 	defT := &cecTranslator{}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			res := defT.getEnvoyHTTPRouteConfiguration(tt.args.m)
+			res, err := defT.desiredEnvoyHTTPRouteConfiguration(tt.args.m)
+			require.NoError(t, err)
 			require.Len(t, res, len(tt.expectedRouteConfigs), "Number of Listeners did not match")
 
 			for i, rawRoute := range res {
@@ -728,7 +830,8 @@ func TestSharedIngressTranslator_getResources(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			i := &cecTranslator{}
-			got := i.getResources(tt.args.m)
+			got, err := i.desiredResources(tt.args.m)
+			require.NoError(t, err)
 			require.Lenf(t, got, tt.expected, "expected %d resources, got %d", tt.expected, len(got))
 
 			// Log for debugging purpose
@@ -738,4 +841,40 @@ func TestSharedIngressTranslator_getResources(t *testing.T) {
 			}
 		})
 	}
+}
+
+func Test_getUniqueAuthFilters(t *testing.T) {
+	backend := model.Backend{Name: "authz", Namespace: "ns", Port: &model.BackendPort{Port: 9000}}
+	i := &cecTranslator{}
+
+	t.Run("same backend same config deduplicates to one filter", func(t *testing.T) {
+		af := &model.HTTPExternalAuthFilter{Backend: backend, Protocol: model.ExternalAuthProtocolHTTP, PathPrefix: "/check"}
+		m := &model.Model{HTTP: []model.HTTPListener{{Routes: []model.HTTPRoute{
+			{ExternalAuth: af},
+			{ExternalAuth: af},
+		}}}}
+		result := i.getUniqueAuthFilters(m)
+		require.Len(t, result, 1)
+	})
+
+	t.Run("same backend different config produces separate filter instances", func(t *testing.T) {
+		afA := &model.HTTPExternalAuthFilter{Backend: backend, Protocol: model.ExternalAuthProtocolHTTP, PathPrefix: "/check"}
+		afB := &model.HTTPExternalAuthFilter{Backend: backend, Protocol: model.ExternalAuthProtocolHTTP, PathPrefix: "/verify"}
+		m := &model.Model{HTTP: []model.HTTPListener{{Routes: []model.HTTPRoute{
+			{ExternalAuth: afA},
+			{ExternalAuth: afB},
+		}}}}
+		result := i.getUniqueAuthFilters(m)
+		require.Len(t, result, 2)
+	})
+
+	t.Run("routes without auth are skipped", func(t *testing.T) {
+		af := &model.HTTPExternalAuthFilter{Backend: backend, Protocol: model.ExternalAuthProtocolGRPC}
+		m := &model.Model{HTTP: []model.HTTPListener{{Routes: []model.HTTPRoute{
+			{ExternalAuth: nil},
+			{ExternalAuth: af},
+		}}}}
+		result := i.getUniqueAuthFilters(m)
+		require.Len(t, result, 1)
+	})
 }

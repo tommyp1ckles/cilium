@@ -5,14 +5,15 @@ package node_test
 
 import (
 	"context"
-	"slices"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/hivetest"
+	"github.com/stretchr/testify/assert"
 
+	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	"github.com/cilium/cilium/pkg/hive"
 	. "github.com/cilium/cilium/pkg/node"
 )
@@ -20,14 +21,18 @@ import (
 type testSynchronizer struct{ identity chan uint32 }
 
 func (testSynchronizer) InitLocalNode(ctx context.Context, n *LocalNode) error {
-	n.NodeIdentity = 1
+	n.ClusterID = 1
 	return nil
 }
 
 func (ts testSynchronizer) SyncLocalNode(ctx context.Context, lns *LocalNodeStore) {
 	id := <-ts.identity
-	lns.Update(func(n *LocalNode) { n.NodeIdentity = id })
+	lns.Update(func(n *LocalNode) { n.ClusterID = id })
 	<-ctx.Done()
+}
+
+func (ts testSynchronizer) WaitForNodeInformation(context.Context, *LocalNodeStore) error {
+	return nil
 }
 
 func TestLocalNodeStore(t *testing.T) {
@@ -44,9 +49,9 @@ func TestLocalNodeStore(t *testing.T) {
 	observe := func(store *LocalNodeStore) {
 		store.Observe(context.TODO(),
 			func(n LocalNode) {
-				observed = append(observed, n.NodeIdentity)
+				observed = append(observed, n.ClusterID)
 
-				if n.NodeIdentity == expected[len(expected)-1] {
+				if n.ClusterID == expected[len(expected)-1] {
 					waitObserve.Done()
 				}
 			},
@@ -67,7 +72,7 @@ func TestLocalNodeStore(t *testing.T) {
 					}
 
 					store.Update(func(n *LocalNode) {
-						n.NodeIdentity = i
+						n.ClusterID = i
 					})
 				}
 				return nil
@@ -76,8 +81,14 @@ func TestLocalNodeStore(t *testing.T) {
 	}
 
 	hive := hive.New(
-		cell.Provide(NewLocalNodeStore),
+		LocalNodeStoreCell,
 
+		cell.Provide(func() cmtypes.ClusterInfo {
+			return cmtypes.ClusterInfo{
+				Name: "test",
+				ID:   1,
+			}
+		}),
 		cell.Provide(func() LocalNodeSynchronizer { return ts }),
 		cell.Invoke(observe),
 		cell.Invoke(update),
@@ -98,9 +109,10 @@ func TestLocalNodeStore(t *testing.T) {
 		t.Fatalf("Failed to stop: %s", err)
 	}
 
-	if !slices.Equal(observed, expected) {
-		t.Fatalf("Unexpected values observed: %v, expected: %v", observed, expected)
-	}
+	// Observed should be an ordered subset of [expected] since some intermediate
+	// states may get skipped.
+	assert.NotEmpty(t, observed)
+	assert.Subset(t, expected, observed)
 }
 
 func BenchmarkLocalNodeStoreGet(b *testing.B) {
@@ -108,9 +120,8 @@ func BenchmarkLocalNodeStoreGet(b *testing.B) {
 	lns := NewTestLocalNodeStore(LocalNode{})
 
 	b.ReportAllocs()
-	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, _ = lns.Get(ctx)
 	}
 }

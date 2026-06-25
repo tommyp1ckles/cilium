@@ -50,19 +50,8 @@ namespace.
 	  order to enforce namespace boundaries at egress, the same example can
 	  be used by specifying the rules at egress in addition to ingress.
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/kubernetes/namespace/isolate-namespaces.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/kubernetes/namespace/isolate-namespaces.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/kubernetes/namespace/isolate-namespaces.json
+.. literalinclude:: ../../../examples/policies/kubernetes/namespace/isolate-namespaces.yaml
+  :language: yaml
 
 Policies Only Apply Within The Namespace
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -84,19 +73,8 @@ namespace ``ns1`` to all pods with the label ``name=luke`` in the namespace
 Refer to the :git-tree:`example YAML files <examples/policies/kubernetes/namespace/demo-pods.yaml>`
 for a fully functional example including pods deployed to different namespaces.
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/kubernetes/namespace/namespace-policy.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/kubernetes/namespace/namespace-policy.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/kubernetes/namespace/namespace-policy.json
+.. literalinclude:: ../../../examples/policies/kubernetes/namespace/namespace-policy.yaml
+  :language: yaml
 
 Specifying Namespace In EndpointSelector, FromEndpoints, ToEndpoints
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -119,29 +97,41 @@ The following example allows all pods in the ``public`` namespace in which the
 policy is created to communicate with kube-dns on port 53/UDP in the ``kube-system``
 namespace.
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/kubernetes/namespace/kubedns-policy.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/kubernetes/namespace/kubedns-policy.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/kubernetes/namespace/kubedns-policy.json
-
+.. literalinclude:: ../../../examples/policies/kubernetes/namespace/kubedns-policy.yaml
+  :language: yaml
 
 Namespace Specific Information
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Using namespace-specific information like
-``io.cilium.k8s.namespace.labels`` within a ``fromEndpoints`` or
-``toEndpoints`` is supported only for a :ref:`CiliumClusterwideNetworkPolicy`
-and not a :ref:`CiliumNetworkPolicy`. Hence, ``io.cilium.k8s.namespace.labels``
-will be ignored in :ref:`CiliumNetworkPolicy` resources.
+Namespace-specific information such as ``io.cilium.k8s.namespace.labels``
+can be used within ``fromEndpoints`` and ``toEndpoints`` in both
+:ref:`CiliumNetworkPolicy` and :ref:`CiliumClusterwideNetworkPolicy` resources
+to match pods based on the labels of the namespace they belong to.
+
+The label format is ``io.cilium.k8s.namespace.labels.<label-key>``, where
+``<label-key>`` corresponds to a label on the Kubernetes namespace.
+
+When namespace labels are specified in a ``fromEndpoints`` or ``toEndpoints``
+selector within a :ref:`CiliumNetworkPolicy`, the selector is not implicitly
+restricted to the policy's own namespace. This allows matching pods across
+namespaces based on namespace labels.
+
+.. note:: The ``endpointSelector`` always applies to pods in the namespace
+          associated with the :ref:`CiliumNetworkPolicy` resource itself, regardless
+          of any namespace labels used in ``fromEndpoints`` or ``toEndpoints``.
+
+.. _example_cnp_namespace_labels:
+
+Example
+^^^^^^^
+
+The following example restricts ``rebel-base`` pods to only communicate with
+pods in namespaces labeled ``faction: alliance``. As the Rebel Alliance
+operates across multiple namespaces, namespace labels allow this policy to
+apply to all Alliance namespaces without listing each one by name.
+
+.. literalinclude:: ../../../examples/policies/kubernetes/namespace/namespace-labels-policy.yaml
+  :language: yaml
 
 Match Expressions
 ~~~~~~~~~~~~~~~~~
@@ -159,34 +149,13 @@ Example
 This example demonstrates how to enforce a policy with multiple ``matchExpressions``
 that achieves a logical OR between the keys and its values.
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/l3/match-expressions/or-statement.yaml
-
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/l3/match-expressions/or-statement.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/l3/match-expressions/or-statement.json
-
+.. literalinclude:: ../../../examples/policies/l3/match-expressions/or-statement.yaml
+  :language: yaml
 
 The following example shows a logical AND using a single ``matchExpression``.
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/l3/match-expressions/and-statement.yaml
-
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/l3/match-expressions/and-statement.json
+.. literalinclude:: ../../../examples/policies/l3/match-expressions/and-statement.yaml
+  :language: yaml
 
 ServiceAccounts
 ~~~~~~~~~~~~~~~
@@ -212,7 +181,7 @@ resource like this:
           name: my-pod
         spec:
           serviceAccountName: leia
-          ...
+          # ...
 
 Example
 ^^^^^^^
@@ -226,19 +195,8 @@ for a fully functional example including deployment and service account
 resources.
 
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/kubernetes/serviceaccount/serviceaccount-policy.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../../examples/policies/kubernetes/serviceaccount/serviceaccount-policy.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/kubernetes/serviceaccount/serviceaccount-policy.json
+.. literalinclude:: ../../../examples/policies/kubernetes/serviceaccount/serviceaccount-policy.yaml
+  :language: yaml
 
 Multi-Cluster
 ~~~~~~~~~~~~~
@@ -247,24 +205,21 @@ When operating multiple cluster with cluster mesh, the cluster name is exposed
 via the label ``io.cilium.k8s.policy.cluster`` and can be used to restrict
 policies to a particular cluster.
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/kubernetes/clustermesh/cross-cluster-policy.yaml
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/kubernetes/clustermesh/cross-cluster-policy.yaml
+.. literalinclude:: ../../../examples/policies/kubernetes/clustermesh/cross-cluster-policy.yaml
+  :language: yaml
 
 Note the ``io.kubernetes.pod.namespace: default`` in the policy
 rule. It makes sure the policy applies to ``rebel-base`` in the
 ``default`` namespace of ``cluster2`` regardless of the namespace in
-``cluster1`` where ``x-wing`` is deployed in. If the namespace label
-of policy rules is omitted it defaults to the same namespace where the
-policy itself is applied in, which may be not what is wanted when
-deploying cross-cluster policies.
+``cluster1`` where ``x-wing`` is deployed in.
+
+If the namespace label of policy rules is omitted it defaults to the same namespace
+where the policy itself is applied in, which may be not what is wanted when deploying
+cross-cluster policies. To allow access from/to any namespace, use ``matchExpressions``
+combined with an ``Exists`` operator.
+
+.. literalinclude:: ../../../examples/policies/kubernetes/clustermesh/cross-cluster-any-namespace-policy.yaml
+  :language: yaml
 
 Clusterwide Policies
 ~~~~~~~~~~~~~~~~~~~~
@@ -277,16 +232,8 @@ of `CiliumNetworkPolicy` except that it is not namespaced.
 In the cluster, this policy will allow ingress traffic from pods matching the label ``name=luke`` from any
 namespace to pods matching the labels ``name=leia`` in any namespace.
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/kubernetes/clusterwide/clusterscope-policy.yaml
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/kubernetes/clusterwide/clusterscope-policy.yaml
+.. literalinclude:: ../../../examples/policies/kubernetes/clusterwide/clusterscope-policy.yaml
+  :language: yaml
 
 Allow All Cilium Managed Endpoints To Communicate With Kube-dns
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -294,16 +241,8 @@ Allow All Cilium Managed Endpoints To Communicate With Kube-dns
 The following example allows all Cilium managed endpoints in the cluster to communicate
 with kube-dns on port 53/UDP in the ``kube-system`` namespace.
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/kubernetes/clusterwide/wildcard-from-endpoints.yaml
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/kubernetes/clusterwide/wildcard-from-endpoints.yaml
+.. literalinclude:: ../../../examples/policies/kubernetes/clusterwide/wildcard-from-endpoints.yaml
+  :language: yaml
 
 .. _health_endpoint: 
 
@@ -313,13 +252,5 @@ Example: Add Health Endpoint
 The following example adds the health entity to all Cilium managed endpoints in order to check
 cluster connectivity health.
 
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../../examples/policies/kubernetes/clusterwide/health.yaml
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../../examples/policies/kubernetes/clusterwide/health.yaml
+.. literalinclude:: ../../../examples/policies/kubernetes/clusterwide/health.yaml
+  :language: yaml

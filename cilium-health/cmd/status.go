@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/cilium/cilium/api/v1/health/client/connectivity"
 	"github.com/cilium/cilium/api/v1/health/models"
 	"github.com/cilium/cilium/pkg/command"
 	clientPkg "github.com/cilium/cilium/pkg/health/client"
@@ -33,13 +34,13 @@ var statusGetCmd = &cobra.Command{
 		}
 
 		if probe {
-			result, err := client.Connectivity.PutStatusProbe(nil)
+			result, err := client.Connectivity.PutStatusProbe(connectivity.NewPutStatusProbeParams())
 			if err != nil {
 				Fatalf("Cannot get status/probe: %s\n", err)
 			}
 			sr = result.Payload
 		} else {
-			result, err := client.Connectivity.GetStatus(nil)
+			result, err := client.Connectivity.GetStatus(connectivity.NewGetStatusParams())
 			if err != nil {
 				Fatalf("Cannot get status: %s\n", err)
 			}
@@ -52,7 +53,7 @@ var statusGetCmd = &cobra.Command{
 			}
 		} else {
 			w := tabwriter.NewWriter(os.Stdout, 2, 0, 3, ' ', 0)
-			clientPkg.FormatHealthStatusResponse(w, sr, true, succinct, verbose, 0)
+			clientPkg.FormatHealthStatusResponse(w, sr, true, verbose, 0)
 			w.Flush()
 		}
 	},
@@ -62,6 +63,7 @@ func init() {
 	rootCmd.AddCommand(statusGetCmd)
 	statusGetCmd.Flags().BoolVarP(&probe, "probe", "", false,
 		"Synchronously probe connectivity status")
+	statusGetCmd.Flags().MarkHidden("probe")
 	statusGetCmd.Flags().BoolVarP(&succinct, "succinct", "", false,
 		"Print the result succinctly (one node per line)")
 	statusGetCmd.Flags().BoolVarP(&verbose, "verbose", "", false,

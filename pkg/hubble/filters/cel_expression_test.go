@@ -4,10 +4,9 @@
 package filters
 
 import (
-	"context"
 	"testing"
 
-	"github.com/sirupsen/logrus"
+	"github.com/cilium/hive/hivetest"
 
 	flowpb "github.com/cilium/cilium/api/v1/flow"
 	v1 "github.com/cilium/cilium/pkg/hubble/api/v1"
@@ -126,8 +125,8 @@ func TestCELExpressionFilter(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			log := logrus.New()
-			fl, err := BuildFilterList(context.Background(), tt.args.f, []OnBuildFilter{&CELExpressionFilter{log: log}})
+			log := hivetest.Logger(t)
+			fl, err := BuildFilterList(t.Context(), tt.args.f, []OnBuildFilter{&CELExpressionFilter{log: log}})
 			if (err != nil) != tt.wantErr {
 				t.Errorf("error = %v, wantErr %v", err, tt.wantErr)
 				return

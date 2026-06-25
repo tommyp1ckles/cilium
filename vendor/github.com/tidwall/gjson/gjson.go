@@ -1,7 +1,14 @@
+// Copyright 2024 Joshua J Baker. All rights reserved.
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file.
+//
+// https://github.com/tidwall/gjson
+
 // Package gjson provides searching for json strings.
 package gjson
 
 import (
+	"iter"
 	"strconv"
 	"strings"
 	"time"
@@ -1040,6 +1047,10 @@ func parseObjectPath(path string) (r objectPathResult) {
 	return
 }
 
+var vchars = [256]byte{
+	'"': 2, '{': 3, '(': 3, '[': 3, '}': 1, ')': 1, ']': 1,
+}
+
 func parseSquash(json string, i int) (int, string) {
 	// expects that the lead character is a '[' or '{' or '('
 	// squash the value, ignoring all nested arrays and objects.
@@ -1047,43 +1058,137 @@ func parseSquash(json string, i int) (int, string) {
 	s := i
 	i++
 	depth := 1
-	for ; i < len(json); i++ {
-		if json[i] >= '"' && json[i] <= '}' {
-			switch json[i] {
-			case '"':
+	var c byte
+	for i < len(json) {
+		for i < len(json)-8 {
+			jslice := json[i : i+8]
+			c = vchars[jslice[0]]
+			if c != 0 {
+				i += 0
+				goto token
+			}
+			c = vchars[jslice[1]]
+			if c != 0 {
+				i += 1
+				goto token
+			}
+			c = vchars[jslice[2]]
+			if c != 0 {
+				i += 2
+				goto token
+			}
+			c = vchars[jslice[3]]
+			if c != 0 {
+				i += 3
+				goto token
+			}
+			c = vchars[jslice[4]]
+			if c != 0 {
+				i += 4
+				goto token
+			}
+			c = vchars[jslice[5]]
+			if c != 0 {
+				i += 5
+				goto token
+			}
+			c = vchars[jslice[6]]
+			if c != 0 {
+				i += 6
+				goto token
+			}
+			c = vchars[jslice[7]]
+			if c != 0 {
+				i += 7
+				goto token
+			}
+			i += 8
+		}
+		c = vchars[json[i]]
+		if c == 0 {
+			i++
+			continue
+		}
+	token:
+		if c == 2 {
+			// '"' string
+			i++
+			s2 := i
+		nextquote:
+			for i < len(json)-8 {
+				jslice := json[i : i+8]
+				if jslice[0] == '"' {
+					i += 0
+					goto strchkesc
+				}
+				if jslice[1] == '"' {
+					i += 1
+					goto strchkesc
+				}
+				if jslice[2] == '"' {
+					i += 2
+					goto strchkesc
+				}
+				if jslice[3] == '"' {
+					i += 3
+					goto strchkesc
+				}
+				if jslice[4] == '"' {
+					i += 4
+					goto strchkesc
+				}
+				if jslice[5] == '"' {
+					i += 5
+					goto strchkesc
+				}
+				if jslice[6] == '"' {
+					i += 6
+					goto strchkesc
+				}
+				if jslice[7] == '"' {
+					i += 7
+					goto strchkesc
+				}
+				i += 8
+			}
+			goto strchkstd
+		strchkesc:
+			if json[i-1] != '\\' {
 				i++
-				s2 := i
-				for ; i < len(json); i++ {
-					if json[i] > '\\' {
-						continue
-					}
-					if json[i] == '"' {
-						// look for an escaped slash
-						if json[i-1] == '\\' {
-							n := 0
-							for j := i - 2; j > s2-1; j-- {
-								if json[j] != '\\' {
-									break
-								}
-								n++
-							}
-							if n%2 == 0 {
-								continue
-							}
-						}
-						break
-					}
-				}
-			case '{', '[', '(':
-				depth++
-			case '}', ']', ')':
-				depth--
-				if depth == 0 {
+				continue
+			}
+		strchkstd:
+			for i < len(json) {
+				if json[i] > '\\' || json[i] != '"' {
 					i++
-					return i, json[s:i]
+					continue
 				}
+				// look for an escaped slash
+				if json[i-1] == '\\' {
+					n := 0
+					for j := i - 2; j > s2-1; j-- {
+						if json[j] != '\\' {
+							break
+						}
+						n++
+					}
+					if n%2 == 0 {
+						i++
+						goto nextquote
+					}
+				}
+				break
+			}
+		} else {
+			// '{', '[', '(', '}', ']', ')'
+			// open close tokens
+			depth += int(c) - 2
+			if depth == 0 {
+				i++
+				return i, json[s:i]
 			}
 		}
+		i++
 	}
 	return i, json[s:]
 }
@@ -3502,4 +3607,44 @@ func modDig(json, arg string) string {
 	}
 	out = append(out, ']')
 	return string(out)
+}
+
+// All iterates over a json result.
+// This works identically to ForEach, but allows modern Go loops:
+//
+//	for key, value := range res.All() {
+//		fmt.Printf("%s %s\n", key, value)
+//	}
+func (t Result) All() iter.Seq2[Result, Result] {
+	return func(yield func(Result, Result) bool) {
+		t.ForEach(yield)
+	}
+}
+
+// Keys iterates over a json result.
+// This works identically to ForEach, but allows modern Go loops:
+//
+//	for key := range res.Keys() {
+//		fmt.Printf("%s\n", key)
+//	}
+func (t Result) Keys() iter.Seq[Result] {
+	return func(yield func(Result) bool) {
+		t.ForEach(func(key, _ Result) bool {
+			return yield(key)
+		})
+	}
+}
+
+// Values iterates over a json result.
+// This works identically to ForEach, but allows modern Go loops:
+//
+//	for value := range res.Values() {
+//		fmt.Printf("%s\n", value)
+//	}
+func (t Result) Values() iter.Seq[Result] {
+	return func(yield func(Result) bool) {
+		t.ForEach(func(_, value Result) bool {
+			return yield(value)
+		})
+	}
 }

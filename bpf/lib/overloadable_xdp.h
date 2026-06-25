@@ -9,6 +9,22 @@
 static __always_inline __maybe_unused void
 bpf_clear_meta(struct xdp_md *ctx __maybe_unused)
 {
+	__u32 zero = 0, *data_meta = map_lookup_elem(&cilium_xdp_scratch, &zero);
+
+	/* Unlike __sk_buff->cb[] in tcx (per-skb), the XDP "meta" lives
+	 * in a per-CPU PERCPU_ARRAY (cilium_xdp_scratch) that persists
+	 * across packets on the same CPU. CB slots can alias. Thus zero
+	 * the CB region on each program entry to mirror the TC behavior.
+	 * Leave RECIRC_MARKER / XFER_MARKER (offsets 5/6) intact; they
+	 * have their own dedicated clears.
+	 */
+	if (always_succeeds(data_meta)) {
+		data_meta[0] = 0;
+		data_meta[1] = 0;
+		data_meta[2] = 0;
+		data_meta[3] = 0;
+		data_meta[4] = 0;
+	}
 }
 
 static __always_inline __maybe_unused void
@@ -36,59 +52,19 @@ ctx_load_meta_ipv6(const struct xdp_md *ctx __maybe_unused,
 }
 
 static __always_inline __maybe_unused int
-get_identity(struct xdp_md *ctx __maybe_unused)
-{
-	return 0;
-}
-
-static __always_inline __maybe_unused void
-set_identity_mark(struct xdp_md *ctx __maybe_unused, __u32 identity __maybe_unused,
-		  __u32 magic __maybe_unused)
-{
-}
-
-static __always_inline __maybe_unused void
-set_identity_meta(struct xdp_md *ctx __maybe_unused,
-		__u32 identity __maybe_unused)
-{
-}
-
-static __always_inline __maybe_unused void
-set_encrypt_key_mark(struct xdp_md *ctx __maybe_unused, __u8 key __maybe_unused,
-		     __u32 node_id __maybe_unused)
-{
-}
-
-static __always_inline __maybe_unused void
-set_encrypt_key_meta(struct __sk_buff *ctx __maybe_unused, __u8 key __maybe_unused,
-		     __u32 node_id __maybe_unused)
-{
-}
-
-static __always_inline __maybe_unused void
-ctx_set_cluster_id_mark(struct xdp_md *ctx __maybe_unused, __u32 cluster_id __maybe_unused)
-{
-}
-
-static __always_inline __maybe_unused __u32
-ctx_get_cluster_id_mark(struct __sk_buff *ctx __maybe_unused)
-{
-	return 0;
-}
-
-static __always_inline __maybe_unused int
 redirect_self(struct xdp_md *ctx __maybe_unused)
 {
-	return XDP_TX;
+	return CTX_ACT_TX;
 }
 
 static __always_inline __maybe_unused int
-redirect_neigh(int ifindex __maybe_unused,
+redirect_neigh(__u32 ifindex __maybe_unused,
 	       struct bpf_redir_neigh *params __maybe_unused,
 	       int plen __maybe_unused,
 	       __u32 flags __maybe_unused)
 {
-	return XDP_DROP;
+	/* Available only in TC BPF. */
+	__throw_build_bug();
 }
 
 static __always_inline __maybe_unused bool
@@ -180,11 +156,11 @@ static __always_inline bool ctx_snat_done(struct xdp_md *ctx)
 
 #ifdef HAVE_ENCAP
 static __always_inline __maybe_unused int
-ctx_set_encap_info(struct xdp_md *ctx, __u32 src_ip, __be16 src_port,
-		   __u32 daddr, __u32 seclabel __maybe_unused,
-		   __u32 vni __maybe_unused, void *opt, __u32 opt_len)
+ctx_set_encap_info4(struct xdp_md *ctx, __u32 src_ip, __be16 src_port,
+		    __u32 daddr, __u32 seclabel __maybe_unused,
+		    __u32 vni __maybe_unused, void *opt, __u32 opt_len)
 {
-	__u32 inner_len = ctx_full_len(ctx);
+	__u32 inner_len = (__u32)ctx_full_len(ctx);
 	__u32 tunnel_hdr_len = 8; /* geneve / vxlan */
 	void *data, *data_end;
 	struct ethhdr *eth;
@@ -211,7 +187,7 @@ ctx_set_encap_info(struct xdp_md *ctx, __u32 src_ip, __be16 src_port,
 
 	memset(data, 0, sizeof(*eth) + sizeof(*ip4) + sizeof(*udp) + tunnel_hdr_len);
 
-	switch (TUNNEL_PROTOCOL) {
+	switch (CONFIG(tunnel_protocol)) {
 	case TUNNEL_PROTOCOL_GENEVE:
 		{
 			struct genevehdr *geneve = (void *)udp + sizeof(*udp);
@@ -239,12 +215,10 @@ ctx_set_encap_info(struct xdp_md *ctx, __u32 src_ip, __be16 src_port,
 			memcpy(&vxlan->vx_vni, &seclabel, sizeof(__u32));
 		}
 		break;
-	default:
-		__throw_build_bug();
 	}
 
 	udp->source = src_port;
-	udp->dest = bpf_htons(TUNNEL_PORT);
+	udp->dest = bpf_htons(CONFIG(tunnel_port));
 	udp->len = bpf_htons((__u16)(sizeof(*udp) + tunnel_hdr_len + opt_len + inner_len));
 	udp->check = 0; /* we use BPF_F_ZERO_CSUM_TX */
 
@@ -254,12 +228,21 @@ ctx_set_encap_info(struct xdp_md *ctx, __u32 src_ip, __be16 src_port,
 	ip4->ttl = IPDEFTTL;
 	ip4->protocol = IPPROTO_UDP;
 	ip4->saddr = src_ip;
-	ip4->daddr = bpf_htonl(daddr);
+	ip4->daddr = daddr;
 	ip4->check = csum_fold(csum_diff(NULL, 0, ip4, sizeof(*ip4), 0));
 
 	eth->h_proto = bpf_htons(ETH_P_IP);
 
 	return CTX_ACT_REDIRECT;
+}
+
+static __always_inline __maybe_unused int
+ctx_set_encap_info6(struct xdp_md *ctx __maybe_unused,
+		    const union v6addr *tunnel_endpoint __maybe_unused,
+		    __u32 seclabel __maybe_unused, void *opt __maybe_unused,
+		    __u32 opt_len __maybe_unused)
+{
+	return 0;
 }
 
 static __always_inline __maybe_unused int

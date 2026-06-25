@@ -4,14 +4,16 @@
 package monitor
 
 import (
-	"io"
+	"log/slog"
 	"testing"
 	"time"
 
+	"github.com/cilium/hive/hivetest"
 	"github.com/google/uuid"
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
+	"github.com/cilium/cilium/pkg/hubble/defaults"
 	observerTypes "github.com/cilium/cilium/pkg/hubble/observer/types"
 	"github.com/cilium/cilium/pkg/monitor/api"
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
@@ -20,14 +22,14 @@ import (
 
 type fakeObserver struct {
 	events chan *observerTypes.MonitorEvent
-	logger *logrus.Entry
+	logger *slog.Logger
 }
 
 func (f fakeObserver) GetEventsChannel() chan *observerTypes.MonitorEvent {
 	return f.events
 }
 
-func (f fakeObserver) GetLogger() logrus.FieldLogger {
+func (f fakeObserver) GetLogger() *slog.Logger {
 	return f.logger
 }
 
@@ -35,9 +37,10 @@ func TestHubbleConsumer(t *testing.T) {
 	observer := fakeObserver{
 		// For testing, we an events queue with a buffer size of 1
 		events: make(chan *observerTypes.MonitorEvent, 1),
-		logger: logrus.NewEntry(logrus.New()),
+		logger: hivetest.Logger(t),
 	}
-	consumer := NewConsumer(observer)
+	lostSendInterval := 100 * time.Millisecond
+	consumer := NewConsumer(observer, lostSendInterval)
 	data := []byte{0, 1, 2, 3, 4}
 	cpu := 5
 
@@ -52,7 +55,7 @@ func TestHubbleConsumer(t *testing.T) {
 	received := <-observer.GetEventsChannel()
 	assert.Equal(t, expected.NodeName, received.NodeName)
 	assert.Equal(t, expected.Payload, received.Payload)
-	assert.NotEqual(t, received.UUID, uuid.UUID{})
+	assert.NotEqual(t, uuid.UUID{}, received.UUID)
 
 	numLostEvents := uint64(7)
 	consumer.NotifyPerfEventLost(numLostEvents, cpu)
@@ -67,7 +70,7 @@ func TestHubbleConsumer(t *testing.T) {
 	received = <-observer.GetEventsChannel()
 	assert.Equal(t, expected.NodeName, received.NodeName)
 	assert.Equal(t, expected.Payload, received.Payload)
-	assert.NotEqual(t, received.UUID, uuid.UUID{})
+	assert.NotEqual(t, uuid.UUID{}, received.UUID)
 
 	typ := api.MessageTypeAccessLog
 	message := &accesslog.LogRecord{Timestamp: time.RFC3339}
@@ -82,12 +85,21 @@ func TestHubbleConsumer(t *testing.T) {
 	received = <-observer.GetEventsChannel()
 	assert.Equal(t, expected.NodeName, received.NodeName)
 	assert.Equal(t, expected.Payload, received.Payload)
-	assert.NotEqual(t, received.UUID, uuid.UUID{})
+	assert.NotEqual(t, uuid.UUID{}, received.UUID)
 
-	// The first notification will get through, the other two will be dropped
+	// The first notification will get through, the others two will be dropped
 	consumer.NotifyAgentEvent(1, nil)
 	consumer.NotifyPerfEventLost(0, 0) // dropped
 	consumer.NotifyPerfEvent(nil, 0)   // dropped
+
+	time.Sleep(lostSendInterval * 2) // Wait for lost event counter interval to elapse
+
+	// try to send other events, which will also be dropped
+	// consumer should also try to send lost events but would not succeed
+	consumer.NotifyPerfEventLost(0, 0) // dropped
+	consumer.NotifyPerfEvent(nil, 0)   // dropped
+
+	// then receive the event before the drops happened
 	expected = &observerTypes.MonitorEvent{
 		NodeName: nodeTypes.GetName(),
 		Payload: &observerTypes.AgentEvent{
@@ -97,28 +109,35 @@ func TestHubbleConsumer(t *testing.T) {
 	received = <-observer.GetEventsChannel()
 	assert.Equal(t, expected.NodeName, received.NodeName)
 	assert.Equal(t, expected.Payload, received.Payload)
-	assert.NotEqual(t, received.UUID, uuid.UUID{})
+	assert.NotEqual(t, uuid.UUID{}, received.UUID)
 
-	// Now that the channel has one slot again, send another message
-	// (which will be dropped) to get a lost event notifications
-	consumer.NotifyAgentEvent(0, nil) // dropped
+	// now that we emptied the channel, the consumer should be able to send
+	// the lost events notification, which it tries to do if any are pending
+	// before the next event is sent. Since we only have a buffer of size 1,
+	// this event will be dropped.
+	consumer.NotifyPerfEvent(nil, 0) // dropped
 
-	expected = &observerTypes.MonitorEvent{
-		NodeName: nodeTypes.GetName(),
-		Payload: &observerTypes.LostEvent{
-			Source:        observerTypes.LostEventSourceEventsQueue,
-			NumLostEvents: 2,
-		},
+	// receive the lost event notification which is always
+	// sent before the next event, and validate we receive
+	// the count of lost events before and after the counter
+	// interval elapsed.
+	expectedPayload := &observerTypes.LostEvent{
+		Source:        observerTypes.LostEventSourceEventsQueue,
+		NumLostEvents: 4,
+		// omit First, Last timestamps on-purpose as they are not predictable
 	}
 	received = <-observer.GetEventsChannel()
-	assert.Equal(t, expected.NodeName, received.NodeName)
-	assert.Equal(t, expected.Payload, received.Payload)
-	assert.NotEqual(t, received.UUID, uuid.UUID{})
+	assert.Equal(t, expected.NodeName, nodeTypes.GetName())
+	receivedPayload, ok := received.Payload.(*observerTypes.LostEvent)
+	require.Truef(t, ok, "expected payload to be of type *observerTypes.LostEvent, got %T", received.Payload)
+	assert.Equal(t, expectedPayload.Source, receivedPayload.Source)
+	assert.Equal(t, expectedPayload.NumLostEvents, receivedPayload.NumLostEvents)
+	assert.NotEqual(t, uuid.UUID{}, received.UUID)
 
 	// Verify that the events channel is empty now.
 	select {
 	case ev := <-observer.GetEventsChannel():
-		assert.Fail(t, "Unexpected event", ev)
+		assert.Fail(t, "Unexpected event", "event %v", ev)
 	default:
 	}
 }
@@ -134,15 +153,13 @@ func BenchmarkHubbleConsumerSendEvent(b *testing.B) {
 	body := func(b *testing.B, bt benchType) {
 		observer := fakeObserver{
 			events: make(chan *observerTypes.MonitorEvent, 1),
-			logger: func() *logrus.Entry {
-				log := logrus.New()
-				log.SetOutput(io.Discard)
-				return logrus.NewEntry(log)
+			logger: func() *slog.Logger {
+				return hivetest.Logger(b)
 			}(),
 		}
 
 		var (
-			cnsm = NewConsumer(observer)
+			cnsm = NewConsumer(observer, defaults.LostEventSendInterval)
 			data = []byte{0, 1, 2, 3, 4}
 			cpu  = 5
 		)

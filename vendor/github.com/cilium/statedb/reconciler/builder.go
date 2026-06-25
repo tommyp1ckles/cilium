@@ -4,6 +4,7 @@
 package reconciler
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/cilium/hive/job"
@@ -12,7 +13,8 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// Register creates a new reconciler and registers it to the application lifecycle.
+// Register creates a new reconciler and adds the reconcilation jobs to the provided
+// job group.
 //
 // The setStatus etc. functions are passed in as arguments rather than requiring
 // the object to implement them via interface as this allows constructing multiple
@@ -77,21 +79,34 @@ func Register[Obj comparable](
 		retries:              newRetries(cfg.RetryBackoffMinDuration, cfg.RetryBackoffMaxDuration, objectToKey),
 		externalPruneTrigger: make(chan struct{}, 1),
 		primaryIndexer:       idx,
+		progress:             newProgressTracker(),
 	}
 
-	g := params.Jobs.NewGroup(params.Health)
+	var scoped = func(jn string) string {
+		if cfg.Name == "" {
+			return jn
+		}
 
-	g.Add(job.OneShot("reconcile", r.reconcileLoop))
+		return fmt.Sprintf("%s-%s", jn, cfg.Name)
+	}
+
+	params.JobGroup.Add(job.OneShot(scoped("reconcile"), r.reconcileLoop))
 	if r.config.RefreshInterval > 0 {
-		g.Add(job.OneShot("refresh", r.refreshLoop))
+		params.JobGroup.Add(job.OneShot(scoped("refresh"), r.refreshLoop))
 	}
-	params.Lifecycle.Append(g)
-
 	return r, nil
 }
 
 // Option for the reconciler
 type Option func(opts *options)
+
+// WithName sets the name of this reconciler instance.
+// This name is passed to the configured [Metrics] implementation.
+func WithName(name string) Option {
+	return func(opts *options) {
+		opts.Name = name
+	}
+}
 
 // WithMetrics sets the [Metrics] instance to use with this reconciler.
 // The metrics capture the duration of operations during incremental and

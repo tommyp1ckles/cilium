@@ -7,14 +7,14 @@ import (
 	"fmt"
 	"strings"
 
-	envoy_config_cluster_v3 "github.com/cilium/proxy/go/envoy/config/cluster/v3"
-	envoy_config_core_v3 "github.com/cilium/proxy/go/envoy/config/core/v3"
-	envoy_config_listener "github.com/cilium/proxy/go/envoy/config/listener/v3"
-	envoy_config_route_v3 "github.com/cilium/proxy/go/envoy/config/route/v3"
-	envoy_extensions_filters_http_router_v3 "github.com/cilium/proxy/go/envoy/extensions/filters/http/router/v3"
-	envoy_extensions_listener_tls_inspector_v3 "github.com/cilium/proxy/go/envoy/extensions/filters/listener/tls_inspector/v3"
-	envoy_extensions_filters_network_http_connection_manager_v3 "github.com/cilium/proxy/go/envoy/extensions/filters/network/http_connection_manager/v3"
-	envoy_config_upstream "github.com/cilium/proxy/go/envoy/extensions/upstreams/http/v3"
+	envoy_config_cluster_v3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
+	envoy_config_core_v3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	envoy_config_listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
+	envoy_config_route_v3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
+	envoy_extensions_filters_http_router_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/router/v3"
+	envoy_extensions_listener_tls_inspector_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/listener/tls_inspector/v3"
+	envoy_extensions_filters_network_http_connection_manager_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
+	envoy_config_upstream "github.com/envoyproxy/go-control-plane/envoy/extensions/upstreams/http/v3"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -24,6 +24,7 @@ import (
 
 	"github.com/cilium/cilium/pkg/envoy"
 	ciliumv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 )
 
 func (r *ciliumEnvoyConfigReconciler) getEnvoyConfigForService(svc *corev1.Service) (*ciliumv2.CiliumEnvoyConfig, error) {
@@ -155,7 +156,7 @@ func (r *ciliumEnvoyConfigReconciler) getListenerResource(svc *corev1.Service) (
 		return ciliumv2.XDSResource{}, nil
 	}
 
-	var filterChains []*envoy_config_listener.FilterChain = []*envoy_config_listener.FilterChain{
+	var filterChains = []*envoy_config_listener.FilterChain{
 		{
 			FilterChainMatch: &envoy_config_listener.FilterChainMatch{
 				TransportProtocol: "raw_buffer",
@@ -209,8 +210,9 @@ func (r *ciliumEnvoyConfigReconciler) getConnectionManager(svc *corev1.Service) 
 				RouteConfigName: getName(svc),
 			},
 		},
-		UseRemoteAddress: &wrapperspb.BoolValue{Value: true},
-		SkipXffAppend:    false,
+		StreamIdleTimeout: &durationpb.Duration{Seconds: int64(r.streamIdleTimeoutSeconds)},
+		UseRemoteAddress:  &wrapperspb.BoolValue{Value: true},
+		SkipXffAppend:     false,
 		HttpFilters: []*envoy_extensions_filters_network_http_connection_manager_v3.HttpFilter{
 			{
 				Name: "envoy.filters.http.router",
@@ -218,6 +220,12 @@ func (r *ciliumEnvoyConfigReconciler) getConnectionManager(svc *corev1.Service) 
 					TypedConfig: r.toAny(&envoy_extensions_filters_http_router_v3.Router{}),
 				},
 			},
+		},
+		InternalAddressConfig: &envoy_extensions_filters_network_http_connection_manager_v3.HttpConnectionManager_InternalAddressConfig{
+			UnixSockets: false,
+			// only RFC1918 IP addresses will be considered internal
+			// https://datatracker.ietf.org/doc/html/rfc1918
+			CidrRanges: envoy.GetInternalListenerCIDRs(r.enableIpv4, r.enableIpv6),
 		},
 	}
 
@@ -288,7 +296,7 @@ func getName(obj metav1.Object) string {
 func (r *ciliumEnvoyConfigReconciler) toAny(message proto.Message) *anypb.Any {
 	a, err := anypb.New(message)
 	if err != nil {
-		r.logger.WithError(err).Errorf("invalid message %s", message)
+		r.logger.Error(fmt.Sprintf("invalid message %s", message), logfields.Error, err)
 		return nil
 	}
 	return a

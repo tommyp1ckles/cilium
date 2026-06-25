@@ -8,13 +8,16 @@ import (
 	"net/netip"
 	"testing"
 
+	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/require"
-	"github.com/vishvananda/netlink"
+
+	"github.com/cilium/cilium/pkg/datapath/linux/safenetlink"
 )
 
 func TestGroupOps(t *testing.T) {
-	ifs, err := netlink.LinkList()
-	require.Nil(t, err)
+	logger := hivetest.Logger(t)
+	ifs, err := safenetlink.LinkList()
+	require.NoError(t, err)
 
 	if len(ifs) == 0 {
 		t.Skip("no interfaces to test")
@@ -24,22 +27,22 @@ func TestGroupOps(t *testing.T) {
 	maddr := randMaddr()
 
 	// Join Group
-	err = JoinGroup(ifc.Attrs().Name, maddr)
-	require.Nil(t, err)
+	err = JoinGroup(logger, ifc.Attrs().Name, maddr)
+	require.NoError(t, err)
 
 	// maddr in group
 	inGroup, err := IsInGroup(ifc.Attrs().Name, maddr)
-	require.Nil(t, err)
-	require.Equal(t, true, inGroup)
+	require.NoError(t, err)
+	require.True(t, inGroup)
 
 	// LeaveGroup
-	err = LeaveGroup(ifc.Attrs().Name, maddr)
-	require.Nil(t, err)
+	err = LeaveGroup(logger, ifc.Attrs().Name, maddr)
+	require.NoError(t, err)
 
 	// maddr not in group
 	inGroup, err = IsInGroup(ifc.Attrs().Name, maddr)
-	require.Nil(t, err)
-	require.Equal(t, false, inGroup)
+	require.NoError(t, err)
+	require.False(t, inGroup)
 }
 
 func TestSolicitedNodeMaddr(t *testing.T) {
@@ -64,7 +67,7 @@ func TestSolicitedNodeMaddr(t *testing.T) {
 func randMaddr() netip.Addr {
 	maddr := make([]byte, 16)
 	rand.Read(maddr[13:])
-	return Address(netip.AddrFrom16(*(*[16]byte)(maddr))).SolicitedNodeMaddr()
+	return Address(netip.AddrFrom16(([16]byte)(maddr))).SolicitedNodeMaddr()
 }
 
 func TestMcastKey(t *testing.T) {

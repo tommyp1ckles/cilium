@@ -5,50 +5,127 @@ package part
 
 import (
 	"bytes"
-	"slices"
 	"sort"
 )
 
 // Iterator for key and value pairs where value is of type T
 type Iterator[T any] struct {
-	next [][]*header[T] // sets of edges to explore
+	// start is the starting point of the iteration when there's only
+	// a single edge to start from.
+	start *header[T]
+
+	// edges are the edges to explore
+	edges [][]*header[T]
 }
 
-// Clone returns a copy of the iterator, allowing restarting
-// the iterator from scratch.
-func (it *Iterator[T]) Clone() *Iterator[T] {
-	// Since the iterator does not mutate the edge array elements themselves ([]*header[T])
-	// it is enough to do a shallow clone here.
-	return &Iterator[T]{slices.Clone(it.next)}
-}
+// All calls yield for every value. Can be called multiple times.
+//
+// [All] does not modify the iterator state. If [Next] is called then
+// [All] will return only the remaining values.
+func (it Iterator[T]) All(yield func(key []byte, value T) bool) {
+	// Use a suitably large stack allocated array to hold the edges to explore.
+	// [append] will allocate from the heap if this is not large enough.
+	var nextArray [32][]*header[T]
+	next := nextArray[0:0:32]
 
-// Next returns the next key, value and true if the value exists,
-// otherwise it returns false.
-func (it *Iterator[T]) Next() (key []byte, value T, ok bool) {
-	for len(it.next) > 0 {
+	if it.start != nil {
+		node := it.start
+		if node.size() > 0 {
+			next = append(next, node.children())
+		}
+		if leaf := node.getLeaf(); leaf != nil {
+			if !yield(leaf.fullKey(), leaf.value) {
+				return
+			}
+		}
+	} else {
+		next = append(next, it.edges...)
+	}
+
+	// NOTE: Seems like there's a 25% performance drop if we try to share
+	// the code below with Next() by moving it into a function. Looks like the
+	// inliner at least in v1.25.4 doesn't want to inline it. So let's just live
+	// with the duplication.
+
+	for len(next) > 0 {
 		// Pop the next set of edges to explore
-		edges := it.next[len(it.next)-1]
+		edges := next[len(next)-1]
+		next = next[:len(next)-1]
+
+		// Node256 may have nil children, so jump over them.
 		for len(edges) > 0 && edges[0] == nil {
-			// Node256 may have nil children, so jump over them.
 			edges = edges[1:]
 		}
-		it.next = it.next[:len(it.next)-1]
 
 		if len(edges) == 0 {
 			continue
 		} else if len(edges) > 1 {
-			// More edges remain to be explored, add them back.
-			it.next = append(it.next, edges[1:])
+			// More edges remain to be explored, add them back to queue.
+			next = append(next, edges[1:])
 		}
 
-		// Follow the smallest edge and add its children to the queue.
 		node := edges[0]
-
 		if node.size() > 0 {
-			it.next = append(it.next, node.children())
+			// Node has children, add them to queue.
+			next = append(next, node.children())
 		}
 		if leaf := node.getLeaf(); leaf != nil {
-			key = leaf.key
+			if !yield(leaf.fullKey(), leaf.value) {
+				return
+			}
+		}
+	}
+}
+
+// Next returns the next key, value and true if the value exists,
+// otherwise it returns false.
+//
+// This modifies the iterator state and changes what [All]
+// returns (e.g. the values consumed by [Next] are not returned by it).
+func (it *Iterator[T]) Next() (key []byte, value T, ok bool) {
+	if it == nil {
+		return
+	}
+
+	if it.edges == nil {
+		if it.start == nil {
+			return
+		}
+		node := it.start
+		it.start = nil
+		if node.size() > 0 {
+			it.edges = make([][]*header[T], 1, 32)
+			it.edges = append(it.edges, node.children())
+		}
+		if leaf := node.getLeaf(); leaf != nil {
+			return leaf.fullKey(), leaf.value, true
+		}
+	}
+
+	for len(it.edges) > 0 {
+		// Pop the next set of edges to explore
+		edges := it.edges[len(it.edges)-1]
+		it.edges = it.edges[:len(it.edges)-1]
+
+		// Node256 may have nil children, so jump over them.
+		for len(edges) > 0 && edges[0] == nil {
+			edges = edges[1:]
+		}
+
+		if len(edges) == 0 {
+			continue
+		} else if len(edges) > 1 {
+			// More edges remain to be explored, add them back to queue.
+			it.edges = append(it.edges, edges[1:])
+		}
+
+		node := edges[0]
+		if node.size() > 0 {
+			// Node has children, add them to queue.
+			it.edges = append(it.edges, node.children())
+		}
+		if leaf := node.getLeaf(); leaf != nil {
+			key = leaf.fullKey()
 			value = leaf.value
 			ok = true
 			return
@@ -57,40 +134,41 @@ func (it *Iterator[T]) Next() (key []byte, value T, ok bool) {
 	return
 }
 
-func newIterator[T any](start *header[T]) *Iterator[T] {
-	if start == nil {
-		return &Iterator[T]{nil}
-	}
-	return &Iterator[T]{[][]*header[T]{{start}}}
+func newIterator[T any](start *header[T]) Iterator[T] {
+	return Iterator[T]{start: start}
 }
 
-func prefixSearch[T any](root *header[T], key []byte) (*Iterator[T], <-chan struct{}) {
+func prefixSearch[T any](root *header[T], rootWatch <-chan struct{}, prefix []byte) (Iterator[T], <-chan struct{}) {
+	if root == nil {
+		return newIterator[T](nil), rootWatch
+	}
+
 	this := root
-	var watch <-chan struct{}
+	watch := rootWatch
 	for {
+		// Does the node have part of the prefix we're looking for?
+		commonPrefix := this.prefix()[:min(len(prefix), int(this.prefixLen))]
+		if !bytes.HasPrefix(prefix, commonPrefix) {
+			// Mismatching prefix, return the watch channel from the previous matching node.
+			return newIterator[T](nil), watch
+		}
+
 		if !this.isLeaf() && this.watch != nil {
 			// Leaf watch channels only close when the leaf is manipulated,
 			// thus we only return non-leaf watch channels.
 			watch = this.watch
 		}
 
-		switch {
-		case bytes.Equal(key, this.prefix[:min(len(key), len(this.prefix))]):
+		// Consume the prefix of this node
+		prefix = prefix[len(commonPrefix):]
+		if len(prefix) == 0 {
+			// Exact match to our search prefix.
 			return newIterator(this), watch
-
-		case bytes.HasPrefix(key, this.prefix):
-			key = key[len(this.prefix):]
-			if len(key) == 0 {
-				return newIterator(this), this.watch
-			}
-
-		default:
-			return newIterator[T](nil), root.watch
 		}
 
-		this = this.find(key[0])
+		this = this.find(prefix[0])
 		if this == nil {
-			return newIterator[T](nil), root.watch
+			return newIterator[T](nil), watch
 		}
 	}
 }
@@ -117,21 +195,25 @@ func traverseToMin[T any](n *header[T], edges [][]*header[T]) [][]*header[T] {
 	return edges
 }
 
-func lowerbound[T any](start *header[T], key []byte) *Iterator[T] {
+func lowerbound[T any](start *header[T], key []byte) Iterator[T] {
+	if start == nil {
+		return Iterator[T]{}
+	}
+
 	// The starting edges to explore. This contains all larger nodes encountered
 	// on the path to the node larger or equal to the key.
-	edges := [][]*header[T]{}
+	var edges [][]*header[T]
 	this := start
 loop:
 	for {
-		switch bytes.Compare(this.prefix, key[:min(len(key), len(this.prefix))]) {
+		switch bytes.Compare(this.prefix(), key[:min(len(key), int(this.prefixLen))]) {
 		case -1:
 			// Prefix is smaller, stop here and return an iterator for
 			// the larger nodes in the parent's.
 			break loop
 
 		case 0:
-			if len(this.prefix) == len(key) {
+			if int(this.prefixLen) == len(key) {
 				// Exact match.
 				edges = append(edges, []*header[T]{this})
 				break loop
@@ -140,7 +222,7 @@ loop:
 			// Prefix matches the beginning of the key, but more
 			// remains of the key. Drop the matching part and keep
 			// going further.
-			key = key[len(this.prefix):]
+			key = key[this.prefixLen:]
 
 			if this.kind() == nodeKind256 {
 				children := this.node256().children[:]
@@ -162,7 +244,7 @@ loop:
 
 				// Find the smallest child that is equal or larger than the lower bound
 				idx := sort.Search(len(children), func(i int) bool {
-					return children[i].prefix[0] >= key[0]
+					return children[i].key() >= key[0]
 				})
 				if idx >= this.size() {
 					break loop
@@ -182,7 +264,7 @@ loop:
 	}
 
 	if len(edges) > 0 {
-		return &Iterator[T]{edges}
+		return Iterator[T]{edges: edges}
 	}
-	return &Iterator[T]{nil}
+	return Iterator[T]{}
 }

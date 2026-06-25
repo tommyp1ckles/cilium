@@ -34,7 +34,7 @@ type MonitorEvent struct {
 	// NodeName where the event occurred
 	NodeName string
 	// Payload is one of: AgentEvent, PerfEvent or LostEvent
-	Payload interface{}
+	Payload any
 }
 
 // AgentEvent is any agent event
@@ -42,7 +42,7 @@ type AgentEvent struct {
 	// Type is a monitorAPI.MessageType* value
 	Type int
 	// Message is the agent message, e.g. accesslog.LogRecord, monitorAPI.AgentNotifyMessage
-	Message interface{}
+	Message any
 }
 
 // PerfEvent is a raw event obtained from a BPF perf ring buffer
@@ -61,4 +61,8 @@ type LostEvent struct {
 	NumLostEvents uint64
 	// CPU is the cpu number if for events lost in the perf ring buffer
 	CPU int
+	// First is the timestamp of the first event that was lost
+	First time.Time
+	// Last is the timestamp of the last event that was lost
+	Last time.Time
 }

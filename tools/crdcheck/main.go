@@ -6,11 +6,15 @@ package main
 import (
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 
 	crdv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/client-go/kubernetes/scheme"
+
+	"github.com/cilium/cilium/pkg/logging"
 )
 
 const mandatoryCategory = "cilium"
@@ -23,13 +27,17 @@ var allChecks = []checkCRDFunc{
 
 func main() {
 	if len(os.Args) != 2 {
-		log.Fatalf("usage: %s <path>", os.Args[0])
+		logging.Fatal(slog.Default(), fmt.Sprintf("usage: %s <path>", os.Args[0]))
 	}
 
 	_ = crdv1.AddToScheme(scheme.Scheme)
 
-	if err := filepath.Walk(os.Args[1], func(path string, info os.FileInfo, _ error) error {
-		if info.IsDir() {
+	if err := filepath.WalkDir(os.Args[1], func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return fmt.Errorf("error accessing %s: %w", path, err)
+		}
+
+		if d.IsDir() {
 			return nil
 		}
 
@@ -39,6 +47,9 @@ func main() {
 
 		fileContent, err := os.ReadFile(path)
 		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
 			return err
 		}
 
@@ -64,18 +75,9 @@ func main() {
 }
 
 func checkForCategory(crd *crdv1.CustomResourceDefinition) error {
-	if len(crd.Spec.Names.Categories) == 0 || !sliceContains(crd.Spec.Names.Categories, mandatoryCategory) {
+	if len(crd.Spec.Names.Categories) == 0 || !slices.Contains(crd.Spec.Names.Categories, mandatoryCategory) {
 		return fmt.Errorf("category %s missing for %s", mandatoryCategory, crd.GetName())
 	}
 
 	return nil
-}
-
-func sliceContains(slice []string, item string) bool {
-	for _, a := range slice {
-		if a == item {
-			return true
-		}
-	}
-	return false
 }

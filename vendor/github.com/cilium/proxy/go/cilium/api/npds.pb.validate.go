@@ -18,7 +18,7 @@ import (
 
 	"google.golang.org/protobuf/types/known/anypb"
 
-	v3 "github.com/cilium/proxy/go/envoy/config/core/v3"
+	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 )
 
 // ensure the imports are used
@@ -36,7 +36,7 @@ var (
 	_ = anypb.Any{}
 	_ = sort.Sort
 
-	_ = v3.SocketAddress_Protocol(0)
+	_ = corev3.SocketAddress_Protocol(0)
 )
 
 // Validate checks the field values on NetworkPolicy with the rules defined in
@@ -158,8 +158,6 @@ func (m *NetworkPolicy) validate(all bool) error {
 
 	}
 
-	// no validation rules for ConntrackMapName
-
 	if len(errors) > 0 {
 		return NetworkPolicyMultiError(errors)
 	}
@@ -174,7 +172,7 @@ type NetworkPolicyMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m NetworkPolicyMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -332,7 +330,7 @@ type PortNetworkPolicyMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m PortNetworkPolicyMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -443,7 +441,7 @@ type TLSContextMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m TLSContextMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -529,7 +527,18 @@ func (m *PortNetworkPolicyRule) validate(all bool) error {
 
 	var errors []error
 
-	// no validation rules for Deny
+	// no validation rules for Precedence
+
+	if m.GetProxyId() > 65535 {
+		err := PortNetworkPolicyRuleValidationError{
+			field:  "ProxyId",
+			reason: "value must be less than or equal to 65535",
+		}
+		if !all {
+			return err
+		}
+		errors = append(errors, err)
+	}
 
 	// no validation rules for Name
 
@@ -591,8 +600,52 @@ func (m *PortNetworkPolicyRule) validate(all bool) error {
 		}
 	}
 
+	for idx, item := range m.GetServerNames() {
+		_, _ = idx, item
+
+		if !_PortNetworkPolicyRule_ServerNames_Pattern.MatchString(item) {
+			err := PortNetworkPolicyRuleValidationError{
+				field:  fmt.Sprintf("ServerNames[%v]", idx),
+				reason: "value does not match regex pattern \"^(([*]{1,2}|[*]?[-a-zA-Z0-9_]+([*][-a-zA-Z0-9_]+)*[*]?)[.])*([*]{1,2}|[*]?[-a-zA-Z0-9_]+([*][-a-zA-Z0-9_]+)*[*]?)$\"",
+			}
+			if !all {
+				return err
+			}
+			errors = append(errors, err)
+		}
+
+	}
+
 	// no validation rules for L7Proto
 
+	switch v := m.Verdict.(type) {
+	case *PortNetworkPolicyRule_PassPrecedence:
+		if v == nil {
+			err := PortNetworkPolicyRuleValidationError{
+				field:  "Verdict",
+				reason: "oneof value cannot be a typed-nil",
+			}
+			if !all {
+				return err
+			}
+			errors = append(errors, err)
+		}
+		// no validation rules for PassPrecedence
+	case *PortNetworkPolicyRule_Deny:
+		if v == nil {
+			err := PortNetworkPolicyRuleValidationError{
+				field:  "Verdict",
+				reason: "oneof value cannot be a typed-nil",
+			}
+			if !all {
+				return err
+			}
+			errors = append(errors, err)
+		}
+		// no validation rules for Deny
+	default:
+		_ = v // ensures v is used
+	}
 	switch v := m.L7.(type) {
 	case *PortNetworkPolicyRule_HttpRules:
 		if v == nil {
@@ -735,7 +788,7 @@ type PortNetworkPolicyRuleMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m PortNetworkPolicyRuleMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -800,6 +853,8 @@ var _ interface {
 	Cause() error
 	ErrorName() string
 } = PortNetworkPolicyRuleValidationError{}
+
+var _PortNetworkPolicyRule_ServerNames_Pattern = regexp.MustCompile("^(([*]{1,2}|[*]?[-a-zA-Z0-9_]+([*][-a-zA-Z0-9_]+)*[*]?)[.])*([*]{1,2}|[*]?[-a-zA-Z0-9_]+([*][-a-zA-Z0-9_]+)*[*]?)$")
 
 // Validate checks the field values on HttpNetworkPolicyRules with the rules
 // defined in the proto definition for this message. If any rules are
@@ -882,7 +937,7 @@ type HttpNetworkPolicyRulesMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m HttpNetworkPolicyRulesMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -1002,7 +1057,7 @@ type HeaderMatchMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m HeaderMatchMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -1170,7 +1225,7 @@ type HttpNetworkPolicyRuleMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m HttpNetworkPolicyRuleMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -1317,7 +1372,7 @@ type KafkaNetworkPolicyRulesMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m KafkaNetworkPolicyRulesMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -1454,7 +1509,7 @@ type KafkaNetworkPolicyRuleMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m KafkaNetworkPolicyRuleMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -1628,7 +1683,7 @@ type L7NetworkPolicyRulesMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m L7NetworkPolicyRulesMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -1768,7 +1823,7 @@ type L7NetworkPolicyRuleMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m L7NetworkPolicyRuleMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -1904,7 +1959,7 @@ type NetworkPoliciesConfigDumpMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m NetworkPoliciesConfigDumpMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}

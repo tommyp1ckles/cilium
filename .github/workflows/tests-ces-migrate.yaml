@@ -13,18 +13,21 @@ on:
       SHA:
         description: "SHA under test (head of the PR branch)."
         required: true
+      base-SHA:
+        description: "SHA of the base branch (target branch of the PR)."
+        required: false
       extra-args:
         description: "[JSON object] Arbitrary arguments passed from the trigger comment via regex capture group. Parse with 'fromJson(inputs.extra-args).argName' in workflow."
         required: false
         default: '{}'
-  # Run every 6 hours
+  # Run every 8 hours
   schedule:
-    - cron:  '0 5/6 * * *'
+    - cron:  '0 5/8 * * *'
 
 # By specifying the access of one of the scopes, all of those that are not
 # specified are set to 'none'.
 permissions:
-  # To read actions state with catchpoint/workflow-telemetry-action
+  # To read actions state with cilium/workflow-telemetry-action
   actions: read
   # To be able to access the repository with actions/checkout
   contents: read
@@ -53,14 +56,13 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  cilium_cli_ci_version:
   KIND_CONFIG: .github/kind-config.yaml
 
 jobs:
   echo-inputs:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     name: Echo Workflow Dispatch Inputs
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - name: Echo Workflow Dispatch Inputs
         run: |
@@ -68,48 +70,62 @@ jobs:
 
   commit-status-start:
     name: Commit Status Start
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Set initial commit status
-        uses: myrotvorets/set-commit-status-action@3730c0a348a2ace3c110851bed53331bc6406e9f # v2.0.1
+        uses: cilium/cilium/.github/actions/set-commit-status@main # main
         with:
           sha: ${{ inputs.SHA || github.sha }}
 
   wait-for-images:
     name: Wait for images
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout context ref (trusted)
-        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.context-ref || github.sha }}
           persist-credentials: false
       - name: Wait for images
         uses: ./.github/actions/wait-for-images
         with:
-          SHA: ${{ inputs.SHA }}
+          SHA: ${{ inputs.SHA || github.sha }}
           images: cilium-ci operator-generic-ci hubble-relay-ci cilium-cli-ci
+          login-host: ${{ vars.DOCKER_READ_HOST }}
+          login-username: ${{ vars.DOCKER_READ_USERNAME }}
+          login-password: ${{ secrets.DOCKER_READ_PASSWORD }}
 
   setup-and-test:
     needs: [wait-for-images]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     name: Installation and Migration Test
     timeout-minutes: 30
+    env:
+      job_name: "Installation and Migration Test"
     steps:
+      - name: Set commit status to pending
+        uses: cilium/cilium/.github/actions/set-commit-status@main # main
+        with:
+          sha: ${{ inputs.SHA || github.sha }}
+
       - name: Collect Workflow Telemetry
-        uses: catchpoint/workflow-telemetry-action@94c3c3d9567a0205de6da68a76c428ce4e769af1 # v2.0.0
+        uses: cilium/workflow-telemetry-action@b1a318f80a08acede58027afe1455d037379966f # v2.2.0
         with:
           comment_on_pr: false
 
       - name: Checkout target branch to access local actions
-        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ github.base_ref || github.ref }}
           persist-credentials: false
 
       - name: Set Environment Variables
         uses: ./.github/actions/set-env-variables
+
+      - name: Get connectivity test flags
+        id: e2e_config
+        uses: ./.github/actions/cli-test-config
 
       - name: Set up job variables
         id: vars
@@ -119,10 +135,14 @@ jobs:
           else
             SHA="${{ github.sha }}"
           fi
+
+          CONNECTIVITY_TEST_DEFAULTS="${{ steps.e2e_config.outputs.test_flags }}"
+
+          echo connectivity_test_defaults=${CONNECTIVITY_TEST_DEFAULTS} >> $GITHUB_OUTPUT
           echo sha=${SHA} >> $GITHUB_OUTPUT
 
       - name: Create kind cluster
-        uses: helm/kind-action@0025e74a8c7512023d06dc019c617aa3cf561fde # v1.10.0
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
         with:
           version: ${{ env.KIND_VERSION }}
           node_image: ${{ env.KIND_K8S_IMAGE }}
@@ -130,45 +150,64 @@ jobs:
           config: ${{ env.KIND_CONFIG }}
           wait: 0 # The control-plane never becomes ready, since no CNI is present
 
+      - name: Create imagePullSecret
+        run: |
+          kubectl create secret docker-registry cilium-registry \
+            --namespace kube-system \
+            --docker-server=${{ vars.DOCKER_READ_HOST }} \
+            --docker-username="${{ vars.DOCKER_READ_USERNAME }}" \
+            --docker-password="${{ secrets.DOCKER_READ_PASSWORD }}"
+
       - name: Set up install variables
         id: cilium-config
         uses: ./.github/actions/cilium-config
         with:
           image-tag: ${{ steps.vars.outputs.sha }}
+          registry_host: ${{ vars.DOCKER_READ_HOST }}
+          registry_organization: ${{ vars.DOCKER_READ_ORG }}
           chart-dir: 'install/kubernetes/cilium'
           ipv6: false
           egress-gateway: false # Currently incompatible with CES
           mutual-auth: false
           misc: 'bpfClockProbe=false,cni.uninstall=false'
+          image-pull-secret: "cilium-registry"
 
       - name: Install Cilium CLI
-        uses: cilium/cilium-cli@62bd4511031211b50a4623870955a5ad27b43e3b # v0.16.16
+        if: ${{ steps.cilium-config.outputs.skip != 'true' }}
+        uses: cilium/cilium-cli@e391e739db83a8b888ecf18786af6853c51a0c58 # v0.19.5
         with:
           skip-build: ${{ env.CILIUM_CLI_SKIP_BUILD }}
           image-repo: ${{ env.CILIUM_CLI_IMAGE_REPO }}
           image-tag: ${{ steps.vars.outputs.sha }}
+          repository: ${{ env.CILIUM_CLI_RELEASE_REPO }}
+          release-version: ${{ env.CILIUM_CLI_VERSION }}
 
       - name: Install Cilium
+        if: ${{ steps.cilium-config.outputs.skip != 'true' }}
         id: install-cilium
         run: |
           cilium install ${{ steps.cilium-config.outputs.config }}
 
       - name: Wait for Cilium status to be ready
+        if: ${{ steps.cilium-config.outputs.skip != 'true' }}
         run: |
-          cilium status --wait
+          cilium status --wait --interactive=false
           kubectl get pods --all-namespaces -o wide
           mkdir -p cilium-junits
           kubectl -n kube-system exec daemonset/cilium -c cilium-agent -- cilium-dbg status
 
       - name: Setup conn-disrupt-test
+        if: ${{ steps.cilium-config.outputs.skip != 'true' }}
         uses: ./.github/actions/conn-disrupt-test-setup
 
       - name: Enable CiliumEndpointSlice
+        if: ${{ steps.cilium-config.outputs.skip != 'true' }}
         shell: bash
         run: |
           kubectl patch -n kube-system configmap cilium-config --type merge --patch '{"data":{"enable-cilium-endpoint-slice":"true"}}'
 
           kubectl rollout restart -n kube-system deployment cilium-operator
+          # shellcheck disable=SC2034
           for i in $(seq 1 6);
           do
             if [[ $(kubectl get crd ciliumendpointslices.cilium.io) != "" ]]; then
@@ -181,57 +220,36 @@ jobs:
 
           kubectl rollout restart -n kube-system ds cilium
 
-          cilium status --wait
+          cilium status --wait --interactive=false
           kubectl get pods --all-namespaces -o wide
           kubectl -n kube-system exec daemonset/cilium -c cilium-agent -- cilium-dbg status
 
       - name: Run tests after migration
+        if: ${{ steps.cilium-config.outputs.skip != 'true' }}
+        id: run-tests
         uses: ./.github/actions/conn-disrupt-test-check
         with:
           job-name: ces-enable
           full-test: 'true'
+          test-concurrency: 5
+          extra-connectivity-test-flags: ${{ steps.vars.outputs.connectivity_test_defaults }}
 
-      - name: Fetch artifacts
-        if: ${{ failure() && steps.install-cilium.outcome != 'skipped' }}
-        # The following is needed to prevent hubble from receiving an empty
-        # file (EOF) on stdin and displaying no flows.
-        shell: 'script -q -e -c "bash --noprofile --norc -eo pipefail {0}"'
-        run: |
-          echo "=== Retrieve cluster state ==="
-          kubectl get pods --all-namespaces -o wide
-          cilium status
-          mkdir -p cilium-sysdumps
-
-          cilium sysdump --output-filename cilium-sysdumps-out
-
-      - name: Upload cilium-sysdumps
-        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
-        if: ${{ failure() }}
+      - name: Run common post steps
+        if: ${{ always() && steps.install-cilium.outcome != 'skipped' }}
+        uses: ./.github/actions/post-logic
         with:
-          name: cilium-sysdumps-out.zip
-          path: cilium-sysdumps-out.zip
+          always_capture_sysdump: true
+          artifacts_suffix: "tests-ces-migrate"
+          job_status: "${{ job.status }}"
+          capture_features_tested: ${{ steps.run-tests.outcome != 'skipped' }}
 
-      - name: Upload JUnits [junit]
-        if: ${{ always() }}
-        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
-        with:
-          name: cilium-junits
-          path: cilium-junits/*.xml
-
-      - name: Publish Test Results As GitHub Summary
-        if: ${{ always() }}
-        uses: aanm/junit2md@332ebf0fddd34e91b03a832cfafaa826306558f9 # v0.0.3
-        with:
-          junit-directory: "cilium-junits"
-
-  commit-status-final:
+  merge-upload-and-status:
+    name: Merge Upload and Status
     if: ${{ always() }}
-    name: Commit Status Final
     needs: setup-and-test
-    runs-on: ubuntu-latest
-    steps:
-      - name: Set final commit status
-        uses: myrotvorets/set-commit-status-action@3730c0a348a2ace3c110851bed53331bc6406e9f # v2.0.1
-        with:
-          sha: ${{ inputs.SHA || github.sha }}
-          status: ${{ needs.setup-and-test.result }}
+    uses: ./.github/workflows/common-post-jobs.yaml
+    secrets: inherit
+    with:
+      context-ref: ${{ inputs.context-ref || github.sha }}
+      sha: ${{ inputs.SHA || github.sha }}
+      success: ${{ needs.setup-and-test.result == 'success' }}

@@ -44,6 +44,14 @@
 #undef __always_inline		/* stddef.h defines its own */
 #define __always_inline		inline __attribute__((always_inline))
 
+#ifndef __noinline
+# define __noinline		__attribute__((noinline))
+#endif
+
+#ifndef __weak
+# define __weak		__attribute__((weak))
+#endif
+
 #ifndef __stringify
 # define __stringify(X)		#X
 #endif

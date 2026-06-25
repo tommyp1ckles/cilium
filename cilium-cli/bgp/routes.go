@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/netip"
 	"os"
 	"slices"
@@ -19,14 +20,14 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
+	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/cilium-cli/defaults"
 	"github.com/cilium/cilium/cilium-cli/status"
-	"github.com/cilium/cilium/pkg/bgpv1/api"
-	"github.com/cilium/cilium/pkg/bgpv1/types"
+	"github.com/cilium/cilium/pkg/bgp/api"
+	"github.com/cilium/cilium/pkg/bgp/types"
 )
 
 const (
@@ -240,11 +241,7 @@ func validateGetRoutesArgs(args []string) error {
 
 func printRouteSummary(out io.Writer, routesPerNode map[string][]*models.BgpRoute, printPeer bool) {
 	// sort by node names
-	var nodes []string
-	for node := range routesPerNode {
-		nodes = append(nodes, node)
-	}
-	slices.Sort(nodes)
+	nodes := slices.Sorted(maps.Keys(routesPerNode))
 
 	// sort routes per node
 	for _, routes := range routesPerNode {
@@ -287,7 +284,7 @@ func printRouteSummary(out io.Writer, routesPerNode map[string][]*models.BgpRout
 				}
 				fmt.Fprintf(w, "%s\t", path.NLRI)
 				fmt.Fprintf(w, "%s\t", nextHopFromPathAttributes(path.PathAttributes))
-				fmt.Fprintf(w, "%s\t", time.Duration(path.AgeNanoseconds).Round(time.Second))
+				fmt.Fprintf(w, "%s\t", path.Age().Round(time.Second))
 				fmt.Fprintf(w, "%s\t", path.PathAttributes)
 				fmt.Fprintf(w, "\n")
 			}

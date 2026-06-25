@@ -75,12 +75,17 @@ type ModifyInstanceAttributeRequest struct {
 	Recyclable                  requests.Boolean                               `position:"Query" name:"Recyclable"`
 	NetworkInterfaceQueueNumber requests.Integer                               `position:"Query" name:"NetworkInterfaceQueueNumber"`
 	Description                 string                                         `position:"Query" name:"Description"`
+	CpuOptionsThreadsPerCore    requests.Integer                               `position:"Query" name:"CpuOptions.ThreadsPerCore"`
 	DeletionProtection          requests.Boolean                               `position:"Query" name:"DeletionProtection"`
 	UserData                    string                                         `position:"Query" name:"UserData"`
 	Password                    string                                         `position:"Query" name:"Password"`
 	HostName                    string                                         `position:"Query" name:"HostName"`
+	PrivateDnsNameOptions       ModifyInstanceAttributePrivateDnsNameOptions   `position:"Query" name:"PrivateDnsNameOptions"  type:"Struct"`
 	CpuOptionsTopologyType      string                                         `position:"Query" name:"CpuOptions.TopologyType"`
+	ImageOptions                ModifyInstanceAttributeImageOptions            `position:"Query" name:"ImageOptions"  type:"Struct"`
+	OSNameEn                    string                                         `position:"Query" name:"OSNameEn"`
 	EnableJumboFrame            requests.Boolean                               `position:"Query" name:"EnableJumboFrame"`
+	CpuOptionsCore              requests.Integer                               `position:"Query" name:"CpuOptions.Core"`
 	ResourceOwnerAccount        string                                         `position:"Query" name:"ResourceOwnerAccount"`
 	OwnerAccount                string                                         `position:"Query" name:"OwnerAccount"`
 	CreditSpecification         string                                         `position:"Query" name:"CreditSpecification"`
@@ -92,9 +97,24 @@ type ModifyInstanceAttributeRequest struct {
 	RemoteConnectionOptions     ModifyInstanceAttributeRemoteConnectionOptions `position:"Query" name:"RemoteConnectionOptions"  type:"Struct"`
 }
 
+// ModifyInstanceAttributePrivateDnsNameOptions is a repeated param struct in ModifyInstanceAttributeRequest
+type ModifyInstanceAttributePrivateDnsNameOptions struct {
+	HostnameType                  string `name:"HostnameType"`
+	EnableInstanceIdDnsARecord    string `name:"EnableInstanceIdDnsARecord"`
+	EnableInstanceIdDnsAAAARecord string `name:"EnableInstanceIdDnsAAAARecord"`
+	EnableIpDnsARecord            string `name:"EnableIpDnsARecord"`
+	EnableIpDnsPtrRecord          string `name:"EnableIpDnsPtrRecord"`
+}
+
+// ModifyInstanceAttributeImageOptions is a repeated param struct in ModifyInstanceAttributeRequest
+type ModifyInstanceAttributeImageOptions struct {
+	CurrentOSNVMeSupported string `name:"CurrentOSNVMeSupported"`
+}
+
 // ModifyInstanceAttributeAdditionalInfo is a repeated param struct in ModifyInstanceAttributeRequest
 type ModifyInstanceAttributeAdditionalInfo struct {
-	PvdConfig string `name:"PvdConfig"`
+	PvdConfig             string `name:"PvdConfig"`
+	EnableHighDensityMode string `name:"EnableHighDensityMode"`
 }
 
 // ModifyInstanceAttributeRemoteConnectionOptions is a repeated param struct in ModifyInstanceAttributeRequest

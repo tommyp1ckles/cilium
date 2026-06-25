@@ -4,11 +4,15 @@
 package operator
 
 import (
+	"log/slog"
+
 	"github.com/cilium/hive/cell"
-	"github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
 
 	"github.com/cilium/cilium/pkg/clustermesh/common"
+	cmendpointslice "github.com/cilium/cilium/pkg/clustermesh/endpointslice"
+	mcsapitypes "github.com/cilium/cilium/pkg/clustermesh/mcsapi/types"
+	"github.com/cilium/cilium/pkg/clustermesh/observer"
 	"github.com/cilium/cilium/pkg/clustermesh/types"
 	"github.com/cilium/cilium/pkg/clustermesh/wait"
 	"github.com/cilium/cilium/pkg/dial"
@@ -16,15 +20,16 @@ import (
 	"github.com/cilium/cilium/pkg/metrics"
 )
 
-const subsystem = "clustermesh"
-
 // Cell is the cell for the Operator ClusterMesh
 var Cell = cell.Module(
 	"clustermesh",
 	"Cell providing clustermesh capabilities in the operator",
 	cell.Config(ClusterMeshConfig{}),
-	cell.Config(MCSAPIConfig{}),
+	cell.Config(mcsapitypes.DefaultMCSAPIConfig),
+	cell.Config(types.DefaultServiceModeV2Config),
+	cell.Invoke(types.ServiceModeV2Config.Validate),
 	cell.Provide(
+		common.DefaultRemoteClientFactory,
 		newClusterMesh,
 		newAPIClustersHandler,
 	),
@@ -33,27 +38,36 @@ var Cell = cell.Module(
 	cell.Config(wait.TimeoutConfigDefault),
 
 	metrics.Metric(NewMetrics),
-	metrics.Metric(common.MetricsProvider(subsystem)),
+	metrics.Metric(common.MetricsProvider(metrics.SubsystemClusterMesh)),
+	metrics.Metric(cmendpointslice.MetricsProvider(metrics.CiliumOperatorNamespace)),
+	cmendpointslice.Cell,
 )
 
 type clusterMeshParams struct {
 	cell.In
 
 	common.Config
+	types.ServiceModeV2Config
 	wait.TimeoutConfig
 	Cfg       ClusterMeshConfig
-	CfgMCSAPI MCSAPIConfig
-	Logger    logrus.FieldLogger
+	CfgMCSAPI mcsapitypes.MCSAPIConfig
+	Logger    *slog.Logger
 
-	// ClusterInfo is the id/name of the local cluster. This is used for logging and metrics
+	// ClusterInfo is the id/name of the local cluster.
 	ClusterInfo types.ClusterInfo
+
+	// RemoteClientFactory is the factory to create new backend instances.
+	RemoteClientFactory common.RemoteClientFactoryFn
 
 	Metrics       Metrics
 	CommonMetrics common.Metrics
 	StoreFactory  store.Factory
 
 	// ServiceResolver, if not nil, is used to create a custom dialer for service resolution.
-	ServiceResolver *dial.ServiceResolver
+	ServiceResolver dial.Resolver
+
+	// ObserverFactories is the list of factories to instantiate additional observers.
+	ObserverFactories []observer.Factory `group:"clustermesh-observers"`
 }
 
 // ClusterMeshConfig contains the configuration for ClusterMesh inside the operator.
@@ -68,20 +82,5 @@ func (cfg ClusterMeshConfig) Flags(flags *pflag.FlagSet) {
 		"clustermesh-enable-endpoint-sync",
 		cfg.ClusterMeshEnableEndpointSync,
 		"Whether or not the endpoint slice cluster mesh synchronization is enabled.",
-	)
-}
-
-// MCSAPIConfig contains the configuration for MCS-API
-type MCSAPIConfig struct {
-	// ClusterMeshEnableMCSAPI enables the MCS API support
-	ClusterMeshEnableMCSAPI bool `mapstructure:"clustermesh-enable-mcs-api"`
-}
-
-// Flags adds the flags used by ClientConfig.
-func (cfg MCSAPIConfig) Flags(flags *pflag.FlagSet) {
-	flags.Bool(
-		"clustermesh-enable-mcs-api",
-		cfg.ClusterMeshEnableMCSAPI,
-		"Whether or not the MCS API support is enabled.",
 	)
 }

@@ -5,6 +5,7 @@ package ciliumidentity
 
 import (
 	"context"
+	"sync"
 
 	"github.com/cilium/cilium/pkg/k8s/resource"
 	"github.com/cilium/cilium/pkg/logging/logfields"
@@ -30,12 +31,24 @@ func (p PodItem) Meter(enqueuedLatency float64, processingLatency float64, isErr
 	metrics.meterLatency(LabelValuePod, enqueuedLatency, processingLatency)
 	metrics.markEvent(LabelValuePod, isErr)
 }
-func (c *Controller) processPodEvents(ctx context.Context) error {
+
+func (c *Controller) processPodEvents(ctx context.Context, wg *sync.WaitGroup) error {
 	for event := range c.pod.Events(ctx) {
-		if event.Kind == resource.Upsert || event.Kind == resource.Delete {
-			c.logger.Debug("Got Pod event", logfields.Type, event.Kind, logfields.K8sPodName, event.Key.String())
-			c.enqueueReconciliation(PodItem{podResourceKey(event.Object.Name, event.Object.Namespace)}, 0)
+		if event.Kind == resource.Sync {
+			wg.Done()
 		}
+
+		if event.Kind == resource.Upsert || event.Kind == resource.Delete {
+			if !event.Object.Spec.HostNetwork {
+				c.logger.DebugContext(ctx,
+					"Got Pod event",
+					logfields.Type, event.Kind,
+					logfields.K8sPodName, event.Key,
+				)
+				c.enqueueReconciliation(PodItem{podResourceKey(event.Object.Name, event.Object.Namespace)}, 0)
+			}
+		}
+
 		event.Done(nil)
 	}
 	return nil

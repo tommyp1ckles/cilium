@@ -7,19 +7,19 @@ import (
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/runtime"
-	mcsapiv1alpha1 "sigs.k8s.io/mcs-api/pkg/apis/v1alpha1"
-	mcsapicontrollers "sigs.k8s.io/mcs-api/pkg/controllers"
+	mcsapicontrollers "sigs.k8s.io/mcs-api/controllers"
+	mcsapiv1beta1 "sigs.k8s.io/mcs-api/pkg/apis/v1beta1"
 )
 
 // HasServiceImportSupport return if the ServiceImport CRD is supported.
-// This checks if the MCS API group is registered in the client scheme
+// This checks if the MCS API group ServiceImport CRD is registered in the client scheme
 // and it is expected that it is registered only if the ServiceImport
 // CRD has been installed prior to the client setup.
 func HasServiceImportSupport(scheme *runtime.Scheme) bool {
-	return scheme.IsGroupRegistered(mcsapiv1alpha1.GroupVersion.Group)
+	return scheme.Recognizes(mcsapiv1beta1.SchemeGroupVersion.WithKind(kindServiceImport))
 }
 
-func GetServiceName(svcImport *mcsapiv1alpha1.ServiceImport) (string, error) {
+func GetServiceName(svcImport *mcsapiv1beta1.ServiceImport) (string, error) {
 	// ServiceImport gateway api support is conditioned by the fact
 	// that an actual Service backs it. Other implementations of MCS API
 	// are not supported.

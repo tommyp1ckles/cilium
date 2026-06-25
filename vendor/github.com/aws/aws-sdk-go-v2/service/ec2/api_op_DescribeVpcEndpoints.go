@@ -43,6 +43,8 @@ type DescribeVpcEndpointsInput struct {
 	//
 	//   - service-name - The name of the service.
 	//
+	//   - service-region - The Region of the service.
+	//
 	//   - tag : - The key/value combination of a tag assigned to the resource. Use the
 	//   tag key in the filter name and the tag value as the filter value. For example,
 	//   to find all resources that have a tag with the key Owner and the value TeamA ,
@@ -59,7 +61,7 @@ type DescribeVpcEndpointsInput struct {
 	//   | available | deleting | deleted | rejected | failed ).
 	//
 	//   - vpc-endpoint-type - The type of VPC endpoint ( Interface | Gateway |
-	//   GatewayLoadBalancer ).
+	//   GatewayLoadBalancer | Resource | ServiceNetwork ).
 	Filters []types.Filter
 
 	// The maximum number of items to return for this request. The request returns a
@@ -127,13 +129,16 @@ func (c *Client) addOperationDescribeVpcEndpointsMiddlewares(stack *middleware.S
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
+	if err = addRetry(stack, options, c); err != nil {
 		return err
 	}
 	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
 	if err = addRecordResponseTiming(stack); err != nil {
+		return err
+	}
+	if err = addSpanRetryLoop(stack, options); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -148,10 +153,10 @@ func (c *Client) addOperationDescribeVpcEndpointsMiddlewares(stack *middleware.S
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
-	if err = addTimeOffsetBuild(stack, c); err != nil {
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
-	if err = addUserAgentRetryMode(stack, options); err != nil {
+	if err = addCredentialSource(stack, options); err != nil {
 		return err
 	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opDescribeVpcEndpoints(options.Region), middleware.Before); err != nil {
@@ -170,6 +175,15 @@ func (c *Client) addOperationDescribeVpcEndpointsMiddlewares(stack *middleware.S
 		return err
 	}
 	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptBeforeRetryLoop(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptAttempt(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil

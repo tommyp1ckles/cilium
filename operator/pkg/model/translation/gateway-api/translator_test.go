@@ -5,459 +5,211 @@ package gateway_api
 
 import (
 	"fmt"
+	"os"
+	"strings"
 	"testing"
 
-	envoy_config_route_v3 "github.com/cilium/proxy/go/envoy/config/route/v3"
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/testing/protocmp"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
-	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	k8syaml "sigs.k8s.io/yaml"
 
 	"github.com/cilium/cilium/operator/pkg/model"
 	"github.com/cilium/cilium/operator/pkg/model/translation"
 	ciliumv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
+	"github.com/cilium/cilium/pkg/shortener"
 )
 
 func Test_translator_Translate(t *testing.T) {
-	type args struct {
-		m *model.Model
-	}
 	tests := []struct {
 		name    string
-		args    args
-		want    *ciliumv2.CiliumEnvoyConfig
 		wantErr bool
 	}{
-		{
-			name: "Basic HTTP Listener",
-			args: args{
-				m: &model.Model{
-					HTTP: basicHTTPListeners(80),
-				},
-			},
-			want: basicHTTPListenersCiliumEnvoyConfig,
-		},
-		{
-			name: "Basic TLS SNI Listener",
-			args: args{
-				m: &model.Model{
-					TLSPassthrough: basicTLSListeners,
-				},
-			},
-			want: basicTLSListenersCiliumEnvoyConfig,
-		},
-		{
-			name: "Conformance/HTTPRouteSimpleSameNamespace",
-			args: args{
-				m: &model.Model{
-					HTTP: simpleSameNamespaceHTTPListeners,
-				},
-			},
-			want: simpleSameNamespaceHTTPListenersCiliumEnvoyConfig,
-		},
-		{
-			name: "Conformance/HTTPRouteBackendProtocolH2C",
-			args: args{
-				m: &model.Model{
-					HTTP: backendProtocolDisabledH2CHTTPListeners,
-				},
-			},
-			want: simpleSameNamespaceHTTPListenersCiliumEnvoyConfig,
-		},
-		{
-			name: "Conformance/HTTPRouteCrossNamespace",
-			args: args{
-				m: &model.Model{
-					HTTP: crossNamespaceHTTPListeners,
-				},
-			},
-			want: crossNamespaceHTTPListenersCiliumEnvoyConfig,
-		},
-		{
-			name: "Conformance/HTTPExactPathMatching",
-			args: args{
-				m: &model.Model{
-					HTTP: exactPathMatchingHTTPListeners,
-				},
-			},
-			want: exactPathMatchingHTTPListenersCiliumEnvoyConfig,
-		},
-		{
-			name: "Conformance/HTTPRouteHeaderMatching",
-			args: args{
-				m: &model.Model{
-					HTTP: headerMatchingHTTPListeners,
-				},
-			},
-			want: headerMatchingHTTPCiliumEnvoyConfig,
-		},
-		{
-			name: "Conformance/HTTPRouteHostnameIntersection",
-			args: args{
-				m: &model.Model{
-					HTTP: hostnameIntersectionHTTPListeners,
-				},
-			},
-			want: hostnameIntersectionHTTPListenersCiliumEnvoyConfig,
-		},
-		{
-			name: "Conformance/HTTPRouteListenerHostnameMatching",
-			args: args{
-				m: &model.Model{
-					HTTP: listenerHostnameMatchingHTTPListeners,
-				},
-			},
-			want: listenerHostNameMatchingCiliumEnvoyConfig,
-		},
-		{
-			name: "Conformance/HTTPRouteMatchingAcrossRoutes",
-			args: args{
-				m: &model.Model{
-					HTTP: matchingAcrossHTTPListeners,
-				},
-			},
-			want: matchingAcrossHTTPListenersCiliumEnvoyConfig,
-		},
-		{
-			name: "Conformance/HTTPRouteMatching",
-			args: args{
-				m: &model.Model{
-					HTTP: matchingHTTPListeners,
-				},
-			},
-			want: matchingHTTPListenersCiliumEnvoyConfig,
-		},
-		{
-			name: "Conformance/HTTPRouteMethodMatching",
-			args: args{
-				m: &model.Model{
-					HTTP: methodMatchingHTTPListeners,
-				},
-			},
-			want: methodMatchingHTTPListenersHTTPListenersCiliumEnvoyConfig,
-		},
-		{
-			name: "Conformance/HTTPRouteQueryParamMatching",
-			args: args{
-				m: &model.Model{
-					HTTP: queryParamMatchingHTTPListeners,
-				},
-			},
-			want: queryParamMatchingHTTPListenersCiliumEnvoyConfig,
-		},
-		{
-			name: "Conformance/HTTPRouteRequestHeaderModifier",
-			args: args{
-				m: &model.Model{
-					HTTP: requestHeaderModifierHTTPListeners,
-				},
-			},
-			want: requestHeaderModifierHTTPListenersCiliumEnvoyConfig,
-		},
-		{
-			name: "Conformance/HTTPRouteBackendRefsRequestHeaderModifier",
-			args: args{
-				m: &model.Model{
-					HTTP: backendRefsRequestHeaderModifierHTTPListeners,
-				},
-			},
-			want: backendRefsRequestHeaderModifierHTTPListenersCiliumEnvoyConfig,
-		},
-		{
-			name: "Conformance/HTTPRouteRequestRedirect",
-			args: args{
-				m: &model.Model{
-					HTTP: requestRedirectHTTPListeners,
-				},
-			},
-			want: requestRedirectHTTPListenersCiliumEnvoyConfig,
-		},
-		{
-			name: "Conformance/HTTPRouteResponseHeaderModifier",
-			args: args{
-				m: &model.Model{
-					HTTP: responseHeaderModifierHTTPListeners,
-				},
-			},
-			want: responseHeaderModifierHTTPListenersCiliumEnvoyConfig,
-		},
-		{
-			name: "Conformance/HTTPRouteBackendRefsResponseHeaderModifier",
-			args: args{
-				m: &model.Model{
-					HTTP: backendRefsResponseHeaderModifierHTTPListeners,
-				},
-			},
-			want: backendRefsResponseHeaderModifierHTTPListenersCiliumEnvoyConfig,
-		},
-		{
-			name: "Conformance/HTTPRouteRewriteHost",
-			args: args{
-				m: &model.Model{
-					HTTP: rewriteHostHTTPListeners,
-				},
-			},
-			want: rewriteHostHTTPListenersCiliumEnvoyConfig,
-		},
-		{
-			name: "Conformance/HTTPRouteRewritePath",
-			args: args{
-				m: &model.Model{
-					HTTP: rewritePathHTTPListeners,
-				},
-			},
-			want: rewritePathHTTPListenersCiliumEnvoyConfig,
-		},
-		{
-			name: "Conformance/HTTPRouteRequestMirror",
-			args: args{
-				m: &model.Model{
-					HTTP: mirrorHTTPListeners,
-				},
-			},
-			want: mirrorHTTPListenersCiliumEnvoyConfig,
-		},
-		{
-			name: "Conformance/HTTPRouteRequestRedirectWithMultiHTTPListeners",
-			args: args{
-				m: &model.Model{
-					HTTP: requestRedirectWithMultiHTTPListeners,
-				},
-			},
-			want: requestRedirectWithMultiHTTPListenersCiliumEnvoyConfig,
-		},
+		// Gateway API related tests
+		{name: "basic_http_listener"},
+		{name: "basic_http_listener_without_grpc_web_translation"},
+		{name: "basic_http_listener_nodeport"},
+		{name: "basic_http_listener_external_traffic_policy"},
+		{name: "basic_http_listener_load_balancer"},
+		{name: "basic_tls_sni_listener"},
+		{name: "tls_sni_weighted_backends"},
+		{name: "basic_https_multi_port_listener"},
+		{name: "conformance/httproute_simple_same_namespace"},
+		{name: "conformance/httproute_backend_protocol_h_2_c"},
+		{name: "conformance/httproute_cross_namespace"},
+		{name: "conformance/httpexact_path_matching"},
+		{name: "conformance/httproute_header_matching"},
+		{name: "conformance/httproute_hostname_intersection"},
+		{name: "conformance/httproute_listener_hostname_matching"},
+		{name: "conformance/httproute_matching_across_routes"},
+		{name: "conformance/httproute_matching"},
+		{name: "conformance/httproute_method_matching"},
+		{name: "conformance/httproute_query_param_matching"},
+		{name: "conformance/httproute_request_header_modifier"},
+		{name: "conformance/httproute_backend_refs_request_header_modifier"},
+		{name: "conformance/httproute_request_redirect"},
+		{name: "conformance/httproute_response_header_modifier"},
+		{name: "conformance/httproute_backend_refs_response_header_modifier"},
+		{name: "conformance/httproute_rewrite_host"},
+		{name: "conformance/httproute_rewrite_path"},
+		{name: "conformance/httproute_request_mirror"},
+		{name: "conformance/httproute_request_redirect_with_multi_httplisteners"},
+		{name: "conformance/httproute_backend_protocol_h_2_c_app_protocol"},
+
+		// TLSRoute related tests
+
+		{name: "conformance/tlsroute_hostname_intersection"},
+
+		// GAMMA related tests
+		{name: "conformance/gamma/mesh_frontend"},
+		{name: "conformance/gamma/mesh_ports"},
+		{name: "conformance/gamma/mesh_splits"},
+		{name: "httproute_external_auth_grpc"},
+		{name: "httproute_external_auth_grpc_with_tls"},
+		{name: "httproute_external_auth_http"},
+		{name: "httproute_external_auth_http_with_tls"},
+		{name: "httproute_external_auth_mixed"},
+		{name: "httproute_external_auth_shared_and_no_auth"},
+		{name: "tcproute_basic"},
+		{name: "udproute_basic"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			cfg := translation.Config{}
+			readInput(t, fmt.Sprintf("testdata/%s/config-input.yaml", tt.name), &cfg)
 			trans := &gatewayAPITranslator{
-				cecTranslator: translation.NewCECTranslator("cilium-secrets", false, false, true, 60, false, nil, false, false, 0),
+				cecTranslator: translation.NewCECTranslator(cfg),
 			}
-			cec, _, _, err := trans.Translate(tt.args.m)
+
+			input := &model.Model{}
+			readInput(t, fmt.Sprintf("testdata/%s/input.yaml", tt.name), input)
+			expectedCEC := &ciliumv2.CiliumEnvoyConfig{}
+			// An empty cec-output.yaml means no CEC is expected (L4-only paths,
+			// e.g. TCPRoute/UDPRoute, don't produce a CiliumEnvoyConfig).
+			cecYaml := readOutput(t, fmt.Sprintf("testdata/%s/cec-output.yaml", tt.name), expectedCEC)
+			var wantCEC *ciliumv2.CiliumEnvoyConfig
+			if cecYaml != "" {
+				wantCEC = expectedCEC
+			}
+			expectedService := &corev1.Service{}
+			readOutput(t, fmt.Sprintf("testdata/%s/service-output.yaml", tt.name), expectedService)
+
+			cec, svc, eps, err := trans.Translate(input)
+
 			require.Equal(t, tt.wantErr, err != nil, "Error mismatch")
-			require.Equal(t, tt.want, cec, "CiliumEnvoyConfig did not match")
-		})
-	}
-}
-
-func Test_translator_TranslateResource(t *testing.T) {
-	type args struct {
-		m *model.Model
-	}
-	tests := []struct {
-		name          string
-		args          args
-		wantErr       bool
-		validateFuncs []func(config *ciliumv2.CiliumEnvoyConfig) bool
-	}{
-		{
-			name: "MultipleListenerGateway",
-			args: args{
-				m: &model.Model{
-					HTTP: multipleListenerGatewayListeners,
-				},
-			},
-			validateFuncs: []func(cec *ciliumv2.CiliumEnvoyConfig) bool{
-				func(cec *ciliumv2.CiliumEnvoyConfig) bool {
-					resource := ciliumv2.XDSResource{
-						Any: toAny(&envoy_config_route_v3.RouteConfiguration{
-							Name: "listener-insecure",
-							VirtualHosts: []*envoy_config_route_v3.VirtualHost{
-								{
-									Name: "example.com",
-									Domains: []string{
-										"example.com",
-										"example.com:*",
-									},
-									Routes: []*envoy_config_route_v3.Route{
-										{
-											Match: &envoy_config_route_v3.RouteMatch{
-												PathSpecifier: &envoy_config_route_v3.RouteMatch_Prefix{
-													Prefix: "/",
-												},
-											},
-											Action: &envoy_config_route_v3.Route_Redirect{
-												Redirect: &envoy_config_route_v3.RedirectAction{
-													SchemeRewriteSpecifier: &envoy_config_route_v3.RedirectAction_SchemeRedirect{
-														SchemeRedirect: "https",
-													},
-													PortRedirect: 443,
-												},
-											},
-										},
-									},
-								},
-							},
-						}),
-					}
-
-					expected, _ := resource.MarshalJSON()
-					got, _ := cec.Spec.Resources[1].MarshalJSON()
-					return assert.Equal(t, string(expected), string(got), "Route Configuration mismatch")
-				},
-				func(cec *ciliumv2.CiliumEnvoyConfig) bool {
-					resource := ciliumv2.XDSResource{
-						Any: toAny(&envoy_config_route_v3.RouteConfiguration{
-							Name: "listener-secure",
-							VirtualHosts: []*envoy_config_route_v3.VirtualHost{
-								{
-									Name: "example.com",
-									Domains: []string{
-										"example.com",
-										"example.com:*",
-									},
-									Routes: []*envoy_config_route_v3.Route{
-										{
-											Match: &envoy_config_route_v3.RouteMatch{
-												PathSpecifier: &envoy_config_route_v3.RouteMatch_Prefix{
-													Prefix: "/",
-												},
-											},
-											Action: toRouteAction("default", "my-service", "8080"),
-										},
-									},
-								},
-							},
-						}),
-					}
-
-					expected, _ := resource.MarshalJSON()
-					got, _ := cec.Spec.Resources[2].MarshalJSON()
-					return assert.Equal(t, string(expected), string(got), "Route Configuration mismatch")
-				},
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			trans := &gatewayAPITranslator{
-				cecTranslator: translation.NewCECTranslator("cilium-secrets", false, false, true, 60, false, nil, false, false, 0),
+			require.Equal(t, expectedService, svc, "Service mismatch")
+			require.NotNil(t, eps)
+			for i, ep := range eps {
+				require.Equal(t, svc.Name, ep.Labels[discoveryv1.LabelServiceName], "EndpointSlice[%d] must carry the Service association label", i)
 			}
-			cec, _, _, err := trans.Translate(tt.args.m)
-			require.Equal(t, tt.wantErr, err != nil, "Error mismatch")
-			for _, fn := range tt.validateFuncs {
-				require.True(t, fn(cec), "Validation failed")
-			}
-		})
-	}
-}
 
-func Test_translator_Translate_AppProtocol(t *testing.T) {
-	type args struct {
-		m *model.Model
-	}
-	tests := []struct {
-		name    string
-		args    args
-		want    *ciliumv2.CiliumEnvoyConfig
-		wantErr bool
-	}{
-		{
-			name: "Conformance/HTTPRouteBackendProtocolH2C",
-			args: args{
-				m: &model.Model{
-					HTTP: backendProtocolEnabledH2CHTTPListeners,
-				},
-			},
-			want: backendProtocolEnabledH2CHTTPListenersCiliumEnvoyConfig,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			trans := &gatewayAPITranslator{
-				cecTranslator: translation.NewCECTranslator("cilium-secrets", false, true, true, 60, false, nil, false, false, 0),
+			diffOutput := cmp.Diff(wantCEC, cec, protocmp.Transform())
+			if len(diffOutput) != 0 {
+				t.Errorf("CiliumEnvoyConfigs did not match:\n%s\n", diffOutput)
 			}
-			cec, _, _, err := trans.Translate(tt.args.m)
-			require.Equal(t, tt.wantErr, err != nil, "Error mismatch")
-			require.Equal(t, tt.want, cec, "CiliumEnvoyConfig did not match")
 		})
 	}
 }
 
 func Test_translator_Translate_HostNetwork(t *testing.T) {
-	type args struct {
-		m *model.Model
-	}
 	tests := []struct {
 		name              string
-		args              args
 		nodeLabelSelector *slim_metav1.LabelSelector
 		ipv4Enabled       bool
 		ipv6Enabled       bool
-		want              *ciliumv2.CiliumEnvoyConfig
 		wantErr           bool
 	}{
 		{
-			name:        "Basic HTTP Listener",
+			name:        "host_network/basic_http_listener",
 			ipv4Enabled: true,
-			args: args{
-				m: &model.Model{
-					HTTP: basicHTTPListeners(80),
-				},
-			},
-			want: basicHostPortHTTPListenersCiliumEnvoyConfig("0.0.0.0", 80, nil),
 		},
 		{
-			name:        "Basic HTTP Listener with different port",
+			name:        "host_network/basic_http_listener_with_different_port",
 			ipv4Enabled: true,
-			args: args{
-				m: &model.Model{
-					HTTP: basicHTTPListeners(55555),
-				},
-			},
-			want: basicHostPortHTTPListenersCiliumEnvoyConfig("0.0.0.0", 55555, nil),
 		},
 		{
-			name:        "Basic HTTP Listener with different port and IPv6",
+			name:        "host_network/basic_http_listener_with_different_port_and_ipv_6",
 			ipv4Enabled: false,
 			ipv6Enabled: true,
-			args: args{
-				m: &model.Model{
-					HTTP: basicHTTPListeners(55555),
-				},
-			},
-			want: basicHostPortHTTPListenersCiliumEnvoyConfig("::", 55555, nil),
 		},
 		{
-			name:        "Basic HTTP Listener with LabelSelector",
+			name:        "host_network/basic_http_listener_with_label_selector",
 			ipv4Enabled: true,
 			nodeLabelSelector: &slim_metav1.LabelSelector{
 				MatchLabels: map[string]slim_metav1.MatchLabelsValue{
 					"a": "b",
 				},
 			},
-			args: args{
-				m: &model.Model{
-					HTTP: basicHTTPListeners(55555),
-				},
-			},
-			want: basicHostPortHTTPListenersCiliumEnvoyConfig("0.0.0.0", 55555, &slim_metav1.LabelSelector{MatchLabels: map[string]slim_metav1.MatchLabelsValue{"a": "b"}}),
 		},
 	}
 	for _, tt := range tests {
 		translatorCases := []struct {
-			name                 string
-			gatewayAPITranslator *gatewayAPITranslator
+			name string
+			cfg  translation.Config
 		}{
 			{
-				name: "Without externalTrafficPolicy",
-				gatewayAPITranslator: &gatewayAPITranslator{
-					cecTranslator:      translation.NewCECTranslator("cilium-secrets", false, false, true, 60, true, tt.nodeLabelSelector, tt.ipv4Enabled, tt.ipv6Enabled, 0),
-					hostNetworkEnabled: true,
+				name: "without_external_traffic_policy",
+				cfg: translation.Config{
+					SecretsNamespace: "cilium-secrets",
+					RouteConfig: translation.RouteConfig{
+						HostNameSuffixMatch: true,
+					},
+					ListenerConfig: translation.ListenerConfig{
+						StreamIdleTimeoutSeconds: 300,
+					},
+					ClusterConfig: translation.ClusterConfig{
+						IdleTimeoutSeconds: 60,
+					},
+					HostNetworkConfig: translation.HostNetworkConfig{
+						Enabled:           true,
+						NodeLabelSelector: tt.nodeLabelSelector,
+					},
+					IPConfig: translation.IPConfig{
+						IPv4Enabled: tt.ipv4Enabled,
+						IPv6Enabled: tt.ipv6Enabled,
+					},
+					OriginalIPDetectionConfig: translation.OriginalIPDetectionConfig{
+						UseRemoteAddress:  true,
+						XFFNumTrustedHops: 0,
+					},
 				},
 			},
 			{
-				name: "With externalTrafficPolicy",
-				gatewayAPITranslator: &gatewayAPITranslator{
-					cecTranslator:         translation.NewCECTranslator("cilium-secrets", false, false, true, 60, true, tt.nodeLabelSelector, tt.ipv4Enabled, tt.ipv6Enabled, 0),
-					hostNetworkEnabled:    true,
-					externalTrafficPolicy: "Cluster",
+				name: "with_external_traffic_policy",
+				cfg: translation.Config{
+					SecretsNamespace: "cilium-secrets",
+					ServiceConfig: translation.ServiceConfig{
+						ExternalTrafficPolicy: "Cluster",
+					},
+					RouteConfig: translation.RouteConfig{
+						HostNameSuffixMatch: true,
+					},
+					ListenerConfig: translation.ListenerConfig{
+						StreamIdleTimeoutSeconds: 300,
+					},
+					ClusterConfig: translation.ClusterConfig{
+						IdleTimeoutSeconds: 60,
+					},
+					HostNetworkConfig: translation.HostNetworkConfig{
+						Enabled:           true,
+						NodeLabelSelector: tt.nodeLabelSelector,
+					},
+					IPConfig: translation.IPConfig{
+						IPv4Enabled: tt.ipv4Enabled,
+						IPv6Enabled: tt.ipv6Enabled,
+					},
+					OriginalIPDetectionConfig: translation.OriginalIPDetectionConfig{
+						UseRemoteAddress:  true,
+						XFFNumTrustedHops: 0,
+					},
 				},
 			},
 		}
@@ -465,19 +217,29 @@ func Test_translator_Translate_HostNetwork(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			for _, translatorCase := range translatorCases {
 				t.Run(translatorCase.name, func(t *testing.T) {
-					cec, svc, ep, err := translatorCase.gatewayAPITranslator.Translate(tt.args.m)
-					require.Equal(t, tt.wantErr, err != nil, "Error mismatch")
+					trans := &gatewayAPITranslator{
+						cecTranslator: translation.NewCECTranslator(translatorCase.cfg),
+						cfg:           translatorCase.cfg,
+					}
+					input := &model.Model{}
+					readInput(t, fmt.Sprintf("testdata/%s/%s/input.yaml", tt.name, translatorCase.name), input)
+					output := &ciliumv2.CiliumEnvoyConfig{}
+					readOutput(t, fmt.Sprintf("testdata/%s/%s/cec-output.yaml", tt.name, translatorCase.name), output)
+					expectedService := &corev1.Service{}
+					readOutput(t, fmt.Sprintf("testdata/%s/%s/service-output.yaml", tt.name, translatorCase.name), expectedService)
 
-					diffOutput := cmp.Diff(tt.want, cec, protocmp.Transform())
+					cec, svc, eps, err := trans.Translate(input)
+					require.Equal(t, tt.wantErr, err != nil, "Error mismatch")
+					require.Equal(t, expectedService, svc, "Service mismatch")
+					require.NotNil(t, eps)
+					for i, ep := range eps {
+						require.Equal(t, svc.Name, ep.Labels[discoveryv1.LabelServiceName], "EndpointSlice[%d] must carry the Service association label", i)
+					}
+
+					diffOutput := cmp.Diff(output, cec, protocmp.Transform())
 					if len(diffOutput) != 0 {
 						t.Errorf("CiliumEnvoyConfigs did not match:\n%s\n", diffOutput)
 					}
-
-					require.NotNil(t, svc)
-					assert.Equal(t, corev1.ServiceTypeClusterIP, svc.Spec.Type)
-					require.Emptyf(t, svc.Spec.ExternalTrafficPolicy, "ClusterIP Services must not have an ExternalTrafficPolicy")
-
-					require.NotNil(t, ep)
 				})
 			}
 		})
@@ -485,51 +247,200 @@ func Test_translator_Translate_HostNetwork(t *testing.T) {
 }
 
 func Test_translator_Translate_WithXffNumTrustedHops(t *testing.T) {
-	type args struct {
-		m *model.Model
-	}
 	tests := []struct {
 		name    string
-		args    args
-		want    *ciliumv2.CiliumEnvoyConfig
 		wantErr bool
 	}{
-		{
-			name: "Basic HTTP Listener with XffNumTrustedHops",
-			args: args{
-				m: &model.Model{
-					HTTP: basicHTTPListeners(80),
-				},
-			},
-			want: basicHTTPListenersCiliumEnvoyConfigWithXff,
-		},
+		{name: "basic_http_listener_with_xff_num_trusted_hops"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			trans := &gatewayAPITranslator{
-				cecTranslator:      translation.NewCECTranslator("cilium-secrets", false, false, true, 60, false, nil, false, false, 2),
-				hostNetworkEnabled: true,
+			cfg := translation.Config{
+				HostNetworkConfig: translation.HostNetworkConfig{
+					Enabled: true,
+				},
+				OriginalIPDetectionConfig: translation.OriginalIPDetectionConfig{
+					UseRemoteAddress:  true,
+					XFFNumTrustedHops: 2,
+				},
+				ListenerConfig: translation.ListenerConfig{
+					StreamIdleTimeoutSeconds: 300,
+				},
+				ClusterConfig: translation.ClusterConfig{
+					IdleTimeoutSeconds: 60,
+				},
+				IPConfig: translation.IPConfig{
+					IPv4Enabled: true,
+					IPv6Enabled: true,
+				},
 			}
-			cec, svc, ep, err := trans.Translate(tt.args.m)
-			require.Equal(t, tt.wantErr, err != nil, "Error mismatch")
+			trans := &gatewayAPITranslator{
+				cecTranslator: translation.NewCECTranslator(cfg),
+				cfg:           cfg,
+			}
 
-			diffOutput := cmp.Diff(tt.want, cec, protocmp.Transform())
+			input := &model.Model{}
+			readInput(t, fmt.Sprintf("testdata/%s/input.yaml", tt.name), input)
+			output := &ciliumv2.CiliumEnvoyConfig{}
+			readOutput(t, fmt.Sprintf("testdata/%s/cec-output.yaml", tt.name), output)
+			expectedService := &corev1.Service{}
+			readOutput(t, fmt.Sprintf("testdata/%s/service-output.yaml", tt.name), expectedService)
+
+			cec, svc, ep, err := trans.Translate(input)
+			require.Equal(t, tt.wantErr, err != nil, "Error mismatch")
+			require.Equal(t, expectedService, svc, "Service mismatch")
+			diffOutput := cmp.Diff(output, cec, protocmp.Transform())
 			if len(diffOutput) != 0 {
 				t.Errorf("CiliumEnvoyConfigs did not match:\n%s\n", diffOutput)
 			}
 
 			require.NotNil(t, svc)
-			assert.Equal(t, corev1.ServiceTypeClusterIP, svc.Spec.Type)
+			assert.Equal(t, corev1.ServiceTypeNodePort, svc.Spec.Type)
 
 			require.NotNil(t, ep)
 		})
 	}
 }
 
+func Test_translator_Translate_L4Only(t *testing.T) {
+	trans := &gatewayAPITranslator{
+		cecTranslator: translation.NewCECTranslator(translation.Config{}),
+	}
+	source := model.FullyQualifiedResource{
+		Name:      "test",
+		Namespace: "default",
+		Kind:      "Gateway",
+		UID:       "uid",
+	}
+	input := &model.Model{
+		L4: []model.L4Listener{
+			{
+				Name:     "tcp",
+				Sources:  []model.FullyQualifiedResource{source},
+				Port:     80,
+				Protocol: model.L4ProtocolTCP,
+			},
+			{
+				Name:     "udp",
+				Sources:  []model.FullyQualifiedResource{source},
+				Port:     53,
+				Protocol: model.L4ProtocolUDP,
+			},
+		},
+	}
+
+	cec, svc, _, err := trans.Translate(input)
+	require.NoError(t, err)
+	require.NotNil(t, svc)
+	require.Nil(t, cec)
+	assert.ElementsMatch(t, []corev1.ServicePort{
+		{
+			Name:     "port-80",
+			Port:     80,
+			Protocol: corev1.ProtocolTCP,
+		},
+		{
+			Name:     "port-53-udp",
+			Port:     53,
+			Protocol: corev1.ProtocolUDP,
+		},
+	}, svc.Spec.Ports)
+}
+
+func Test_translator_Translate_L4MaglevWeightAnnotation(t *testing.T) {
+	trans := &gatewayAPITranslator{
+		cecTranslator: translation.NewCECTranslator(translation.Config{}),
+	}
+	source := model.FullyQualifiedResource{
+		Name:      "test",
+		Namespace: "default",
+		Kind:      "Gateway",
+		UID:       "uid",
+	}
+	l4 := func(backend model.Backend) []model.L4Listener {
+		return []model.L4Listener{
+			{
+				Name:     "tcp",
+				Sources:  []model.FullyQualifiedResource{source},
+				Port:     80,
+				Protocol: model.L4ProtocolTCP,
+				Routes: []model.L4Route{
+					{Backends: []model.Backend{backend}},
+				},
+			},
+		}
+	}
+
+	// Weighted L4 backend -> maglev annotation set (datapath honors weights).
+	input := &model.Model{L4: l4(model.Backend{
+		Name: "echo", Namespace: "default",
+		Port: &model.BackendPort{Port: 9090}, Weight: ptr.To(int32(50)),
+	})}
+	_, svc, eps, err := trans.Translate(input)
+	require.NoError(t, err)
+	require.NotNil(t, svc)
+	assert.Equal(t, lbAlgorithmMaglev, svc.Annotations[lbAlgorithmAnnotation])
+	require.NotEmpty(t, eps, "weighted L4 backend must yield EndpointSlices")
+
+	// No weights -> no maglev annotation.
+	input = &model.Model{L4: l4(model.Backend{
+		Name: "echo", Namespace: "default", Port: &model.BackendPort{Port: 9090},
+	})}
+	_, svc, _, err = trans.Translate(input)
+	require.NoError(t, err)
+	require.NotNil(t, svc)
+	_, ok := svc.Annotations[lbAlgorithmAnnotation]
+	assert.False(t, ok, "unweighted L4 backend must not set maglev annotation")
+}
+
+func Test_translator_toServicePorts_MixedProtocolsSamePort(t *testing.T) {
+	trans := &gatewayAPITranslator{}
+	listeners := []model.Listener{
+		&model.L4Listener{
+			Port:     80,
+			Protocol: model.L4ProtocolUDP,
+		},
+		&model.HTTPListener{
+			Port: 80,
+		},
+		&model.TLSPassthroughListener{
+			Port: 53,
+		},
+		&model.L4Listener{
+			Port:     53,
+			Protocol: model.L4ProtocolUDP,
+		},
+	}
+
+	servicePorts := trans.toServicePorts(listeners)
+	assert.Equal(t, []corev1.ServicePort{
+		{
+			Name:     "port-53",
+			Port:     53,
+			Protocol: corev1.ProtocolTCP,
+		},
+		{
+			Name:     "port-53-udp",
+			Port:     53,
+			Protocol: corev1.ProtocolUDP,
+		},
+		{
+			Name:     "port-80",
+			Port:     80,
+			Protocol: corev1.ProtocolTCP,
+		},
+		{
+			Name:     "port-80-udp",
+			Port:     80,
+			Protocol: corev1.ProtocolUDP,
+		},
+	}, servicePorts)
+}
+
 func Test_getService(t *testing.T) {
 	type args struct {
 		resource              *model.FullyQualifiedResource
-		allPorts              []uint32
+		allPorts              []corev1.ServicePort
 		labels                map[string]string
 		annotations           map[string]string
 		externalTrafficPolicy string
@@ -549,7 +460,13 @@ func Test_getService(t *testing.T) {
 					Kind:      "Gateway",
 					UID:       "57889650-380b-4c05-9a2e-3baee7fd5271",
 				},
-				allPorts:              []uint32{80},
+				allPorts: []corev1.ServicePort{
+					{
+						Name:     fmt.Sprintf("port-%d", 80),
+						Port:     80,
+						Protocol: corev1.ProtocolTCP,
+					},
+				},
 				externalTrafficPolicy: "Cluster",
 			},
 			want: &corev1.Service{
@@ -562,7 +479,7 @@ func Test_getService(t *testing.T) {
 					},
 					OwnerReferences: []metav1.OwnerReference{
 						{
-							APIVersion: gatewayv1beta1.GroupVersion.String(),
+							APIVersion: gatewayv1.GroupVersion.String(),
 							Kind:       "Gateway",
 							Name:       "test-long-long-long-long-long-long-long-long-long-long-long-long-name",
 							UID:        types.UID("57889650-380b-4c05-9a2e-3baee7fd5271"),
@@ -593,7 +510,7 @@ func Test_getService(t *testing.T) {
 					Kind:      "Gateway",
 					UID:       "41b82697-2d8d-4776-81b6-44d0bbac7faa",
 				},
-				allPorts:              []uint32{80},
+				allPorts:              []corev1.ServicePort{{Name: "port-80", Port: 80, Protocol: corev1.ProtocolTCP}},
 				externalTrafficPolicy: "Local",
 			},
 			want: &corev1.Service{
@@ -606,7 +523,7 @@ func Test_getService(t *testing.T) {
 					},
 					OwnerReferences: []metav1.OwnerReference{
 						{
-							APIVersion: gatewayv1beta1.GroupVersion.String(),
+							APIVersion: gatewayv1.GroupVersion.String(),
 							Kind:       "Gateway",
 							Name:       "test-externaltrafficpolicy-local",
 							UID:        types.UID("41b82697-2d8d-4776-81b6-44d0bbac7faa"),
@@ -630,9 +547,125 @@ func Test_getService(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := getService(tt.args.resource, tt.args.allPorts, tt.args.labels, tt.args.annotations, tt.args.externalTrafficPolicy)
-			assert.Equalf(t, tt.want, got, "getService(%v, %v, %v, %v)", tt.args.resource, tt.args.allPorts, tt.args.labels, tt.args.annotations)
-			assert.Equal(t, true, len(got.Name) <= 63, "Service name is too long")
+			trans := &gatewayAPITranslator{cfg: translation.Config{
+				ServiceConfig: translation.ServiceConfig{
+					ExternalTrafficPolicy: tt.args.externalTrafficPolicy,
+				},
+			}}
+			got := trans.desiredService(nil, tt.args.resource, tt.args.allPorts, tt.args.labels, tt.args.annotations)
+			assert.Equalf(t, tt.want, got, "desiredService(%v, %v, %v, %v)", tt.args.resource, tt.args.allPorts, tt.args.labels, tt.args.annotations)
+			assert.LessOrEqual(t, len(got.Name), 63, "Service name is too long")
 		})
 	}
+}
+
+func Test_desiredL7DummyEndpointSlice(t *testing.T) {
+	trans := &gatewayAPITranslator{}
+	owner := &model.FullyQualifiedResource{
+		Name:      "dummy-gateway",
+		Namespace: "dummy-namespace",
+		Version:   "v1",
+		Kind:      "Gateway",
+		UID:       "57889650-380b-4c05-9a2e-3baee7fd5271",
+	}
+
+	got := trans.desiredL7DummyEndpointSlice(owner, nil, nil)
+
+	require.Equal(t, []*discoveryv1.EndpointSlice{{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "cilium-gateway-dummy-gateway",
+			Namespace: "dummy-namespace",
+			Labels: map[string]string{
+				owningGatewayLabel:           "dummy-gateway",
+				gatewayNameLabel:             "dummy-gateway",
+				discoveryv1.LabelServiceName: "cilium-gateway-dummy-gateway",
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: gatewayv1.GroupVersion.String(),
+					Kind:       "Gateway",
+					Name:       "dummy-gateway",
+					UID:        types.UID("57889650-380b-4c05-9a2e-3baee7fd5271"),
+					Controller: ptr.To(true),
+				},
+			},
+		},
+		AddressType: discoveryv1.AddressTypeIPv4,
+		Endpoints: []discoveryv1.Endpoint{
+			{
+				Addresses: []string{"192.192.192.192"},
+				Conditions: discoveryv1.EndpointConditions{
+					Ready: ptr.To(true),
+				},
+			},
+		},
+		Ports: []discoveryv1.EndpointPort{
+			{Port: ptr.To[int32](9999)},
+		},
+	}}, got)
+}
+
+func Test_translator_Translate_ShortensCECName(t *testing.T) {
+	trans := &gatewayAPITranslator{
+		cecTranslator: translation.NewCECTranslator(translation.Config{}),
+	}
+
+	longName := "test-long-long-long-long-long-long-long-long-long-long-long-long-name"
+	input := &model.Model{
+		HTTP: []model.HTTPListener{
+			{
+				Name: "listener",
+				Sources: []model.FullyQualifiedResource{
+					{
+						Name:      longName,
+						Namespace: "default",
+						Group:     gatewayv1.GroupVersion.Group,
+						Version:   gatewayv1.GroupVersion.Version,
+						Kind:      "Gateway",
+						UID:       "57889650-380b-4c05-9a2e-3baee7fd5271",
+					},
+				},
+				Port: 80,
+			},
+		},
+	}
+
+	cec, svc, ep, err := trans.Translate(input)
+	require.NoError(t, err)
+	require.NotNil(t, cec)
+	require.NotNil(t, svc)
+	require.NotNil(t, ep)
+	require.Equal(t, shortener.ShortenK8sResourceName(CiliumGatewayPrefix+longName), cec.Name)
+	require.Equal(t, svc.Name, cec.Name)
+	require.LessOrEqual(t, len(cec.Name), 63, "CiliumEnvoyConfig name is too long")
+}
+
+func readInput(t *testing.T, file string, obj any) {
+	inputYaml, err := os.ReadFile(file)
+	require.NoError(t, err)
+
+	require.NoError(t, k8syaml.Unmarshal(inputYaml, obj))
+}
+
+func readOutput(t *testing.T, file string, obj any) string {
+	// unmarshal and marshal to prevent formatting diffs
+	outputYaml, err := os.ReadFile(file)
+	require.NoError(t, err)
+
+	if strings.TrimSpace(string(outputYaml)) == "" {
+		return strings.TrimSpace(string(outputYaml))
+	}
+
+	require.NoError(t, k8syaml.Unmarshal(outputYaml, obj))
+
+	yamlText := toYaml(t, obj)
+
+	return strings.TrimSpace(yamlText)
+}
+
+func toYaml(t *testing.T, obj any) string {
+	yamlText, err := k8syaml.Marshal(obj)
+	require.NoError(t, err)
+
+	return strings.TrimSpace(string(yamlText))
 }

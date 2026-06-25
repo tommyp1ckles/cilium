@@ -23,6 +23,7 @@ type providerParams struct {
 	DB          *statedb.DB
 	Lifecycle   cell.Lifecycle
 	StatusTable statedb.RWTable[types.Status]
+	History     *healthHistory `optional:"true"`
 	Logger      *slog.Logger
 }
 
@@ -31,6 +32,7 @@ type provider struct {
 
 	stopped     atomic.Bool
 	statusTable statedb.RWTable[types.Status]
+	history     *healthHistory
 	logger      *slog.Logger
 }
 
@@ -39,6 +41,7 @@ const TableName = "health"
 func newHealthV2Provider(params providerParams) types.Provider {
 	p := &provider{
 		statusTable: params.StatusTable,
+		history:     params.History,
 		db:          params.DB,
 		logger:      params.Logger,
 	}
@@ -52,10 +55,6 @@ func (p *provider) Start(ctx cell.HookContext) error {
 
 func (p *provider) Stop(ctx cell.HookContext) error {
 	p.stopped.Store(true)
-	tx := p.db.ReadTxn()
-	for s, rev := range p.statusTable.All(tx) {
-		p.logger.Info(fmt.Sprintf("%s (rev=%d)", s.ID.String(), rev))
-	}
 	return nil
 }
 
@@ -91,11 +90,13 @@ func (p *provider) ForModule(mid cell.FullModuleID) cell.Health {
 					lastLevel = string(old.Level)
 				}
 				p.logger.Debug("upserting health status",
-					slog.String("lastLevel", lastLevel),
-					slog.String("reporter-id", s.ID.String()),
-					slog.String("status", s.String()))
+					logfields.LastLevel, lastLevel,
+					logfields.ReporterID, s.ID,
+					logfields.Status, s,
+				)
 			}
 
+			p.history.observeUpsert(s)
 			tx.Commit()
 			return nil
 		},
@@ -103,27 +104,33 @@ func (p *provider) ForModule(mid cell.FullModuleID) cell.Health {
 			if p.stopped.Load() {
 				return fmt.Errorf("provider is stopped, no more updates will take place")
 			}
+
 			tx := p.db.WriteTxn(p.statusTable)
 			defer tx.Abort()
 			q := PrimaryIndex.Query(types.HealthID(i.String()))
 			iter := p.statusTable.Prefix(tx, q)
-			var deleted int
+			numDeleted := 0
 			for o := range iter {
-				if _, _, err := p.statusTable.Delete(tx, types.Status{
+				_, found, err := p.statusTable.Delete(tx, types.Status{
 					ID: o.ID,
-				}); err != nil {
+				})
+				if err != nil {
 					return fmt.Errorf("deleting prunable child %s: %w", i, err)
 				}
-				deleted++
+				if found {
+					p.history.observeClosed(o)
+					numDeleted++
+				}
 			}
 
 			p.logger.Debug("delete health sub-tree",
-				slog.String("prefix", i.String()),
-				slog.Int("deleted", deleted))
+				logfields.Prefix, i,
+				logfields.Deleted, numDeleted,
+			)
 			tx.Commit()
 			return nil
 		},
-		stop: func(i types.Identifier) error {
+		stop: func(i types.Identifier, msg string) error {
 			if p.stopped.Load() {
 				return fmt.Errorf("provider is stopped, no more updates will take place")
 			}
@@ -137,12 +144,17 @@ func (p *provider) ForModule(mid cell.FullModuleID) cell.Health {
 			if !old.Stopped.IsZero() {
 				return fmt.Errorf("reporting for %q has been stopped", i)
 			}
+			old.Level = types.LevelStopped
 			old.Stopped = time.Now()
+			old.Final = msg
 			if _, _, err := p.statusTable.Insert(tx, old); err != nil {
 				return fmt.Errorf("stopping reporter - upsert status %s: %w", old, err)
 			}
+			p.history.observeStopped(old)
 			tx.Commit()
-			p.logger.Debug("stopping health reporter", slog.String("reporter-id", i.String()))
+			p.logger.Debug("stopping health reporter",
+				logfields.ReporterID, i,
+			)
 			return nil
 		},
 		providerStopped: p.stopped.Load,
@@ -153,9 +165,10 @@ type moduleReporter struct {
 	logger          *slog.Logger
 	id              types.Identifier
 	stopped         atomic.Bool
+	closed          atomic.Bool
 	providerStopped func() bool
 	upsert          func(types.Status) error
-	stop            func(types.Identifier) error
+	stop            func(types.Identifier, string) error
 	deletePrefix    func(types.Identifier) error
 }
 
@@ -185,7 +198,7 @@ func (r *moduleReporter) NewScopeWithContext(ctx context.Context, name string) c
 
 func (r *moduleReporter) OK(msg string) {
 	if r.stopped.Load() {
-		r.logger.Warn("report on stopped reporter", slog.String("id", r.id.String()))
+		r.logger.Warn("report on stopped reporter", logfields.ReporterID, r.id)
 	}
 	ts := time.Now()
 	if err := r.upsert(types.Status{
@@ -195,13 +208,15 @@ func (r *moduleReporter) OK(msg string) {
 		LastOK:  ts,
 		Updated: ts,
 	}); err != nil {
-		r.logger.Error("failed to upsert ok health status", slog.String(logfields.Error, err.Error()))
+		r.logger.Error("failed to upsert ok health status",
+			logfields.ReporterID, r.id,
+			logfields.Error, err)
 	}
 }
 
 func (r *moduleReporter) Degraded(msg string, err error) {
 	if r.stopped.Load() {
-		r.logger.Warn("report on stopped reporter", slog.String("id", r.id.String()))
+		r.logger.Warn("report on stopped reporter", logfields.ReporterID, r.id)
 	}
 	if err := r.upsert(types.Status{
 		ID:      r.id,
@@ -210,7 +225,10 @@ func (r *moduleReporter) Degraded(msg string, err error) {
 		Error:   err.Error(),
 		Updated: time.Now(),
 	}); err != nil {
-		r.logger.Error("failed to upsert degraded health status", slog.String(logfields.Error, err.Error()))
+		r.logger.Error("failed to upsert degraded health status",
+			logfields.ReporterID, r.id,
+			logfields.Error, err,
+		)
 	}
 }
 
@@ -218,15 +236,23 @@ func (r *moduleReporter) Degraded(msg string, err error) {
 // maintaining the last known status of the reporter.
 func (r *moduleReporter) Stopped(msg string) {
 	r.stopped.Store(true)
-	if err := r.stop(r.id); err != nil {
-		r.logger.Error("failed to delete reporter status tree", slog.String(logfields.Error, err.Error()))
+	if err := r.stop(r.id, msg); err != nil {
+		r.logger.Error("failed to upsert stop health status",
+			logfields.ReporterID, r.id,
+			logfields.Error, err)
 	}
 }
 
 // Close completely closes out a tree, it will remove all health statuses below
 // this reporter scope.
 func (r *moduleReporter) Close() {
+	if !r.closed.CompareAndSwap(false, true) {
+		// Already closed.
+		return
+	}
 	if err := r.deletePrefix(r.id); err != nil {
-		r.logger.Error("failed to delete reporter status tree", slog.String(logfields.Error, err.Error()))
+		r.logger.Error("failed to delete reporter status tree",
+			logfields.ReporterID, r.id,
+			logfields.Error, err)
 	}
 }

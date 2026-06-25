@@ -5,12 +5,11 @@ package proxy
 
 import (
 	"fmt"
+	"log/slog"
 	"net"
 
-	"github.com/sirupsen/logrus"
-
 	"github.com/cilium/cilium/pkg/completion"
-	datapath "github.com/cilium/cilium/pkg/datapath/types"
+	"github.com/cilium/cilium/pkg/datapath/iptables"
 	"github.com/cilium/cilium/pkg/envoy"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/proxy/endpoint"
@@ -20,52 +19,56 @@ import (
 
 // envoyRedirect implements the RedirectImplementation interface for an l7 proxy.
 type envoyRedirect struct {
+	Redirect
 	listenerName string
 	xdsServer    envoy.XDSServer
 	adminClient  *envoy.EnvoyAdminClient
 }
 
+func (dr *envoyRedirect) GetRedirect() *Redirect {
+	return &dr.Redirect
+}
+
 type envoyProxyIntegration struct {
 	adminClient     *envoy.EnvoyAdminClient
 	xdsServer       envoy.XDSServer
-	iptablesManager datapath.IptablesManager
+	iptablesManager iptables.Manager
+	// Controls if an L7 proxy can use POD's original source address and port in
+	// the upstream connection.
+	proxyUseOriginalSourceAddress bool
 }
 
 // createRedirect creates a redirect with corresponding proxy configuration. This will launch a proxy instance.
-func (p *envoyProxyIntegration) createRedirect(r *Redirect, wg *completion.WaitGroup) (RedirectImplementation, error) {
-	if r.listener.ProxyType == types.ProxyTypeCRD {
+func (p *envoyProxyIntegration) createRedirect(r Redirect, wg *completion.WaitGroup, cb func(err error)) (RedirectImplementation, error) {
+	if r.proxyPort.ProxyType == types.ProxyTypeCRD {
 		// CRD Listeners already exist, create a no-op implementation
-		return &CRDRedirect{}, nil
+		return &CRDRedirect{Redirect: r}, nil
 	}
 
 	// create an Envoy Listener for Cilium policy enforcement
-	return p.handleEnvoyRedirect(r, wg)
-}
-
-func (p *envoyProxyIntegration) changeLogLevel(level logrus.Level) error {
-	return p.adminClient.ChangeLogLevel(level)
-}
-
-func (p *envoyProxyIntegration) handleEnvoyRedirect(r *Redirect, wg *completion.WaitGroup) (RedirectImplementation, error) {
-	l := r.listener
+	l := r.proxyPort
 	redirect := &envoyRedirect{
+		Redirect:     r,
 		listenerName: net.JoinHostPort(r.name, fmt.Sprintf("%d", l.ProxyPort)),
 		xdsServer:    p.xdsServer,
 		adminClient:  p.adminClient,
 	}
-
-	mayUseOriginalSourceAddr := p.iptablesManager.SupportsOriginalSourceAddr()
+	mayUseOriginalSourceAddr := p.proxyUseOriginalSourceAddress && p.iptablesManager.SupportsOriginalSourceAddr()
 	// Only use original source address for egress
 	if l.Ingress {
 		mayUseOriginalSourceAddr = false
 	}
-	p.xdsServer.AddListener(redirect.listenerName, policy.L7ParserType(l.ProxyType), l.ProxyPort, l.Ingress, mayUseOriginalSourceAddr, wg)
+	err := p.xdsServer.AddListener(redirect.listenerName, policy.L7ParserType(l.ProxyType), l.ProxyPort, l.Ingress, mayUseOriginalSourceAddr, wg, cb)
 
-	return redirect, nil
+	return redirect, err
 }
 
-func (p *envoyProxyIntegration) UpdateNetworkPolicy(ep endpoint.EndpointUpdater, vis *policy.VisibilityPolicy, policy *policy.L4Policy, ingressPolicyEnforced, egressPolicyEnforced bool, wg *completion.WaitGroup) (error, func() error) {
-	return p.xdsServer.UpdateNetworkPolicy(ep, vis, policy, ingressPolicyEnforced, egressPolicyEnforced, wg)
+func (p *envoyProxyIntegration) changeLogLevel(level slog.Level) error {
+	return p.adminClient.ChangeLogLevel(level)
+}
+
+func (p *envoyProxyIntegration) UpdateNetworkPolicy(ep endpoint.EndpointUpdater, policy *policy.EndpointPolicy, wg *completion.WaitGroup) (error, revert.RevertFunc, revert.FinalizeFunc) {
+	return p.xdsServer.UpdateNetworkPolicy(ep, policy, wg)
 }
 
 func (p *envoyProxyIntegration) RemoveNetworkPolicy(ep endpoint.EndpointInfoSource) {
@@ -73,18 +76,11 @@ func (p *envoyProxyIntegration) RemoveNetworkPolicy(ep endpoint.EndpointInfoSour
 }
 
 // UpdateRules is a no-op for envoy, as redirect data is synchronized via the xDS cache.
-func (k *envoyRedirect) UpdateRules(wg *completion.WaitGroup) (revert.RevertFunc, error) {
-	return func() error { return nil }, nil
+func (k *envoyRedirect) UpdateRules(rules policy.L7DataMap) (revert.RevertFunc, error) {
+	return nil, nil
 }
 
 // Close the redirect.
-func (r *envoyRedirect) Close(wg *completion.WaitGroup) (revert.FinalizeFunc, revert.RevertFunc) {
-	revertFunc := r.xdsServer.RemoveListener(r.listenerName, wg)
-
-	return nil, func() error {
-		// Don't wait for an ACK for the reverted xDS updates.
-		// This is best-effort.
-		revertFunc(completion.NewCompletion(nil, nil))
-		return nil
-	}
+func (r *envoyRedirect) Close() {
+	r.xdsServer.RemoveListener(r.listenerName, nil)
 }

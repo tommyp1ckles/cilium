@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/netip"
 	"testing"
-	"time"
 
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/hivetest"
@@ -17,7 +16,6 @@ import (
 	"go4.org/netipx"
 
 	"github.com/cilium/cilium/pkg/hive"
-	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/node/addressing"
 	"github.com/cilium/cilium/pkg/node/types"
@@ -54,7 +52,6 @@ func TestDirectRoutingDevice(t *testing.T) {
 		),
 		DirectRoutingDeviceCell,
 		cell.Invoke(
-			statedb.RegisterTable[*Device],
 			func(db_ *statedb.DB, table statedb.RWTable[*Device], dev DirectRoutingDevice) {
 				db = db_
 				devicesTable = table
@@ -63,20 +60,18 @@ func TestDirectRoutingDevice(t *testing.T) {
 		),
 	)
 
-	ctx := context.Background()
+	tctx := context.Background()
 	log := hivetest.Logger(t)
-	err := h.Start(log, ctx)
+	err := h.Start(log, tctx)
 	require.NoError(t, err)
-	t.Cleanup(func() { h.Stop(log, ctx) })
+	t.Cleanup(func() { h.Stop(log, tctx) })
 	require.NotNil(t, h)
 	require.NotNil(t, db)
 	require.NotNil(t, devicesTable)
 	require.NotNil(t, directRoutingDev)
 
 	// No devices - ensure that we don't get a device.
-	tctx, cancel := context.WithTimeout(ctx, time.Millisecond)
 	dev, _ := directRoutingDev.Get(tctx, db.ReadTxn())
-	cancel()
 	require.Nil(t, dev)
 
 	// Insert a device
@@ -86,19 +81,18 @@ func TestDirectRoutingDevice(t *testing.T) {
 		Name:     "direct0",
 		Selected: true,
 	}
-	devicesTable.Insert(txn, &want)
+	_, _, err = devicesTable.Insert(txn, &want)
+	require.NoError(t, err)
 	txn.Commit()
 
 	// And check that it's returned
-	tctx, cancel = context.WithTimeout(ctx, time.Millisecond)
 	got, watch := directRoutingDev.Get(tctx, db.ReadTxn())
-	cancel()
 	require.NotNil(t, got)
 	require.Equal(t, want.Name, got.Name)
 	select {
 	case <-watch:
 		t.Error("watch channel closed even though it should not")
-	case <-inctimer.After(time.Millisecond):
+	default:
 	}
 
 	// Insert another device.
@@ -108,18 +102,17 @@ func TestDirectRoutingDevice(t *testing.T) {
 		Name:     "dummy0",
 		Selected: true,
 	}
-	devicesTable.Insert(txn, &dummyDev)
+	_, _, err = devicesTable.Insert(txn, &dummyDev)
+	require.NoError(t, err)
 	txn.Commit()
 
 	// Two selected devices - ensure that we don't get a device.
-	tctx, cancel = context.WithTimeout(ctx, time.Millisecond)
 	dev, watch = directRoutingDev.Get(tctx, db.ReadTxn())
-	cancel()
 	require.Nil(t, dev)
 	select {
 	case <-watch:
 		t.Error("watch channel closed even though it should not")
-	case <-inctimer.After(time.Millisecond):
+	default:
 	}
 
 	// If one of the devices matches the K8s Node IP, it is returned.
@@ -128,15 +121,13 @@ func TestDirectRoutingDevice(t *testing.T) {
 			Addr: netipx.MustFromStdIP(testIP),
 		},
 	}
-	tctx, cancel = context.WithTimeout(ctx, time.Millisecond)
 	got, watch = directRoutingDev.Get(tctx, db.ReadTxn())
-	cancel()
 	require.NotNil(t, got)
 	require.Equal(t, want.Name, got.Name)
 	select {
 	case <-watch:
 		t.Error("watch channel closed even though it should not")
-	case <-inctimer.After(time.Millisecond):
+	default:
 	}
 	want.Addrs = nil
 }
@@ -191,7 +182,6 @@ func TestDirectRoutingDevice_withConfig(t *testing.T) {
 				),
 				DirectRoutingDeviceCell,
 				cell.Invoke(
-					statedb.RegisterTable[*Device],
 					func(db_ *statedb.DB, table_ statedb.RWTable[*Device], dev DirectRoutingDevice) {
 						db = db_
 						devicesTable = table_
@@ -203,18 +193,18 @@ func TestDirectRoutingDevice_withConfig(t *testing.T) {
 				c.DirectRoutingDevice = tc.config
 			})
 
-			ctx := context.Background()
+			tctx := context.Background()
 			log := hivetest.Logger(t)
-			err := h.Start(log, ctx)
+			err := h.Start(log, tctx)
 			require.NoError(t, err)
-			t.Cleanup(func() { h.Stop(log, ctx) })
+			t.Cleanup(func() { h.Stop(log, tctx) })
 			require.NotNil(t, db)
 			require.NotNil(t, devicesTable)
 			require.NotNil(t, directRoutingDev)
 
 			// Insert devices
 			txn := db.WriteTxn(devicesTable)
-			devicesTable.Insert(txn, &Device{
+			_, _, err = devicesTable.Insert(txn, &Device{
 				Index:    10,
 				Name:     "dummy0",
 				Selected: true,
@@ -224,12 +214,12 @@ func TestDirectRoutingDevice_withConfig(t *testing.T) {
 					},
 				},
 			})
-			devicesTable.Insert(txn, &tc.want)
+			require.NoError(t, err)
+			_, _, err = devicesTable.Insert(txn, &tc.want)
+			require.NoError(t, err)
 			txn.Commit()
 
-			tctx, cancel := context.WithTimeout(ctx, time.Millisecond)
 			got, watch := directRoutingDev.Get(tctx, db.ReadTxn())
-			cancel()
 			if tc.wantErr == (got == nil) {
 				t.Errorf("wantErr %v but have err %v", tc.wantErr, err)
 			}
@@ -241,7 +231,7 @@ func TestDirectRoutingDevice_withConfig(t *testing.T) {
 			select {
 			case <-watch:
 				t.Error("watch channel closed even though it should not")
-			case <-inctimer.After(time.Millisecond):
+			default:
 			}
 		})
 	}

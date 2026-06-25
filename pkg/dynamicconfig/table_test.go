@@ -6,20 +6,19 @@ package dynamicconfig
 import (
 	"context"
 	"encoding/json"
-	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/hivetest"
-	"github.com/cilium/hive/job"
 	"github.com/cilium/statedb"
+	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/cilium/cilium/pkg/hive"
-	"github.com/cilium/cilium/pkg/hive/health/types"
-	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
+	k8sClient "github.com/cilium/cilium/pkg/k8s/client/testutils"
 	"github.com/cilium/cilium/pkg/option/resolver"
 	"github.com/cilium/cilium/pkg/testutils"
 )
@@ -30,12 +29,58 @@ var (
 	dummyConfigMap = map[string]string{"key1": "value1", "key2": "value2"}
 )
 
-func TestWatchKey(t *testing.T) {
-	cSource := `[{"kind":"config-map","namespace":"kube-system","name":"aLowPriority"},{"kind":"config-map","namespace":"kube-system","name":"cilium-config"}]`
-	_, db, dct, _ := fixture(t, cSource)
+func startHive(t *testing.T, h *hive.Hive) {
+	tLog := hivetest.Logger(t)
+	if err := h.Start(tLog, t.Context()); err != nil {
+		t.Fatalf("starting hive encountered: %s", err)
+	}
+	t.Cleanup(func() {
+		if err := h.Stop(tLog, context.Background()); err != nil {
+			t.Fatalf("stopping hive encountered: %s", err)
+		}
+	})
+}
+
+func TestWatchAllKeys(t *testing.T) {
+	cSource := `[{"kind":"config-map","namespace":"kube-system","name":"a-low-priority"},{"kind":"config-map","namespace":"kube-system","name":"cilium-config"}]`
+	expected := map[string]DynamicConfig{
+		"key": {
+			Key: Key{
+				Name:   "key",
+				Source: "cilium-config",
+			},
+			Value:    "newValue",
+			Priority: 0,
+		},
+	}
+	h, db, dct, _ := fixture(t, cSource)
+	startHive(t, h)
 
 	key := "key"
-	lowPrioritySource := "aLowPriority" // leading 'a' to test that sources that are not in priority map have lower priority
+	lowPrioritySource := "a-low-priority" // leading 'a' to test that sources that are not in priority map have lower priority
+	value := "value"
+	newValue := "newValue"
+
+	upsertDummyEntry(db, dct, key, lowPrioritySource, value, 1)
+	_, w := WatchAllKeys(db.ReadTxn(), dct)
+	upsertDummyEntry(db, dct, key, cmName, newValue, 0)
+	select {
+	case <-w:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WatchKey() failed to detect changes")
+	}
+
+	keys, _ := WatchAllKeys(db.ReadTxn(), dct)
+	assert.Equal(t, expected, keys, "WatchAllKeys returned unexpected result")
+}
+
+func TestWatchKey(t *testing.T) {
+	cSource := `[{"kind":"config-map","namespace":"kube-system","name":"a-low-priority"},{"kind":"config-map","namespace":"kube-system","name":"cilium-config"}]`
+	h, db, dct, _ := fixture(t, cSource)
+	startHive(t, h)
+
+	key := "key"
+	lowPrioritySource := "a-low-priority" // leading 'a' to test that sources that are not in priority map have lower priority
 	value := "value"
 	newValue := "newValue"
 
@@ -61,11 +106,12 @@ func TestWatchKey(t *testing.T) {
 }
 
 func TestGetKey(t *testing.T) {
-	cSource := `[{"kind":"config-map","namespace":"kube-system","name":"aLowPriority"},{"kind":"config-map","namespace":"kube-system","name":"cilium-config"}]`
-	_, db, dct, _ := fixture(t, cSource)
+	cSource := `[{"kind":"config-map","namespace":"kube-system","name":"a-low-priority"},{"kind":"config-map","namespace":"kube-system","name":"cilium-config"}]`
+	h, db, dct, _ := fixture(t, cSource)
+	startHive(t, h)
 
 	key := "key"
-	lowPrioritySource := "aLowPriority"
+	lowPrioritySource := "a-low-priority"
 	value := "value"
 	newValue := "newValue"
 
@@ -133,17 +179,17 @@ func TestDynamicConfigMap(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
 			configSources, _ := json.Marshal(tc.configSources)
 
-			_, db, dct, cs := fixture(t, string(configSources))
+			h, db, dct, cs := fixture(t, string(configSources))
 
 			for _, cm := range tc.cms {
-				_, err := cs.CoreV1().ConfigMaps(namespace).Create(ctx, cm, metav1.CreateOptions{})
+				_, err := cs.CoreV1().ConfigMaps(namespace).Create(t.Context(), cm, metav1.CreateOptions{})
 				if err != nil {
-					t.Errorf("creating CofigMap: %v", err)
+					t.Fatalf("creating ConfigMap: %v", err)
 				}
 			}
+			startHive(t, h)
 
 			gotMap := map[string]string{}
 			if err := testutils.WaitUntil(func() bool {
@@ -151,18 +197,22 @@ func TestDynamicConfigMap(t *testing.T) {
 					gotMap[obj.Key.String()] = obj.Value
 				}
 				return len(gotMap) == len(tc.expectedConfig)
-			}, 2*time.Second); err != nil {
-				t.Errorf("waiting for confing table: %v", err)
+			}, 10*time.Second); err != nil {
+				t.Fatalf("waiting for config table timed out: %v", err)
 			}
 
-			if !reflect.DeepEqual(gotMap, tc.expectedConfig) {
-				t.Errorf("expectedConfig:\n%+v\ngot:\n%+v", tc.expectedConfig, gotMap)
-			}
+			assert.Equal(t, tc.expectedConfig, gotMap)
 
 			for _, cm := range tc.cms {
 				for k, v := range cm.Data {
-					obj, _, found := dct.Get(db.ReadTxn(), ByKey(Key{Name: k, Source: cm.Name}))
-					if !found || obj.Value != v || obj.Key.Source != cm.Name || obj.Key.Name != k {
+					txn := db.ReadTxn()
+					obj, _, found := dct.Get(txn, ByKey(Key{Name: k, Source: cm.Name}))
+					if !found {
+						for e := range dct.All(txn) {
+							t.Logf("%s\n", strings.Join(e.TableRow(), " "))
+						}
+						t.Errorf("Entry %s not found", cm.Name)
+					} else if obj.Value != v || obj.Key.Source != cm.Name || obj.Key.Name != k {
 						t.Errorf("Entry mismatch: expected (key=%v, source=%v, value=%v), but got (key=%v, source=%v, value=%v)", k, cm.Name, v, obj.Key.Name, obj.Key.Source, obj.Value)
 					}
 				}
@@ -179,21 +229,15 @@ func fixture(t *testing.T, sources string) (*hive.Hive, *statedb.DB, statedb.RWT
 	)
 
 	h := hive.New(
-		k8sClient.FakeClientCell,
+		k8sClient.FakeClientCell(),
 		cell.Provide(
 			NewConfigTable,
 			NewConfigMapReflector,
 			func(table statedb.RWTable[DynamicConfig]) statedb.Table[DynamicConfig] {
 				return table
 			},
-			func(lc cell.Lifecycle, p types.Provider, jr job.Registry) job.Group {
-				h := p.ForModule(cell.FullModuleID{"test"})
-				jg := jr.NewGroup(h)
-				lc.Append(jg)
-				return jg
-			},
-			func() config {
-				return config{
+			func() Config {
+				return Config{
 					EnableDynamicConfig:    true,
 					ConfigSources:          sources,
 					ConfigSourcesOverrides: "{\"allowConfigKeys\":null,\"denyConfigKeys\":null}",
@@ -209,17 +253,9 @@ func fixture(t *testing.T, sources string) (*hive.Hive, *statedb.DB, statedb.RWT
 			},
 		),
 	)
-
-	ctx := context.Background()
-	tLog := hivetest.Logger(t)
-	if err := h.Start(tLog, ctx); err != nil {
-		t.Fatalf("starting hive encountered: %s", err)
+	if err := h.Populate(hivetest.Logger(t)); err != nil {
+		t.Fatalf("Populate: %s", err)
 	}
-	t.Cleanup(func() {
-		if err := h.Stop(tLog, ctx); err != nil {
-			t.Fatalf("stopping hive encountered: %s", err)
-		}
-	})
 
 	return h, db, table, fakeClient
 }

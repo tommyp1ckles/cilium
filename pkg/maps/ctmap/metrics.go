@@ -5,13 +5,17 @@ package ctmap
 
 import (
 	"fmt"
+	"log/slog"
 
 	"github.com/cilium/cilium/pkg/bpf"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/maps/nat"
 	"github.com/cilium/cilium/pkg/metrics"
 )
 
 type gcStats struct {
+	logger *slog.Logger
+
 	*bpf.DumpStats
 
 	// aliveEntries is the number of scanned entries that are still alive.
@@ -19,6 +23,10 @@ type gcStats struct {
 
 	// deleted is the number of keys deleted
 	deleted uint32
+
+	// entries that where marked for deletion but skipped (i.e. due to
+	// LRU evictions, etc).
+	skipped uint32
 
 	// family is the address family
 	family gcFamily
@@ -68,6 +76,7 @@ func (g gcProtocol) String() string {
 
 func statStartGc(m *Map) gcStats {
 	result := gcStats{
+		logger:    m.Logger,
 		DumpStats: bpf.NewDumpStats(&m.Map),
 	}
 	if m.mapType.isIPv6() {
@@ -101,11 +110,18 @@ func (s *gcStats) finish() {
 		metrics.ConntrackGCSize.WithLabelValues(family, proto, metricsDeleted).Set(float64(s.deleted))
 	} else {
 		status = "uncompleted"
-		scopedLog := log.WithField("interrupted", s.Interrupted)
+		scopedLog := s.logger.With(
+			logfields.Interrupted, s.Interrupted,
+		)
 		if s.dumpError != nil {
-			scopedLog = scopedLog.WithError(s.dumpError)
+			scopedLog = scopedLog.With(
+				logfields.Error, s.dumpError,
+			)
 		}
-		scopedLog.Warningf("Garbage collection on %s %s CT map failed to finish", family, proto)
+		scopedLog.Warn("Garbage collection CT map failed to finish",
+			logfields.Family, family,
+			logfields.Protocol, proto,
+		)
 	}
 
 	metrics.ConntrackGCRuns.WithLabelValues(family, proto, status).Inc()
@@ -117,7 +133,8 @@ type NatGCStats struct {
 	*bpf.DumpStats
 
 	// family is the address family
-	Family gcFamily
+	Family    gcFamily
+	ClusterID uint32
 
 	IngressAlive   uint32
 	IngressDeleted uint32
@@ -125,10 +142,11 @@ type NatGCStats struct {
 	EgressAlive    uint32
 }
 
-func newNatGCStats(m *nat.Map, family gcFamily) NatGCStats {
+func newNatGCStats(m *nat.Map, family gcFamily, clusterID uint32) NatGCStats {
 	return NatGCStats{
 		DumpStats: m.DumpStats(),
 		Family:    family,
+		ClusterID: clusterID,
 	}
 }
 

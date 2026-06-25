@@ -10,6 +10,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestNilString(t *testing.T) {
+	var c *CIDR
+	var n *net.IPNet
+	require.Equal(t, n.String(), c.String())
+}
+
 func TestNilDeepCopy(t *testing.T) {
 	var c1 *CIDR
 	require.Nil(t, c1.DeepCopy())
@@ -17,12 +23,12 @@ func TestNilDeepCopy(t *testing.T) {
 
 func TestDeepCopy(t *testing.T) {
 	_, ipnet, err := net.ParseCIDR("1.1.1.1/8")
-	require.Nil(t, err)
+	require.NoError(t, err)
 	c1 := NewCIDR(ipnet)
 	require.NotNil(t, c1)
 
 	c2 := c1.DeepCopy()
-	require.EqualValues(t, c2, c1)
+	require.Equal(t, c2, c1)
 }
 
 func TestNewCIDRNil(t *testing.T) {
@@ -32,7 +38,7 @@ func TestNewCIDRNil(t *testing.T) {
 func TestIllegalParseCIDR(t *testing.T) {
 	c1, err := ParseCIDR("Illegal")
 	require.Nil(t, c1)
-	require.NotNil(t, err)
+	require.Error(t, err)
 }
 
 func TestIllegalMustParseCIDR(t *testing.T) {
@@ -43,13 +49,6 @@ func TestIllegalMustParseCIDR(t *testing.T) {
 	}()
 	c1 := MustParseCIDR("Illegal")
 	require.Nil(t, c1)
-}
-
-func TestAvailableIPs(t *testing.T) {
-	cidr := MustParseCIDR("10.0.0.0/8")
-	require.Equal(t, 16777216, cidr.AvailableIPs())
-	cidr = MustParseCIDR("1.1.1.1/32")
-	require.Equal(t, 1, cidr.AvailableIPs())
 }
 
 func TestEqual(t *testing.T) {

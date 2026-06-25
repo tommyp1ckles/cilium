@@ -8,6 +8,7 @@
 #include <linux/icmpv6.h>
 
 #include "common.h"
+#include "csum.h"
 #include "ipv4.h"
 #include "ipv6.h"
 #include "eth.h"
@@ -27,19 +28,24 @@ static __always_inline __maybe_unused bool is_v4_in_v6(const union v6addr *daddr
 	return ipv6_addr_equals(&dprobe, &dmasked);
 }
 
-static __always_inline __maybe_unused bool is_v4_in_v6_rfc8215(const union v6addr *daddr)
+static __always_inline __maybe_unused void nat46x64_prefix_copy_v6(union v6addr *dst)
 {
-	union v6addr dprobe  = {
-		.addr[0] = NAT_46X64_PREFIX_0,
-		.addr[1] = NAT_46X64_PREFIX_1,
-		.addr[2] = NAT_46X64_PREFIX_2,
-		.addr[3] = NAT_46X64_PREFIX_3,
-	};
+	union v4addr nat_prefix = CONFIG(nat_46x64_prefix);
+
+	#pragma unroll
+	for (int i = 0; i < 4; i++)
+		dst->addr[i] = nat_prefix.addr[i];
+}
+
+static __always_inline __maybe_unused bool is_v4_in_v6_rfc6052(const union v6addr *daddr)
+{
+	union v6addr dprobe  = {};
 	union v6addr dmasked = {
 		.d1 = daddr->d1,
 	};
 
 	dmasked.p3 = daddr->p3;
+	nat46x64_prefix_copy_v6(&dprobe);
 	return ipv6_addr_equals(&dprobe, &dmasked);
 }
 
@@ -53,13 +59,10 @@ void build_v4_in_v6(union v6addr *daddr, __be32 v4)
 }
 
 static __always_inline __maybe_unused
-void build_v4_in_v6_rfc8215(union v6addr *daddr, __be32 v4)
+void build_v4_in_v6_rfc6052(union v6addr *daddr, __be32 v4)
 {
 	memset(daddr, 0, sizeof(*daddr));
-	daddr->addr[0] = NAT_46X64_PREFIX_0;
-	daddr->addr[1] = NAT_46X64_PREFIX_1;
-	daddr->addr[2] = NAT_46X64_PREFIX_2;
-	daddr->addr[3] = NAT_46X64_PREFIX_3;
+	nat46x64_prefix_copy_v6(daddr);
 	daddr->p4 = v4;
 }
 
@@ -158,7 +161,7 @@ static __always_inline int icmp4_to_icmp6(struct __ctx_buff *ctx, int nh_off)
 			icmp6.icmp6_code = ICMPV6_ADM_PROHIBITED;
 			break;
 		default:
-			return DROP_UNKNOWN_ICMP_CODE;
+			return DROP_UNKNOWN_ICMP4_CODE;
 		}
 		break;
 	case ICMP_TIME_EXCEEDED:
@@ -170,7 +173,7 @@ static __always_inline int icmp4_to_icmp6(struct __ctx_buff *ctx, int nh_off)
 		icmp6.icmp6_pointer = 6;
 		break;
 	default:
-		return DROP_UNKNOWN_ICMP_TYPE;
+		return DROP_UNKNOWN_ICMP4_TYPE;
 	}
 	if (ctx_store_bytes(ctx, nh_off, &icmp6, sizeof(icmp6), 0) < 0)
 		return DROP_WRITE_ERROR;
@@ -308,7 +311,7 @@ static __always_inline int ipv4_to_ipv6(struct __ctx_buff *ctx, int nh_off,
 	if (csum_off < 0)
 		return csum_off;
 	csum_off += sizeof(struct ipv6hdr);
-	if (l4_csum_replace(ctx, nh_off + csum_off, 0, csum, csum_flags) < 0)
+	if (l4_csum_replace(ctx, nh_off + csum_off, 0, csum, (__u32)csum_flags) < 0)
 		return DROP_CSUM_L4;
 	return 0;
 }
@@ -365,26 +368,26 @@ static __always_inline int ipv6_to_ipv4(struct __ctx_buff *ctx,
 	if (csum_off < 0)
 		return csum_off;
 	csum_off += sizeof(struct iphdr);
-	if (l4_csum_replace(ctx, nh_off + csum_off, 0, csum, csum_flags) < 0)
+	if (l4_csum_replace(ctx, nh_off + csum_off, 0, csum, (__u32)csum_flags) < 0)
 		return DROP_CSUM_L4;
 	return 0;
 }
 
 static __always_inline int
-nat46_rfc8215(struct __ctx_buff *ctx __maybe_unused,
+nat46_rfc6052(struct __ctx_buff *ctx __maybe_unused,
 	      const struct iphdr *ip4 __maybe_unused,
 	      int l3_off __maybe_unused)
 {
 	union v6addr src6, dst6;
 
-	build_v4_in_v6_rfc8215(&src6, ip4->saddr);
-	build_v4_in_v6_rfc8215(&dst6, ip4->daddr);
+	build_v4_in_v6_rfc6052(&src6, ip4->saddr);
+	build_v4_in_v6_rfc6052(&dst6, ip4->daddr);
 
 	return ipv4_to_ipv6(ctx, l3_off, &src6, &dst6);
 }
 
 static __always_inline int
-nat64_rfc8215(struct __ctx_buff *ctx __maybe_unused,
+nat64_rfc6052(struct __ctx_buff *ctx __maybe_unused,
 	      const struct ipv6hdr *ip6 __maybe_unused)
 {
 	__be32 src4, dst4;
@@ -403,7 +406,12 @@ static __always_inline bool nat46x64_cb_route(struct __ctx_buff *ctx)
 	return ctx_load_meta(ctx, CB_NAT_46X64) == NAT46x64_MODE_ROUTE;
 }
 
-static __always_inline bool nat46x64_cb_xlate(struct __ctx_buff *ctx)
+static __always_inline bool
+nat46x64_cb_xlate(struct __ctx_buff *ctx __maybe_unused)
 {
+#if defined(ENABLE_NAT_46X64_GATEWAY) || defined(ENABLE_NAT_46X64)
 	return ctx_load_meta(ctx, CB_NAT_46X64) == NAT46x64_MODE_XLATE;
+#else
+	return false;
+#endif
 }

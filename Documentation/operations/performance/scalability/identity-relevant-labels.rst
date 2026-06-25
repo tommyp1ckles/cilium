@@ -38,6 +38,7 @@ Label                                               Description
 ``!annotation.*``                                   Ignore all ``annotation`` labels
 ``!controller-uid``                                 Ignore all ``controller-uid`` labels
 ``!etcd_node``                                      Ignore all ``etcd_node`` labels
+``!topology\.kubernetes\.io``                       Ignore all ``topology.kubernetes.io`` labels
 =================================================== =========================================================
 
 The above label patterns are all *exclusive label patterns*, that is to say
@@ -51,14 +52,16 @@ for identities. Additionally, when at least one inclusive label pattern is
 configured, the following inclusive label patterns are automatically added to
 the configuration:
 
-========================================== =====================================================
-Label                                      Description
------------------------------------------- -----------------------------------------------------
-``reserved:.*``                            Include all ``reserved:`` labels
-``io\.kubernetes\.pod\.namespace``         Include all ``io.kubernetes.pod.namespace`` labels
-``io\.cilium\.k8s\.namespace\.labels``     Include all ``io.cilium.k8s.namespace.labels`` labels
-``app\.kubernetes\.io``                    Include all ``app.kubernetes.io`` labels
-========================================== =====================================================
+=================================================== =========================================================
+Label                                               Description
+--------------------------------------------------- ---------------------------------------------------------
+``reserved:.*``                                     Include all ``reserved:`` labels
+``io\.kubernetes\.pod\.namespace``                  Include all ``io.kubernetes.pod.namespace`` labels
+``io\.cilium\.k8s\.namespace\.labels``              Include all ``io.cilium.k8s.namespace.labels`` labels
+``io\.cilium\.k8s\.policy\.cluster``                Include all ``io.cilium.k8s.policy.cluster`` labels
+``io\.cilium\.k8s\.policy\.serviceaccount``         Include all ``io.cilium.k8s.policy.serviceaccount`` labels
+``app\.kubernetes\.io``                             Include all ``app.kubernetes.io`` labels
+=================================================== =========================================================
 
 
 
@@ -74,12 +77,12 @@ this attribute can also be set via helm option ``--set labels=<values>``.
 
     apiVersion: v1
     data:
-    ...
+    # ...
       kube-proxy-replacement: "true"
       labels:  "io\\.kubernetes\\.pod\\.namespace k8s-app app name"
       enable-ipv4-masquerade: "true"
       monitor-aggregation: medium
-    ...
+    # ...
 
 .. note:: The double backslash in ``\\.`` is required to escape the slash in
           the YAML string so that the regular expression contains ``\.``.
@@ -91,26 +94,35 @@ with ``example.com``, whereas ``.*example\.com`` will match labels that contain
 the pattern matching too broadly and therefore including or excluding too many
 labels.
 
-The label patterns are using regular expressions. Therefore, using  ``kind$`` 
+The label patterns are using regular expressions. Therefore, using  ``kind$``
 or ``^kind$`` can exactly match the label key ``kind``, not just the prefix.
 
 Upon defining a custom list of label patterns in the ConfigMap, Cilium adds the
 provided list of label patterns to the default list of label patterns. After
-saving the ConfigMap, restart the Cilium Agents to pickup the new label pattern
-setting.
+saving the ConfigMap, if the Operator is managing identities (:ref:`IdentityManagementMode`),
+restart both the Cilium Operators and Agents to pickup the new label pattern setting. If the Agent
+is managing identities, restart the Cilium Agents to pickup the new label pattern.
 
 .. code-block:: shell-session
 
-    kubectl delete pods -n kube-system -l k8s-app=cilium
+    kubectl rollout restart -n kube-system ds/cilium
 
 .. note:: Configuring Cilium with label patterns via ``labels`` Helm value does
-          **not** override the default set of label patterns.
+          **not** override the default set of label patterns. That is to say,
+          you can consider this configuration to append a list of label
+          configurations to the defaults listed above.
+
+          If you wish to configure this setting in a declarative way including
+          the exact set of label prefixes to be considered for determining
+          workload security identities, you should instead configure the
+          ``label-prefix-file`` configuration flag.
 
 Existing identities will not change as a result of this new configuration. To
 apply the new label pattern setting to existing identities, restart the
-associated pods. Upon restart, new identities will be created. The old
-identities will be garbage collected by the Cilium Operator once they are no
-longer used by any Cilium endpoints.
+corresponding Cilium pod on the node where the workload is running. Upon
+restart, new identities will be created. The old identities will be garbage
+collected by the Cilium Operator once they are no longer used by any Cilium
+endpoints.
 
 When specifying multiple label patterns to evaluate, provide the list of labels
 as a space-separated string.
@@ -136,6 +148,8 @@ evaluating Cilium identities:
 - reserved:.*
 - io\.kubernetes\.pod\.namespace
 - io\.cilium\.k8s.namespace\.labels
+- io\.cilium\.k8s\.policy\.cluster
+- io\.cilium\.k8s\.policy\.serviceaccount
 - app\.kubernetes\.io
 
 Note that ``io.kubernetes.pod.namespace`` is already included in default
@@ -150,7 +164,7 @@ for Cilium identities:
 - name-defined
 
 Because we have ``$`` in label key ``kind$`` and ``other$``. Only label keys using
-exactly ``kind`` and ``other`` will be evaluated for Cilium. 
+exactly ``kind`` and ``other`` will be evaluated for Cilium.
 
 When a single inclusive label is added to the filter, all labels not defined
 in the default list will be excluded. For example, pods running with the

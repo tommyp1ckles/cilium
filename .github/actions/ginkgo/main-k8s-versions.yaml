@@ -1,30 +1,34 @@
 # This file contains which kernel versions should be run with which k8s versions
 ---
 include:
-  - k8s-version: "1.31"
+  - k8s-version: "1.36"
     ip-family: "dual"
     # renovate: datasource=docker
-    kube-image: "quay.io/cilium/kindest-node:v1.31.0@sha256:d2b2a8cd6fa282b9a4126938341a4d2924dfa96f60b1f983d519498c9cde1a99"
+    kube-image: "quay.io/cilium/kindest-node:v1.36.0@sha256:0244ee685fe1947d4826c766291f7b03ba29a6794b655ad9a579c29cb627d8a8"
     # renovate: datasource=docker depName=quay.io/lvh-images/kind
-    kernel: "bpf-next-20240711.013133@sha256:5a2e78c14809c33d6fbae7762ec73b293aaa5e9b485226292348782bae1a3ed1"
+    kernel: "6.18-20260525.014435"
+    kernel-type: "latest"
 
-  - k8s-version: "1.30"
+  - k8s-version: "1.35"
     ip-family: "dual"
     # renovate: datasource=docker
-    kube-image: "quay.io/cilium/kindest-node:v1.30.0@sha256:edcb457c0b2ecc69a0fa9b0878bdcfd4a0f1205340cf08bf36a03d3a94a16dd9"
+    kube-image: "quay.io/cilium/kindest-node:v1.35.0@sha256:a36285a50bb7ee33d44b6d7938dca10e34f8a9294873ae4b0b04f9d21619d44c"
     # renovate: datasource=docker depName=quay.io/lvh-images/kind
-    kernel: "rhel8-20240404.144247@sha256:3d3510c373eb93a66518a30b715e6b3209a768ff816efe95d8da24107e90e70e"
+    kernel: "6.12-20260525.014435"
+    kernel-type: "oldstable"
 
-  - k8s-version: "1.29"
+  - k8s-version: "1.34"
     ip-family: "dual"
     # renovate: datasource=docker
-    kube-image: "kindest/node:v1.29.8@sha256:d46b7aa29567e93b27f7531d258c372e829d7224b25e3fc6ffdefed12476d3aa"
+    kube-image: "quay.io/cilium/kindest-node:v1.34.0@sha256:7416a61b42b1662ca6ca89f02028ac133a309a2a30ba309614e8ec94d976dc5a"
     # renovate: datasource=docker depName=quay.io/lvh-images/kind
-    kernel: "rhel8-20240404.144247@sha256:3d3510c373eb93a66518a30b715e6b3209a768ff816efe95d8da24107e90e70e"
+    kernel: "6.6-20260525.014435"
+    kernel-type: "oldstable"
 
-  - k8s-version: "1.28"
+  - k8s-version: "1.33"
     ip-family: "dual"
     # renovate: datasource=docker
-    kube-image: "kindest/node:v1.28.13@sha256:45d319897776e11167e4698f6b14938eb4d52eb381d9e3d7a9086c16c69a8110"
+    kube-image: "quay.io/cilium/kindest-node:v1.33.4@sha256:25a6018e48dfcaee478f4a59af81157a437f15e6e140bf103f85a2e7cd0cbbf2"
     # renovate: datasource=docker depName=quay.io/lvh-images/kind
-    kernel: "5.4-20240710.064909@sha256:f794fae21a07acf69d81a091f89ba01ad21b12e28b43ec4ce9ebb9e2a9f92e01"
+    kernel: "6.1-20260525.014435"
+    kernel-type: "stable"

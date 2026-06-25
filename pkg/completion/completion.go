@@ -6,6 +6,7 @@ package completion
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/cilium/cilium/pkg/lock"
 )
@@ -15,22 +16,29 @@ type WaitGroup struct {
 	// ctx is the context of all the Completions in the wait group.
 	ctx context.Context
 
-	// cancel is the function to call if any pending operation fails
+	// cancel is the function to call if any pending operation fails, if Wait returns or when cleaning up all resources
 	cancel context.CancelFunc
 
-	// counterLocker locks all calls to AddCompletion and Wait, which must not
-	// be called concurrently.
+	// counterLocker locks all calls to AddCompletionWithCallback and Wait,
+	// which must not be called concurrently.
 	counterLocker lock.Mutex
 
-	// pendingCompletions is the list of Completions returned by
-	// AddCompletion() which have not yet been completed.
+	// pendingCompletions is the list of Completions added to the wait group
+	// which have not yet been completed.
 	pendingCompletions []*Completion
 }
 
-// NewWaitGroup returns a new WaitGroup using the given context.
+// NewWaitGroup returns a new WaitGroup using the given context. The WaitGroup will hold an internal context
+// that will be cancelled when the first completion returns an error or when Wait returns. If Wait is not executed,
+// a call to Cancel should be done to avoid leaking resources.
 func NewWaitGroup(ctx context.Context) *WaitGroup {
 	ctx2, cancel := context.WithCancel(ctx)
 	return &WaitGroup{ctx: ctx2, cancel: cancel}
+}
+
+// Cancel will cancel the underlying context and free its resources
+func (wg *WaitGroup) Cancel() {
+	wg.cancel()
 }
 
 // Context returns the context of all the Completions in the wait group.
@@ -38,21 +46,22 @@ func (wg *WaitGroup) Context() context.Context {
 	return wg.ctx
 }
 
+// Owner provides optional debug correlation and wait-time cleanup for a
+// completion created with AddCompletionWithCallback.
+type Owner interface {
+	ID() string
+	CleanupAfterWait(*Completion)
+}
+
 // AddCompletionWithCallback creates a new completion, adds it to the wait
 // group, and returns it. The callback will be called upon completion.
 // Completion can complete in a failure (err != nil)
-func (wg *WaitGroup) AddCompletionWithCallback(callback func(err error)) *Completion {
+func (wg *WaitGroup) AddCompletionWithCallback(owner Owner, callback func(err error)) *Completion {
 	wg.counterLocker.Lock()
 	defer wg.counterLocker.Unlock()
-	c := NewCompletion(wg.cancel, callback)
+	c := NewCompletion(owner, wg.cancel, callback)
 	wg.pendingCompletions = append(wg.pendingCompletions, c)
 	return c
-}
-
-// AddCompletion creates a new completion, adds it into the wait group, and
-// returns it.
-func (wg *WaitGroup) AddCompletion() *Completion {
-	return wg.AddCompletionWithCallback(nil)
 }
 
 // updateError updates the error value to be returned from Wait()
@@ -77,8 +86,8 @@ func updateError(old, new error) error {
 	return old
 }
 
-// Wait blocks until all completions added by calling AddCompletion are
-// completed, or the context is canceled, whichever happens first.
+// Wait blocks until all completions added to the wait group are completed, or
+// the context is canceled, whichever happens first.
 // Returns the context's error if it is cancelled, nil otherwise.
 // No callbacks of the completions in this wait group will be called after
 // this returns.
@@ -98,15 +107,24 @@ Loop:
 		case <-wg.ctx.Done():
 			// Complete the remaining completions (if any) to make sure their completed
 			// channels are closed.
-			for _, comp := range wg.pendingCompletions[i:] {
+			ctxErr := wg.ctx.Err()
+			for _, c := range wg.pendingCompletions[i:] {
 				// 'comp' may have already completed on a different error
-				compErr := comp.Complete(wg.ctx.Err())
+				compErr := c.Complete(ctxErr)
+				if c.owner != nil {
+					c.owner.CleanupAfterWait(c)
+				}
 				err = updateError(err, compErr) // Keep the most severe error value we encounter
+			}
+			// override error with the hanging completion if deadline exceeded
+			if errors.Is(ctxErr, context.DeadlineExceeded) {
+				err = fmt.Errorf("Waiting on %s: %w", comp.Id(), ctxErr)
 			}
 			break Loop
 		}
 	}
 	wg.pendingCompletions = nil
+	wg.cancel()
 	return err
 }
 
@@ -126,6 +144,9 @@ type Completion struct {
 	// callback is called when Complete is called the first time.
 	callback func(err error)
 
+	// owner provides an optional debug ID and wait-time cleanup hook.
+	owner Owner
+
 	// err is the error the completion completed with
 	err error
 }
@@ -135,6 +156,13 @@ func (c *Completion) Err() error {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	return c.err
+}
+
+func (c *Completion) Id() string {
+	if c.owner == nil {
+		return ""
+	}
+	return c.owner.ID()
 }
 
 // Complete notifies of the completion of the asynchronous computation.
@@ -173,8 +201,9 @@ func (c *Completion) Completed() <-chan struct{} {
 
 // NewCompletion creates a Completion which calls a function upon Complete().
 // 'cancel' is called if the associated operation fails for any reason.
-func NewCompletion(cancel context.CancelFunc, callback func(err error)) *Completion {
+func NewCompletion(owner Owner, cancel context.CancelFunc, callback func(err error)) *Completion {
 	return &Completion{
+		owner:     owner,
 		cancel:    cancel,
 		completed: make(chan struct{}),
 		callback:  callback,

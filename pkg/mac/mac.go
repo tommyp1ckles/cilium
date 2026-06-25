@@ -4,9 +4,7 @@
 package mac
 
 import (
-	"bytes"
 	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"net"
 )
@@ -37,17 +35,37 @@ func (m MAC) String() string {
 	return net.HardwareAddr(m).String()
 }
 
+// As6 returns the MAC as an array of 6 bytes for use in datapath configuration
+// structs.
+func (m MAC) As6() [6]byte {
+	var res [6]byte
+	copy(res[:], m)
+	return res
+}
+
 // ParseMAC parses s only as an IEEE 802 MAC-48.
 func ParseMAC(s string) (MAC, error) {
 	ha, err := net.ParseMAC(s)
 	if err != nil {
 		return nil, err
 	}
+	// MAC only supports the IEEE 802 MAC-48 address format while [net.HardwareAddress]
+	// supports several other formats, see [net.ParseMAC].
 	if len(ha) != 6 {
 		return nil, fmt.Errorf("invalid MAC address %s", s)
 	}
 
 	return MAC(ha), nil
+}
+
+// MustParseMAC calls [ParseMAC] and panics on error. It is intended for use in tests with
+// hard-coded strings.
+func MustParseMAC(s string) MAC {
+	mac, err := ParseMAC(s)
+	if err != nil {
+		panic(err)
+	}
+	return mac
 }
 
 // Uint64 returns the MAC in uint64 format. The MAC is represented as little-endian in
@@ -67,40 +85,23 @@ func (m MAC) Uint64() (Uint64MAC, error) {
 	return Uint64MAC(res), nil
 }
 
-func (m MAC) MarshalJSON() ([]byte, error) {
-	if len(m) == 0 {
-		return []byte(`""`), nil
-	}
-	if len(m) != 6 {
-		return nil, fmt.Errorf("invalid MAC address length %s", string(m))
-	}
-	return []byte(fmt.Sprintf("\"%02x:%02x:%02x:%02x:%02x:%02x\"", m[0], m[1], m[2], m[3], m[4], m[5])), nil
+// MarshalText implements the [encoding.TextMarshaler] interface.
+// The encoding is the same as the one returned by [MAC.String].
+func (m MAC) MarshalText() ([]byte, error) {
+	return []byte(m.String()), nil
 }
 
-func (m MAC) MarshalIndentJSON(prefix, indent string) ([]byte, error) {
-	return m.MarshalJSON()
-}
-
-func (m *MAC) UnmarshalJSON(data []byte) error {
-	if len(data) == len([]byte(`""`)) {
-		if m == nil {
-			m = new(MAC)
-		}
+// UnmarshalText implements the [encoding.TextUnmarshaler] interface.
+func (m *MAC) UnmarshalText(data []byte) error {
+	if len(data) == 0 {
 		*m = MAC{}
 		return nil
 	}
-	if len(data) != 19 {
-		return fmt.Errorf("invalid MAC address length %s", string(data))
+	hw, err := ParseMAC(string(data))
+	if err == nil {
+		*m = MAC(hw)
 	}
-	data = data[1 : len(data)-1]
-	macStr := bytes.Replace(data, []byte(`:`), []byte(``), -1)
-	if len(macStr) != 12 {
-		return fmt.Errorf("invalid MAC address format")
-	}
-	macByte := make([]byte, len(macStr))
-	hex.Decode(macByte, macStr)
-	*m = MAC{macByte[0], macByte[1], macByte[2], macByte[3], macByte[4], macByte[5]}
-	return nil
+	return err
 }
 
 // GenerateRandMAC generates a random unicast and locally administered MAC address.
@@ -114,25 +115,4 @@ func GenerateRandMAC() (MAC, error) {
 	buf[0] = (buf[0] | 0x02) & 0xfe
 
 	return buf, nil
-}
-
-// HaveMACAddrs returns true if all given network interfaces have L2 addr.
-func HaveMACAddrs(ifaces []string) bool {
-	for _, iface := range ifaces {
-		if !HasMacAddr(iface) {
-			return false
-		}
-	}
-	return true
-}
-
-// CArrayString returns a string which can be used for assigning the given
-// MAC addr to "union macaddr" in C.
-func CArrayString(m net.HardwareAddr) string {
-	if m == nil || len(m) != 6 {
-		return "{0x0,0x0,0x0,0x0,0x0,0x0}"
-	}
-
-	return fmt.Sprintf("{0x%x,0x%x,0x%x,0x%x,0x%x,0x%x}",
-		m[0], m[1], m[2], m[3], m[4], m[5])
 }

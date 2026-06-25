@@ -28,7 +28,6 @@ import (
 	"github.com/cilium/cilium/cilium-cli/defaults"
 	"github.com/cilium/cilium/cilium-cli/utils/features"
 	hubprinter "github.com/cilium/cilium/hubble/pkg/printer"
-	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/lock"
 )
 
@@ -38,7 +37,8 @@ const (
 
 var (
 	// PING 10.0.0.1 (10.0.0.1) 56(84) bytes of data.
-	pingHeaderPattern = regexp.MustCompile(`^PING .* bytes of data\.`)
+	// PING 2606:4700:4700::1111(2606:4700:4700::1111) 56 data bytes
+	pingHeaderPattern = regexp.MustCompile(`^PING .*(bytes of data\.|data bytes)`)
 )
 
 // Action represents an individual action (e.g. a curl call) in a Scenario
@@ -84,6 +84,9 @@ type Action struct {
 	// failed is true when Fail was called on the Action
 	failed bool
 
+	// failureMessage contains the reason why the action failed
+	failureMessage string
+
 	// Output from action if there is any
 	cmdOutput string
 
@@ -112,10 +115,10 @@ func (a *Action) String() string {
 	sn := a.test.scenarioName(a.scenario)
 	p := a.Peers()
 	if p != "" {
-		return fmt.Sprintf("%s/%s: %s", sn, a.name, p)
+		return fmt.Sprintf("%s:%s: %s", sn, a.name, p)
 	}
 
-	return fmt.Sprintf("%s/%s", sn, a.name)
+	return fmt.Sprintf("%s:%s", sn, a.name)
 }
 
 // Peers returns the name and addr:port of the peers involved in the Action.
@@ -165,14 +168,14 @@ func (a *Action) Run(f func(*Action)) {
 	for _, m := range a.expIngress.Metrics {
 		err := a.collectMetricsPerSource(m)
 		if err != nil {
-			a.Logf("❌ Failed to collect metrics for ingress from source %s: %w", m.Source, err)
+			a.Logf("❌ Failed to collect metrics for ingress from source %s: %s", m.Source, err)
 		}
 
 	}
 	for _, m := range a.expEgress.Metrics {
 		err := a.collectMetricsPerSource(m)
 		if err != nil {
-			a.Logf("❌ Failed to collect metrics for egress from source %s: %w", m.Source, err)
+			a.Logf("❌ Failed to collect metrics for egress from source %s: %s", m.Source, err)
 		}
 	}
 
@@ -261,7 +264,7 @@ func (a *Action) WriteDataToPod(ctx context.Context, filePath string, data []byt
 	pod := a.src
 
 	output, err := pod.K8sClient.ExecInPod(ctx,
-		pod.Pod.Namespace, pod.Pod.Name, pod.Pod.Labels["name"],
+		pod.Pod.Namespace, pod.Pod.Name, pod.Pod.Spec.Containers[0].Name,
 		[]string{"sh", "-c", fmt.Sprintf("echo %s | base64 -d > %s", encodedData, filePath)})
 
 	if err != nil {
@@ -297,12 +300,18 @@ func (a *Action) ExecInPod(ctx context.Context, cmd []string) {
 	// output.
 	for i := 1; i <= testCommandRetries; i++ {
 		output, errOutput, err = pod.K8sClient.ExecInPodWithStderr(ctx,
-			pod.Pod.Namespace, pod.Pod.Name, pod.Pod.Labels["name"], cmd)
+			pod.Pod.Namespace, pod.Pod.Name, pod.Pod.Spec.Containers[0].Name, cmd)
 		a.cmdOutput = output.String()
 		// Check for inconclusive results.
 		if err == nil && strings.TrimSpace(pingHeaderPattern.ReplaceAllString(output.String(), "")) == "" {
 			a.Debugf("retrying command %s due to inconclusive results", cmdStr)
 			continue
+		} else if err != nil {
+			exitCode, _ := a.extractExitCode(err)
+			if exitCode == ExitInvalidCode {
+				a.Debugf("retrying command %s to command execution error", cmdStr)
+				continue
+			}
 		}
 		break
 	}
@@ -802,7 +811,7 @@ func (a *Action) waitForRelay(ctx context.Context, client observer.ObserverClien
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("hubble server status failure: %w", ctx.Err())
-		case <-inctimer.After(time.Second):
+		case <-time.After(time.Second):
 			a.Debug("retrying hubble relay server status request")
 		}
 	}
@@ -1053,7 +1062,7 @@ func (a *Action) validateMetric(ctx context.Context, node string, result Metrics
 		// Collect the new metrics.
 		newMetrics, err := a.collectPrometheusMetricsForNode(result.Source, node)
 		if err != nil {
-			a.Failf("failed to collect new metrics on node %s: %w", node, err)
+			a.Failf("failed to collect new metrics on node %s: %s\n", node, err)
 			return
 		}
 
@@ -1077,4 +1086,16 @@ func (a *Action) validateMetric(ctx context.Context, node string, result Metrics
 			// Ticker is delivered, let's retry.
 		}
 	}
+}
+
+func (a *Action) expectingSuccess() bool {
+	return a.expectedExitCode() == ExitCode(0)
+}
+
+func (a *Action) CurlCommandWithOutput(peer TestPeer, opts ...string) []string {
+	return a.test.ctx.CurlCommandWithOutput(peer, a.IPFamily(), a.expectingSuccess(), opts)
+}
+
+func (a *Action) CurlCommand(peer TestPeer, opts ...string) []string {
+	return a.test.ctx.CurlCommand(peer, a.IPFamily(), a.expectingSuccess(), opts)
 }

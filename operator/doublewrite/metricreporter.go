@@ -1,29 +1,29 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Authors of Cilium
+
 package doublewrite
 
 import (
 	"context"
+	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
-
-	"github.com/cilium/cilium/pkg/slices"
-
-	"github.com/cilium/cilium/pkg/allocator"
-	"github.com/cilium/cilium/pkg/identity/key"
-	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
-	"github.com/cilium/cilium/pkg/k8s/identitybackend"
-
-	"github.com/sirupsen/logrus"
 
 	"github.com/cilium/hive/cell"
 
+	"github.com/cilium/cilium/pkg/allocator"
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/identity/cache"
+	"github.com/cilium/cilium/pkg/identity/key"
+	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
+	"github.com/cilium/cilium/pkg/k8s/identitybackend"
 	"github.com/cilium/cilium/pkg/kvstore"
 	kvstoreallocator "github.com/cilium/cilium/pkg/kvstore/allocator"
 	"github.com/cilium/cilium/pkg/kvstore/allocator/doublewrite"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/slices"
 )
 
 // params contains all the dependencies for the double-write-metric-reporter.
@@ -31,10 +31,11 @@ import (
 type params struct {
 	cell.In
 
-	Logger    logrus.FieldLogger
+	Logger    *slog.Logger
 	Lifecycle cell.Lifecycle
 
-	Clientset k8sClient.Clientset
+	Clientset     k8sClient.Clientset
+	KVStoreClient kvstore.Client
 
 	Cfg Config
 
@@ -42,15 +43,16 @@ type params struct {
 }
 
 type DoubleWriteMetricReporter struct {
-	logger logrus.FieldLogger
+	logger *slog.Logger
 
 	interval time.Duration
 
-	kvStoreBackend            allocator.Backend
-	clientset                 k8sClient.Clientset
-	crdBackend                allocator.Backend
-	crdBackendWatcherStopChan chan struct{}
-	crdBackendListDone        chan struct{}
+	kvstoreClient         kvstore.Client
+	kvStoreBackend        allocator.Backend
+	clientset             k8sClient.Clientset
+	crdBackend            allocator.Backend
+	crdBackendWatcherStop context.CancelFunc
+	crdBackendListDone    chan struct{}
 
 	mgr *controller.Manager
 	wg  sync.WaitGroup
@@ -63,10 +65,11 @@ func registerDoubleWriteMetricReporter(p params) {
 		return
 	}
 	doubleWriteMetricReporter := &DoubleWriteMetricReporter{
-		logger:    p.Logger,
-		interval:  p.Cfg.Interval,
-		clientset: p.Clientset,
-		metrics:   p.Metrics,
+		logger:        p.Logger,
+		interval:      p.Cfg.Interval,
+		clientset:     p.Clientset,
+		kvstoreClient: p.KVStoreClient,
+		metrics:       p.Metrics,
 	}
 	p.Lifecycle.Append(doubleWriteMetricReporter)
 }
@@ -82,30 +85,29 @@ func (h NoOpHandlerWithListDone) OnListDone() {
 }
 
 func (g *DoubleWriteMetricReporter) Start(ctx cell.HookContext) error {
-	g.logger.Info("Starting the Double Write Metric Reporter")
+	g.logger.InfoContext(ctx, "Starting the Double Write Metric Reporter")
 
-	kvStoreBackend, err := kvstoreallocator.NewKVStoreBackend(kvstoreallocator.KVStoreBackendConfiguration{BasePath: cache.IdentitiesPath, Suffix: "", Typ: nil, Backend: kvstore.Client()})
+	kvStoreBackend, err := kvstoreallocator.NewKVStoreBackend(g.logger, kvstoreallocator.KVStoreBackendConfiguration{BasePath: cache.IdentitiesPath, Suffix: "", Typ: nil, Backend: g.kvstoreClient})
 	if err != nil {
-		g.logger.WithError(err).Error("Unable to initialize kvstore backend for the Double Write Metric Reporter")
+		g.logger.ErrorContext(ctx, "Unable to initialize kvstore backend for the Double Write Metric Reporter", logfields.Error, err)
 		return err
 	}
 	g.kvStoreBackend = kvStoreBackend
 
-	crdBackend, err := identitybackend.NewCRDBackend(identitybackend.CRDBackendConfiguration{Store: nil, Client: g.clientset, KeyFunc: (&key.GlobalIdentity{}).PutKeyFromMap})
+	crdBackend, err := identitybackend.NewCRDBackend(g.logger, identitybackend.CRDBackendConfiguration{Store: nil, StoreSet: &atomic.Bool{}, Client: g.clientset, KeyFunc: (&key.GlobalIdentity{}).PutKeyFromMap})
 	if err != nil {
-		g.logger.WithError(err).Error("Unable to initialize CRD backend for the Double Write Metric Reporter")
+		g.logger.ErrorContext(ctx, "Unable to initialize CRD backend for the Double Write Metric Reporter", logfields.Error, err)
 		return err
 	}
 	g.crdBackend = crdBackend
 	// Initialize the CRD backend store
-	g.crdBackendWatcherStopChan = make(chan struct{})
+	var cctx context.Context
+	cctx, g.crdBackendWatcherStop = context.WithCancel(context.Background())
 	g.crdBackendListDone = make(chan struct{})
 	g.wg = sync.WaitGroup{}
-	g.wg.Add(1)
-	go func() {
-		g.crdBackend.ListAndWatch(context.Background(), NoOpHandlerWithListDone{listDone: g.crdBackendListDone}, g.crdBackendWatcherStopChan)
-		g.wg.Done()
-	}()
+	g.wg.Go(func() {
+		g.crdBackend.ListAndWatch(cctx, NoOpHandlerWithListDone{listDone: g.crdBackendListDone})
+	})
 
 	g.mgr = controller.NewManager()
 	g.mgr.UpdateController("double-write-metric-reporter",
@@ -122,7 +124,11 @@ func (g *DoubleWriteMetricReporter) Stop(ctx cell.HookContext) error {
 	if g.mgr != nil {
 		g.mgr.RemoveAllAndWait()
 	}
-	close(g.crdBackendWatcherStopChan)
+
+	if g.crdBackendWatcherStop != nil {
+		g.crdBackendWatcherStop()
+	}
+
 	g.wg.Wait()
 	return nil
 }
@@ -137,14 +143,14 @@ func (g *DoubleWriteMetricReporter) compareCRDAndKVStoreIdentities(ctx context.C
 	// Get CRD identities
 	crdIdentityIds, err := g.crdBackend.ListIDs(ctx)
 	if err != nil {
-		g.logger.WithError(err).Error("Unable to get CRD identities")
+		g.logger.ErrorContext(ctx, "Unable to get CRD identities", logfields.Error, err)
 		return err
 	}
 
 	// Get KVStore identities
 	kvstoreIdentityIds, err := g.kvStoreBackend.ListIDs(ctx)
 	if err != nil {
-		g.logger.WithError(err).Error("Unable to get KVStore identities")
+		g.logger.ErrorContext(ctx, "Unable to get KVStore identities", logfields.Error, err)
 		return err
 	}
 
@@ -157,22 +163,23 @@ func (g *DoubleWriteMetricReporter) compareCRDAndKVStoreIdentities(ctx context.C
 	onlyInCrdSample := onlyInCrd[:min(onlyInCrdCount, maxPrintedDiffIDs)]
 	onlyInKVStoreSample := onlyInKVStore[:min(onlyInKVStoreCount, maxPrintedDiffIDs)]
 
-	g.metrics.IdentityCRDTotalCount.Set(float64(len(crdIdentityIds)))
-	g.metrics.IdentityKVStoreTotalCount.Set(float64(len(kvstoreIdentityIds)))
-	g.metrics.IdentityCRDOnlyCount.Set(float64(onlyInCrdCount))
-	g.metrics.IdentityKVStoreOnlyCount.Set(float64(onlyInKVStoreCount))
+	g.metrics.CRDIdentities.Set(float64(len(crdIdentityIds)))
+	g.metrics.KVStoreIdentities.Set(float64(len(kvstoreIdentityIds)))
+	g.metrics.CRDOnlyIdentities.Set(float64(onlyInCrdCount))
+	g.metrics.KVStoreOnlyIdentities.Set(float64(onlyInKVStoreCount))
 
 	if onlyInCrdCount == 0 && onlyInKVStoreCount == 0 {
-		g.logger.Info("CRD and KVStore identities are in sync")
+		g.logger.InfoContext(ctx, "CRD and KVStore identities are in sync")
 	} else {
-		g.logger.WithFields(logrus.Fields{
-			"crd_identity_count":     len(crdIdentityIds),
-			"kvstore_identity_count": len(kvstoreIdentityIds),
-			"only_in_crd_count":      onlyInCrdCount,
-			"only_in_kvstore_count":  onlyInKVStoreCount,
-			"only_in_crd_sample":     onlyInCrdSample,
-			"only_in_kvstore_sample": onlyInKVStoreSample,
-		}).Infof("Detected differences between CRD and KVStore identities")
+		g.logger.InfoContext(ctx, "Detected differences between CRD and KVStore identities",
+			logfields.CRDIdentityCount, len(crdIdentityIds),
+			logfields.KVStoreIdentityCount, len(kvstoreIdentityIds),
+			logfields.OnlyInCRDCount, onlyInCrdCount,
+			logfields.OnlyInKVStoreCount, onlyInKVStoreCount,
+			logfields.OnlyInCRDSample, onlyInCrdSample,
+			logfields.OnlyInKVStoreSample, onlyInKVStoreSample,
+		)
+
 	}
 
 	return nil

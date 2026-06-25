@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -40,13 +41,9 @@ const (
 	// which corresponds to policy_verdict_notify defined in bpf/lib/policy_log.h
 	MessageTypePolicyVerdict
 
-	// MessageTypeRecCapture is a BPF datapath notification carrying a RecorderCapture
-	// which corresponds to capture_msg defined in bpf/lib/pcap.h
-	MessageTypeRecCapture
-
 	// MessageTypeTraceSock is a BPF datapath notification carrying a TraceNotifySock
 	// which corresponds to trace_sock_notify defined in bpf/lib/trace_sock.h
-	MessageTypeTraceSock
+	MessageTypeTraceSock = 7
 
 	// 129-255 are reserved for agent level events
 
@@ -65,7 +62,6 @@ const (
 	MessageTypeNameL7            = "l7"
 	MessageTypeNameAgent         = "agent"
 	MessageTypeNamePolicyVerdict = "policy-verdict"
-	MessageTypeNameRecCapture    = "recorder"
 	MessageTypeNameTraceSock     = "trace-sock"
 )
 
@@ -81,7 +77,6 @@ var (
 		MessageTypeNameL7:            MessageTypeAccessLog,
 		MessageTypeNameAgent:         MessageTypeAgent,
 		MessageTypeNamePolicyVerdict: MessageTypePolicyVerdict,
-		MessageTypeNameRecCapture:    MessageTypeRecCapture,
 		MessageTypeNameTraceSock:     MessageTypeTraceSock,
 	}
 )
@@ -138,13 +133,7 @@ func (m *MessageTypeFilter) Type() string {
 }
 
 func (m *MessageTypeFilter) Contains(typ int) bool {
-	for _, v := range *m {
-		if v == typ {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(*m, typ)
 }
 
 // Must be synchronized with <bpf/lib/trace.h>
@@ -161,6 +150,8 @@ const (
 	TraceFromOverlay
 	TraceFromNetwork
 	TraceToNetwork
+	TraceFromCrypto
+	TraceToCrypto
 )
 
 // TraceObservationPoints is a map of all supported trace observation points
@@ -171,12 +162,14 @@ var TraceObservationPoints = map[uint8]string{
 	TraceToStack:     "to-stack",
 	TraceToOverlay:   "to-overlay",
 	TraceToNetwork:   "to-network",
+	TraceToCrypto:    "to-crypto",
 	TraceFromLxc:     "from-endpoint",
 	TraceFromProxy:   "from-proxy",
 	TraceFromHost:    "from-host",
 	TraceFromStack:   "from-stack",
 	TraceFromOverlay: "from-overlay",
 	TraceFromNetwork: "from-network",
+	TraceFromCrypto:  "from-crypto",
 }
 
 // TraceObservationPoint returns the name of a trace observation point
@@ -199,7 +192,7 @@ type AgentNotify struct {
 // constructors in this package for possible values.
 type AgentNotifyMessage struct {
 	Type         AgentNotification
-	Notification interface{}
+	Notification any
 }
 
 // ToJSON encodes a AgentNotifyMessage to its JSON-based AgentNotify representation
@@ -229,8 +222,6 @@ const (
 	AgentNotifyEndpointDeleted
 	AgentNotifyIPCacheUpserted
 	AgentNotifyIPCacheDeleted
-	AgentNotifyServiceUpserted
-	AgentNotifyServiceDeleted
 )
 
 // AgentNotifications is a map of all supported agent notification types.
@@ -246,8 +237,6 @@ var AgentNotifications = map[AgentNotification]string{
 	AgentNotifyIPCacheUpserted:           "IPCache entry upserted",
 	AgentNotifyPolicyUpdated:             "Policy updated",
 	AgentNotifyPolicyDeleted:             "Policy deleted",
-	AgentNotifyServiceDeleted:            "Service deleted",
-	AgentNotifyServiceUpserted:           "Service upserted",
 }
 
 func resolveAgentType(t AgentNotification) string {
@@ -258,18 +247,8 @@ func resolveAgentType(t AgentNotification) string {
 	return fmt.Sprintf("%d", t)
 }
 
-// DumpInfo dumps an agent notification
-func (n *AgentNotify) DumpInfo() {
-	fmt.Printf(">> %s: %s\n", resolveAgentType(n.Type), n.Text)
-}
-
 func (n *AgentNotify) getJSON() string {
 	return fmt.Sprintf(`{"type":"agent","subtype":"%s","message":%s}`, resolveAgentType(n.Type), n.Text)
-}
-
-// DumpJSON prints notification in json format
-func (n *AgentNotify) DumpJSON() {
-	fmt.Println(n.getJSON())
 }
 
 // PolicyUpdateNotification structures update notification
@@ -441,71 +420,6 @@ func StartMessage(t time.Time) AgentNotifyMessage {
 
 	return AgentNotifyMessage{
 		Type:         AgentNotifyStart,
-		Notification: notification,
-	}
-}
-
-// ServiceUpsertNotificationAddr is part of ServiceUpsertNotification
-type ServiceUpsertNotificationAddr struct {
-	IP   net.IP `json:"ip"`
-	Port uint16 `json:"port"`
-}
-
-// ServiceUpsertNotification structures service upsert notifications
-type ServiceUpsertNotification struct {
-	ID uint32 `json:"id"`
-
-	Frontend ServiceUpsertNotificationAddr   `json:"frontend-address"`
-	Backends []ServiceUpsertNotificationAddr `json:"backend-addresses"`
-
-	Type string `json:"type,omitempty"`
-	// Deprecated: superseded by ExtTrafficPolicy.
-	TrafficPolicy    string `json:"traffic-policy,omitempty"`
-	ExtTrafficPolicy string `json:"ext-traffic-policy,omitempty"`
-	IntTrafficPolicy string `json:"int-traffic-policy,omitempty"`
-
-	Name      string `json:"name,omitempty"`
-	Namespace string `json:"namespace,,omitempty"`
-}
-
-// ServiceUpsertMessage constructs an agent notification message for service upserts
-func ServiceUpsertMessage(
-	id uint32,
-	frontend ServiceUpsertNotificationAddr,
-	backends []ServiceUpsertNotificationAddr,
-	svcType, svcExtTrafficPolicy, svcIntTrafficPolicy, svcName, svcNamespace string,
-) AgentNotifyMessage {
-	notification := ServiceUpsertNotification{
-		ID:               id,
-		Frontend:         frontend,
-		Backends:         backends,
-		Type:             svcType,
-		TrafficPolicy:    svcExtTrafficPolicy,
-		ExtTrafficPolicy: svcExtTrafficPolicy,
-		IntTrafficPolicy: svcIntTrafficPolicy,
-		Name:             svcName,
-		Namespace:        svcNamespace,
-	}
-
-	return AgentNotifyMessage{
-		Type:         AgentNotifyServiceUpserted,
-		Notification: notification,
-	}
-}
-
-// ServiceDeleteNotification structures service delete notifications
-type ServiceDeleteNotification struct {
-	ID uint32 `json:"id"`
-}
-
-// ServiceDeleteMessage constructs an agent notification message for service deletions
-func ServiceDeleteMessage(id uint32) AgentNotifyMessage {
-	notification := ServiceDeleteNotification{
-		ID: id,
-	}
-
-	return AgentNotifyMessage{
-		Type:         AgentNotifyServiceDeleted,
 		Notification: notification,
 	}
 }

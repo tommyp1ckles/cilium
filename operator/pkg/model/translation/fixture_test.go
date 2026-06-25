@@ -4,7 +4,7 @@
 package translation
 
 import (
-	envoy_config_route_v3 "github.com/cilium/proxy/go/envoy/config/route/v3"
+	envoy_config_route_v3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 
 	"github.com/cilium/cilium/operator/pkg/model"
 )
@@ -1307,6 +1307,126 @@ var multipleRouteHostnamesExpectedConfig = []*envoy_config_route_v3.RouteConfigu
 					{
 						Match:  envoyRouteMatchRootPath(),
 						Action: envoyRouteAction("dummy-namespace", "another-dummy-backend", "8081"),
+					},
+				},
+			},
+		},
+	},
+}
+
+// multiPortHTTPSModel represents a Gateway with HTTP on port 80 and HTTPS on
+// two different ports (443 and 50051), triggering per-port listener splitting.
+var multiPortHTTPSModel = &model.Model{
+	HTTP: []model.HTTPListener{
+		{
+			Sources: []model.FullyQualifiedResource{
+				{Name: "my-gateway", Namespace: "default", Version: "v1", Kind: "Gateway"},
+			},
+			Port:     80,
+			Hostname: "example.com",
+			Routes: []model.HTTPRoute{
+				{
+					PathMatch: model.StringMatch{Prefix: "/"},
+					Backends: []model.Backend{
+						{
+							Name:      "http-backend",
+							Namespace: "default",
+							Port:      &model.BackendPort{Port: 8080},
+						},
+					},
+				},
+			},
+		},
+		{
+			Sources: []model.FullyQualifiedResource{
+				{Name: "my-gateway", Namespace: "default", Version: "v1", Kind: "Gateway"},
+			},
+			Port:     443,
+			Hostname: "example.com",
+			TLS: []model.TLSSecret{
+				{Name: "example-tls", Namespace: "default"},
+			},
+			Routes: []model.HTTPRoute{
+				{
+					PathMatch: model.StringMatch{Prefix: "/"},
+					Backends: []model.Backend{
+						{
+							Name:      "http-backend",
+							Namespace: "default",
+							Port:      &model.BackendPort{Port: 8080},
+						},
+					},
+				},
+			},
+		},
+		{
+			Sources: []model.FullyQualifiedResource{
+				{Name: "my-gateway", Namespace: "default", Version: "v1", Kind: "Gateway"},
+			},
+			Port:     50051,
+			Hostname: "example.com",
+			TLS: []model.TLSSecret{
+				{Name: "example-tls", Namespace: "default"},
+			},
+			Routes: []model.HTTPRoute{
+				{
+					PathMatch: model.StringMatch{Prefix: "/"},
+					Backends: []model.Backend{
+						{
+							Name:      "grpc-backend",
+							Namespace: "default",
+							Port:      &model.BackendPort{Port: 9090},
+						},
+					},
+				},
+			},
+		},
+	},
+}
+
+// multiPortHTTPSExpectedRouteConfigs is the expected route configuration for
+// multiPortHTTPSModel: one RouteConfiguration per listener.
+var multiPortHTTPSExpectedRouteConfigs = []*envoy_config_route_v3.RouteConfiguration{
+	{
+		Name: "listener-insecure",
+		VirtualHosts: []*envoy_config_route_v3.VirtualHost{
+			{
+				Name:    "example.com",
+				Domains: domainsHelper("example.com"),
+				Routes: []*envoy_config_route_v3.Route{
+					{
+						Match:  envoyRouteMatchRootPath(),
+						Action: envoyRouteAction("default", "http-backend", "8080"),
+					},
+				},
+			},
+		},
+	},
+	{
+		Name: "listener-443",
+		VirtualHosts: []*envoy_config_route_v3.VirtualHost{
+			{
+				Name:    "example.com",
+				Domains: domainsHelper("example.com"),
+				Routes: []*envoy_config_route_v3.Route{
+					{
+						Match:  envoyRouteMatchRootPath(),
+						Action: envoyRouteAction("default", "http-backend", "8080"),
+					},
+				},
+			},
+		},
+	},
+	{
+		Name: "listener-50051",
+		VirtualHosts: []*envoy_config_route_v3.VirtualHost{
+			{
+				Name:    "example.com",
+				Domains: domainsHelper("example.com"),
+				Routes: []*envoy_config_route_v3.Route{
+					{
+						Match:  envoyRouteMatchRootPath(),
+						Action: envoyRouteAction("default", "grpc-backend", "9090"),
 					},
 				},
 			},

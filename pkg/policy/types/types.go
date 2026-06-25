@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright Authors of Hubble
+// Copyright Authors of Cilium
 
 package types
 
@@ -132,6 +132,8 @@ func (k Key) WithIdentity(nid identity.NumericIdentity) Key {
 
 // TrafficDirection() returns the direction of the Key, 0 == ingress, 1 == egress
 func (k LPMKey) TrafficDirection() trafficdirection.TrafficDirection {
+	// Note that 0 and 1 are the only possible return values, the shift below reduces the byte
+	// to a single bit.
 	return trafficdirection.TrafficDirection(k.bits >> directionBitShift)
 }
 
@@ -140,11 +142,15 @@ func (k LPMKey) PortPrefixLen() uint8 {
 	return k.bits & ^directionBitMask
 }
 
+func (k LPMKey) HasPortWildcard() bool {
+	return k.bits & ^directionBitMask < 16
+}
+
 // String returns a string representation of the Key
 func (k Key) String() string {
 	dPort := strconv.FormatUint(uint64(k.DestPort), 10)
 	if k.DestPort != 0 && k.PortPrefixLen() < 16 {
-		dPort += "-" + strconv.FormatUint(uint64(k.DestPort+k.EndPort()), 10)
+		dPort += "-" + strconv.FormatUint(uint64(k.EndPort()), 10)
 	}
 	return "Identity=" + strconv.FormatUint(uint64(k.Identity), 10) +
 		",DestPort=" + dPort +
@@ -165,6 +171,13 @@ func (k LPMKey) IsEgress() bool {
 // EndPort returns the end-port of the Key based on the Mask.
 func (k LPMKey) EndPort() uint16 {
 	return k.DestPort + uint16(0xffff)>>k.PortPrefixLen()
+}
+
+// Covers returns true if 'k' matches all traffic that 'c' matcches.
+func (k Key) Covers(c Key) bool {
+	return (k.Identity == 0 || k.Identity == c.Identity) &&
+		(k.Nexthdr == 0 || k.Nexthdr == c.Nexthdr) &&
+		(k.PortIsEqual(c) || k.PortIsBroader(c))
 }
 
 // PortProtoIsBroader returns true if the receiver Key has broader
@@ -240,10 +253,19 @@ func (k LPMKey) BitValueAt(i uint) uint8 {
 	}
 }
 
-// Value implements the Value method for the
-// bitlpm.Key interface.
-func (k LPMKey) Value() LPMKey {
-	return k
-}
+type LPMKeys map[LPMKey]struct{}
 
 type Keys map[Key]struct{}
+
+func (keys *Keys) Has(key Key) bool {
+	_, exists := (*keys)[key]
+	return exists
+}
+
+// Insert adds 'key' to '*keys', initializing '*keys' if needed.
+func (keys *Keys) Insert(key Key) {
+	if *keys == nil {
+		*keys = make(Keys)
+	}
+	(*keys)[key] = struct{}{}
+}

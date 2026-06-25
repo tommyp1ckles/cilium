@@ -5,16 +5,16 @@ package iptables
 
 import (
 	"context"
-	"net"
+	"log/slog"
 	"net/netip"
 
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/stream"
-	"github.com/sirupsen/logrus"
 	"k8s.io/apimachinery/pkg/util/sets"
 
 	"github.com/cilium/cilium/pkg/datapath/tables"
 	"github.com/cilium/cilium/pkg/logging"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/time"
@@ -23,15 +23,16 @@ import (
 type desiredState struct {
 	installRules bool
 
-	devices       sets.Set[string]
-	localNodeInfo localNodeInfo
-	proxies       map[string]proxyInfo
-	noTrackPods   sets.Set[noTrackPodInfo]
+	devices          sets.Set[string]
+	localNodeInfo    localNodeInfo
+	proxies          map[string]proxyInfo
+	noTrackPods      sets.Set[noTrackPodInfo]
+	noTrackHostPorts noTrackHostPortsByPod
 }
 
 type localNodeInfo struct {
-	internalIPv4          net.IP
-	internalIPv6          net.IP
+	internalIPv4          netip.Addr
+	internalIPv6          netip.Addr
 	ipv4AllocCIDR         string
 	ipv6AllocCIDR         string
 	ipv4NativeRoutingCIDR string
@@ -50,8 +51,8 @@ func (lni localNodeInfo) isValid() bool {
 }
 
 func (lni localNodeInfo) equal(other localNodeInfo) bool {
-	if lni.internalIPv4.Equal(other.internalIPv4) &&
-		lni.internalIPv6.Equal(other.internalIPv6) &&
+	if lni.internalIPv4 == other.internalIPv4 &&
+		lni.internalIPv6 == other.internalIPv6 &&
 		lni.ipv4AllocCIDR == other.ipv4AllocCIDR &&
 		lni.ipv6AllocCIDR == other.ipv6AllocCIDR &&
 		lni.ipv4NativeRoutingCIDR == other.ipv4NativeRoutingCIDR &&
@@ -73,16 +74,19 @@ func toLocalNodeInfo(n node.LocalNode) localNodeInfo {
 	if n.IPv6AllocCIDR != nil {
 		v6AllocCIDR = n.IPv6AllocCIDR.String()
 	}
-	if n.IPv4NativeRoutingCIDR != nil {
-		v4NativeRoutingCIDR = n.IPv4NativeRoutingCIDR.String()
+	if n.Local.IPv4NativeRoutingCIDR != nil {
+		v4NativeRoutingCIDR = n.Local.IPv4NativeRoutingCIDR.String()
 	}
-	if n.IPv6NativeRoutingCIDR != nil {
-		v6NativeRoutingCIDR = n.IPv6NativeRoutingCIDR.String()
+	if n.Local.IPv6NativeRoutingCIDR != nil {
+		v6NativeRoutingCIDR = n.Local.IPv6NativeRoutingCIDR.String()
 	}
 
+	internalIPv4, _ := netip.AddrFromSlice(n.GetCiliumInternalIP(false).To4())
+	internalIPv6, _ := netip.AddrFromSlice(n.GetCiliumInternalIP(true).To16())
+
 	return localNodeInfo{
-		internalIPv4:          n.GetCiliumInternalIP(false),
-		internalIPv6:          n.GetCiliumInternalIP(true),
+		internalIPv4:          internalIPv4,
+		internalIPv6:          internalIPv6,
 		ipv4AllocCIDR:         v4AllocCIDR,
 		ipv6AllocCIDR:         v6AllocCIDR,
 		ipv4NativeRoutingCIDR: v4NativeRoutingCIDR,
@@ -111,9 +115,14 @@ type noTrackPodInfo struct {
 	port uint16
 }
 
+type noTrackHostPortsPodInfo struct {
+	podKey podAndNameSpace
+	ports  []string
+}
+
 func reconciliationLoop(
 	ctx context.Context,
-	log logrus.FieldLogger,
+	log *slog.Logger,
 	health cell.Health,
 	installIptRules bool,
 	params *reconcilerParams,
@@ -121,6 +130,8 @@ func reconciliationLoop(
 	updateProxyRules func(proxyPort uint16, name string) error,
 	installNoTrackRules func(addr netip.Addr, port uint16) error,
 	removeNoTrackRules func(addr netip.Addr, port uint16) error,
+	addNoTrackHostPorts func(currentState noTrackHostPortsByPod, podName podAndNameSpace, ports []string) error,
+	removeNoTrackHostPorts func(currentState noTrackHostPortsByPod, podName podAndNameSpace) error,
 ) error {
 	// The minimum interval between reconciliation attempts
 	const minReconciliationInterval = 200 * time.Millisecond
@@ -135,9 +146,10 @@ func reconciliationLoop(
 	fullLogLimiter := logging.NewLimiter(10*time.Second, 3)
 
 	state := desiredState{
-		installRules: installIptRules,
-		proxies:      make(map[string]proxyInfo),
-		noTrackPods:  sets.New[noTrackPodInfo](),
+		installRules:     installIptRules,
+		proxies:          make(map[string]proxyInfo),
+		noTrackPods:      sets.New[noTrackPodInfo](),
+		noTrackHostPorts: make(noTrackHostPortsByPod),
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -230,7 +242,7 @@ stop:
 
 			if err := updateProxyRules(req.info.port, req.info.name); err != nil {
 				if partialLogLimiter.Allow() {
-					log.WithError(err).Error("iptables proxy rules incremental update failed, will retry a full reconciliation")
+					log.Error("iptables proxy rules incremental update failed, will retry a full reconciliation", logfields.Error, err)
 				}
 				// incremental rules update failed, schedule a full iptables reconciliation
 				stateChanged = true
@@ -257,7 +269,7 @@ stop:
 
 			if err := installNoTrackRules(req.info.ip, req.info.port); err != nil {
 				if partialLogLimiter.Allow() {
-					log.WithError(err).Error("iptables no track rules incremental install failed, will retry a full reconciliation")
+					log.Error("iptables no track rules incremental install failed, will retry a full reconciliation", logfields.Error, err)
 				}
 				// incremental rules update failed, schedule a full iptables reconciliation
 				stateChanged = true
@@ -284,7 +296,7 @@ stop:
 
 			if err := removeNoTrackRules(req.info.ip, req.info.port); err != nil {
 				if partialLogLimiter.Allow() {
-					log.WithError(err).Error("iptables no track rules incremental removal failed, will retry a full reconciliation")
+					log.Error("iptables no track rules incremental removal failed, will retry a full reconciliation", logfields.Error, err)
 				}
 				// incremental rules update failed, schedule a full iptables reconciliation
 				stateChanged = true
@@ -292,6 +304,53 @@ stop:
 			} else {
 				close(req.updated)
 			}
+
+		case req, ok := <-params.addNoTrackHostPorts:
+			if !ok {
+				break stop
+			}
+
+			if firstInit {
+				stateChanged = true
+				updatedChs = append(updatedChs, req.updated)
+				continue
+			}
+
+			if err := addNoTrackHostPorts(state.noTrackHostPorts, req.info.podKey, req.info.ports); err != nil {
+				if partialLogLimiter.Allow() {
+					log.Error("failed to set up no-track-host-ports, will retry a full reconciliation", logfields.Error, err)
+				}
+
+				// incremental rules update failed, schedule a full iptables reconciliation
+				stateChanged = true
+				updatedChs = append(updatedChs, req.updated)
+			} else {
+				close(req.updated)
+			}
+
+		case req, ok := <-params.delNoTrackHostPorts:
+			if !ok {
+				break stop
+			}
+
+			if firstInit {
+				stateChanged = true
+				updatedChs = append(updatedChs, req.updated)
+				continue
+			}
+
+			if err := removeNoTrackHostPorts(state.noTrackHostPorts, req.info); err != nil {
+				if partialLogLimiter.Allow() {
+					log.Error("failed to remove no-track-host-ports, will retry a full reconciliation", logfields.Error, err)
+				}
+
+				// incremental rules update failed, schedule a full iptables reconciliation
+				stateChanged = true
+				updatedChs = append(updatedChs, req.updated)
+			} else {
+				close(req.updated)
+			}
+
 		case <-refresher.C():
 			stateChanged = true
 		case <-ticker.C():
@@ -301,7 +360,7 @@ stop:
 
 			if err := updateRules(state, firstInit); err != nil {
 				if fullLogLimiter.Allow() {
-					log.WithError(err).Error("iptables rules full reconciliation failed, will retry another one later")
+					log.Error("iptables rules full reconciliation failed, will retry another one later", logfields.Error, err)
 				}
 				health.Degraded("iptables rules full reconciliation failed", err)
 				// Keep stateChanged=true to try again on the next tick.
@@ -321,15 +380,7 @@ stop:
 
 			// Reset the timer so that it gets triggered again after fullReconciliationInterval,
 			// to avoid introducing unnecessary churn in case a full reconciliation was already
-			// triggered due to other reasons. The Stop and select steps can be dropped once
-			// switching to using go v1.23: https://go.dev/wiki/Go123Timer
-			if !refresher.Stop() {
-				select {
-				case <-ticker.C():
-				default:
-				}
-			}
-
+			// triggered due to other reasons.
 			refresher.Reset(fullReconciliationInterval)
 		}
 	}
@@ -349,6 +400,10 @@ stop:
 	for range params.addNoTrackPod {
 	}
 	for range params.delNoTrackPod {
+	}
+	for range params.addNoTrackHostPorts {
+	}
+	for range params.delNoTrackHostPorts {
 	}
 
 	return nil

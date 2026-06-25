@@ -16,20 +16,20 @@ func TestNeedsDelay(t *testing.T) {
 	tr := &Trigger{params: Parameters{}}
 
 	needsDelay, _ := tr.needsDelay()
-	require.Equal(t, false, needsDelay)
+	require.False(t, needsDelay)
 
 	tr.params.MinInterval = time.Second
 
 	tr.lastTrigger = time.Now().Add(time.Second * -2)
 	needsDelay, _ = tr.needsDelay()
-	require.Equal(t, false, needsDelay)
+	require.False(t, needsDelay)
 
 	tr.lastTrigger = time.Now().Add(time.Millisecond * -900)
 	needsDelay, _ = tr.needsDelay()
-	require.Equal(t, true, needsDelay)
+	require.True(t, needsDelay)
 	time.Sleep(time.Millisecond * 200)
 	needsDelay, _ = tr.needsDelay()
-	require.Equal(t, false, needsDelay)
+	require.False(t, needsDelay)
 }
 
 func TestMinInterval(t *testing.T) {
@@ -50,7 +50,7 @@ func TestMinInterval(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, tr)
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		tr.Trigger()
 		time.Sleep(time.Millisecond * 20)
 	}
@@ -81,7 +81,7 @@ func TestLongTrigger(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, tr)
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		tr.Trigger()
 		time.Sleep(time.Millisecond * 20)
 	}
@@ -116,5 +116,21 @@ func TestShutdownFunc(t *testing.T) {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Errorf("timed out while waiting for shutdown func")
+	}
+}
+
+func BenchmarkUntriggeredTrigger(b *testing.B) {
+	b.ReportAllocs()
+
+	for b.Loop() {
+		tr, err := NewTrigger(Parameters{
+			TriggerFunc:   func(reasons []string) {},
+			ShutdownFunc:  func() {},
+			sleepInterval: time.Millisecond,
+		})
+		require.NoError(b, err)
+
+		time.Sleep(time.Millisecond * 50)
+		tr.Shutdown()
 	}
 }

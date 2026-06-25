@@ -7,77 +7,52 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sort"
-	"strings"
 	"text/tabwriter"
-	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/cilium/cilium/api/v1/client/bgp"
-	"github.com/cilium/cilium/api/v1/models"
+	"github.com/cilium/cilium/pkg/bgp/api"
 	"github.com/cilium/cilium/pkg/command"
 )
 
-var BgpPeersCmd = &cobra.Command{
-	Use:     "peers",
-	Aliases: []string{"neighbors"},
-	Short:   "List current state of all peers",
-	Long:    "List state of all peers defined in CiliumBGPPeeringPolicy",
-	Run: func(cmd *cobra.Command, args []string) {
-		res, err := client.Bgp.GetBgpPeers(nil)
-		if err != nil {
-			disabledErr := bgp.NewGetBgpPeersDisabled()
-			if errors.As(err, &disabledErr) {
-				fmt.Println("BGP Control Plane is disabled")
-				return
+var (
+	showCaps bool
+
+	BgpPeersCmd = &cobra.Command{
+		Use:     "peers",
+		Aliases: []string{"neighbors"},
+		Short:   "List current state of all peers (deprecated)",
+		Long:    "List state of all peers defined in Cilium BGP configuration (deprecated)",
+		Run: func(cmd *cobra.Command, args []string) {
+			res, err := client.Bgp.GetBgpPeers(bgp.NewGetBgpPeersParams())
+			if err != nil {
+				disabledErr := bgp.NewGetBgpPeersDisabled()
+				if errors.As(err, &disabledErr) {
+					fmt.Println("BGP Control Plane is disabled")
+					return
+				}
+				Fatalf("cannot get peers list: %s\n", err)
 			}
-			Fatalf("cannot get peers list: %s\n", err)
-		}
 
-		if command.OutputOption() {
-			if err := command.PrintOutput(res.GetPayload()); err != nil {
-				Fatalf("error getting output in JSON: %s\n", err)
+			if command.OutputOption() {
+				if err := command.PrintOutput(res.GetPayload()); err != nil {
+					Fatalf("error getting output in JSON: %s\n", err)
+				}
+			} else {
+				fmt.Fprint(cmd.OutOrStderr(), "Command \"peers\" is deprecated, Use the subcommand: \"shell bgp/peers\"\n")
+				w := NewTabWriter()
+				payload := res.GetPayload()
+				if showCaps {
+					api.PrintBGPPeersCaps(w, payload)
+					w.Flush()
+				} else {
+					api.PrintBGPPeersTable(w, payload, true)
+				}
 			}
-		} else {
-			printSummary(res.GetPayload())
-		}
-	},
-}
-
-func printSummary(peers []*models.BgpPeer) {
-	// get new tab writer with predefined defaults
-	w := NewTabWriter()
-
-	// sort by local AS, if peers from same AS then sort by peer address.
-	sort.Slice(peers, func(i, j int) bool {
-		return peers[i].LocalAsn < peers[j].LocalAsn || peers[i].PeerAddress < peers[j].PeerAddress
-	})
-
-	fmt.Fprintln(w, "Local AS\tPeer AS\tPeer Address\tSession\tUptime\tFamily\tReceived\tAdvertised")
-	for _, peer := range peers {
-		fmt.Fprintf(w, "%d\t", peer.LocalAsn)
-		fmt.Fprintf(w, "%d\t", peer.PeerAsn)
-		fmt.Fprintf(w, "%s:%d\t", peer.PeerAddress, peer.PeerPort)
-		fmt.Fprintf(w, "%s\t", peer.SessionState)
-
-		// Time is rounded to nearest second
-		fmt.Fprintf(w, "%s\t", time.Duration(peer.UptimeNanoseconds).Round(time.Second).String())
-
-		for i, afisafi := range peer.Families {
-			if i > 0 {
-				// move by 5 tabs to align with afi-safi
-				fmt.Fprint(w, strings.Repeat("\t", 5))
-			}
-			// AFI and SAFI are concatenated for brevity
-			fmt.Fprintf(w, "%s/%s\t", afisafi.Afi, afisafi.Safi)
-			fmt.Fprintf(w, "%d\t", afisafi.Received)
-			fmt.Fprintf(w, "%d\t", afisafi.Advertised)
-			fmt.Fprintf(w, "\n")
-		}
+		},
 	}
-	w.Flush()
-}
+)
 
 // NewTabWriter initialises tabwriter.Writer with following defaults
 // width 5 and padding 3
@@ -94,4 +69,5 @@ func NewTabWriter() *tabwriter.Writer {
 func init() {
 	BgpCmd.AddCommand(BgpPeersCmd)
 	command.AddOutputOption(BgpPeersCmd)
+	BgpPeersCmd.Flags().BoolVarP(&showCaps, "capabilities", "c", false, "Show BGP peer capabilities in detail")
 }

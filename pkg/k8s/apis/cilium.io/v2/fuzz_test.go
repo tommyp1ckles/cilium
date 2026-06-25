@@ -4,6 +4,7 @@
 package v2
 
 import (
+	"log/slog"
 	"testing"
 
 	fuzz "github.com/AdaLogics/go-fuzz-headers"
@@ -14,7 +15,8 @@ func FuzzCiliumNetworkPolicyParse(f *testing.F) {
 		ff := fuzz.NewConsumer(data)
 		r := &CiliumNetworkPolicy{}
 		ff.GenerateStruct(r)
-		_, _ = r.Parse()
+		clusterName, _ := ff.GetString()
+		_, _ = r.Parse(slog.New(slog.DiscardHandler), clusterName)
 	})
 }
 
@@ -23,6 +25,7 @@ func FuzzCiliumClusterwideNetworkPolicyParse(f *testing.F) {
 		ff := fuzz.NewConsumer(data)
 		r := &CiliumClusterwideNetworkPolicy{}
 		ff.GenerateStruct(r)
-		_, _ = r.Parse()
+		clusterName, _ := ff.GetString()
+		_, _ = r.Parse(slog.New(slog.DiscardHandler), clusterName)
 	})
 }

@@ -46,8 +46,7 @@ type DescribeIpamResourceDiscoveriesInput struct {
 	// The maximum number of resource discoveries to return in one page of results.
 	MaxResults *int32
 
-	// Specify the pagination token from a previous request to retrieve the next page
-	// of results.
+	// The token for the next page of results.
 	NextToken *string
 
 	noSmithyDocumentSerde
@@ -58,8 +57,8 @@ type DescribeIpamResourceDiscoveriesOutput struct {
 	// The resource discoveries.
 	IpamResourceDiscoveries []types.IpamResourceDiscovery
 
-	// Specify the pagination token from a previous request to retrieve the next page
-	// of results.
+	// The token to use to retrieve the next page of results. This value is null when
+	// there are no more results to return.
 	NextToken *string
 
 	// Metadata pertaining to the operation's result.
@@ -102,13 +101,16 @@ func (c *Client) addOperationDescribeIpamResourceDiscoveriesMiddlewares(stack *m
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
+	if err = addRetry(stack, options, c); err != nil {
 		return err
 	}
 	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
 	if err = addRecordResponseTiming(stack); err != nil {
+		return err
+	}
+	if err = addSpanRetryLoop(stack, options); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -123,10 +125,10 @@ func (c *Client) addOperationDescribeIpamResourceDiscoveriesMiddlewares(stack *m
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
-	if err = addTimeOffsetBuild(stack, c); err != nil {
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
-	if err = addUserAgentRetryMode(stack, options); err != nil {
+	if err = addCredentialSource(stack, options); err != nil {
 		return err
 	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opDescribeIpamResourceDiscoveries(options.Region), middleware.Before); err != nil {
@@ -145,6 +147,15 @@ func (c *Client) addOperationDescribeIpamResourceDiscoveriesMiddlewares(stack *m
 		return err
 	}
 	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptBeforeRetryLoop(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptAttempt(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil

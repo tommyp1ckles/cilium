@@ -4,10 +4,9 @@
 package filters
 
 import (
-	"context"
 	"testing"
 
-	"github.com/sirupsen/logrus"
+	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -21,10 +20,10 @@ var (
 )
 
 func runFilterBenchmark(b *testing.B, ff *flowpb.FlowFilter, events []*v1.Event) {
-	filterFuncs, err := BuildFilter(context.Background(), ff, DefaultFilters(logrus.New()))
+	filterFuncs, err := BuildFilter(b.Context(), ff, DefaultFilters(hivetest.Logger(b)))
 	require.NoError(b, err)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		for _, ev := range events {
 			filterFuncs.MatchOne(ev)
 		}
@@ -33,7 +32,7 @@ func runFilterBenchmark(b *testing.B, ff *flowpb.FlowFilter, events []*v1.Event)
 
 func duplicateEvent(ev *v1.Event, n int) []*v1.Event {
 	evs := make([]*v1.Event, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		evs[i] = matchingEvent
 	}
 	return evs
@@ -96,10 +95,10 @@ func BenchmarkCELL4ProtocolPortFlowFilterNonMatching100(b *testing.B) {
 }
 
 func TestBenchmarkFiltersAreEquivalent(t *testing.T) {
-	log := logrus.New()
-	basicFuncs, err := BuildFilter(context.Background(), basicL4Filter, DefaultFilters(log))
+	log := hivetest.Logger(t)
+	basicFuncs, err := BuildFilter(t.Context(), basicL4Filter, DefaultFilters(log))
 	require.NoError(t, err)
-	celFuncs, err := BuildFilter(context.Background(), celL4Filter, DefaultFilters(log))
+	celFuncs, err := BuildFilter(t.Context(), celL4Filter, DefaultFilters(log))
 	require.NoError(t, err)
 
 	gotBasic := basicFuncs.MatchOne(matchingEvent)

@@ -6,13 +6,13 @@ package multicast
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"unsafe"
 
 	ciliumebpf "github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/hive/cell"
-	"github.com/sirupsen/logrus"
 
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/datapath/linux/config/defines"
@@ -51,11 +51,12 @@ type GroupV4OuterMap struct {
 
 	// batchLookupSupported indicates if the kernel supports batch lookup.
 	batchLookupSupported bool
+	logger               *slog.Logger
 }
 
-func NewGroupV4OuterMap(name string) *GroupV4OuterMap {
+func NewGroupV4OuterMap(logger *slog.Logger, name string) *GroupV4OuterMap {
 	innerMap := newSubscriberV4InnerMapSpec()
-	m := ebpf.NewMap(&ebpf.MapSpec{
+	m := ebpf.NewMap(logger, &ebpf.MapSpec{
 		Name:       name,
 		Type:       ebpf.HashOfMaps,
 		KeySize:    uint32(unsafe.Sizeof(GroupV4Key{})),
@@ -65,7 +66,7 @@ func NewGroupV4OuterMap(name string) *GroupV4OuterMap {
 		Pinning:    ebpf.PinByName,
 	})
 
-	return &GroupV4OuterMap{Map: m}
+	return &GroupV4OuterMap{logger: logger, Map: m}
 }
 
 // ParamsIn are parameters provided by the Hive and is the argument for
@@ -73,7 +74,7 @@ func NewGroupV4OuterMap(name string) *GroupV4OuterMap {
 type ParamsIn struct {
 	cell.In
 	Lifecycle cell.Lifecycle
-	Logger    logrus.FieldLogger
+	Logger    *slog.Logger
 	Config
 }
 
@@ -93,10 +94,6 @@ type ParamsOut struct {
 func NewGroupV4Map(in ParamsIn) ParamsOut {
 	out := ParamsOut{}
 
-	out.NodeDefines = map[string]string{
-		"MCAST_GROUP_OUTER_V4_MAP": GroupOuter4MapName,
-	}
-
 	if !in.MulticastEnabled {
 		return out
 	}
@@ -104,14 +101,14 @@ func NewGroupV4Map(in ParamsIn) ParamsOut {
 	// must have "bpf_map_for_each_elem" helper available, if not, don't
 	// initialize the map, dependent code should be checking if their map
 	// dependency is nil or not.
-	if probes.HaveProgramHelper(ciliumebpf.SchedCLS, asm.FnForEachMapElem) != nil {
+	if probes.HaveProgramHelper(in.Logger, ciliumebpf.SchedCLS, asm.FnForEachMapElem) != nil {
 		in.Logger.Error("Disabled support for BPF Multicast due to missing kernel support (Linux 5.13 or later)")
 		return out
 	}
 
-	out.NodeDefines["ENABLE_MULTICAST"] = "1"
+	out.NodeDefines = defines.Map{"ENABLE_MULTICAST": "1"}
 
-	groupMap := NewGroupV4OuterMap(GroupOuter4MapName)
+	groupMap := NewGroupV4OuterMap(in.Logger, GroupOuter4MapName)
 
 	out.MapOut = bpf.NewMapOut((GroupV4Map(groupMap)))
 
@@ -138,7 +135,7 @@ func (m GroupV4OuterMap) Insert(group netip.Addr) error {
 		return err
 	}
 
-	subMap, err := newSubscriberV4InnerMap()
+	subMap, err := newSubscriberV4InnerMap(m.logger)
 	if err != nil {
 		return fmt.Errorf("failed to create SubscriberV4InnerMap: %w", err)
 	}
@@ -173,7 +170,7 @@ func (m GroupV4OuterMap) Lookup(group netip.Addr) (SubscriberV4Map, error) {
 	}
 
 	var subMap *ebpf.Map
-	subMap, err = ebpf.MapFromID(int(val.FD))
+	subMap, err = ebpf.MapFromID(m.logger, int(val.FD))
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert SubscriberV4InnerMap FD to *ebpf.Map: %w", err)
 	}
@@ -208,11 +205,7 @@ func (m GroupV4OuterMap) ListIterator() ([]netip.Addr, error) {
 
 	iter := m.Iterate()
 	for iter.Next(&key, &val) {
-		ip, ok := key.ToNetIPAddr()
-		if !ok {
-			return out, fmt.Errorf("failed to convert key to netip.Addr")
-		}
-		out = append(out, ip)
+		out = append(out, netip.AddrFrom4(key.Group))
 	}
 
 	return out, iter.Err()
@@ -240,11 +233,7 @@ func (m GroupV4OuterMap) ListBatch() ([]netip.Addr, error) {
 	}
 
 	for i := 0; i < len(keys) && i < count; i++ {
-		group, ok := keys[i].ToNetIPAddr()
-		if !ok {
-			return nil, fmt.Errorf("failed to convert GroupV4Key.Group to netip.Addr")
-		}
-		out = append(out, group)
+		out = append(out, netip.AddrFrom4(keys[i].Group))
 	}
 
 	return out, nil
@@ -264,18 +253,14 @@ func NewGroupV4KeyFromNetIPAddr(ip netip.Addr) (out GroupV4Key, err error) {
 	return out, nil
 }
 
-func (k GroupV4Key) ToNetIPAddr() (netip.Addr, bool) {
-	return netip.AddrFromSlice(k.Group[:])
-}
-
 // GroupV4Val is the value of a GroupV4OuterMap.
 // It is a file descriptor for an inner SubscriberV4InnerMap.
 type GroupV4Val struct {
 	FD uint32
 }
 
-func OpenGroupV4OuterMap(name string) (*GroupV4OuterMap, error) {
-	m, err := ebpf.LoadRegisterMap(name)
+func OpenGroupV4OuterMap(logger *slog.Logger, name string) (*GroupV4OuterMap, error) {
+	m, err := ebpf.LoadRegisterMap(logger, name)
 	if err != nil {
 		return nil, err
 	}
@@ -283,6 +268,7 @@ func OpenGroupV4OuterMap(name string) (*GroupV4OuterMap, error) {
 	return &GroupV4OuterMap{
 		Map:                  m,
 		batchLookupSupported: haveBatchLookupSupport[GroupV4Key, GroupV4Val](m),
+		logger:               logger,
 	}, nil
 }
 
@@ -316,10 +302,10 @@ type SubscriberV4InnerMap struct {
 	*ebpf.Map
 }
 
-func newSubscriberV4InnerMap() (*SubscriberV4InnerMap, error) {
+func newSubscriberV4InnerMap(logger *slog.Logger) (*SubscriberV4InnerMap, error) {
 	spec := newSubscriberV4InnerMapSpec()
 
-	m := ebpf.NewMap(spec)
+	m := ebpf.NewMap(logger, spec)
 	if err := m.OpenOrCreate(); err != nil {
 		return nil, err
 	}
@@ -390,7 +376,7 @@ func (v *SubscriberV4Val) ToSubsciberV4() (*SubscriberV4, error) {
 }
 
 func newSubscriberV4InnerMapSpec() *ebpf.MapSpec {
-	flags := bpf.GetPreAllocateMapFlags(ebpf.Hash)
+	flags := bpf.GetMapMemoryFlags(ebpf.Hash)
 	return &ebpf.MapSpec{
 		Name:       "cilium_mcast_subscriber_v4_inner",
 		Type:       ebpf.Hash,

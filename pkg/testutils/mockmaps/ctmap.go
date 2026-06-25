@@ -4,6 +4,9 @@
 package mockmaps
 
 import (
+	"context"
+
+	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/maps/ctmap"
 )
@@ -35,10 +38,10 @@ func (m *CtMockMap) Path() (string, error) {
 	return "/this/is/a/mock/map", nil
 }
 
-// DumpEntries iterates through Map m and writes the values of the ct entries
+// DumpEntriesWithTimeDiff iterates through Map m and writes the values of the ct entries
 // in m to a string.
-func (m *CtMockMap) DumpEntries() (string, error) {
-	return ctmap.DoDumpEntries(m)
+func (m *CtMockMap) DumpEntriesWithTimeDiff(clockSource *models.ClockSource) (string, error) {
+	return ctmap.DumpEntriesWithTimeDiff(m, clockSource)
 }
 
 // DumpWithCallback runs the callback on each entry of the mock map.
@@ -53,7 +56,7 @@ func (m *CtMockMap) DumpWithCallback(cb bpf.DumpCallback) error {
 }
 
 // Count returns the length of the map entries.
-func (m *CtMockMap) Count() (int, error) {
+func (m *CtMockMap) Count(_ context.Context) (int, error) {
 	return len(m.Entries), nil
 }
 

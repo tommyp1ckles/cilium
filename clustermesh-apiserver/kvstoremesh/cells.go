@@ -6,16 +6,11 @@ package kvstoremesh
 import (
 	"github.com/cilium/hive/cell"
 
-	"github.com/cilium/cilium/clustermesh-apiserver/health"
-	cmmetrics "github.com/cilium/cilium/clustermesh-apiserver/metrics"
 	"github.com/cilium/cilium/clustermesh-apiserver/option"
-	"github.com/cilium/cilium/clustermesh-apiserver/syncstate"
 	"github.com/cilium/cilium/pkg/clustermesh/kvstoremesh"
-	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
-	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/gops"
-	"github.com/cilium/cilium/pkg/kvstore"
+	"github.com/cilium/cilium/pkg/kvstore/heartbeat"
 	"github.com/cilium/cilium/pkg/pprof"
 )
 
@@ -23,39 +18,44 @@ var Cell = cell.Module(
 	"kvstoremesh",
 	"Cilium KVStoreMesh",
 
-	cell.Config(option.DefaultLegacyKVStoreMeshConfig),
 	cell.Config(kvstoremesh.DefaultConfig),
 
-	cell.Config(cmtypes.DefaultClusterInfo),
-	cell.Invoke(registerClusterInfoValidator),
-
-	pprof.Cell,
-	cell.Config(pprofConfig),
-	controller.Cell,
-
-	gops.Cell(defaults.GopsPortKVStoreMesh),
-	cmmetrics.Cell,
+	pprof.Cell(pprofConfig),
+	gops.Cell(defaults.EnableGops, defaults.GopsPortKVStoreMesh),
 
 	HealthAPIEndpointsCell,
-	health.HealthAPIServerCell,
 
 	APIServerCell,
 
-	kvstore.Cell,
-	cell.Provide(func(ss syncstate.SyncState) *kvstore.ExtraOptions {
-		return &kvstore.ExtraOptions{
-			BootstrapComplete: ss.WaitChannel(),
-		}
-	}),
-	kvstoremesh.Cell,
+	WithLeaderLifecycle(
+		kvstoremesh.Cell,
 
-	cell.Invoke(kvstoremesh.RegisterSyncWaiter),
+		cell.Provide(func(kmConfig kvstoremesh.Config) heartbeat.Config {
+			return heartbeat.Config{
+				EnableHeartBeat: kmConfig.EnableHeartBeat,
+			}
+		}),
+		heartbeat.Cell,
 
-	cell.Invoke(func(*kvstoremesh.KVStoreMesh) {}),
+		cell.Provide(kvstoremesh.NewSyncWaiter),
+		cell.Invoke(func(*kvstoremesh.KVStoreMesh) {}),
+	),
+
+	// This needs to be the last in the list, so that the start hook responsible
+	// for leader election is guaranteed to be executed last, when
+	// all the previous ones have already completed. Otherwise, cells within
+	// the "WithLeaderLifecycle" scope may be incorrectly started too early,
+	// given that "registerLeaderElectionHooks" does not depend on all of their
+	// individual dependencies outside of that scope.
+	cell.Invoke(
+		registerLeaderElectionHooks,
+	),
 )
 
 var pprofConfig = pprof.Config{
-	Pprof:        false,
-	PprofAddress: option.PprofAddress,
-	PprofPort:    option.PprofPortKVStoreMesh,
+	Pprof:                     false,
+	PprofAddress:              option.PprofAddress,
+	PprofPort:                 option.PprofPortKVStoreMesh,
+	PprofMutexProfileFraction: 0,
+	PprofBlockProfileRate:     0,
 }

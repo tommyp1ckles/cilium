@@ -1,11 +1,13 @@
+# check=error=true
+
 # Copyright Authors of Cilium
 # SPDX-License-Identifier: Apache-2.0
 
-ARG COMPILERS_IMAGE=quay.io/cilium/image-compilers:f51ffb467692a59696b144dfe2f1ddeae1bb6bca@sha256:32f5f098d74db46c9d0405e25236828d22b7e3d7006387f9287b4aee48bc85c6
-ARG CILIUM_RUNTIME_IMAGE=quay.io/cilium/cilium-runtime:85aff327b358b84ecea2e06e1aebc5f8ad2b0d2b@sha256:7666e657b917f1cc1001ec2aa11f3b65bc67010568f29f0bd183e6efffa761e1
-ARG TESTER_IMAGE=quay.io/cilium/image-tester:0a7ee27812441d95926aec83929d97e93ce96aae@sha256:e96542b4f71dbc9cbe77feaf5b1fa9bd5e13122ee6418094731212f1c5667c67
-ARG GOLANG_IMAGE=docker.io/library/golang:1.23.1@sha256:4a3c2bcd243d3dbb7b15237eecb0792db3614900037998c2cd6a579c46888c1e
-ARG CILIUM_LLVM_IMAGE=quay.io/cilium/cilium-llvm:02191b3a68f4003f075e69a61b61faa8d12d4b6d@sha256:54ca04f65a6de3aa5243a7da392aed342c64f579ebd94ea1290590ce77a433a8
+ARG COMPILERS_IMAGE=quay.io/cilium/image-compilers:1772622536-65b121f@sha256:e24936bb08e93ca6ac0a6deb1f7f2651da109001b28786c6e1a4d31f973f0fcb
+ARG CILIUM_RUNTIME_IMAGE=quay.io/cilium/cilium-runtime:8c9daeaa2a0e3b1071013e8e27983e66e081949e@sha256:a98d771b2dc341133b802d2fb20ac984ffbec2db76a1aef3b2cd91eab87feeca
+ARG TESTER_IMAGE=quay.io/cilium/image-tester:1773917420-7a13a3a@sha256:f1f14f4dad14b1b3e4cd5c6433fedd09bd984c44a56ab5010e1326d184075c7e
+ARG GOLANG_IMAGE=docker.io/library/golang:1.26.3@sha256:2d6c80227255c3112a4d08e67ba98e58efd3846daf15d9d7d4c389565d881b1a
+ARG CILIUM_LLVM_IMAGE=quay.io/cilium/cilium-llvm:19.1.7-1772622536-65b121f@sha256:4320b57bde46d6642efeb72e405f699a5e189f8377614900f58f54f2641afdf3
 
 FROM ${COMPILERS_IMAGE} AS compilers-image
 
@@ -25,25 +27,28 @@ RUN \
     apt-get update && \
     apt-get upgrade -y --no-install-recommends && \
     apt-get install -y --no-install-recommends \
-      # Install cross tools for both arm64 on amd64
-      gcc-aarch64-linux-gnu \
-      g++-aarch64-linux-gnu \
-      libc6-dev-arm64-cross \
-      binutils-aarch64-linux-gnu \
-      gcc-x86-64-linux-gnu \
-      g++-x86-64-linux-gnu \
-      libc6-dev-amd64-cross \
-      binutils-x86-64-linux-gnu \
-      # Dependencies to unzip protoc
-      unzip \
-      # Base Cilium-build dependencies
-      binutils \
-      coreutils \
-      curl \
-      gcc \
-      git \
-      libc6-dev \
-      make && \
+    # Install cross tools for both arm64 on amd64
+    gcc-aarch64-linux-gnu \
+    g++-aarch64-linux-gnu \
+    libc6-dev-arm64-cross \
+    binutils-aarch64-linux-gnu \
+    gcc-x86-64-linux-gnu \
+    g++-x86-64-linux-gnu \
+    libc6-dev-amd64-cross \
+    binutils-x86-64-linux-gnu \
+    # Dependencies to unzip protoc
+    unzip \
+    # Base Cilium-build dependencies
+    binutils \
+    coreutils \
+    curl \
+    gcc \
+    git \
+    libc6-dev \
+    make \
+    ccache \
+    python3-scapy \
+    python3-jinja2 && \
     apt-get purge --auto-remove && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
@@ -52,11 +57,11 @@ COPY --from=compilers-image /usr/lib/aarch64-linux-gnu /usr/lib/aarch64-linux-gn
 
 COPY --from=golang-dist /usr/local/go /usr/local/go
 RUN mkdir -p /go
-ENV GOROOT /usr/local/go
-ENV GOPATH /go
-ENV PATH "${GOROOT}/bin:${GOPATH}/bin:${PATH}"
+ENV GOROOT=/usr/local/go
+ENV GOPATH=/go
+ENV PATH="${GOROOT}/bin:${GOPATH}/bin:${PATH}"
 
-RUN CGO_ENABLED=0 go install github.com/go-delve/delve/cmd/dlv@latest
+RUN GOARCH=${TARGETARCH} CGO_ENABLED=0 go install github.com/go-delve/delve/cmd/dlv@latest
 
 WORKDIR /go/src/github.com/cilium/cilium/images/builder
 RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium/images/builder \
@@ -75,21 +80,25 @@ RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium/images/b
 RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium/images/builder \
     ./install-protoplugins.sh
 
+WORKDIR /go/src/github.com/cilium/cilium/images/builder
+RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium/images/builder \
+    ./install-test-formatters.sh
+
 # used to facilitate the verifier tests
-COPY --from=llvm-dist /usr/local/bin/llvm-objcopy /bin/
+COPY --from=llvm-dist /usr/local/bin/llvm-objcopy /usr/local/bin/llvm-strip /bin/
 
 # Create a cache directory with 777 so that we can run the builder image and
 # compile golang code from any UID.
 RUN mkdir -p /.cache && chmod 777 /.cache && \
     mkdir -p /go/bin && chmod 777 /go/bin
 
-FROM ${TESTER_IMAGE} as test
+FROM ${TESTER_IMAGE} AS test
 COPY --from=rootfs / /
 COPY test /test
 RUN /test/bin/cst
 
 # this image is large, and re-using layers is beneficial,
 # so final images is not squashed
-FROM rootfs as release
+FROM rootfs AS release
 LABEL maintainer="maintainer@cilium.io"
 WORKDIR /go/src/github.com/cilium/cilium

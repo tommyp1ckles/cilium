@@ -41,7 +41,7 @@ func (c *Client) CreatePlacementGroup(ctx context.Context, params *CreatePlaceme
 
 type CreatePlacementGroupInput struct {
 
-	// Checks whether you have the required permissions for the action, without
+	// Checks whether you have the required permissions for the operation, without
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation . Otherwise, it is
 	// UnauthorizedOperation .
@@ -52,6 +52,12 @@ type CreatePlacementGroupInput struct {
 	//
 	// Constraints: Up to 255 ASCII characters
 	GroupName *string
+
+	// Reserved for future use.
+	LinkedGroupId *string
+
+	// Reserved for internal use.
+	Operator *types.OperatorRequest
 
 	// The number of partitions. Valid only when Strategy is set to partition .
 	PartitionCount *int32
@@ -117,13 +123,16 @@ func (c *Client) addOperationCreatePlacementGroupMiddlewares(stack *middleware.S
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
+	if err = addRetry(stack, options, c); err != nil {
 		return err
 	}
 	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
 	if err = addRecordResponseTiming(stack); err != nil {
+		return err
+	}
+	if err = addSpanRetryLoop(stack, options); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -138,10 +147,10 @@ func (c *Client) addOperationCreatePlacementGroupMiddlewares(stack *middleware.S
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
-	if err = addTimeOffsetBuild(stack, c); err != nil {
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
-	if err = addUserAgentRetryMode(stack, options); err != nil {
+	if err = addCredentialSource(stack, options); err != nil {
 		return err
 	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opCreatePlacementGroup(options.Region), middleware.Before); err != nil {
@@ -160,6 +169,15 @@ func (c *Client) addOperationCreatePlacementGroupMiddlewares(stack *middleware.S
 		return err
 	}
 	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptBeforeRetryLoop(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptAttempt(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil

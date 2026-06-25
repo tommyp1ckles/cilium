@@ -13,14 +13,15 @@ import (
 	"github.com/cilium/hive/hivetest"
 	"github.com/cilium/hive/job"
 	"github.com/cilium/statedb"
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/vishvananda/netlink"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/cilium/cilium/pkg/datapath/tables"
 	"github.com/cilium/cilium/pkg/hive"
-	"github.com/cilium/cilium/pkg/k8s/resource"
+	"github.com/cilium/cilium/pkg/mac"
 	"github.com/cilium/cilium/pkg/maps/l2respondermap"
+	"github.com/cilium/cilium/pkg/maps/l2v6respondermap"
 )
 
 type fixture struct {
@@ -29,6 +30,7 @@ type fixture struct {
 	stateDB            *statedb.DB
 	mockNetlink        *mockNeighborNetlink
 	respondermap       l2respondermap.Map
+	respondermap6      l2v6respondermap.Map
 }
 
 func newFixture(t testing.TB) *fixture {
@@ -38,42 +40,42 @@ func newFixture(t testing.TB) *fixture {
 		jg  job.Group
 	)
 
+	logger := hivetest.Logger(t)
+
 	hive.New(
 		cell.Provide(
 			tables.NewL2AnnounceTable,
 			statedb.RWTable[*tables.L2AnnounceEntry].ToTable,
 		),
 
-		cell.Module(
-			"l2responder-test",
-			"L2 responder test module",
-
-			cell.Invoke(
-				statedb.RegisterTable[*tables.L2AnnounceEntry],
-				func(d *statedb.DB, lc cell.Lifecycle, h cell.Health, t statedb.RWTable[*tables.L2AnnounceEntry], j job.Group) {
-					db = d
-					tbl = t
-					jg = j
-				}),
-		),
-	).Populate(hivetest.Logger(t))
+		cell.Invoke(
+			func(d *statedb.DB, lc cell.Lifecycle, h cell.Health, t statedb.RWTable[*tables.L2AnnounceEntry], j job.Group) {
+				db = d
+				tbl = t
+				jg = j
+			}),
+	).Populate(logger)
 
 	nl := &mockNeighborNetlink{}
 	m := l2respondermap.NewFakeMap()
+	m6 := l2v6respondermap.NewFakeMap()
 	return &fixture{
 		reconciler: NewL2ResponderReconciler(params{
 			Lifecycle:           &cell.DefaultLifecycle{},
-			Logger:              logrus.New(),
+			Logger:              logger,
 			L2AnnouncementTable: tbl,
 			StateDB:             db,
 			L2ResponderMap:      m,
+			L2V6ResponderMap:    m6,
 			NetLink:             nl,
 			JobGroup:            jg,
+			AddRemMcMACFunc:     addRemMcMACMock,
 		}),
 		proxyNeighborTable: tbl,
 		stateDB:            db,
 		mockNetlink:        nl,
 		respondermap:       m,
+		respondermap6:      m6,
 	}
 }
 
@@ -81,7 +83,11 @@ var (
 	ip1     = netip.MustParseAddr("1.2.3.4")
 	ip2     = netip.MustParseAddr("2.3.4.5")
 	ip3     = netip.MustParseAddr("3.4.5.6")
-	origin1 = resource.Key{Name: "abc"}
+	ipv6_1  = netip.MustParseAddr("fd01::c0a8:0")
+	ipv6_2  = netip.MustParseAddr("fd02::c0a8:0")
+	ipv6_3  = netip.MustParseAddr("fd03::c0a8:0")
+	ns_mac  = mac.MustParseMAC("33:33:ff:a8:00:00")
+	origin1 = types.NamespacedName{Name: "abc"}
 )
 
 const (
@@ -100,7 +106,7 @@ func TestEmptyMapAddPartialSync(t *testing.T) {
 			IP:               ip1,
 			NetworkInterface: if1,
 		},
-		Origins: []resource.Key{origin1},
+		Origins: []types.NamespacedName{origin1},
 	})
 	assert.NoError(t, err)
 
@@ -137,7 +143,7 @@ func TestEmptyMapAddDelPartialSync(t *testing.T) {
 			IP:               ip1,
 			NetworkInterface: if1,
 		},
-		Origins: []resource.Key{origin1},
+		Origins: []types.NamespacedName{origin1},
 	})
 	assert.NoError(t, err)
 	_, _, err = fix.proxyNeighborTable.Insert(txn, &tables.L2AnnounceEntry{
@@ -199,7 +205,7 @@ func TestEmptyMapAddFullSync(t *testing.T) {
 			IP:               ip1,
 			NetworkInterface: if1,
 		},
-		Origins: []resource.Key{origin1},
+		Origins: []types.NamespacedName{origin1},
 	})
 	assert.NoError(t, err)
 	txn.Commit()
@@ -230,7 +236,7 @@ func TestEmptyMapAddDelFullSync(t *testing.T) {
 			IP:               ip1,
 			NetworkInterface: if1,
 		},
-		Origins: []resource.Key{origin1},
+		Origins: []types.NamespacedName{origin1},
 	})
 	assert.NoError(t, err)
 	_, _, err = fix.proxyNeighborTable.Insert(txn, &tables.L2AnnounceEntry{
@@ -284,7 +290,7 @@ func Test1RougeAddPartialSync(t *testing.T) {
 			IP:               ip1,
 			NetworkInterface: if1,
 		},
-		Origins: []resource.Key{origin1},
+		Origins: []types.NamespacedName{origin1},
 	})
 	assert.NoError(t, err)
 
@@ -329,7 +335,7 @@ func Test1RougeAddFullSync(t *testing.T) {
 			IP:               ip1,
 			NetworkInterface: if1,
 		},
-		Origins: []resource.Key{origin1},
+		Origins: []types.NamespacedName{origin1},
 	})
 	assert.NoError(t, err)
 	txn.Commit()
@@ -368,7 +374,7 @@ func Test1ExistingAddFullSync(t *testing.T) {
 			IP:               ip1,
 			NetworkInterface: if1,
 		},
-		Origins: []resource.Key{origin1},
+		Origins: []types.NamespacedName{origin1},
 	})
 	assert.NoError(t, err)
 	txn.Commit()
@@ -389,6 +395,253 @@ func Test1ExistingAddFullSync(t *testing.T) {
 	stats, err := fix.respondermap.Lookup(ip1, ifidx1)
 	assert.NoError(t, err)
 	assert.NotNil(t, stats)
+}
+
+// Test consistent overlapping Solicited Node MAC management
+var macAdd = make(McMACMap)
+var macRem = make(McMACMap)
+
+func clearMACMaps() {
+	macAdd = make(McMACMap)
+	macRem = make(McMACMap)
+}
+
+func makeMcMACKey(ifindex int, mac mac.MAC) McMACEntry {
+	var key McMACEntry
+	key.IfIndex = ifindex
+	copy(key.MAC[:], mac[:6])
+	return key
+}
+
+func addRemMcMACMock(ifindex int, mac mac.MAC, add bool) error {
+	key := makeMcMACKey(ifindex, mac)
+	if add {
+		macAdd[key] = mac
+	} else {
+		macRem[key] = mac
+	}
+	return nil
+}
+
+func TestIpv6McasMAC(t *testing.T) {
+	fix := newFixture(t)
+
+	txn := fix.stateDB.WriteTxn(fix.proxyNeighborTable)
+	_, _, err := fix.proxyNeighborTable.Insert(txn, &tables.L2AnnounceEntry{
+		L2AnnounceKey: tables.L2AnnounceKey{
+			IP:               ipv6_1,
+			NetworkInterface: if1,
+		},
+		Origins: []types.NamespacedName{origin1},
+	})
+	assert.NoError(t, err)
+	txn.Commit()
+
+	fix.mockNetlink.LinkByNameFn = func(name string) (netlink.Link, error) {
+		return &mockLink{
+			attr: netlink.LinkAttrs{Index: ifidx1},
+		}, nil
+	}
+
+	err = fix.reconciler.fullReconciliation(fix.stateDB.ReadTxn())
+	assert.NoError(t, err)
+
+	assert.Len(t, macAdd, 1)
+	assert.Empty(t, macRem)
+
+	key := makeMcMACKey(ifidx1, ns_mac)
+	_, ok := macAdd[key]
+	assert.True(t, ok, "expected key %v to exist in map", key)
+
+	clearMACMaps()
+	err = fix.reconciler.fullReconciliation(fix.stateDB.ReadTxn())
+	assert.NoError(t, err)
+
+	assert.Len(t, macAdd, 1)
+	assert.Empty(t, macRem)
+
+	_, ok = macAdd[key]
+	assert.True(t, ok, "expected key %v to exist in map", key)
+
+	txn = fix.stateDB.WriteTxn(fix.proxyNeighborTable)
+	_, _, err = fix.proxyNeighborTable.Insert(txn, &tables.L2AnnounceEntry{
+		L2AnnounceKey: tables.L2AnnounceKey{
+			IP:               ipv6_2,
+			NetworkInterface: if1,
+		},
+		Origins: []types.NamespacedName{origin1},
+	})
+	assert.NoError(t, err)
+	txn.Commit()
+
+	clearMACMaps()
+	err = fix.reconciler.fullReconciliation(fix.stateDB.ReadTxn())
+	assert.NoError(t, err)
+
+	assert.Len(t, macAdd, 1)
+	assert.Empty(t, macRem)
+
+	_, ok = macAdd[key]
+	assert.True(t, ok, "expected key %v to exist in map", key)
+
+	txn = fix.stateDB.WriteTxn(fix.proxyNeighborTable)
+	_, _, err = fix.proxyNeighborTable.Delete(txn, &tables.L2AnnounceEntry{
+		L2AnnounceKey: tables.L2AnnounceKey{
+			IP:               ipv6_2,
+			NetworkInterface: if1,
+		},
+		Origins: []types.NamespacedName{origin1},
+	})
+	assert.NoError(t, err)
+	txn.Commit()
+
+	clearMACMaps()
+	err = fix.reconciler.fullReconciliation(fix.stateDB.ReadTxn())
+	assert.NoError(t, err)
+
+	assert.Len(t, macAdd, 1)
+	assert.Empty(t, macRem)
+
+	_, ok = macAdd[key]
+	assert.True(t, ok, "expected key %v to exist in map", key)
+
+	txn = fix.stateDB.WriteTxn(fix.proxyNeighborTable)
+	_, _, err = fix.proxyNeighborTable.Delete(txn, &tables.L2AnnounceEntry{
+		L2AnnounceKey: tables.L2AnnounceKey{
+			IP:               ipv6_1,
+			NetworkInterface: if1,
+		},
+		Origins: []types.NamespacedName{origin1},
+	})
+	assert.NoError(t, err)
+	txn.Commit()
+
+	clearMACMaps()
+	err = fix.reconciler.fullReconciliation(fix.stateDB.ReadTxn())
+	assert.NoError(t, err)
+
+	assert.Empty(t, macAdd)
+	assert.Len(t, macRem, 1)
+
+	_, ok = macRem[key]
+	assert.True(t, ok, "expected key %v to exist in map", key)
+}
+
+// Regression test for https://github.com/cilium/cilium/issues/45068
+func TestFullReconciliationPointerReuse(t *testing.T) {
+	type mapOps struct {
+		create func(ip netip.Addr, ifIndex uint32) error
+		lookup func(ip netip.Addr, ifIndex uint32) (any, error)
+	}
+
+	for _, tt := range []struct {
+		name     string
+		ips      [3]netip.Addr
+		ipLabels [3]string
+		mapOpsFn func(fix *fixture) mapOps
+	}{
+		{
+			name:     "v4",
+			ips:      [3]netip.Addr{ip1, ip2, ip3},
+			ipLabels: [3]string{"ip1", "ip2", "ip3"},
+			mapOpsFn: func(fix *fixture) mapOps {
+				return mapOps{
+					create: fix.respondermap.Create,
+					lookup: func(ip netip.Addr, ifIndex uint32) (any, error) {
+						return fix.respondermap.Lookup(ip, ifIndex)
+					},
+				}
+			},
+		},
+		{
+			name:     "v6",
+			ips:      [3]netip.Addr{ipv6_1, ipv6_2, ipv6_3},
+			ipLabels: [3]string{"ipv6_1", "ipv6_2", "ipv6_3"},
+			mapOpsFn: func(fix *fixture) mapOps {
+				return mapOps{
+					create: fix.respondermap6.Create,
+					lookup: func(ip netip.Addr, ifIndex uint32) (any, error) {
+						return fix.respondermap6.Lookup(ip, ifIndex)
+					},
+				}
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fix := newFixture(t)
+			ops := tt.mapOpsFn(fix)
+
+			fix.mockNetlink.LinkByNameFn = func(name string) (netlink.Link, error) {
+				return &mockLink{
+					attr: netlink.LinkAttrs{Index: ifidx1},
+				}, nil
+			}
+
+			// Add IP1 only as desired entry in state DB. Therefore, IP2 and IP3
+			// are rogue entries that should be removed from the BPF map.
+			txn := fix.stateDB.WriteTxn(fix.proxyNeighborTable)
+			_, _, err := fix.proxyNeighborTable.Insert(txn, &tables.L2AnnounceEntry{
+				L2AnnounceKey: tables.L2AnnounceKey{
+					IP:               tt.ips[0],
+					NetworkInterface: if1,
+				},
+				Origins: []types.NamespacedName{origin1},
+			})
+			assert.NoError(t, err)
+			txn.Commit()
+
+			for _, ip := range tt.ips {
+				assert.NoError(t, ops.create(ip, ifidx1))
+			}
+
+			err = fix.reconciler.fullReconciliation(fix.stateDB.ReadTxn())
+			assert.NoError(t, err)
+
+			stats, err := ops.lookup(tt.ips[0], ifidx1)
+			assert.NoError(t, err)
+			assert.NotNil(t, stats, "desired entry %s was wrongly deleted from BPF map", tt.ipLabels[0])
+
+			stats, err = ops.lookup(tt.ips[1], ifidx1)
+			assert.NoError(t, err)
+			assert.Nil(t, stats, "rogue entry %s was not deleted from BPF map", tt.ipLabels[1])
+
+			stats, err = ops.lookup(tt.ips[2], ifidx1)
+			assert.NoError(t, err)
+			assert.Nil(t, stats, "rogue entry %s was not deleted from BPF map", tt.ipLabels[2])
+
+			// Now add also IP2 as desired entry in state DB. Therefore, IP3 is
+			// the only rogue entry that should be removed from the BPF map.
+			txn = fix.stateDB.WriteTxn(fix.proxyNeighborTable)
+			_, _, err = fix.proxyNeighborTable.Insert(txn, &tables.L2AnnounceEntry{
+				L2AnnounceKey: tables.L2AnnounceKey{
+					IP:               tt.ips[1],
+					NetworkInterface: if1,
+				},
+				Origins: []types.NamespacedName{origin1},
+			})
+			assert.NoError(t, err)
+			txn.Commit()
+
+			for _, ip := range tt.ips {
+				assert.NoError(t, ops.create(ip, ifidx1))
+			}
+
+			err = fix.reconciler.fullReconciliation(fix.stateDB.ReadTxn())
+			assert.NoError(t, err)
+
+			stats, err = ops.lookup(tt.ips[0], ifidx1)
+			assert.NoError(t, err)
+			assert.NotNil(t, stats, "desired entry %s was wrongly deleted from BPF map", tt.ipLabels[0])
+
+			stats, err = ops.lookup(tt.ips[1], ifidx1)
+			assert.NoError(t, err)
+			assert.NotNil(t, stats, "desired entry %s was wrongly deleted from BPF map", tt.ipLabels[1])
+
+			stats, err = ops.lookup(tt.ips[2], ifidx1)
+			assert.NoError(t, err)
+			assert.Nil(t, stats, "rogue entry %s was not deleted from BPF map", tt.ipLabels[2])
+		})
+	}
 }
 
 type mockNeighborNetlink struct {

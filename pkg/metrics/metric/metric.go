@@ -6,16 +6,20 @@ package metric
 import (
 	"fmt"
 	"maps"
+	"os"
 	"slices"
+	"strconv"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/sirupsen/logrus"
 
-	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/metrics/metric/collections"
 )
 
-var logger = logrus.WithField(logfields.LogSubsys, "metric")
+var invalidMetricValueDetectionEnabled = false
+
+func init() {
+	invalidMetricValueDetectionEnabled, _ = strconv.ParseBool(os.Getenv("CILIUM_INVALID_METRIC_VALUE_DETECTOR"))
+}
 
 // WithMetadata is the interface implemented by any metric defined in this package. These typically embed existing
 // prometheus metric types and add additional metadata. In addition, these metrics have the concept of being enabled
@@ -56,12 +60,11 @@ func (b *metric) checkLabelValues(lvs ...string) {
 	if b.labels == nil {
 		return
 	}
-	if err := b.labels.checkLabelValues(lvs); err != nil {
-		logger.WithError(err).
-			WithFields(logrus.Fields{
-				"metric": b.opts.Name,
-			}).
-			Warning("metric label constraints violated, metric will still be collected")
+
+	if invalidMetricValueDetectionEnabled {
+		if err := b.labels.checkLabelValues(lvs); err != nil {
+			panic("metric label constraints violated for metric " + b.opts.Name + ": " + err.Error())
+		}
 	}
 }
 
@@ -70,12 +73,10 @@ func (b *metric) checkLabels(labels prometheus.Labels) {
 		return
 	}
 
-	if err := b.labels.checkLabels(labels); err != nil {
-		logger.WithError(err).
-			WithFields(logrus.Fields{
-				"metric": b.opts.Name,
-			}).
-			Warning("metric label constraints violated, metric will still be collected")
+	if invalidMetricValueDetectionEnabled {
+		if err := b.labels.checkLabels(labels); err != nil {
+			panic("metric label constraints violated for metric " + b.opts.Name + ": " + err.Error())
+		}
 	}
 }
 
@@ -91,11 +92,35 @@ func (b *metric) Opts() Opts {
 	return b.opts
 }
 
+type collectorWithMetadata interface {
+	prometheus.Collector
+	WithMetadata
+}
+
+// EnabledCollector collects the underlying metric only when it's enabled.
+type EnabledCollector struct {
+	C prometheus.Collector
+}
+
+// Collect implements prometheus.Collector.
+func (e EnabledCollector) Collect(ch chan<- prometheus.Metric) {
+	if m, ok := e.C.(WithMetadata); ok && !m.IsEnabled() {
+		return
+	}
+	e.C.Collect(ch)
+}
+
+// Describe implements prometheus.Collector.
+func (e EnabledCollector) Describe(ch chan<- *prometheus.Desc) {
+	e.C.Describe(ch)
+}
+
+var _ prometheus.Collector = &EnabledCollector{}
+
 // Vec is a generic type to describe the vectorized version of another metric type, for example Vec[Counter] would be
 // our version of a prometheus.CounterVec.
 type Vec[T any] interface {
-	prometheus.Collector
-	WithMetadata
+	collectorWithMetadata
 
 	// CurryWith returns a vector curried with the provided labels, i.e. the
 	// returned vector has those labels pre-set for all labeled operations performed
@@ -306,6 +331,9 @@ func (l *labelSet) namesToValues() map[string]map[string]struct{} {
 func (l *labelSet) checkLabels(labels prometheus.Labels) error {
 	for name, value := range labels {
 		if lvs, ok := l.namesToValues()[name]; ok {
+			if len(lvs) == 0 {
+				continue
+			}
 			if _, ok := lvs[value]; !ok {
 				return fmt.Errorf("unexpected label vector value for label %q: value %q not defined in label range %v",
 					name, value, maps.Keys(lvs))
@@ -322,6 +350,9 @@ func (l *labelSet) checkLabelValues(lvs []string) error {
 		return fmt.Errorf("unexpected label vector length: expected %d, got %d", len(l.lbls), len(lvs))
 	}
 	for i, label := range l.lbls {
+		if len(label.Values) == 0 {
+			continue
+		}
 		if _, ok := label.Values[lvs[i]]; !ok {
 			return fmt.Errorf("unexpected label vector value for label %q: value %q not defined in label range %v",
 				label.Name, lvs[i], maps.Keys(label.Values))

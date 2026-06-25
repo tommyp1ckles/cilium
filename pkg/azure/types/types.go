@@ -4,8 +4,7 @@
 package types
 
 import (
-	"strings"
-
+	iputil "github.com/cilium/cilium/pkg/ip"
 	"github.com/cilium/cilium/pkg/ipam/types"
 )
 
@@ -32,8 +31,6 @@ const (
 // custom resource along with an Azure specification when the node registers
 // itself to the Kubernetes cluster.
 // This struct is embedded into v2.CiliumNode
-//
-// +k8s:deepcopy-gen=true
 type AzureSpec struct {
 	// InterfaceName is the name of the interface the cilium-operator
 	// will use to allocate all the IPs on
@@ -44,8 +41,6 @@ type AzureSpec struct {
 
 // AzureStatus is the status of Azure addressing of the node.
 // This struct is embedded into v2.CiliumNode
-//
-// +k8s:deepcopy-gen=true
 type AzureStatus struct {
 	// Interfaces is the list of interfaces on the node
 	//
@@ -56,23 +51,47 @@ type AzureStatus struct {
 // AzureAddress is an IP address assigned to an AzureInterface
 type AzureAddress struct {
 	// IP is the ip address of the address
-	IP string `json:"ip,omitempty"`
+	//
+	// +optional
+	IP iputil.Addr `json:"ip,omitzero"`
 
-	// Subnet is the subnet the address belongs to
+	// Subnet is the subnet the address belongs to.
+	//
+	// Deprecated: use AzureInterface.Subnet.ID. Populated as a mirror for one
+	// release so external consumers of CiliumNode.Status.Azure can migrate.
+	// TODO(https://github.com/cilium/cilium/issues/46074): remove once the migration window closes.
 	Subnet string `json:"subnet,omitempty"`
 
 	// State is the provisioning state of the address
 	State string `json:"state,omitempty"`
 }
 
+// AzureSubnet describes the subnet an AzureInterface is attached to. Azure
+// enforces one subnet per NIC, so it is tracked once per interface (mirroring
+// the AWS and Alibaba patterns).
+type AzureSubnet struct {
+	// ID is the resource ID of the subnet
+	//
+	// +optional
+	ID string `json:"id,omitempty"`
+
+	// CIDR is the CIDR range associated with the subnet
+	//
+	// +optional
+	CIDR iputil.Prefix `json:"cidr,omitzero"`
+}
+
 // AzureInterface represents an Azure Interface
-//
-// +k8s:deepcopy-gen=true
 type AzureInterface struct {
 	// ID is the identifier
 	//
 	// +optional
 	ID string `json:"id,omitempty"`
+
+	// IP is the primary IP of the interface
+	//
+	// +optional
+	IP iputil.Addr `json:"ip,omitzero"`
 
 	// Name is the name of the interface
 	//
@@ -89,8 +108,10 @@ type AzureInterface struct {
 	// +optional
 	State string `json:"state,omitempty"`
 
-	// Addresses is the list of all IPs associated with the interface,
-	// including all secondary addresses
+	// Addresses is the list of secondary IPs associated with the interface.
+	// The primary IP is tracked separately in the IP field, but is also
+	// included here when the operator is configured to expose it for
+	// allocation.
 	//
 	// +optional
 	Addresses []AzureAddress `json:"addresses,omitempty"`
@@ -98,22 +119,24 @@ type AzureInterface struct {
 	// SecurityGroup is the security group associated with the interface
 	SecurityGroup string `json:"security-group,omitempty"`
 
-	// GatewayIP is the interface's subnet's default route
-	//
-	// OBSOLETE: This field is obsolete, please use Gateway field instead.
+	// Subnet is the subnet the interface is attached to.
 	//
 	// +optional
-	GatewayIP string `json:"GatewayIP"`
+	Subnet AzureSubnet `json:"subnet,omitzero"`
 
 	// Gateway is the interface's subnet's default route
 	//
 	// +optional
-	Gateway string `json:"gateway"`
+	Gateway iputil.Addr `json:"gateway"`
 
 	// CIDR is the range that the interface belongs to.
 	//
+	// Deprecated: use Subnet.CIDR. Retained for one release so agent/operator
+	// rolling upgrades work in either order.
+	// TODO(https://github.com/cilium/cilium/issues/46074): remove once the migration window closes.
+	//
 	// +optional
-	CIDR string `json:"cidr,omitempty"`
+	CIDR iputil.Prefix `json:"cidr,omitzero"`
 
 	// vmssName is the name of the virtual machine scale set. This field is
 	// set by extractIDs()
@@ -142,29 +165,12 @@ func (a *AzureInterface) InterfaceID() string {
 	return a.ID
 }
 
+// extractIDs extracts resource group name, VMSS name, and VM ID from the
+// network interface Azure resource ID. The actual implementation is build-tag
+// gated so the Azure SDK is only pulled in by builds that need it (see
+// extract_ids.go).
 func (a *AzureInterface) extractIDs() {
-	switch {
-	// Interface from a VMSS instance:
-	// //subscriptions/xxx/resourceGroups/yyy/providers/Microsoft.Compute/virtualMachineScaleSets/ssss/virtualMachines/vvv/networkInterfaces/iii
-	case strings.Contains(a.ID, "virtualMachineScaleSets"):
-		segs := strings.Split(a.ID, "/")
-		if len(segs) >= 5 {
-			a.resourceGroup = segs[4]
-		}
-		if len(segs) >= 9 {
-			a.vmssName = segs[8]
-		}
-		if len(segs) >= 11 {
-			a.vmID = segs[10]
-		}
-	// Interface from a standalone instance:
-	// //subscriptions/xxx/resourceGroups/yyy/providers/Microsoft.Network/networkInterfaces/iii
-	case strings.Contains(a.ID, "/Microsoft.Network/"):
-		segs := strings.Split(a.ID, "/")
-		if len(segs) >= 5 {
-			a.resourceGroup = segs[4]
-		}
-	}
+	a.resourceGroup, a.vmssName, a.vmID = parseAzureResourceID(a.ID)
 }
 
 // GetResourceGroup returns the resource group the interface belongs to
@@ -180,15 +186,4 @@ func (a *AzureInterface) GetVMScaleSetName() string {
 // GetVMID returns the VM ID the interface belongs to
 func (a *AzureInterface) GetVMID() string {
 	return a.vmID
-}
-
-// ForeachAddress iterates over all addresses and calls fn
-func (a *AzureInterface) ForeachAddress(id string, fn types.AddressIterator) error {
-	for _, address := range a.Addresses {
-		if err := fn(id, a.ID, address.IP, address.Subnet, address); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }

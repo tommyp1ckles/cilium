@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-
-	"github.com/cilium/cilium/pkg/kvstore"
 )
 
 var kvstoreDeleteCmd = &cobra.Command{
@@ -24,14 +22,14 @@ var kvstoreDeleteCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		setupKvstore(ctx)
+		client := setupKvstore(ctx, log)
 
 		if recursive {
-			if err := kvstore.Client().DeletePrefix(ctx, args[0]); err != nil {
+			if err := client.DeletePrefix(ctx, args[0]); err != nil {
 				Fatalf("Unable to delete keys: %s", err)
 			}
 		} else {
-			if err := kvstore.Client().Delete(ctx, args[0]); err != nil {
+			if err := client.Delete(ctx, args[0]); err != nil {
 				Fatalf("Unable to delete key: %s", err)
 			}
 		}

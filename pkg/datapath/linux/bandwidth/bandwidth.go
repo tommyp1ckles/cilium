@@ -11,17 +11,20 @@ package bandwidth
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
+	"github.com/cilium/statedb"
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	"github.com/cilium/cilium/pkg/datapath/linux/bandwidth/types"
 	"github.com/cilium/cilium/pkg/datapath/linux/config/defines"
 	"github.com/cilium/cilium/pkg/datapath/linux/probes"
 	"github.com/cilium/cilium/pkg/datapath/tables"
-	"github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/maps/bwmap"
+	"github.com/cilium/cilium/pkg/node"
 )
 
 const (
@@ -29,6 +32,8 @@ const (
 	EgressBandwidth = "kubernetes.io/egress-bandwidth"
 	// IngressBandwidth is the K8s Pod annotation.
 	IngressBandwidth = "kubernetes.io/ingress-bandwidth"
+	// Priority is the Cilium Pod priority annotation.
+	Priority = "bandwidth.cilium.io/priority"
 
 	// FqDefaultHorizon represents maximum allowed departure
 	// time delta in future. Given applications can set SO_TXTIME
@@ -38,12 +43,47 @@ const (
 	// FqDefaultBuckets is the default 32k (2^15) bucket limit for bwm.
 	// Too low bucket limit can cause scalability issue.
 	FqDefaultBuckets = 15
+
+	// FQ priomap starting from index 0 is 1 2 2 2 1 2 0 0 1 1 1 1 1 1 1 1
+	// Constants below map priority levels to bands high, medium and low.
+	// TODO: These are picked arbitrarily for each QoS class amongst different possible
+	// values. Revisit to see if picking these values would have any unintended side effects.
+	// HACK: Increment prio values by 1 to allow for distinguishing between 0 prio and no prio set.
+
+	// GuaranteedQoSDefaultPriority prio value to classify packets to high prio band
+	GuaranteedQoSDefaultPriority = 6 + 1
+	// BurstableQoSDefaultPriority prio value to classify packets to medium prio band
+	BurstableQoSDefaultPriority = 8 + 1
+	// BestEffortQoSDefaultPriority prio value to classify packets to medium prio band
+	BestEffortQoSDefaultPriority = 5 + 1
 )
 
+// Must be in sync with DIRECTION_* in <bpf/lib/common.h>
+const (
+	DirectionEgress  uint8 = 0
+	DirectionIngress uint8 = 1
+)
+
+type Manager interface {
+	BBREnabled() bool
+	Enabled() bool
+
+	UpdateBandwidthLimit(endpointID uint16, bytesPerSecond uint64, prio uint32)
+	DeleteBandwidthLimit(endpointID uint16)
+
+	UpdateIngressBandwidthLimit(endpointID uint16, bytesPerSecond uint64)
+	DeleteIngressBandwidthLimit(endpointID uint16)
+}
+
 type manager struct {
-	resetQueues, enabled bool
+	enabled bool
 
 	params bandwidthManagerParams
+
+	// hostEpDone tracks whether the host endpoint has been set up with
+	// Guaranteed QoS priority. This is done lazily on the first bandwidth
+	// update after the host endpoint becomes available.
+	hostEpDone atomic.Bool
 }
 
 func (m *manager) Enabled() bool {
@@ -56,34 +96,93 @@ func (m *manager) BBREnabled() bool {
 
 func (m *manager) defines() (defines.Map, error) {
 	cDefinesMap := make(defines.Map)
-	if m.resetQueues {
-		cDefinesMap["RESET_QUEUES"] = "1"
-	}
 
 	if m.Enabled() {
 		cDefinesMap["ENABLE_BANDWIDTH_MANAGER"] = "1"
-		cDefinesMap["THROTTLE_MAP"] = bwmap.MapName
-		cDefinesMap["THROTTLE_MAP_SIZE"] = fmt.Sprintf("%d", bwmap.MapSize)
 	}
 
 	return cDefinesMap, nil
 }
 
-func (m *manager) UpdateBandwidthLimit(epID uint16, bytesPerSecond uint64) {
-	if m.enabled {
-		txn := m.params.DB.WriteTxn(m.params.EdtTable)
-		m.params.EdtTable.Insert(
-			txn,
-			bwmap.NewEdt(epID, bytesPerSecond),
-		)
-		txn.Commit()
+func (m *manager) UpdateBandwidthLimit(epID uint16, bytesPerSecond uint64, prio uint32) {
+	if !m.enabled {
+		return
 	}
+
+	txn := m.params.DB.WriteTxn(m.params.EdtTable)
+
+	// Ensure host endpoint has Guaranteed QoS priority (lazy one-time setup)
+	m.ensureHostEndpointQoS(txn)
+
+	m.params.EdtTable.Insert(
+		txn,
+		bwmap.NewEdt(epID, DirectionEgress, bytesPerSecond, prio),
+	)
+	txn.Commit()
+}
+
+// ensureHostEndpointQoS sets up the host endpoint with Guaranteed QoS priority.
+// This is done lazily because the host endpoint ID is not available during
+// bandwidth manager initialization. The setup is only performed once; subsequent
+// calls return immediately after checking an atomic flag.
+func (m *manager) ensureHostEndpointQoS(txn statedb.WriteTxn) {
+	// Fast path: already done
+	if m.hostEpDone.Load() {
+		return
+	}
+
+	// Host endpoint not created yet (still using template ID).
+	// Return without setting the flag so we retry on the next call.
+	id, ok := node.GetEndpointID()
+	if !ok {
+		return
+	}
+	hostEpID := uint16(id)
+
+	// Host endpoint is available, set it up with Guaranteed QoS priority
+	m.params.EdtTable.Insert(
+		txn,
+		bwmap.NewEdt(hostEpID, DirectionEgress, 0, GuaranteedQoSDefaultPriority),
+	)
+
+	m.hostEpDone.Store(true)
+
+	m.params.Log.Info("Set host endpoint to Guaranteed QoS class",
+		logfields.EndpointID, hostEpID)
 }
 
 func (m *manager) DeleteBandwidthLimit(epID uint16) {
 	if m.enabled {
 		txn := m.params.DB.WriteTxn(m.params.EdtTable)
-		obj, _, found := m.params.EdtTable.Get(txn, bwmap.EdtIDIndex.Query(epID))
+		obj, _, found := m.params.EdtTable.Get(txn, bwmap.EdtIDIndex.Query(bwmap.EdtIDKey{
+			EndpointID: epID,
+			Direction:  DirectionEgress,
+		}))
+		if found {
+			m.params.EdtTable.Delete(txn, obj)
+		}
+		txn.Commit()
+	}
+}
+
+func (m *manager) UpdateIngressBandwidthLimit(epID uint16, bytesPerSecond uint64) {
+	if m.enabled {
+		txn := m.params.DB.WriteTxn(m.params.EdtTable)
+		m.params.EdtTable.Insert(
+			txn,
+			bwmap.NewEdt(epID, DirectionIngress, bytesPerSecond, 0),
+		)
+		txn.Commit()
+	}
+}
+
+func (m *manager) DeleteIngressBandwidthLimit(epID uint16) {
+	if m.enabled {
+		txn := m.params.DB.WriteTxn(m.params.EdtTable)
+		obj, _, found := m.params.EdtTable.Get(txn, bwmap.EdtIDIndex.Query(bwmap.EdtIDKey{
+			EndpointID: epID,
+			Direction:  DirectionIngress,
+		}))
 		if found {
 			m.params.EdtTable.Delete(txn, obj)
 		}
@@ -102,20 +201,11 @@ func GetBytesPerSec(bandwidth string) (uint64, error) {
 // probe checks the various system requirements of the bandwidth manager and disables it if they are
 // not met.
 func (m *manager) probe() error {
-	// We at least need 5.1 kernel for native TCP EDT integration
-	// and writable queue_mapping that we use. Below helper is
-	// available for 5.1 kernels and onwards.
-	kernelGood := probes.HaveProgramHelper(ebpf.SchedCLS, asm.FnSkbEcnSetCe) == nil
-	m.resetQueues = kernelGood
 	if !m.params.Config.EnableBandwidthManager {
 		return nil
 	}
 	if _, err := m.params.Sysctl.Read([]string{"net", "core", "default_qdisc"}); err != nil {
 		m.params.Log.Warn("BPF bandwidth manager could not read procfs. Disabling the feature.", logfields.Error, err)
-		return nil
-	}
-	if !kernelGood {
-		m.params.Log.Warn("BPF bandwidth manager needs kernel 5.1 or newer. Disabling the feature.")
 		return nil
 	}
 	if m.params.Config.EnableBBR {
@@ -125,18 +215,22 @@ func (m *manager) probe() error {
 		//
 		// - https://lpc.events/event/11/contributions/953/
 		// - https://lore.kernel.org/bpf/20220302195519.3479274-1-kafai@fb.com/
-		if probes.HaveProgramHelper(ebpf.SchedCLS, asm.FnSkbSetTstamp) != nil {
+		if probes.HaveProgramHelper(m.params.Log, ebpf.SchedCLS, asm.FnSkbSetTstamp) != nil {
 			return fmt.Errorf("cannot enable --%s, needs kernel 5.18 or newer", types.EnableBBRFlag)
 		}
 	}
 
+	if !m.params.Config.EnableBBR && m.params.Config.EnableBBRHostnsOnly {
+		return fmt.Errorf("cannot enable --%s without enabling --%s", types.EnableBBRHostnsOnlyFlag, types.EnableBBRFlag)
+	}
+
 	// Going via host stack will orphan skb->sk, so we do need BPF host
 	// routing for it to work properly.
-	if m.params.Config.EnableBBR && m.params.DaemonConfig.EnableHostLegacyRouting {
+	if m.params.Config.EnableBBR && m.params.DaemonConfig.UnsafeDaemonConfigOption.EnableHostLegacyRouting && !m.params.Config.EnableBBRHostnsOnly {
 		return fmt.Errorf("BPF bandwidth manager's BBR setup requires BPF host routing.")
 	}
 
-	if m.params.Config.EnableBandwidthManager && m.params.DaemonConfig.EnableIPSec {
+	if m.params.Config.EnableBandwidthManager && m.params.IPsecConfig.Enabled() {
 		m.params.Log.Warn("The bandwidth manager cannot be used with IPSec. Disabling the bandwidth manager.")
 		return nil
 	}
@@ -147,10 +241,6 @@ func (m *manager) probe() error {
 
 func (m *manager) init() error {
 	m.params.Log.Info("Setting up BPF bandwidth manager")
-
-	if err := bwmap.ThrottleMap().OpenOrCreate(); err != nil {
-		return fmt.Errorf("failed to access ThrottleMap: %w", err)
-	}
 
 	if err := setBaselineSysctls(m.params); err != nil {
 		return fmt.Errorf("failed to set sysctl needed by BPF bandwidth manager: %w", err)
@@ -178,7 +268,7 @@ func setBaselineSysctls(p bandwidthManagerParams) error {
 		scopedLog := p.Log.With(
 			logfields.SysParamName, strings.Join(setting.name, "."),
 			logfields.SysParamValue, currentValue,
-			"baselineValue", setting.val,
+			logfields.SysParamBaselineValue, setting.val,
 		)
 
 		if currentValue >= setting.val {

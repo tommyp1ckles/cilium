@@ -17,8 +17,8 @@ func setGatewayAccepted(gw *gatewayv1.Gateway, accepted bool, msg string, reason
 }
 
 // setGatewayProgrammed inserts or updates the Programmed condition for the provided Gateway resource.
-func setGatewayProgrammed(gw *gatewayv1.Gateway, ready bool, msg string, reason gatewayv1.GatewayConditionReason) *gatewayv1.Gateway {
-	gw.Status.Conditions = merge(gw.Status.Conditions, gatewayStatusProgrammedCondition(gw, ready, msg, reason))
+func setGatewayProgrammed(gw *gatewayv1.Gateway, status metav1.ConditionStatus, msg string, reason gatewayv1.GatewayConditionReason) *gatewayv1.Gateway {
+	gw.Status.Conditions = merge(gw.Status.Conditions, gatewayStatusProgrammedCondition(gw, status, msg, reason))
 	return gw
 }
 
@@ -45,13 +45,21 @@ func gatewayStatusAcceptedCondition(gw *gatewayv1.Gateway, accepted bool, msg st
 	}
 }
 
-func gatewayStatusProgrammedCondition(gw *gatewayv1.Gateway, scheduled bool, msg string, reason gatewayv1.GatewayConditionReason) metav1.Condition {
+func gatewayStatusProgrammedCondition(gw *gatewayv1.Gateway, scheduled metav1.ConditionStatus, msg string, reason gatewayv1.GatewayConditionReason) metav1.Condition {
 	switch scheduled {
-	case true:
+	case metav1.ConditionTrue:
 		return metav1.Condition{
-			Type:   string(gatewayv1.GatewayConditionProgrammed),
-			Status: metav1.ConditionTrue,
-			//Reason:             string(gatewayv1.GatewayReasonProgrammed),
+			Type:               string(gatewayv1.GatewayConditionProgrammed),
+			Status:             metav1.ConditionTrue,
+			Reason:             string(reason),
+			Message:            msg,
+			ObservedGeneration: gw.GetGeneration(),
+			LastTransitionTime: metav1.NewTime(time.Now()),
+		}
+	case metav1.ConditionUnknown:
+		return metav1.Condition{
+			Type:               string(gatewayv1.GatewayConditionProgrammed),
+			Status:             metav1.ConditionUnknown,
 			Reason:             string(reason),
 			Message:            msg,
 			ObservedGeneration: gw.GetGeneration(),
@@ -59,9 +67,8 @@ func gatewayStatusProgrammedCondition(gw *gatewayv1.Gateway, scheduled bool, msg
 		}
 	default:
 		return metav1.Condition{
-			Type:   string(gatewayv1.GatewayConditionProgrammed),
-			Status: metav1.ConditionFalse,
-			//Reason:             string(gatewayv1.GatewayReasonListenersNotReady),
+			Type:               string(gatewayv1.GatewayConditionProgrammed),
+			Status:             metav1.ConditionFalse,
 			Reason:             string(reason),
 			Message:            msg,
 			ObservedGeneration: gw.GetGeneration(),
@@ -116,7 +123,7 @@ func gatewayListenerProgrammedCondition(gw *gatewayv1.Gateway, ready bool, msg s
 	}
 }
 
-func gatewayListenerAcceptedCondition(gw *gatewayv1.Gateway, ready bool, msg string) metav1.Condition {
+func gatewayListenerAcceptedCondition(gw *gatewayv1.Gateway, ready bool, reason gatewayv1.ListenerConditionReason, msg string) metav1.Condition {
 	switch ready {
 	case true:
 		return metav1.Condition{
@@ -124,18 +131,29 @@ func gatewayListenerAcceptedCondition(gw *gatewayv1.Gateway, ready bool, msg str
 			Status:             metav1.ConditionTrue,
 			ObservedGeneration: gw.GetGeneration(),
 			LastTransitionTime: metav1.NewTime(time.Now()),
-			Reason:             string(gatewayv1.ListenerConditionAccepted),
+			Reason:             string(reason),
 			Message:            msg,
 		}
 	default:
 		return metav1.Condition{
 			Type:               string(gatewayv1.ListenerConditionAccepted),
 			Status:             metav1.ConditionFalse,
-			Reason:             string(gatewayv1.ListenerReasonPending),
+			Reason:             string(reason),
 			Message:            msg,
 			ObservedGeneration: gw.GetGeneration(),
 			LastTransitionTime: metav1.NewTime(time.Now()),
 		}
+	}
+}
+
+func gatewayListenerConflictedCondition(gw *gatewayv1.Gateway, reason gatewayv1.ListenerConditionReason, msg string) metav1.Condition {
+	return metav1.Condition{
+		Type:               string(gatewayv1.ListenerConditionConflicted),
+		Status:             metav1.ConditionTrue,
+		Reason:             string(reason),
+		Message:            msg,
+		ObservedGeneration: gw.GetGeneration(),
+		LastTransitionTime: metav1.NewTime(time.Now()),
 	}
 }
 

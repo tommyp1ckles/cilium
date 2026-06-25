@@ -9,18 +9,20 @@ import (
 	"os"
 	"testing"
 
+	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/require"
 
 	"github.com/cilium/cilium/pkg/testutils"
 )
 
-func TestCompile(t *testing.T) {
+func TestPrivilegedCompile(t *testing.T) {
 	testutils.PrivilegedTest(t)
 
 	debugOutput := func(p *progInfo) *progInfo {
 		cpy := *p
 		cpy.Output = cpy.Source
 		cpy.OutputType = outputSource
+		cpy.Options = append(cpy.Options, "-Wno-unused-command-line-argument")
 		return &cpy
 	}
 
@@ -33,7 +35,8 @@ func TestCompile(t *testing.T) {
 	} {
 		name := fmt.Sprintf("%s:%s", prog.OutputType, prog.Output)
 		t.Run(name, func(t *testing.T) {
-			path, err := compile(context.Background(), prog, dirs)
+			logger := hivetest.Logger(t)
+			path, err := compile(context.Background(), logger, prog, dirs)
 			require.NoError(t, err)
 
 			stat, err := os.Stat(path)

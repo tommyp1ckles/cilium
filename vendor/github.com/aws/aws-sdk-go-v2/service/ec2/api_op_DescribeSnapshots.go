@@ -57,8 +57,6 @@ import (
 // If you are describing a long list of snapshots, we recommend that you paginate
 // the output to make the list more manageable. For more information, see [Pagination].
 //
-// To get the state of fast snapshot restores for a snapshot, use DescribeFastSnapshotRestores.
-//
 // For more information about EBS snapshots, see [Amazon EBS snapshots] in the Amazon EBS User Guide.
 //
 // We strongly recommend using only paginated requests. Unpaginated requests are
@@ -112,6 +110,9 @@ type DescribeSnapshotsInput struct {
 	//   - status - The status of the snapshot ( pending | completed | error ).
 	//
 	//   - storage-tier - The storage tier of the snapshot ( archive | standard ).
+	//
+	//   - transfer-type - The type of operation used to create the snapshot (
+	//   time-based | standard ).
 	//
 	//   - tag : - The key/value combination of a tag assigned to the resource. Use the
 	//   tag key in the filter name and the tag value as the filter value. For example,
@@ -202,13 +203,16 @@ func (c *Client) addOperationDescribeSnapshotsMiddlewares(stack *middleware.Stac
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
+	if err = addRetry(stack, options, c); err != nil {
 		return err
 	}
 	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
 	if err = addRecordResponseTiming(stack); err != nil {
+		return err
+	}
+	if err = addSpanRetryLoop(stack, options); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -223,10 +227,10 @@ func (c *Client) addOperationDescribeSnapshotsMiddlewares(stack *middleware.Stac
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
-	if err = addTimeOffsetBuild(stack, c); err != nil {
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
-	if err = addUserAgentRetryMode(stack, options); err != nil {
+	if err = addCredentialSource(stack, options); err != nil {
 		return err
 	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opDescribeSnapshots(options.Region), middleware.Before); err != nil {
@@ -245,6 +249,15 @@ func (c *Client) addOperationDescribeSnapshotsMiddlewares(stack *middleware.Stac
 		return err
 	}
 	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptBeforeRetryLoop(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptAttempt(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil
@@ -451,6 +464,9 @@ func snapshotCompletedStateRetryable(ctx context.Context, input *DescribeSnapsho
 		}
 	}
 
+	if err != nil {
+		return false, err
+	}
 	return true, nil
 }
 

@@ -4,13 +4,17 @@
 package gateway_api
 
 const (
-	Subsys = "gateway-controller"
-
-	gatewayClass   = "gatewayClass"
-	gateway        = "gateway"
-	httpRoute      = "httpRoute"
-	grpcRoute      = "grpcRoute"
-	tlsRoute       = "tlsRoute"
-	gammaHTTPRoute = "gammaHTTPRoute"
-	referenceGrant = "referenceGrant"
+	gatewayClass       = "gatewayClass"
+	gateway            = "gateway"
+	gamma              = "gamma"
+	httpRoute          = "httpRoute"
+	grpcRoute          = "grpcRoute"
+	tlsRoute           = "tlsRoute"
+	tcpRoute           = "tcpRoute"
+	udpRoute           = "udpRoute"
+	relevantHTTPRoutes = "relevantHTTPRoutes"
+	numRoutes          = "numRoutes"
+	policies           = "policies"
+	backendTLSPolicy   = "BackendTLSPolicy"
+	endpointSlice      = "endpointSlice"
 )

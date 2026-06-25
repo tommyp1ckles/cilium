@@ -4,8 +4,10 @@
 package k8s
 
 import (
+	"fmt"
+
 	"github.com/cilium/hive/cell"
-	mcsapiv1alpha1 "sigs.k8s.io/mcs-api/pkg/apis/v1alpha1"
+	mcsapiv1beta1 "sigs.k8s.io/mcs-api/pkg/apis/v1beta1"
 
 	"github.com/cilium/cilium/pkg/clustermesh/mcsapi"
 	"github.com/cilium/cilium/pkg/k8s"
@@ -13,11 +15,14 @@ import (
 	cilium_api_v2alpha1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	"github.com/cilium/cilium/pkg/k8s/resource"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
+	slim_discovery_v1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/discovery/v1"
+	"github.com/cilium/cilium/pkg/node/addressing"
 )
 
 const (
 	CiliumEndpointIndexIdentity = "identity"
 	PodNodeNameIndex            = "pod-node"
+	CiliumNodeIPIndex           = "node-ip"
 )
 
 var (
@@ -31,14 +36,13 @@ var (
 		"Operator Kubernetes resources",
 
 		cell.Config(k8s.DefaultConfig),
+		cell.Provide(k8s.DefaultServiceWatchConfig),
 		cell.Provide(
-			k8s.ServiceResource,
 			mcsapi.ServiceExportResource,
-			k8s.EndpointsResource,
-			k8s.LBIPPoolsResource,
+			EndpointSliceResource,
+			LBIPPoolsResource,
 			k8s.CiliumIdentityResource,
 			k8s.CiliumPodIPPoolResource,
-			k8s.CiliumBGPPeeringPolicyResource,
 			CiliumBGPClusterConfigResource,
 			k8s.CiliumBGPAdvertisementResource,
 			k8s.CiliumBGPPeerConfigResource,
@@ -51,6 +55,7 @@ var (
 			k8s.NamespaceResource,
 			k8s.CiliumNetworkPolicyResource,
 			k8s.CiliumClusterwideNetworkPolicyResource,
+			k8s.CiliumCIDRGroupResource,
 		),
 	)
 )
@@ -60,9 +65,9 @@ type Resources struct {
 	cell.In
 
 	Services             resource.Resource[*slim_corev1.Service]
-	ServiceExports       resource.Resource[*mcsapiv1alpha1.ServiceExport]
-	Endpoints            resource.Resource[*k8s.Endpoints]
-	LBIPPools            resource.Resource[*cilium_api_v2alpha1.CiliumLoadBalancerIPPool]
+	ServiceExports       resource.Resource[*mcsapiv1beta1.ServiceExport]
+	EndpointSlices       resource.Resource[*slim_discovery_v1.EndpointSlice]
+	LBIPPools            resource.Resource[*cilium_api_v2.CiliumLoadBalancerIPPool]
 	Identities           resource.Resource[*cilium_api_v2.CiliumIdentity]
 	CiliumPodIPPools     resource.Resource[*cilium_api_v2alpha1.CiliumPodIPPool]
 	CiliumEndpoints      resource.Resource[*cilium_api_v2.CiliumEndpoint]
@@ -84,10 +89,27 @@ func HasCEWithIdentity(cepStore resource.Store[*cilium_api_v2.CiliumEndpoint], i
 }
 
 // podNodeNameIndexFunc indexes pods by node name.
-func PodNodeNameIndexFunc(obj interface{}) ([]string, error) {
+func PodNodeNameIndexFunc(obj any) ([]string, error) {
 	pod := obj.(*slim_corev1.Pod)
 	if pod.Spec.NodeName != "" {
 		return []string{pod.Spec.NodeName}, nil
 	}
 	return []string{}, nil
+}
+
+// CiliumNodeIPIndexFunc indexes CiliumNode objects by their node addresses.
+// Only indices IPs of type NodeInternalIP or NodeExternalIP.
+func CiliumNodeIPIndexFunc(obj any) ([]string, error) {
+	node, ok := obj.(*cilium_api_v2.CiliumNode)
+	if !ok {
+		return nil, fmt.Errorf("expected *cilium_v2.CiliumNode, got %T", obj)
+	}
+	indices := make([]string, 0)
+	for _, addr := range node.Spec.Addresses {
+		if addr.AddrType() == addressing.NodeInternalIP ||
+			addr.AddrType() == addressing.NodeExternalIP {
+			indices = append(indices, addr.IP)
+		}
+	}
+	return indices, nil
 }

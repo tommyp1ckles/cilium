@@ -13,12 +13,9 @@
 #include "lib/common.h"
 #include "lib/drop.h"
 #include "lib/eth.h"
-#include "linux/bpf.h"
-#include "lib/encap.h"
+#include "lib/trace.h"
 
-/* the below structures are define outside of an IFDEF guard to satisfy
- * enterprise_bpf_alignchecker.c requirement
- */
+#include "linux/bpf.h"
 
 /* mcast_subscriber flags */
 enum {
@@ -44,8 +41,6 @@ struct mcast_subscriber_v4 {
 	/* flags for further subscriber description */
 	__u8  flags;
 };
-
-#ifdef ENABLE_MULTICAST
 
 #define MCAST_MAX_GROUP 1024
 #define MCAST_MAX_SUBSCRIBERS 1024
@@ -74,6 +69,7 @@ struct {
 	});
 } cilium_mcast_group_outer_v4_map __section_maps_btf;
 
+#ifdef ENABLE_MULTICAST
 /* lookup a subscriber map for the given ipv4 multicast group
  * returns a void pointer to a inner subscriper map if one exists
  */
@@ -110,7 +106,7 @@ static __always_inline __s32 mcast_ipv4_igmp_type(const struct iphdr *ip4,
 
 /* add a subscriber to a subscriber map */
 /* returns 1 on success or DROP_INVALID for error */
-static __always_inline __s32 mcast_ipv4_add_subscriber(void *map,
+static __always_inline __s32 mcast_ipv4_add_subscriber(const void *map,
 						       struct mcast_subscriber_v4 *sub)
 {
 	if ((map_update_elem(map, &sub->saddr, sub, BPF_ANY) != 0))
@@ -120,7 +116,7 @@ static __always_inline __s32 mcast_ipv4_add_subscriber(void *map,
 
 /* remove a subscriber to a subscriber map */
 /* always returns 1 */
-static __always_inline void mcast_ipv4_remove_subscriber(void *map,
+static __always_inline void mcast_ipv4_remove_subscriber(const void *map,
 							 struct mcast_subscriber_v4 *sub)
 {
 	map_delete_elem(map, &sub->saddr);
@@ -138,9 +134,9 @@ static __always_inline __s32 mcast_ipv4_handle_v3_membership_report(void *ctx,
 	};
 	const struct igmpv3_report *rep;
 	const struct igmpv3_grec *rec;
+	const void *sub_map = NULL;
 	int ip_len = ip4->ihl * 4;
 	__s32 subscribed = 0;
-	void *sub_map = 0;
 	__u16 ngrec = 0;
 	__u32 i = 0;
 
@@ -221,9 +217,9 @@ static __always_inline __s32 mcast_ipv4_handle_v2_membership_report(void *ctx,
 		.saddr = ip4->saddr,
 		.ifindex = ctx_get_ingress_ifindex(ctx)
 	};
+	const void *sub_map = NULL;
 	int ip_len = ip4->ihl * 4;
 	const struct igmphdr *hdr;
-	void *sub_map = 0;
 
 	if (data + ETH_HLEN + ip_len + sizeof(struct igmphdr) > data_end)
 		return DROP_INVALID;
@@ -252,9 +248,9 @@ static __always_inline __s32 mcast_ipv4_handle_igmp_leave(void *group_map,
 	struct mcast_subscriber_v4 subscriber = {
 		.saddr = ip4->saddr,
 	};
+	const void *sub_map = NULL;
 	int ip_len = ip4->ihl * 4;
 	const struct igmphdr *hdr;
-	void *sub_map = 0;
 
 	if (data + ETH_HLEN + ip_len + sizeof(struct igmphdr) > data_end)
 		return DROP_INVALID;
@@ -341,9 +337,8 @@ static long __mcast_ep_delivery(__maybe_unused void *sub_map,
 				struct _mcast_ep_delivery_ctx *cb_ctx)
 {
 	int ret = 0;
-	__u32 tunnel_id = WORLD_ID;
-	__u8 from_overlay = 0;
 	struct bpf_tunnel_key tun_key = {0};
+	__u32 ifindex;
 
 	if (!cb_ctx || !sub)
 		return 1;
@@ -351,35 +346,20 @@ static long __mcast_ep_delivery(__maybe_unused void *sub_map,
 	if (!cb_ctx->ctx)
 		return 1;
 
-	if (!sub->ifindex)
-		return 1;
-
-	from_overlay = (ctx_get_ingress_ifindex(cb_ctx->ctx) == ENCAP_IFINDEX);
-
 	/* set tunnel key for remote delivery
 	 * this helper sets the tunnel metadata on the skb_buff but only
 	 * tunnel drivers will read it, therefore any local delivery will
 	 * simply ignore if its present and deliver without an issue.
 	 *
-	 * if the ingress interface is set to our tunnel interface, do not
-	 * perform delivery, this would cause a loop, since the sender's node
+	 * If called in from-overlay do not perform remote delivery.
+	 * This would cause a loop, since the sender's node
 	 * already delivered to all remote nodes.
-	 *
-	 * checking ctx->ingress_ifindex is reliable since
-	 * __netif_receive_skb_core sets the skb's input interface before
-	 * calling ingress TC programs.
 	 */
 	if (sub->flags & MCAST_SUB_F_REMOTE) {
-		if (from_overlay)
+		if (is_defined(IS_BPF_OVERLAY))
 			return 0;
 
-#ifdef ENABLE_ENCRYPTED_OVERLAY
-		/* if encrypted overlay is enabled we'll mark the packet for
-		 * encryption via the tunnel ID.
-		 */
-		tunnel_id = ENCRYPTED_OVERLAY_ID;
-#endif /* ENABLE_ENCRYPTED_OVERLAY */
-		tun_key.tunnel_id = tunnel_id;
+		tun_key.tunnel_id = WORLD_ID;
 		tun_key.remote_ipv4 = bpf_ntohl(sub->saddr);
 		tun_key.tunnel_ttl = IPDEFTTL;
 
@@ -392,9 +372,16 @@ static long __mcast_ep_delivery(__maybe_unused void *sub_map,
 			cb_ctx->ret = ret;
 			return 1;
 		}
+
+		ifindex = ENCAP_IFINDEX;
+	} else {
+		ifindex = sub->ifindex;
 	}
 
-	ret = clone_redirect(cb_ctx->ctx, sub->ifindex, 0);
+	if (ifindex == 0)
+		return 1;
+
+	ret = clone_redirect(cb_ctx->ctx, ifindex, 0);
 	if (ret != 0) {
 		cb_ctx->ret = ret;
 		return 1;
@@ -407,17 +394,17 @@ static long __mcast_ep_delivery(__maybe_unused void *sub_map,
  * for a multicast group and the multicast group exists in
  * cilium_mcast_group_outer_v4_map
  */
-__section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_MULTICAST_EP_DELIVERY)
+__declare_tail(CILIUM_CALL_MULTICAST_EP_DELIVERY)
 int tail_mcast_ep_delivery(struct __ctx_buff *ctx)
 {
 	struct _mcast_ep_delivery_ctx cb_ctx = {
 		.ctx = ctx,
 		.ret = 0
 	};
+	struct iphdr *ip4 = NULL;
 	union macaddr mac = {0};
 	void *data, *data_end;
-	struct iphdr *ip4 = 0;
-	void *sub_map = 0;
+	void *sub_map = NULL;
 
 	if (!revalidate_data(ctx, &data, &data_end, &ip4))
 		return DROP_INVALID;
@@ -437,7 +424,6 @@ int tail_mcast_ep_delivery(struct __ctx_buff *ctx)
 				UNKNOWN_ID,
 				TRACE_EP_ID_UNKNOWN,
 				DROP_MULTICAST_HANDLED,
-				CTX_ACT_DROP,
 				METRIC_INGRESS);
 }
 

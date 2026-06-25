@@ -4,230 +4,109 @@
 package bpf
 
 import (
-	"encoding/binary"
+	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
+	"path"
 	"strings"
+	"unsafe"
+
+	"golang.org/x/sys/cpu"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
+	"golang.org/x/sys/unix"
+	"k8s.io/apimachinery/pkg/util/sets"
 
-	"github.com/cilium/cilium/pkg/maps/callsmap"
+	"github.com/cilium/cilium/pkg/bpf/analyze"
+	"github.com/cilium/cilium/pkg/container/set"
+	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/maps/registry"
 )
 
-const globalDataMap = ".rodata.config"
+const (
+	callsMap = "cilium_calls"
+)
 
-// LoadCollectionSpec loads the eBPF ELF at the given path and parses it into
-// a CollectionSpec. This spec is only a blueprint of the contents of the ELF
-// and does not represent any live resources that have been loaded into the
-// kernel.
-//
-// This is a wrapper around ebpf.LoadCollectionSpec that parses legacy iproute2
-// bpf_elf_map definitions (only used for prog_arrays at the time of writing)
-// and assigns tail calls annotated with `__section_tail` macros to their
-// intended maps and slots.
-func LoadCollectionSpec(path string) (*ebpf.CollectionSpec, error) {
-	spec, err := ebpf.LoadCollectionSpec(path)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := removeUnreachableTailcalls(spec); err != nil {
-		return nil, err
-	}
-
-	if err := iproute2Compat(spec); err != nil {
-		return nil, err
-	}
-
-	if err := classifyProgramTypes(spec); err != nil {
-		return nil, err
-	}
-
-	return spec, nil
-}
-
-func removeUnreachableTailcalls(spec *ebpf.CollectionSpec) error {
-	type TailCall struct {
-		referenced bool
-		visited    bool
-		spec       *ebpf.ProgramSpec
-	}
-
-	entrypoints := make([]*ebpf.ProgramSpec, 0)
-	tailcalls := make(map[uint32]*TailCall)
-
-	const (
-		// Corresponds to CILIUM_MAP_CALLS.
-		cilium_calls_map = 2
-	)
-
+// checkUnspecifiedPrograms returns an error if any of the programs in the spec
+// are of the UnspecifiedProgram type.
+func checkUnspecifiedPrograms(spec *ebpf.CollectionSpec) error {
 	for _, prog := range spec.Programs {
-		var id, slot uint32
-		// Consider any program that doesn't follow the tailcall naming convention
-		// x/y to be an entrypoint.
-		// Any program that does follow the x/y naming convention but not part
-		// of the cilium_calls map is also considered an entrypoint.
-		if _, err := fmt.Sscanf(prog.SectionName, "%d/%v", &id, &slot); err != nil || id != cilium_calls_map {
-			entrypoints = append(entrypoints, prog)
-			continue
-		}
-
-		if tailcalls[slot] != nil {
-			return fmt.Errorf("duplicate tail call index %d", slot)
-		}
-
-		tailcalls[slot] = &TailCall{
-			spec: prog,
+		if prog.Type == ebpf.UnspecifiedProgram {
+			return fmt.Errorf("program %s has unspecified type: annotate with __section_entry or __declare_tail()", prog.Name)
 		}
 	}
-
-	// Discover all tailcalls that are reachable from the given program.
-	visit := func(prog *ebpf.ProgramSpec, tailcalls map[uint32]*TailCall) error {
-		// We look back from any tailcall, so we expect there to always be 3 instructions ahead of any tail call instr.
-		for i := 3; i < len(prog.Instructions); i++ {
-			// The `tail_call_static` C function is always used to call tail calls when
-			// the map index is known at compile time.
-			// Due to inline ASM this generates the following instructions:
-			//   Mov R1, Rx
-			//   Mov R2, <map>
-			//   Mov R3, <index>
-			//   call tail_call
-
-			// Find the tail call instruction.
-			inst := prog.Instructions[i]
-			if !inst.IsBuiltinCall() || inst.Constant != int64(asm.FnTailCall) {
-				continue
-			}
-
-			// Check that the previous instruction is a mov of the tail call index.
-			movIdx := prog.Instructions[i-1]
-			if movIdx.OpCode.ALUOp() != asm.Mov || movIdx.Dst != asm.R3 {
-				continue
-			}
-
-			// Check that the instruction before that is the load of the tail call map.
-			movR2 := prog.Instructions[i-2]
-			if movR2.OpCode != asm.LoadImmOp(asm.DWord) || movR2.Src != asm.PseudoMapFD {
-				continue
-			}
-
-			ref := movR2.Reference()
-
-			// Ignore static tail calls made to maps that are not the calls map
-			if !strings.Contains(ref, callsmap.MapName) || strings.Contains(ref, callsmap.CustomCallsMapName) {
-				log.Debugf("program '%s'/'%s', found tail call at %d, reference '%s', not a calls map, skipping",
-					prog.SectionName, prog.Name, i, ref)
-				continue
-			}
-
-			tc := tailcalls[uint32(movIdx.Constant)]
-			if tc == nil {
-				return fmt.Errorf(
-					"program '%s'/'%s' executes tail call to unknown index '%d' at %d, potential missed tailcall",
-					prog.SectionName,
-					prog.Name,
-					movIdx.Constant,
-					i,
-				)
-			}
-
-			tc.referenced = true
-		}
-
-		return nil
-	}
-
-	// Discover all tailcalls that are reachable from the entrypoints.
-	for _, prog := range entrypoints {
-		if err := visit(prog, tailcalls); err != nil {
-			return err
-		}
-	}
-
-	// Keep visiting tailcalls until no more are discovered.
-reset:
-	for _, tailcall := range tailcalls {
-		// If a tailcall is referenced by an entrypoint or another tailcall we should visit it
-		if tailcall.referenced && !tailcall.visited {
-			if err := visit(tailcall.spec, tailcalls); err != nil {
-				return err
-			}
-			tailcall.visited = true
-
-			// Visiting this tail call might have caused tail calls earlier in the list to become referenced, but this
-			// loop already skipped them. So reset the loop. If we already visited a tailcall we will ignore them anyway.
-			goto reset
-		}
-	}
-
-	// Remove all tailcalls that are not referenced.
-	for _, tailcall := range tailcalls {
-		if !tailcall.referenced {
-			log.Debugf("section '%s' / prog '%s', unreferenced, deleting", tailcall.spec.SectionName, tailcall.spec.Name)
-			delete(spec.Programs, tailcall.spec.Name)
-		}
-	}
-
 	return nil
 }
 
-// iproute2Compat parses the Extra field of each MapSpec in the CollectionSpec.
-// This extra portion is present in legacy bpf_elf_map definitions and must be
-// handled before the map can be loaded into the kernel.
-//
-// It parses the ELF section name of each ProgramSpec to extract any map/slot
-// mappings for prog arrays used as tail call maps. The spec's programs are then
-// inserted into the appropriate map and slot.
-//
-// TODO(timo): Remove when bpf_elf_map map definitions are no longer used after
-// moving away from iproute2+libbpf.
-func iproute2Compat(spec *ebpf.CollectionSpec) error {
-	// Parse legacy iproute2 u32 id and pinning fields.
-	maps := make(map[uint32]*ebpf.MapSpec)
-	for _, m := range spec.Maps {
-		if m.Extra != nil && m.Extra.Len() > 0 {
-			tail := struct {
-				ID      uint32
-				Pinning uint32
-				_       uint64 // inner_id + inner_idx
-			}{}
-			if err := binary.Read(m.Extra, spec.ByteOrder, &tail); err != nil {
-				return fmt.Errorf("reading iproute2 map definition: %w", err)
-			}
+// isEntrypoint returns true if the program is marked with the __section_entry
+// annotation.
+func isEntrypoint(prog *ebpf.ProgramSpec) bool {
+	return strings.HasSuffix(prog.SectionName, "/entry")
+}
 
-			m.Pinning = ebpf.PinType(tail.Pinning)
+// isTailCall returns true if the program is marked with the __declare_tail()
+// annotation.
+func isTailCall(prog *ebpf.ProgramSpec) bool {
+	return strings.HasSuffix(prog.SectionName, "/tail")
+}
 
-			// Index maps by their iproute2 .id if any, so X/Y ELF section names can
-			// be matched against them.
-			if tail.ID != 0 {
-				if m2 := maps[tail.ID]; m2 != nil {
-					return fmt.Errorf("maps %s and %s have duplicate iproute2 map ID %d", m.Name, m2.Name, tail.ID)
-				}
-				maps[tail.ID] = m
-			}
+// tailCallSlot returns the tail call slot for the given program, which must be
+// marked with the __declare_tail() annotation. The slot is the index in the
+// calls map that the program will be called from.
+func tailCallSlot(prog *ebpf.ProgramSpec) (uint32, error) {
+	if !isTailCall(prog) {
+		return 0, fmt.Errorf("program %s is not a tail call", prog.Name)
+	}
+
+	fn := btf.FuncMetadata(&prog.Instructions[0])
+	if fn == nil {
+		return 0, fmt.Errorf("program %s has no function metadata", prog.Name)
+	}
+
+	for _, tag := range fn.Tags {
+		var slot uint32
+		if _, err := fmt.Sscanf(tag, fmt.Sprintf("tail:%s/%%v", callsMap), &slot); err == nil {
+			return slot, nil
 		}
 	}
 
-	for n, p := range spec.Programs {
-		// Parse the program's section name to determine which prog array and slot it
-		// needs to be inserted into. For example, a section name of '2/14' means to
-		// insert into the map with the .id field of 2 at index 14.
-		// Uses %v to automatically detect slot's mathematical base, since they can
-		// appear either in dec or hex, e.g. 1/0x0515.
-		var id, slot uint32
-		if _, err := fmt.Sscanf(p.SectionName, "%d/%v", &id, &slot); err == nil {
-			// Assign the prog name and slot to the map with the iproute2 .id obtained
-			// from the program's section name. The lib will load the ProgramSpecs
-			// and insert the corresponding Programs into the prog array at load time.
-			m := maps[id]
-			if m == nil {
-				return fmt.Errorf("no map with iproute2 map .id %d", id)
-			}
-			m.Contents = append(maps[id].Contents, ebpf.MapKV{Key: slot, Value: n})
+	return 0, fmt.Errorf("program %s has no tail call slot", prog.Name)
+}
+
+// resolveTailCalls populates the calls map with Programs marked with the
+// __declare_tail annotation.
+func resolveTailCalls(spec *ebpf.CollectionSpec) error {
+	// If cilium_calls map is missing, do nothing.
+	ms := spec.Maps[callsMap]
+	if ms == nil {
+		return nil
+	}
+
+	if ms.Type != ebpf.ProgramArray {
+		return fmt.Errorf("%s is not a program array, got %s", callsMap, ms.Type)
+	}
+
+	slots := make(map[uint32]struct{})
+	for name, prog := range spec.Programs {
+		if !isTailCall(prog) {
+			continue
 		}
+
+		slot, err := tailCallSlot(prog)
+		if err != nil {
+			return fmt.Errorf("getting tail call slot: %w", err)
+		}
+
+		if _, ok := slots[slot]; ok {
+			return fmt.Errorf("duplicate tail call slot %d", slot)
+		}
+		slots[slot] = struct{}{}
+
+		ms.Contents = append(ms.Contents, ebpf.MapKV{Key: slot, Value: name})
 	}
 
 	return nil
@@ -236,10 +115,14 @@ func iproute2Compat(spec *ebpf.CollectionSpec) error {
 // LoadAndAssign loads spec into the kernel and assigns the requested eBPF
 // objects to the given object. It is a wrapper around [LoadCollection]. See its
 // documentation for more details on the loading process.
-func LoadAndAssign(to any, spec *ebpf.CollectionSpec, opts *CollectionOptions) (func() error, error) {
-	log.Debug("Loading Collection into kernel")
+func LoadAndAssign(logger *slog.Logger, to any, spec *ebpf.CollectionSpec, opts *CollectionOptions) (func() error, error) {
+	keep, err := analyze.Fields(to)
+	if err != nil {
+		return nil, fmt.Errorf("analyzing fields of %T: %w", to, err)
+	}
+	opts.Keep = keep
 
-	coll, commit, err := LoadCollection(spec, opts)
+	coll, commit, err := LoadCollection(logger, spec, opts)
 	var ve *ebpf.VerifierError
 	if errors.As(err, &ve) {
 		if _, err := fmt.Fprintf(os.Stderr, "Verifier error: %s\nVerifier log: %+v\n", err, ve); err != nil {
@@ -260,12 +143,42 @@ func LoadAndAssign(to any, spec *ebpf.CollectionSpec, opts *CollectionOptions) (
 type CollectionOptions struct {
 	ebpf.CollectionOptions
 
-	// Replacements for constants defined using the DECLARE_CONFIG macros.
-	Constants map[string]uint64
+	// Replacements for datapath runtime configs declared using DECLARE_CONFIG.
+	// Pass a pointer to a populated object from pkg/datapath/config.
+	Constants any
 
 	// Maps to be renamed during loading. Key is the key in CollectionSpec.Maps,
 	// value is the new name.
-	MapRenames map[string]string
+	MapRenames []map[string]string
+
+	// MapReplacements passes along the inner map to MapReplacements inside
+	// the embedded ebpf.CollectionOptions struct.
+	MapReplacements map[string]*Map
+
+	// Set of objects to keep during reachability pruning.
+	Keep *set.Set[string]
+
+	// ConfigDumpPath is the path to write a file to containing the constants used
+	// during loading, typically to be included in sysdumps.
+	ConfigDumpPath string
+
+	// MapRegistry is the map registry to use for replacing MapSpecs at load time.
+	// If nil, no maps are replaced.
+	MapRegistry *registry.MapRegistry
+
+	// ProgramPatches transform the instructions in a program after
+	// reachability pruning.
+	ProgramPatches map[string]func(asm.Instructions) (asm.Instructions, error)
+}
+
+func (co *CollectionOptions) populateMapReplacements() {
+	if co.CollectionOptions.MapReplacements == nil {
+		co.CollectionOptions.MapReplacements = make(map[string]*ebpf.Map)
+	}
+
+	for n, m := range co.MapReplacements {
+		co.CollectionOptions.MapReplacements[n] = m.m
+	}
 }
 
 // LoadCollection loads the given spec into the kernel with the specified opts.
@@ -280,14 +193,9 @@ type CollectionOptions struct {
 // example, attach both bpf_host.c:cil_to_netdev and cil_from_netdev before
 // invoking the returned function, otherwise missing tail calls will occur.
 //
-// The value given in ProgramOptions.LogSize is used as the starting point for
-// sizing the verifier's log buffer and defaults to 4MiB. On each retry, the log
-// buffer quadruples in size, for a total of 5 attempts. If that proves
-// insufficient, a truncated ebpf.VerifierError is returned.
-//
 // Any maps marked as pinned in the spec are automatically loaded from the path
 // given in opts.Maps.PinPath and will be used instead of creating new ones.
-func LoadCollection(spec *ebpf.CollectionSpec, opts *CollectionOptions) (*ebpf.Collection, func() error, error) {
+func LoadCollection(logger *slog.Logger, spec *ebpf.CollectionSpec, opts *CollectionOptions) (*ebpf.Collection, func() error, error) {
 	if spec == nil {
 		return nil, nil, errors.New("can't load nil CollectionSpec")
 	}
@@ -296,21 +204,73 @@ func LoadCollection(spec *ebpf.CollectionSpec, opts *CollectionOptions) (*ebpf.C
 		opts = &CollectionOptions{}
 	}
 
+	if err := checkUnspecifiedPrograms(spec); err != nil {
+		return nil, nil, fmt.Errorf("checking for unspecified programs: %w", err)
+	}
+
+	opts.populateMapReplacements()
+
+	logger.Debug("Loading Collection into kernel",
+		logfields.MapRenames, opts.MapRenames,
+		logfields.Constants, printConstants(opts.Constants),
+	)
+
 	// Copy spec so the modifications below don't affect the input parameter,
 	// allowing the spec to be safely re-used by the caller.
 	spec = spec.Copy()
 
-	if err := renameMaps(spec, opts.MapRenames); err != nil {
-		return nil, nil, err
+	if err := patchMaps(spec, opts.MapRegistry); err != nil {
+		return nil, nil, fmt.Errorf("replacing maps from registry: %w", err)
 	}
 
-	if err := inlineGlobalData(spec, opts.Constants); err != nil {
-		return nil, nil, fmt.Errorf("inlining global data: %w", err)
+	// Handle BPF_F_RDONLY_PROG flag compatibility for pinned maps before loading.
+	// This ensures BPF programs can reuse existing pinned maps during upgrades
+	// where the flag state differs between old and new versions.
+	if err := adjustMapFlagsForUpgrade(logger, spec, &opts.CollectionOptions); err != nil {
+		return nil, nil, fmt.Errorf("adjusting map flags for upgrade: %w", err)
+	}
+
+	if err := renameMaps(spec, opts.MapRenames); err != nil {
+		return nil, nil, fmt.Errorf("renaming maps: %w", err)
+	}
+
+	if err := applyConstants(spec, opts.Constants); err != nil {
+		return nil, nil, fmt.Errorf("applying variable overrides: %w", err)
+	}
+
+	reach, err := computeReachability(spec)
+	if err != nil {
+		return nil, nil, fmt.Errorf("computing reachability: %w", err)
+	}
+
+	if err := removeUnusedTailcalls(spec, reach, logger); err != nil {
+		return nil, nil, fmt.Errorf("removing unused tail calls: %w", err)
+	}
+
+	if err := resolveTailCalls(spec); err != nil {
+		return nil, nil, fmt.Errorf("resolving tail calls: %w", err)
+	}
+
+	fixed := fixedResources(spec, opts.Keep)
+	if err := removeUnusedMaps(spec, fixed, reach, logger); err != nil {
+		return nil, nil, fmt.Errorf("pruning unused maps: %w", err)
+	}
+
+	if err := dumpConstants(spec, opts); err != nil {
+		return nil, nil, fmt.Errorf("writing constants: %w", err)
+	}
+
+	if err := modifyAuxData(spec); err != nil {
+		return nil, nil, fmt.Errorf("loading auxiliary data: %w", err)
 	}
 
 	// Find and strip all CILIUM_PIN_REPLACE pinning flags before creating the
 	// Collection. ebpf-go will reject maps with pins it doesn't recognize.
 	toReplace := consumePinReplace(spec)
+
+	if err := patchPrograms(spec, opts.ProgramPatches); err != nil {
+		return nil, nil, fmt.Errorf("applying program patches: %w", err)
+	}
 
 	// Attempt to load the Collection.
 	coll, err := ebpf.NewCollectionWithOptions(spec, opts.CollectionOptions)
@@ -333,6 +293,10 @@ func LoadCollection(spec *ebpf.CollectionSpec, opts *CollectionOptions) (*ebpf.C
 		return nil, nil, err
 	}
 
+	// In debug mode, check that no maps were freed by the kernel after loading
+	// the Collection.
+	logFreedMaps(logger, coll, fixed)
+
 	// Collect Maps that need their bpffs pins replaced. Pull out Map objects
 	// before returning the Collection, since commit() still needs to work when
 	// the Map is removed from the Collection, e.g. by [ebpf.Collection.Assign].
@@ -344,212 +308,196 @@ func LoadCollection(spec *ebpf.CollectionSpec, opts *CollectionOptions) (*ebpf.C
 	// Load successful, return a function that must be invoked after attaching the
 	// Collection's entrypoint programs to their respective hooks.
 	commit := func() error {
-		return commitMapPins(pins)
+		return commitMapPins(logger, pins)
 	}
 	return coll, commit, nil
 }
 
-// classifyProgramTypes sets the type of ProgramSpecs which the library cannot
-// automatically classify due to them being in unrecognized ELF sections. Only
-// programs of type UnspecifiedProgram are modified.
-//
-// Cilium uses the iproute2 X/Y section name convention for assigning programs
-// to prog array slots, which is also not supported.
-//
-// TODO(timo): When iproute2 is no longer used for any loading, tail call progs
-// can receive proper prefixes.
-func classifyProgramTypes(spec *ebpf.CollectionSpec) error {
-	var t ebpf.ProgramType
-	for name, p := range spec.Programs {
-		// If the loader was able to classify a program, go with the verdict.
-		if p.Type != ebpf.UnspecifiedProgram {
-			t = p.Type
-			break
+// patchMaps looks up [registry.MapSpecPatch] objects for each map in coll and
+// applies them. Don't replace MapSpecs with copies from the registry wholesale
+// as we may need to preserve certain fields as they were loaded from the ELF,
+// e.g. Contents or Tags.
+func patchMaps(coll *ebpf.CollectionSpec, reg *registry.MapRegistry) error {
+	if reg == nil {
+		return nil
+	}
+
+	for name, spec := range coll.Maps {
+		patch, err := reg.GetPatch(name)
+		if errors.Is(err, registry.ErrMapNotFound) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("getting MapSpec patch %s: %w", name, err)
 		}
 
-		// Assign a program type based on the first recognized function name.
-		switch name {
-		// bpf_xdp.c
-		case "cil_xdp_entry":
-			t = ebpf.XDP
-		case
-			// bpf_lxc.c
-			"cil_from_container", "cil_to_container",
-			// bpf_host.c
-			"cil_from_netdev", "cil_from_host", "cil_to_netdev", "cil_to_host",
-			// bpf_network.c
-			"cil_from_network",
-			// bpf_overlay.c
-			"cil_to_overlay", "cil_from_overlay",
-			// bpf_wireguard.c
-			"cil_to_wireguard":
-			t = ebpf.SchedCLS
-		default:
+		patch.Apply(spec)
+	}
+
+	return nil
+}
+
+// adjustMapFlagsForUpgrade modifies map specs in the CollectionSpec to handle
+// BPF_F_RDONLY_PROG flag mismatches between spec and pinned maps.
+//
+// On upgrade (no flag -> flag): remove BPF_F_RDONLY_PROG from spec to reuse the
+// existing map, since the datapath functions correctly with a more privileged
+// (read-write) map.
+//
+// On downgrade (flag -> no flag): unpin the existing map to force recreation
+// without the flag, since BPF programs need write access.
+func adjustMapFlagsForUpgrade(logger *slog.Logger, spec *ebpf.CollectionSpec, opts *ebpf.CollectionOptions) error {
+	if opts.Maps.PinPath == "" {
+		return nil
+	}
+
+	const bpfFRdonlyProg = unix.BPF_F_RDONLY_PROG
+
+	for name, mapSpec := range spec.Maps {
+		if mapSpec.Pinning == 0 {
 			continue
 		}
 
-		break
-	}
+		pinPath := path.Join(opts.Maps.PinPath, name)
 
-	for _, p := range spec.Programs {
-		if p.Type == ebpf.UnspecifiedProgram {
-			p.Type = t
+		existing, err := ebpf.LoadPinnedMap(pinPath, nil)
+		if err != nil {
+			continue
 		}
-	}
 
-	if t == ebpf.UnspecifiedProgram {
-		return errors.New("unable to classify program types")
+		info, err := existing.Info()
+		if err != nil {
+			existing.Close()
+			continue
+		}
+
+		switch {
+		case mapSpec.Flags&bpfFRdonlyProg != 0 && info.Flags&bpfFRdonlyProg == 0:
+			// Upgrade: strip flag from spec to reuse existing map.
+			logger.Debug("Removing BPF_F_RDONLY_PROG flag for upgrade compatibility",
+				logfields.BPFMapName, name,
+				logfields.Path, pinPath,
+			)
+			mapSpec.Flags &^= bpfFRdonlyProg
+		case mapSpec.Flags&bpfFRdonlyProg == 0 && info.Flags&bpfFRdonlyProg != 0:
+			// Downgrade: unpin to force recreation without the flag.
+			logger.Debug("Unpinning map with BPF_F_RDONLY_PROG for downgrade compatibility",
+				logfields.BPFMapName, name,
+				logfields.Path, pinPath,
+			)
+			existing.Unpin()
+		}
+
+		existing.Close()
 	}
 
 	return nil
 }
 
 // renameMaps applies renames to coll.
-func renameMaps(coll *ebpf.CollectionSpec, renames map[string]string) error {
-	for name, rename := range renames {
-		mapSpec := coll.Maps[name]
-		if mapSpec == nil {
-			return fmt.Errorf("unknown map %q: can't rename to %q", name, rename)
-		}
+func renameMaps(coll *ebpf.CollectionSpec, allRenames []map[string]string) error {
+	alreadyRenamed := make(sets.Set[string])
+	for _, renames := range allRenames {
+		for name, rename := range renames {
+			spec := coll.Maps[name]
+			if spec == nil {
+				return fmt.Errorf("unknown map %q: can't rename to %q", name, rename)
+			}
 
-		mapSpec.Name = rename
+			if alreadyRenamed.Has(name) {
+				return fmt.Errorf("map %q already renamed to %q (conflicts with: %q)", name, spec.Name, rename)
+			}
+
+			spec.Name = rename
+			alreadyRenamed.Insert(name)
+		}
 	}
 
 	return nil
 }
 
-// Must match the prefix used by the CONFIG macro in static_data.h.
-const constantPrefix = "__config_"
-
-// inlineGlobalData replaces all map loads from a global data section with
-// immediate dword loads, effectively performing those map lookups in the
-// loader. This is done for compatibility with kernels that don't support
-// global data maps yet.
+// logFreedMaps checks that no maps were freed by the kernel after loading
+// the given Collection.
 //
-// overrides allow changing the value of the inlined global data.
-//
-// This code interacts with the DECLARE_CONFIG macro in the BPF C code base.
-func inlineGlobalData(spec *ebpf.CollectionSpec, overrides map[string]uint64) error {
-	offsets, values, err := globalData(spec)
-	if err != nil {
-		return err
+// Only runs in debug mode due to its runtime cost.
+func logFreedMaps(logger *slog.Logger, coll *ebpf.Collection, fixed *set.Set[string]) {
+	if !logger.Enabled(context.TODO(), slog.LevelDebug) {
+		return
 	}
-	if offsets == nil {
-		// Most likely all references to global data have been compiled
-		// out.
+
+	freed, err := freedMaps(coll, fixed)
+	if errors.Is(err, ebpf.ErrRestrictedKernel) {
+		logger.Debug("Cannot detect freed maps due to restricted kernel")
+		return
+	}
+	if err != nil {
+		logger.Debug("Error detecting freed maps", logfields.Error, err)
+	}
+
+	if len(freed) > 0 {
+		logger.Debug("Maps freed by the kernel after dead code elimination", logfields.Maps, freed)
+	}
+
+	logger.Debug("No freed maps found after loading Collection")
+}
+
+func modifyAuxData(spec *ebpf.CollectionSpec) error {
+	auxData, found := spec.Maps[".data.aux"]
+	if !found {
 		return nil
 	}
 
-	for name, value := range overrides {
-		constName := constantPrefix + name
-
-		if _, ok := values[constName]; !ok {
-			return fmt.Errorf("can't override non-existent constant %q", name)
-		}
-
-		values[constName] = value
+	// Make collections of per-CPU values cache line aligned to prevent false sharing between CPUs.
+	cacheLineSize := uint64(unsafe.Sizeof(cpu.CacheLinePad{}))
+	stride := uint64(auxData.ValueSize)
+	if stride%cacheLineSize != 0 {
+		stride += cacheLineSize - (stride % cacheLineSize)
 	}
 
-	for _, prog := range spec.Programs {
-		for i, ins := range prog.Instructions {
-			if !ins.IsLoadFromMap() || ins.Src != asm.PseudoMapValue {
-				continue
-			}
+	// Communicate the stride to the BPF programs so it can calculate the offset from any variable in the map
+	// to the value for the current CPU.
+	auxStride, found := spec.Variables["_aux_stride"]
+	if !found {
+		return fmt.Errorf("missing _aux_stride variable for .data.aux map")
+	}
+	err := auxStride.Set(stride)
+	if err != nil {
+		return fmt.Errorf("setting _aux_stride: %w", err)
+	}
 
-			if ins.Reference() != globalDataMap {
-				return fmt.Errorf("global constants must be in %s, but found reference to %s", globalDataMap, ins.Reference())
-			}
+	// Resize the map so it has a copy of the values for each possible CPU.
+	cpus := ebpf.MustPossibleCPU()
+	valueSize := uint32(cpus) * uint32(stride)
+	auxData.Contents[0] = ebpf.MapKV{Key: uint32(0), Value: make([]byte, valueSize)}
+	auxData.ValueSize = valueSize
 
-			// Get the offset of the read within the target map,
-			// stored in the 32 most-significant bits of Constant.
-			// Equivalent to Instruction.mapOffset().
-			off := uint32(uint64(ins.Constant) >> 32)
-
-			// Look up the value of the variable stored at the Datasec offset pointed
-			// at by the instruction.
-			v, ok := offsets[off]
-			if !ok {
-				return fmt.Errorf("no global constant found in %s at offset %d", globalDataMap, off)
-			}
-
-			// Replace the map load with an immediate load. Must be a dword load
-			// to match the instruction width of a map load.
-			r := asm.LoadImm(ins.Dst, int64(values[v]), asm.DWord)
-
-			// Preserve metadata of the original instruction. Otherwise, a program's
-			// first instruction could be stripped of its func_info or Symbol
-			// (function start) annotations.
-			r.Metadata = ins.Metadata
-
-			prog.Instructions[i] = r
-		}
+	// Communicate the maximum offset of any variable in the map, used to make the verifier happy that we will never
+	// read or write past the end of the map value.
+	auxMaxOff, found := spec.Variables["_aux_max_off"]
+	if !found {
+		return fmt.Errorf("missing _aux_max_off variable for .data.aux map")
+	}
+	err = auxMaxOff.Set(uint64(valueSize) - stride)
+	if err != nil {
+		return fmt.Errorf("setting _aux_max_off: %w", err)
 	}
 
 	return nil
 }
 
-// globalData gets the contents of the first entry in the global data map
-// and removes it from the spec to prevent it from being created in the kernel.
-func globalData(spec *ebpf.CollectionSpec) (offsets map[uint32]string, values map[string]uint64, _ error) {
-	dm := spec.Maps[globalDataMap]
-	if dm == nil {
-		return nil, nil, nil
-	}
-
-	if dl := len(dm.Contents); dl != 1 {
-		return nil, nil, fmt.Errorf("expected one key in %s, found %d", globalDataMap, dl)
-	}
-
-	ds, ok := dm.Value.(*btf.Datasec)
-	if !ok {
-		return nil, nil, fmt.Errorf("no BTF datasec found for %s", globalDataMap)
-	}
-
-	data, ok := (dm.Contents[0].Value).([]byte)
-	if !ok {
-		return nil, nil, fmt.Errorf("expected %s value to be a byte slice, got: %T",
-			globalDataMap, dm.Contents[0].Value)
-	}
-
-	// Slice up the binary contents of the global data map according to the
-	// variables described in its Datasec.
-	values = make(map[string]uint64)
-	offsets = make(map[uint32]string)
-	buf := make([]byte, 8)
-	for _, vsi := range ds.Vars {
-		v, ok := vsi.Type.(*btf.Var)
-		if !ok {
-			// VarSecInfo.Type can be a Func.
+func patchPrograms(coll *ebpf.CollectionSpec, patches map[string]func(asm.Instructions) (asm.Instructions, error)) error {
+	for name, patch := range patches {
+		prog := coll.Programs[name]
+		if prog == nil {
 			continue
 		}
 
-		if _, ok := offsets[vsi.Offset]; ok {
-			return nil, nil, fmt.Errorf("duplicate VarSecInfo for offset %d", vsi.Offset)
+		newInstructions, err := patch(prog.Instructions)
+		if err != nil {
+			return fmt.Errorf("patching %s: %w", name, err)
 		}
-
-		copy(buf, data[vsi.Offset:vsi.Offset+vsi.Size])
-
-		var value uint64
-		switch vsi.Size {
-		case 8:
-			value = spec.ByteOrder.Uint64(buf)
-		case 4:
-			value = uint64(spec.ByteOrder.Uint32(buf))
-		case 2:
-			value = uint64(spec.ByteOrder.Uint16(buf))
-		case 1:
-			value = uint64(buf[0])
-		default:
-			return nil, nil, fmt.Errorf("invalid variable size %d", vsi.Size)
-		}
-
-		// Emit the variable's value by its offset in the datasec.
-		offsets[vsi.Offset] = v.Name
-		values[v.Name] = value
+		prog.Instructions = newInstructions
 	}
 
-	// Remove the map definition to skip loading it into the kernel.
-	delete(spec.Maps, globalDataMap)
-
-	return offsets, values, nil
+	return nil
 }

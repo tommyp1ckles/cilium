@@ -7,20 +7,23 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sync"
 	"sync/atomic"
 
 	"github.com/cilium/hive/cell"
-	"github.com/sirupsen/logrus"
 
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/clustermesh/common"
 	mcsapitypes "github.com/cilium/cilium/pkg/clustermesh/mcsapi/types"
+	"github.com/cilium/cilium/pkg/clustermesh/observer"
+	serviceStore "github.com/cilium/cilium/pkg/clustermesh/store"
+	"github.com/cilium/cilium/pkg/clustermesh/types"
 	"github.com/cilium/cilium/pkg/clustermesh/wait"
+	"github.com/cilium/cilium/pkg/dial"
 	"github.com/cilium/cilium/pkg/kvstore/store"
 	"github.com/cilium/cilium/pkg/logging/logfields"
-	serviceStore "github.com/cilium/cilium/pkg/service/store"
 )
 
 // clusterMesh is a cache of multiple remote clusters
@@ -28,10 +31,11 @@ type clusterMesh struct {
 	// common implements the common logic to connect to remote clusters.
 	common common.ClusterMesh
 
-	cfg       ClusterMeshConfig
-	cfgMCSAPI MCSAPIConfig
-	logger    logrus.FieldLogger
-	Metrics   Metrics
+	cfg           ClusterMeshConfig
+	serviceModeV2 types.ServiceModeV2
+	cfgMCSAPI     mcsapitypes.MCSAPIConfig
+	logger        *slog.Logger
+	metrics       Metrics
 
 	// globalServices is a list of all global services. The datastructure
 	// is protected by its own mutex inside the structure.
@@ -40,6 +44,9 @@ type clusterMesh struct {
 	// globalServiceExports is a list of all global service exports. The datastructure
 	// is protected by its own mutex inside the structure.
 	globalServiceExports *GlobalServiceExportCache
+
+	// ObserverFactories is the list of factories to instantiate additional observers.
+	observerFactories []observer.Factory
 
 	storeFactory store.Factory
 
@@ -72,16 +79,18 @@ type ClusterMesh interface {
 	RegisterClusterServiceDeleteHook(clusterServiceDeleteHook func(*serviceStore.ClusterService))
 	// RegisterClusterServiceExportUpdateHook register a hook when a service export in the mesh is updated.
 	// This should NOT be called after the Start hook.
-	RegisterClusterServiceExportUpdateHook(clusterServiceUpdateHook func(*mcsapitypes.MCSAPIServiceSpec))
+	RegisterClusterServiceExportUpdateHook(clusterServiceExportUpdateHook func(*mcsapitypes.MCSAPIServiceSpec))
 	// RegisterClusterServiceExportDeleteHook register a hook when a service export in the mesh is deleted.
 	// This should NOT be called after the Start hook.
-	RegisterClusterServiceExportDeleteHook(clusterServiceDeleteHook func(*mcsapitypes.MCSAPIServiceSpec))
+	RegisterClusterServiceExportDeleteHook(clusterServiceExportDeleteHook func(*mcsapitypes.MCSAPIServiceSpec))
 
 	ServicesSynced(ctx context.Context) error
 	GlobalServices() *common.GlobalServiceCache
 
 	ServiceExportsSynced(ctx context.Context) error
 	GlobalServiceExports() *GlobalServiceExportCache
+
+	ObserverSynced(ctx context.Context, name observer.Name) error
 }
 
 func newClusterMesh(lc cell.Lifecycle, params clusterMeshParams) (*clusterMesh, ClusterMesh) {
@@ -89,31 +98,37 @@ func newClusterMesh(lc cell.Lifecycle, params clusterMeshParams) (*clusterMesh, 
 		return nil, nil
 	}
 
-	if !params.Cfg.ClusterMeshEnableEndpointSync && !params.CfgMCSAPI.ClusterMeshEnableMCSAPI {
+	if !params.Cfg.ClusterMeshEnableEndpointSync && !params.CfgMCSAPI.EnableMCSAPI {
 		return nil, nil
 	}
 
 	params.Logger.Info("Operator ClusterMesh component enabled")
 
 	cm := clusterMesh{
-		cfg:       params.Cfg,
-		cfgMCSAPI: params.CfgMCSAPI,
-		logger:    params.Logger,
-		globalServices: common.NewGlobalServiceCache(
-			params.Metrics.TotalGlobalServices.WithLabelValues(params.ClusterInfo.Name),
-		),
-		globalServiceExports: NewGlobalServiceExportCache(
-			params.Metrics.TotalGlobalServiceExports.WithLabelValues(params.ClusterInfo.Name),
-		),
-		storeFactory:      params.StoreFactory,
-		syncTimeoutConfig: params.TimeoutConfig,
+		cfg:                  params.Cfg,
+		serviceModeV2:        params.ServiceModeV2,
+		cfgMCSAPI:            params.CfgMCSAPI,
+		logger:               params.Logger,
+		metrics:              params.Metrics,
+		globalServices:       common.NewGlobalServiceCache(params.Logger),
+		globalServiceExports: NewGlobalServiceExportCache(),
+		observerFactories:    params.ObserverFactories,
+		storeFactory:         params.StoreFactory,
+		syncTimeoutConfig:    params.TimeoutConfig,
 	}
 	cm.common = common.NewClusterMesh(common.Configuration{
-		Config:           params.Config,
-		ClusterInfo:      params.ClusterInfo,
-		NewRemoteCluster: cm.newRemoteCluster,
-		ServiceResolver:  params.ServiceResolver,
-		Metrics:          params.CommonMetrics,
+		Logger:              params.Logger,
+		Config:              params.Config,
+		ClusterInfo:         params.ClusterInfo,
+		RemoteClientFactory: params.RemoteClientFactory,
+		NewRemoteCluster:    cm.newRemoteCluster,
+		Resolvers: func() (out []dial.Resolver) {
+			if params.ServiceResolver != nil {
+				out = append(out, params.ServiceResolver)
+			}
+			return out
+		}(),
+		Metrics: params.CommonMetrics,
 	})
 
 	lc.Append(cm.common)
@@ -185,9 +200,11 @@ func (cm *clusterMesh) GlobalServiceExports() *GlobalServiceExportCache {
 
 func (cm *clusterMesh) newRemoteCluster(name string, status common.StatusFunc) common.RemoteCluster {
 	rc := &remoteCluster{
+		logger:                        cm.logger.With(logfields.ClusterName, name),
 		name:                          name,
 		clusterMeshEnableEndpointSync: cm.cfg.ClusterMeshEnableEndpointSync,
-		clusterMeshEnableMCSAPI:       cm.cfgMCSAPI.ClusterMeshEnableMCSAPI,
+		clusterMeshEnableMCSAPI:       cm.cfgMCSAPI.EnableMCSAPI,
+		clusterMeshServiceModeV2:      cm.serviceModeV2,
 		storeFactory:                  cm.storeFactory,
 		synced:                        newSynced(),
 		status:                        status,
@@ -202,7 +219,7 @@ func (cm *clusterMesh) newRemoteCluster(name string, status common.StatusFunc) c
 			serviceStore.NamespacedNameValidator(),
 		),
 		common.NewSharedServicesObserver(
-			cm.logger.WithField(logfields.ClusterName, name),
+			rc.logger,
 			cm.globalServices,
 			func(svc *serviceStore.ClusterService) {
 				for _, hook := range cm.clusterServiceUpdateHooks {
@@ -216,6 +233,7 @@ func (cm *clusterMesh) newRemoteCluster(name string, status common.StatusFunc) c
 			},
 		),
 		store.RWSWithOnSyncCallback(func(ctx context.Context) { rc.synced.services.Stop() }),
+		store.RWSWithEntriesMetric(cm.metrics.TotalServices.WithLabelValues(rc.name)),
 	)
 
 	rc.remoteServiceExports = cm.storeFactory.NewWatchStore(
@@ -238,7 +256,20 @@ func (cm *clusterMesh) newRemoteCluster(name string, status common.StatusFunc) c
 			},
 		),
 		store.RWSWithOnSyncCallback(func(ctx context.Context) { rc.synced.serviceExports.Stop() }),
+		store.RWSWithEntriesMetric(cm.metrics.TotalServiceExports.WithLabelValues(name)),
 	)
+
+	rc.observers = make(map[observer.Name]observer.Observer, len(cm.observerFactories))
+	for _, factory := range cm.observerFactories {
+		var (
+			synced     = make(chan struct{})
+			onceSynced = sync.OnceFunc(func() { close(synced) })
+			obs        = factory(name, onceSynced)
+		)
+
+		rc.observers[obs.Name()] = obs
+		rc.synced.observers[obs.Name()] = synced
+	}
 
 	return rc
 }
@@ -266,6 +297,18 @@ func (cm *clusterMesh) ServiceExportsSynced(ctx context.Context) error {
 	return cm.synced(ctx, func(rc *remoteCluster) wait.Fn { return rc.synced.ServiceExports })
 }
 
+// ObserverSynced returns after that either the given named observer has received
+// the initial list of entries from all remote clusters, or the maximum wait period
+// controlled by the clustermesh-sync-timeout flag elapsed. It returns an error if
+// the given context expired, or if the target observer is not registered.
+func (cm *clusterMesh) ObserverSynced(ctx context.Context, name observer.Name) error {
+	return cm.synced(ctx, func(rc *remoteCluster) wait.Fn {
+		return func(ctx context.Context) error {
+			return rc.synced.Observer(ctx, name)
+		}
+	})
+}
+
 func (cm *clusterMesh) synced(ctx context.Context, toWaitFn func(*remoteCluster) wait.Fn) error {
 	wctx, cancel := context.WithTimeout(ctx, cm.syncTimeoutConfig.ClusterMeshSyncTimeout)
 	defer cancel()
@@ -284,7 +327,7 @@ func (cm *clusterMesh) synced(ctx context.Context, toWaitFn func(*remoteCluster)
 		// and continue normally, as if the synchronization completed successfully.
 		// This ensures that we don't block forever in case of misconfigurations.
 		cm.syncTimeoutLogOnce.Do(func() {
-			cm.logger.Warning("Failed waiting for clustermesh synchronization, expect possible disruption of cross-cluster connections")
+			cm.logger.Warn("Failed waiting for clustermesh synchronization, expect possible disruption of cross-cluster connections")
 		})
 
 		return nil

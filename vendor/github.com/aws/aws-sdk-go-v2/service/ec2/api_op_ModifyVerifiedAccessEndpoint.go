@@ -35,6 +35,9 @@ type ModifyVerifiedAccessEndpointInput struct {
 	// This member is required.
 	VerifiedAccessEndpointId *string
 
+	// The CIDR options.
+	CidrOptions *types.ModifyVerifiedAccessEndpointCidrOptions
+
 	// A unique, case-sensitive token that you provide to ensure idempotency of your
 	// modification request. For more information, see [Ensuring idempotency].
 	//
@@ -56,6 +59,9 @@ type ModifyVerifiedAccessEndpointInput struct {
 
 	// The network interface options.
 	NetworkInterfaceOptions *types.ModifyVerifiedAccessEndpointEniOptions
+
+	// The RDS options.
+	RdsOptions *types.ModifyVerifiedAccessEndpointRdsOptions
 
 	// The ID of the Verified Access group.
 	VerifiedAccessGroupId *string
@@ -108,13 +114,16 @@ func (c *Client) addOperationModifyVerifiedAccessEndpointMiddlewares(stack *midd
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
+	if err = addRetry(stack, options, c); err != nil {
 		return err
 	}
 	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
 	if err = addRecordResponseTiming(stack); err != nil {
+		return err
+	}
+	if err = addSpanRetryLoop(stack, options); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -129,10 +138,10 @@ func (c *Client) addOperationModifyVerifiedAccessEndpointMiddlewares(stack *midd
 	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
 		return err
 	}
-	if err = addTimeOffsetBuild(stack, c); err != nil {
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
-	if err = addUserAgentRetryMode(stack, options); err != nil {
+	if err = addCredentialSource(stack, options); err != nil {
 		return err
 	}
 	if err = addIdempotencyToken_opModifyVerifiedAccessEndpointMiddleware(stack, options); err != nil {
@@ -157,6 +166,15 @@ func (c *Client) addOperationModifyVerifiedAccessEndpointMiddlewares(stack *midd
 		return err
 	}
 	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptBeforeRetryLoop(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptAttempt(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil

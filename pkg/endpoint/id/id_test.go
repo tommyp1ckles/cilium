@@ -88,8 +88,8 @@ func BenchmarkSplitID(b *testing.B) {
 		{string(PodNamePrefix + ":default:foobar"), PodNamePrefix, "default:foobar"},
 	}
 	count := 0
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		for _, test := range tests {
 			pt, str := splitID(test.str)
 			if pt == test.prefixType && str == test.id {
@@ -104,7 +104,7 @@ func BenchmarkSplitID(b *testing.B) {
 	b.ReportAllocs()
 }
 
-func TestParse(t *testing.T) {
+func TestPrivilegedParse(t *testing.T) {
 	type test struct {
 		input      PrefixType
 		wantPrefix PrefixType
@@ -113,8 +113,6 @@ func TestParse(t *testing.T) {
 	}
 
 	tests := []test{
-		{DockerEndpointPrefix + ":foo", DockerEndpointPrefix, "foo", false},
-		{DockerEndpointPrefix + ":foo:foo", DockerEndpointPrefix, "foo:foo", false},
 		{"unknown:unknown", "", "", true},
 		{"unknown", CiliumLocalIdPrefix, "unknown", false},
 	}
@@ -124,14 +122,14 @@ func TestParse(t *testing.T) {
 		require.Equal(t, tt.wantPrefix, prefix)
 		require.Equal(t, tt.wantID, id)
 		if tt.expectFail {
-			require.NotNil(t, err)
+			require.Error(t, err)
 		} else {
-			require.Nil(t, err)
+			require.NoError(t, err)
 		}
 	}
 }
 
 func TestNewIPPrefix(t *testing.T) {
-	require.Equal(t, true, strings.HasPrefix(NewIPPrefixID(netip.MustParseAddr("1.1.1.1")), string(IPv4Prefix)))
-	require.Equal(t, true, strings.HasPrefix(NewIPPrefixID(netip.MustParseAddr("f00d::1")), string(IPv6Prefix)))
+	require.True(t, strings.HasPrefix(NewIPPrefixID(netip.MustParseAddr("1.1.1.1")), string(IPv4Prefix)))
+	require.True(t, strings.HasPrefix(NewIPPrefixID(netip.MustParseAddr("f00d::1")), string(IPv6Prefix)))
 }

@@ -4,10 +4,13 @@
 package policy
 
 import (
+	"log/slog"
 	"net/netip"
+	"slices"
 	"sync"
 	"testing"
 
+	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/require"
 
 	"github.com/cilium/cilium/pkg/identity"
@@ -15,12 +18,48 @@ import (
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/policy/api"
+	"github.com/cilium/cilium/pkg/policy/types"
+	policytypes "github.com/cilium/cilium/pkg/policy/types"
 	testidentity "github.com/cilium/cilium/pkg/testutils/identity"
 )
 
-type DummySelectorCacheUser struct{}
+func testNewSelectorCache(tb testing.TB, logger *slog.Logger, ids identity.IdentityMap) *SelectorCache {
+	sc := NewSelectorCache(logger, ids)
+	sc.userHandlerDone = make(chan struct{})
+	sc.SetLocalIdentityNotifier(testidentity.NewDummyIdentityNotifier())
+	tb.Cleanup(sc.StopNotificationHandler)
+	return sc
+}
 
-func (d *DummySelectorCacheUser) IdentitySelectionUpdated(selector CachedSelector, added, deleted []identity.NumericIdentity) {
+// StopNotificationHandler drains pending notifications and terminates the
+// handler goroutine. Idempotent.
+func (sc *SelectorCache) StopNotificationHandler() {
+	sc.userMutex.Lock()
+	defer sc.userMutex.Unlock()
+
+	if sc.userHandlerDone == nil {
+		return
+	}
+
+	handlerWasStarted := true
+	sc.startNotificationsHandlerOnce.Do(func() {
+		handlerWasStarted = false
+	})
+
+	if handlerWasStarted {
+		sc.userNotes = append(sc.userNotes, userNotification{})
+		sc.userMutex.Unlock()
+		sc.userCond.Signal()
+		<-sc.userHandlerDone
+		sc.userMutex.Lock()
+	}
+
+	sc.userHandlerDone = nil
+}
+
+type selectorUpdate struct {
+	selector       policytypes.CachedSelector
+	added, deleted []identity.NumericIdentity
 }
 
 type cachedSelectionUser struct {
@@ -34,6 +73,8 @@ type cachedSelectionUser struct {
 	notifications int
 	adds          int
 	deletes       int
+
+	updates []selectorUpdate
 }
 
 func (sc *SelectorCache) haveUserNotifications() bool {
@@ -54,20 +95,26 @@ func newUser(t *testing.T, name string, sc *SelectorCache) *cachedSelectionUser 
 }
 
 func haveNid(nid identity.NumericIdentity, selections []identity.NumericIdentity) bool {
-	for i := range selections {
-		if selections[i] == nid {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(selections, nid)
+}
+
+// findCachedIdentitySelector finds the given api.EndpointSelector in the
+// selector cache, returning nil if one can not be found.
+// NOTE: Only used for testing.
+func (sc *SelectorCache) findCachedIdentitySelector(selector api.EndpointSelector) types.CachedSelector {
+	key := selector.CachedString()
+	sc.mutex.RLock()
+	sel, _ := sc.selectors.Get(key)
+	sc.mutex.RUnlock()
+	return sel
 }
 
 func (csu *cachedSelectionUser) AddIdentitySelector(sel api.EndpointSelector) CachedSelector {
 	csu.updateMutex.Lock()
 	defer csu.updateMutex.Unlock()
 
-	cached, added := csu.sc.AddIdentitySelector(csu, nil, sel)
-	require.NotEqual(csu.t, nil, cached)
+	cached, added := csu.sc.AddIdentitySelectorForTest(csu, sel)
+	require.NotNil(csu.t, cached)
 
 	_, exists := csu.selections[cached]
 	// Not added if already exists for this user
@@ -84,8 +131,11 @@ func (csu *cachedSelectionUser) AddFQDNSelector(sel api.FQDNSelector) CachedSele
 	csu.updateMutex.Lock()
 	defer csu.updateMutex.Unlock()
 
-	cached, added := csu.sc.AddFQDNSelector(csu, nil, sel)
-	require.NotEqual(csu.t, nil, cached)
+	var cached types.CachedSelector
+	css, added := csu.sc.AddSelectors(csu, types.ToSelectors(sel)...)
+	cached = css[0]
+
+	require.NotNil(csu.t, cached)
 
 	_, exists := csu.selections[cached]
 	// Not added if already exists for this user
@@ -124,7 +174,7 @@ func (csu *cachedSelectionUser) WaitForUpdate() (adds, deletes int) {
 	return csu.adds, csu.deletes
 }
 
-func (csu *cachedSelectionUser) IdentitySelectionUpdated(selector CachedSelector, added, deleted []identity.NumericIdentity) {
+func (csu *cachedSelectionUser) IdentitySelectionUpdated(logger *slog.Logger, selector policytypes.CachedSelector, added, deleted []identity.NumericIdentity) {
 	csu.updateMutex.Lock()
 	defer csu.updateMutex.Unlock()
 
@@ -132,24 +182,51 @@ func (csu *cachedSelectionUser) IdentitySelectionUpdated(selector CachedSelector
 	csu.adds += len(added)
 	csu.deletes += len(deleted)
 
-	selections := selector.GetSelections()
+	// collect updates as the changes may not be visible in selections before Commit
+	csu.updates = append(csu.updates, selectorUpdate{
+		selector: selector,
+		added:    slices.Clone(added),
+		deleted:  slices.Clone(deleted),
+	})
+}
 
-	// Validate added & deleted against the selections
-	for _, add := range added {
-		require.True(csu.t, haveNid(add, selections))
+func (csu *cachedSelectionUser) IdentitySelectionCommit(logger *slog.Logger, txn SelectorSnapshot) {
+	csu.updateMutex.Lock()
+	defer csu.updateMutex.Unlock()
+
+	for i := range csu.updates {
+		selector := csu.updates[i].selector
+		added := csu.updates[i].added
+		deleted := csu.updates[i].deleted
+
+		selections := selector.GetSelectionsAt(txn)
+
+		// Validate added & deleted against the selections
+		for _, add := range added {
+			require.True(csu.t, haveNid(add, selections))
+		}
+		for _, del := range deleted {
+			require.False(csu.t, haveNid(del, selections))
+		}
+
+		// update selections
+		csu.selections[selector] = selections
 	}
-	for _, del := range deleted {
-		require.False(csu.t, haveNid(del, selections))
-	}
-
-	// update selections
-	csu.selections[selector] = selections
-
+	csu.updates = nil
 	csu.updateCond.Signal()
 }
 
-// Mock CachedSelector for unit testing.
+func (csu *cachedSelectionUser) IsPeerSelector() bool {
+	return true
+}
 
+func (csu *cachedSelectionUser) GetRuleLabels(cs CachedSelector) labels.LabelArrayList {
+	return nil
+}
+
+// Mock CachedSelector for unit testing.
+//
+// testCachedSelector is used in isolation so there is no point to implement versioning for it.
 type testCachedSelector struct {
 	name       string
 	wildcard   bool
@@ -191,7 +268,7 @@ func (cs *testCachedSelector) deleteSelections(selections ...int) (deletes []ide
 		}
 		for i := 0; i < len(cs.selections); i++ {
 			if nid == cs.selections[i] {
-				cs.selections = append(cs.selections[:i], cs.selections[i+1:]...)
+				cs.selections = slices.Delete(cs.selections, i, i+1)
 				i--
 			}
 		}
@@ -204,16 +281,16 @@ func (cs *testCachedSelector) deleteSelections(selections ...int) (deletes []ide
 func (cs *testCachedSelector) GetSelections() identity.NumericIdentitySlice {
 	return cs.selections
 }
-func (cs *testCachedSelector) GetMetadataLabels() labels.LabelArray {
+
+func (cs *testCachedSelector) GetSelectionsAt(SelectorSnapshot) identity.NumericIdentitySlice {
+	return cs.selections
+}
+
+func (cs *testCachedSelector) GetMetadataLabels() labels.LabelArrayList {
 	return nil
 }
 func (cs *testCachedSelector) Selects(nid identity.NumericIdentity) bool {
-	for _, id := range cs.selections {
-		if id == nid {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(cs.selections, nid)
 }
 
 func (cs *testCachedSelector) IsWildcard() bool {
@@ -229,7 +306,7 @@ func (cs *testCachedSelector) String() string {
 }
 
 func TestAddRemoveSelector(t *testing.T) {
-	sc := testNewSelectorCache(identity.IdentityMap{})
+	sc := testNewSelectorCache(t, hivetest.Logger(t), identity.IdentityMap{})
 
 	// Add some identities to the identity cache
 	wg := &sync.WaitGroup{}
@@ -248,7 +325,7 @@ func TestAddRemoveSelector(t *testing.T) {
 
 	// Current selections contain the numeric identities of existing identities that match
 	selections := cached.GetSelections()
-	require.Equal(t, 1, len(selections))
+	require.Len(t, selections, 1)
 	require.Equal(t, identity.NumericIdentity(1234), selections[0])
 
 	// Try add the same selector from the same user the second time
@@ -277,11 +354,11 @@ func TestAddRemoveSelector(t *testing.T) {
 	user2.RemoveSelector(cached3)
 
 	// All identities removed
-	require.Equal(t, 0, len(sc.selectors))
+	require.True(t, sc.selectors.Empty())
 }
 
 func TestMultipleIdentitySelectors(t *testing.T) {
-	sc := testNewSelectorCache(identity.IdentityMap{})
+	sc := testNewSelectorCache(t, hivetest.Logger(t), identity.IdentityMap{})
 
 	// Add some identities to the identity cache
 	wg := &sync.WaitGroup{}
@@ -291,8 +368,8 @@ func TestMultipleIdentitySelectors(t *testing.T) {
 		1234: labels.Labels{"app": labels.NewLabel("app", "test", labels.LabelSourceK8s)}.LabelArray(),
 		2345: labels.Labels{"app": labels.NewLabel("app", "test2", labels.LabelSourceK8s)}.LabelArray(),
 
-		li1: labels.GetCIDRLabels(netip.MustParsePrefix("10.0.0.1/32")).LabelArray(),
-		li2: labels.GetCIDRLabels(netip.MustParsePrefix("10.0.0.0/8")).LabelArray(),
+		li1: labels.GetCIDRLabelArray(netip.MustParsePrefix("10.0.0.1/32")),
+		li2: labels.GetCIDRLabelArray(netip.MustParsePrefix("10.0.0.0/8")),
 	}, nil, wg)
 	wg.Wait()
 
@@ -310,7 +387,7 @@ func TestMultipleIdentitySelectors(t *testing.T) {
 
 	// Current selections contain the numeric identities of existing identities that match
 	selections := cached.GetSelections()
-	require.Equal(t, 1, len(selections))
+	require.Len(t, selections, 1)
 	require.Equal(t, identity.NumericIdentity(1234), selections[0])
 
 	// Add another selector from the same user
@@ -319,13 +396,13 @@ func TestMultipleIdentitySelectors(t *testing.T) {
 
 	// Current selections contain the numeric identities of existing identities that match
 	selections2 := cached2.GetSelections()
-	require.Equal(t, 1, len(selections2))
+	require.Len(t, selections2, 1)
 	require.Equal(t, identity.NumericIdentity(2345), selections2[0])
 
 	shouldSelect := func(sel api.EndpointSelector, wantIDs ...identity.NumericIdentity) {
 		csel := user1.AddIdentitySelector(sel)
 		selections := csel.GetSelections()
-		require.EqualValues(t, identity.NumericIdentitySlice(wantIDs), selections)
+		require.Equal(t, identity.NumericIdentitySlice(wantIDs), selections)
 		user1.RemoveSelector(csel)
 	}
 
@@ -338,11 +415,11 @@ func TestMultipleIdentitySelectors(t *testing.T) {
 	user1.RemoveSelector(cached2)
 
 	// All identities removed
-	require.Equal(t, 0, len(sc.selectors))
+	require.True(t, sc.selectors.Empty())
 }
 
 func TestIdentityUpdates(t *testing.T) {
-	sc := testNewSelectorCache(identity.IdentityMap{})
+	sc := testNewSelectorCache(t, hivetest.Logger(t), identity.IdentityMap{})
 
 	// Add some identities to the identity cache
 	wg := &sync.WaitGroup{}
@@ -360,7 +437,7 @@ func TestIdentityUpdates(t *testing.T) {
 
 	// Current selections contain the numeric identities of existing identities that match
 	selections := cached.GetSelections()
-	require.Equal(t, 1, len(selections))
+	require.Len(t, selections, 1)
 	require.Equal(t, identity.NumericIdentity(1234), selections[0])
 
 	// Add another selector from the same user
@@ -369,7 +446,7 @@ func TestIdentityUpdates(t *testing.T) {
 
 	// Current selections contain the numeric identities of existing identities that match
 	selections2 := cached2.GetSelections()
-	require.Equal(t, 1, len(selections2))
+	require.Len(t, selections2, 1)
 	require.Equal(t, identity.NumericIdentity(2345), selections2[0])
 
 	user1.Reset()
@@ -386,7 +463,7 @@ func TestIdentityUpdates(t *testing.T) {
 
 	// Current selections contain the numeric identities of existing identities that match
 	selections = cached.GetSelections()
-	require.Equal(t, 2, len(selections))
+	require.Len(t, selections, 2)
 	require.Equal(t, identity.NumericIdentity(1234), selections[0])
 	require.Equal(t, identity.NumericIdentity(12345), selections[1])
 
@@ -404,18 +481,18 @@ func TestIdentityUpdates(t *testing.T) {
 
 	// Current selections contain the numeric identities of existing identities that match
 	selections = cached.GetSelections()
-	require.Equal(t, 1, len(selections))
+	require.Len(t, selections, 1)
 	require.Equal(t, identity.NumericIdentity(1234), selections[0])
 
 	user1.RemoveSelector(cached)
 	user1.RemoveSelector(cached2)
 
 	// All identities removed
-	require.Equal(t, 0, len(sc.selectors))
+	require.True(t, sc.selectors.Empty())
 }
 
 func TestIdentityUpdatesMultipleUsers(t *testing.T) {
-	sc := testNewSelectorCache(identity.IdentityMap{})
+	sc := testNewSelectorCache(t, hivetest.Logger(t), identity.IdentityMap{})
 
 	// Add some identities to the identity cache
 	wg := &sync.WaitGroup{}
@@ -455,12 +532,12 @@ func TestIdentityUpdatesMultipleUsers(t *testing.T) {
 
 	// Current selections contain the numeric identities of existing identities that match
 	selections := cached.GetSelections()
-	require.Equal(t, 3, len(selections))
+	require.Len(t, selections, 3)
 	require.Equal(t, identity.NumericIdentity(123), selections[0])
 	require.Equal(t, identity.NumericIdentity(345), selections[1])
 	require.Equal(t, identity.NumericIdentity(1234), selections[2])
 
-	require.EqualValues(t, cached2.GetSelections(), cached.GetSelections())
+	require.Equal(t, cached2.GetSelections(), cached.GetSelections())
 
 	user1.Reset()
 	user2.Reset()
@@ -481,64 +558,175 @@ func TestIdentityUpdatesMultipleUsers(t *testing.T) {
 
 	// Current selections contain the numeric identities of existing identities that match
 	selections = cached.GetSelections()
-	require.Equal(t, 2, len(selections))
+	require.Len(t, selections, 2)
 	require.Equal(t, identity.NumericIdentity(345), selections[0])
 	require.Equal(t, identity.NumericIdentity(1234), selections[1])
 
-	require.EqualValues(t, cached2.GetSelections(), cached.GetSelections())
+	require.Equal(t, cached2.GetSelections(), cached.GetSelections())
 
 	user1.RemoveSelector(cached)
 	user2.RemoveSelector(cached2)
 
 	// All identities removed
-	require.Equal(t, 0, len(sc.selectors))
+	require.True(t, sc.selectors.Empty())
+}
+
+func TestTransactionalUpdate(t *testing.T) {
+	sc := testNewSelectorCache(t, hivetest.Logger(t), identity.IdentityMap{})
+
+	// Add some identities to the identity cache
+	wg := &sync.WaitGroup{}
+	li1 := identity.IdentityScopeLocal
+	li2 := li1 + 1
+	sc.UpdateIdentities(identity.IdentityMap{
+		li1: labels.GetCIDRLabelArray(netip.MustParsePrefix("10.0.0.1/32")),
+		li2: labels.GetCIDRLabelArray(netip.MustParsePrefix("10.0.0.0/8")),
+	}, nil, wg)
+	wg.Wait()
+
+	// Test both exact and broader CIDR selectors
+	cidr32Selector := api.NewESFromLabels(labels.NewLabel("cidr:10.0.0.1/32", "", labels.LabelSourceCIDR))
+	cidr24Selector := api.NewESFromLabels(labels.NewLabel("cidr:10.0.0.0/24", "", labels.LabelSourceCIDR))
+	cidr8Selector := api.NewESFromLabels(labels.NewLabel("cidr:10.0.0.0/8", "", labels.LabelSourceCIDR))
+	cidr7Selector := api.NewESFromLabels(labels.NewLabel("cidr:10.0.0.0/7", "", labels.LabelSourceCIDR))
+
+	user1 := newUser(t, "user1", sc)
+
+	cs32 := user1.AddIdentitySelector(cidr32Selector)
+	cs24 := user1.AddIdentitySelector(cidr24Selector)
+	cs8 := user1.AddIdentitySelector(cidr8Selector)
+	cs7 := user1.AddIdentitySelector(cidr7Selector)
+
+	txn := sc.GetSelectorSnapshot()
+
+	require.Equal(t, identity.NumericIdentitySlice{li1}, cs32.GetSelectionsAt(txn))
+	require.Equal(t, identity.NumericIdentitySlice{li1}, cs24.GetSelectionsAt(txn))
+	require.Equal(t, identity.NumericIdentitySlice{li1, li2}, cs8.GetSelectionsAt(txn))
+	require.Equal(t, identity.NumericIdentitySlice{li1, li2}, cs7.GetSelectionsAt(txn))
+
+	// Add some identities to the identity cache
+	li3 := li2 + 1
+	li4 := li3 + 1
+	wg = &sync.WaitGroup{}
+	sc.UpdateIdentities(identity.IdentityMap{
+		li3: labels.GetCIDRLabelArray(netip.MustParsePrefix("10.0.0.0/31")),
+		li4: labels.GetCIDRLabelArray(netip.MustParsePrefix("10.0.0.0/7")),
+	}, nil, wg)
+	wg.Wait()
+
+	// Old version handle still gets the same selections as before
+	require.Equal(t, identity.NumericIdentitySlice{li1}, cs32.GetSelectionsAt(txn))
+	require.Equal(t, identity.NumericIdentitySlice{li1}, cs24.GetSelectionsAt(txn))
+	require.Equal(t, identity.NumericIdentitySlice{li1, li2}, cs8.GetSelectionsAt(txn))
+	require.Equal(t, identity.NumericIdentitySlice{li1, li2}, cs7.GetSelectionsAt(txn))
+
+	// New version handle sees the new updates on all selectors
+	txn2 := sc.GetSelectorSnapshot()
+
+	require.Equal(t, identity.NumericIdentitySlice{li1}, cs32.GetSelectionsAt(txn2))
+	require.Equal(t, identity.NumericIdentitySlice{li1, li3}, cs24.GetSelectionsAt(txn2))
+	require.Equal(t, identity.NumericIdentitySlice{li1, li2, li3}, cs8.GetSelectionsAt(txn2))
+	require.Equal(t, identity.NumericIdentitySlice{li1, li2, li3, li4}, cs7.GetSelectionsAt(txn2))
+
+	// Remove some identities from the identity cache
+	wg = &sync.WaitGroup{}
+	sc.UpdateIdentities(nil, identity.IdentityMap{
+		li1: labels.GetCIDRLabelArray(netip.MustParsePrefix("10.0.0.1/32")),
+	}, wg)
+	wg.Wait()
+
+	// Oldest version handle still gets the same selections as before
+	require.Equal(t, identity.NumericIdentitySlice{li1}, cs32.GetSelectionsAt(txn))
+	require.Equal(t, identity.NumericIdentitySlice{li1}, cs24.GetSelectionsAt(txn))
+	require.Equal(t, identity.NumericIdentitySlice{li1, li2}, cs8.GetSelectionsAt(txn))
+	require.Equal(t, identity.NumericIdentitySlice{li1, li2}, cs7.GetSelectionsAt(txn))
+
+	require.Equal(t, identity.NumericIdentitySlice{li1}, cs32.GetSelectionsAt(txn2))
+	require.Equal(t, identity.NumericIdentitySlice{li1, li3}, cs24.GetSelectionsAt(txn2))
+	require.Equal(t, identity.NumericIdentitySlice{li1, li2, li3}, cs8.GetSelectionsAt(txn2))
+	require.Equal(t, identity.NumericIdentitySlice{li1, li2, li3, li4}, cs7.GetSelectionsAt(txn2))
+
+	// New version handle sees the removal
+	txn3 := sc.GetSelectorSnapshot()
+
+	require.Equal(t, identity.NumericIdentitySlice(nil), cs32.GetSelectionsAt(txn3))
+	require.Equal(t, identity.NumericIdentitySlice{li3}, cs24.GetSelectionsAt(txn3))
+	require.Equal(t, identity.NumericIdentitySlice{li2, li3}, cs8.GetSelectionsAt(txn3))
+	require.Equal(t, identity.NumericIdentitySlice{li2, li3, li4}, cs7.GetSelectionsAt(txn3))
+
+	user1.RemoveSelector(cs32)
+	user1.RemoveSelector(cs24)
+	user1.RemoveSelector(cs8)
+	user1.RemoveSelector(cs7)
+
+	// All identities removed
+	require.True(t, sc.selectors.Empty())
+}
+
+func TestSelectorCacheCanSkipUpdate(t *testing.T) {
+	id1 := identity.NewIdentity(1001, labels.LabelArray{labels.NewLabel("id", "a", labels.LabelSourceK8s)}.Labels())
+	id2 := identity.NewIdentity(1002, labels.LabelArray{labels.NewLabel("id", "b", labels.LabelSourceK8s)}.Labels())
+
+	toIdentityMap := func(ids ...*identity.Identity) identity.IdentityMap {
+		idMap := identity.IdentityMap{}
+		for _, id := range ids {
+			idMap[id.ID] = id.LabelArray
+		}
+		return idMap
+	}
+
+	sc := testNewSelectorCache(t, hivetest.Logger(t), identity.IdentityMap{})
+	wg := &sync.WaitGroup{}
+
+	require.False(t, sc.CanSkipUpdate(toIdentityMap(id1), nil))
+	sc.UpdateIdentities(toIdentityMap(id1), nil, wg)
+	wg.Wait()
+
+	require.True(t, sc.CanSkipUpdate(nil, toIdentityMap(id2)))
+	require.True(t, sc.CanSkipUpdate(toIdentityMap(id1), toIdentityMap(id2)))
+
+	require.False(t, sc.CanSkipUpdate(toIdentityMap(id2), nil))
+	sc.UpdateIdentities(toIdentityMap(id2), nil, wg)
+	wg.Wait()
+
+	require.True(t, sc.CanSkipUpdate(toIdentityMap(id2), nil))
+	require.False(t, sc.CanSkipUpdate(nil, toIdentityMap(id2)))
+	require.False(t, sc.CanSkipUpdate(nil, toIdentityMap(id1, id2)))
+	sc.UpdateIdentities(nil, toIdentityMap(id1, id2), wg)
+	wg.Wait()
 }
 
 func TestSelectorManagerCanGetBeforeSet(t *testing.T) {
 	defer func() {
 		r := recover()
-		require.Equal(t, nil, r)
+		require.Nil(t, r)
 	}()
 
-	idSel := identitySelector{
-		key:   "test",
-		users: make(map[CachedSelectionUser]struct{}),
+	sc := testNewSelectorCache(t, hivetest.Logger(t), nil)
+	sel := newIdentitySelector(sc, "test", nil)
+
+	selections := sel.GetSelections()
+	require.Empty(t, selections)
+}
+
+func BenchmarkSelectorCacheIdentityUpdates(b *testing.B) {
+	td := newTestData(b, hivetest.Logger(b))
+	td.bootstrapRepo(GenerateMatchAllRules, 1, b)
+	ids := generateNumIdentities(10000)
+	wg := &sync.WaitGroup{}
+	for k, v := range ids {
+		td.sc.UpdateIdentities(identity.IdentityMap{k: v}, nil, wg)
 	}
-	selections := idSel.GetSelections()
-	require.NotEqual(t, nil, selections)
-	require.Equal(t, 0, len(selections))
-}
 
-func testNewSelectorCache(ids identity.IdentityMap) *SelectorCache {
-	sc := NewSelectorCache(ids)
-	sc.SetLocalIdentityNotifier(testidentity.NewDummyIdentityNotifier())
-	return sc
-}
+	wg.Wait()
 
-func Test_getLocalScopePrefix(t *testing.T) {
-	prefix := getLocalScopePrefix(identity.ReservedIdentityWorld, nil)
-	require.False(t, prefix.IsValid())
+	b.ReportAllocs()
+	for b.Loop() {
+		wg := &sync.WaitGroup{}
+		td.sc.UpdateIdentities(nil, identity.IdentityMap{fooIdentity.ID: fooIdentity.LabelArray}, wg)
+		wg.Wait()
+		td.sc.UpdateIdentities(identity.IdentityMap{fooIdentity.ID: fooIdentity.LabelArray}, nil, wg)
+		wg.Wait()
 
-	prefix = getLocalScopePrefix(identity.ReservedIdentityWorld, labels.LabelArray{labels.Label{Source: labels.LabelSourceCIDR, Key: "0.0.0.0/0"}})
-	require.False(t, prefix.IsValid())
-
-	prefix = getLocalScopePrefix(identity.IdentityScopeLocal, labels.LabelArray{labels.Label{Source: labels.LabelSourceCIDR, Key: "0.0.0.0/0"}})
-	require.True(t, prefix.IsValid())
-	require.Equal(t, "0.0.0.0/0", prefix.String())
-
-	prefix = getLocalScopePrefix(identity.IdentityScopeLocal, labels.LabelArray{labels.Label{Source: labels.LabelSourceCIDR, Key: "::/0"}})
-	require.True(t, prefix.IsValid())
-	require.Equal(t, "::/0", prefix.String())
-
-	prefix = getLocalScopePrefix(identity.IdentityScopeLocal, labels.LabelArray{labels.Label{Source: labels.LabelSourceCIDR, Key: "--/0"}})
-	require.True(t, prefix.IsValid())
-	require.Equal(t, "::/0", prefix.String())
-
-	prefix = getLocalScopePrefix(identity.IdentityScopeLocal, labels.LabelArray{
-		labels.Label{Source: labels.LabelSourceCIDR, Key: "ff--/8"},
-		labels.Label{Source: labels.LabelSourceCIDR, Key: "--/0"},
-		labels.Label{Source: labels.LabelSourceCIDR, Key: "--1/128"},
-	})
-	require.True(t, prefix.IsValid())
-	require.Equal(t, "::1/128", prefix.String())
+	}
 }

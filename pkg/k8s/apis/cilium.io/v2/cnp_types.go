@@ -5,7 +5,7 @@ package v2
 
 import (
 	"fmt"
-	"reflect"
+	"log/slog"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -26,6 +26,7 @@ import (
 // +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type=='Valid')].status",name="Valid",type=string
 // +kubebuilder:subresource:status
 // +kubebuilder:storageversion
+// +kubebuilder:validation:XValidation:rule="has(self.spec) || has(self.specs)",message="spec or specs must be provided"
 
 // CiliumNetworkPolicy is a Kubernetes third-party resource with an extended
 // version of NetworkPolicy.
@@ -33,19 +34,24 @@ type CiliumNetworkPolicy struct {
 	// +deepequal-gen=false
 	metav1.TypeMeta `json:",inline"`
 	// +deepequal-gen=false
+	// +kubebuilder:validation:Required
 	metav1.ObjectMeta `json:"metadata"`
 
 	// Spec is the desired Cilium specific rule specification.
+	//
+	// +kubebuilder:validation:Optional
 	Spec *api.Rule `json:"spec,omitempty"`
 
 	// Specs is a list of desired Cilium specific rule specification.
+	//
+	// +kubebuilder:validation:Optional
 	Specs api.Rules `json:"specs,omitempty"`
 
 	// Status is the status of the Cilium policy rule
 	//
 	// +deepequal-gen=false
 	// +kubebuilder:validation:Optional
-	Status CiliumNetworkPolicyStatus `json:"status"`
+	Status CiliumNetworkPolicyStatus `json:"status,omitempty"`
 }
 
 // DeepEqual compares 2 CNPs.
@@ -75,9 +81,11 @@ type CiliumNetworkPolicyStatus struct {
 
 	// DerivativePolicies is the status of all policies derived from the Cilium
 	// policy
+	//
+	// +kubebuilder:validation:Optional
 	DerivativePolicies map[string]CiliumNetworkPolicyNodeStatus `json:"derivativePolicies,omitempty"`
 
-	// +optional
+	// +kubebuilder:validation:Optional
 	// +patchMergeKey=type
 	// +patchStrategy=merge
 	// +listType=map
@@ -92,22 +100,32 @@ type CiliumNetworkPolicyStatus struct {
 type CiliumNetworkPolicyNodeStatus struct {
 	// OK is true when the policy has been parsed and imported successfully
 	// into the in-memory policy repository on the node.
+	//
+	// +kubebuilder:validation:Optional
 	OK bool `json:"ok,omitempty"`
 
 	// Error describes any error that occurred when parsing or importing the
 	// policy, or realizing the policy for the endpoints to which it applies
 	// on the node.
+	//
+	// +kubebuilder:validation:Optional
 	Error string `json:"error,omitempty"`
 
 	// LastUpdated contains the last time this status was updated
+	//
+	// +kubebuilder:validation:Optional
 	LastUpdated slimv1.Time `json:"lastUpdated,omitempty"`
 
 	// Revision is the policy revision of the repository which first implemented
 	// this policy.
+	//
+	// +kubebuilder:validation:Optional
 	Revision uint64 `json:"localPolicyRevision,omitempty"`
 
 	// Enforcing is set to true once all endpoints present at the time the
 	// policy has been imported are enforcing this policy.
+	//
+	// +kubebuilder:validation:Optional
 	Enforcing bool `json:"enforcing,omitempty"`
 
 	// Annotations corresponds to the Annotations in the ObjectMeta of the CNP
@@ -116,23 +134,9 @@ type CiliumNetworkPolicyNodeStatus struct {
 	// Annotations in CiliumNetworkPolicyNodeStatus will be X=Y once the
 	// CNP that was imported corresponding to Annotation X=Y has been realized on
 	// the node.
+	//
+	// +kubebuilder:validation:Optional
 	Annotations map[string]string `json:"annotations,omitempty"`
-}
-
-// CreateCNPNodeStatus returns a CiliumNetworkPolicyNodeStatus created from the
-// provided fields.
-func CreateCNPNodeStatus(enforcing, ok bool, cnpError error, rev uint64, annotations map[string]string) CiliumNetworkPolicyNodeStatus {
-	cnpns := CiliumNetworkPolicyNodeStatus{
-		Enforcing:   enforcing,
-		Revision:    rev,
-		OK:          ok,
-		LastUpdated: slimv1.Now(),
-		Annotations: annotations,
-	}
-	if cnpError != nil {
-		cnpns.Error = cnpError.Error()
-	}
-	return cnpns
 }
 
 func (r *CiliumNetworkPolicy) String() string {
@@ -158,19 +162,9 @@ func (r *CiliumNetworkPolicy) SetDerivedPolicyStatus(derivativePolicyName string
 	r.Status.DerivativePolicies[derivativePolicyName] = status
 }
 
-// AnnotationsEquals returns true if ObjectMeta.Annotations of each
-// CiliumNetworkPolicy are equivalent (i.e., they contain equivalent key-value
-// pairs).
-func (r *CiliumNetworkPolicy) AnnotationsEquals(o *CiliumNetworkPolicy) bool {
-	if o == nil {
-		return r == nil
-	}
-	return reflect.DeepEqual(r.ObjectMeta.Annotations, o.ObjectMeta.Annotations)
-}
-
 // Parse parses a CiliumNetworkPolicy and returns a list of cilium policy
 // rules.
-func (r *CiliumNetworkPolicy) Parse() (api.Rules, error) {
+func (r *CiliumNetworkPolicy) Parse(logger *slog.Logger, clusterName string) (api.Rules, error) {
 	if r.ObjectMeta.Name == "" {
 		return nil, NewErrParse("CiliumNetworkPolicy must have name")
 	}
@@ -187,7 +181,7 @@ func (r *CiliumNetworkPolicy) Parse() (api.Rules, error) {
 			Specs:      r.Specs,
 			Status:     r.Status,
 		}
-		return ccnp.Parse()
+		return ccnp.Parse(logger, clusterName)
 	}
 	name := r.ObjectMeta.Name
 	uid := r.ObjectMeta.UID
@@ -205,16 +199,18 @@ func (r *CiliumNetworkPolicy) Parse() (api.Rules, error) {
 		if r.Spec.NodeSelector.LabelSelector != nil {
 			return nil, NewErrParse("Invalid CiliumNetworkPolicy spec: rule cannot have NodeSelector")
 		}
-		cr := k8sCiliumUtils.ParseToCiliumRule(namespace, name, uid, r.Spec)
+		cr := k8sCiliumUtils.ParseToCiliumRule(logger, clusterName, namespace, name, uid, r.Spec)
 		retRules = append(retRules, cr)
 	}
 	if r.Specs != nil {
 		for _, rule := range r.Specs {
 			if err := rule.Sanitize(); err != nil {
 				return nil, NewErrParse(fmt.Sprintf("Invalid CiliumNetworkPolicy specs: %s", err))
-
 			}
-			cr := k8sCiliumUtils.ParseToCiliumRule(namespace, name, uid, rule)
+			if rule.NodeSelector.LabelSelector != nil {
+				return nil, NewErrParse("Invalid CiliumNetworkPolicy spec: rule cannot have NodeSelector")
+			}
+			cr := k8sCiliumUtils.ParseToCiliumRule(logger, clusterName, namespace, name, uid, rule)
 			retRules = append(retRules, cr)
 		}
 	}
@@ -238,24 +234,6 @@ func (r *CiliumNetworkPolicy) GetIdentityLabels() labels.LabelArray {
 	return k8sCiliumUtils.GetPolicyLabels(namespace, name, uid, derivedFrom)
 }
 
-// RequiresDerivative return true if the CNP has any rule that will create a new
-// derivative rule.
-func (r *CiliumNetworkPolicy) RequiresDerivative() bool {
-	if r.Spec != nil {
-		if r.Spec.RequiresDerivative() {
-			return true
-		}
-	}
-	if r.Specs != nil {
-		for _, rule := range r.Specs {
-			if rule.RequiresDerivative() {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +k8s:openapi-gen=false
 // +deepequal-gen=false
@@ -277,16 +255,18 @@ const (
 
 type NetworkPolicyCondition struct {
 	// The type of the policy condition
+	// +kubebuilder:validation:Required
 	Type PolicyConditionType `json:"type"`
 	// The status of the condition, one of True, False, or Unknown
+	// +kubebuilder:validation:Required
 	Status v1.ConditionStatus `json:"status"`
 	// The last time the condition transitioned from one status to another.
-	// +optional
+	// +kubebuilder:validation:Optional
 	LastTransitionTime slimv1.Time `json:"lastTransitionTime,omitempty"`
 	// The reason for the condition's last transition.
-	// +optional
+	// +kubebuilder:validation:Optional
 	Reason string `json:"reason,omitempty"`
 	// A human readable message indicating details about the transition.
-	// +optional
+	// +kubebuilder:validation:Optional
 	Message string `json:"message,omitempty"`
 }

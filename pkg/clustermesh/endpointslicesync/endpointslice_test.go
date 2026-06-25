@@ -5,32 +5,34 @@ package endpointslicesync
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/hivetest"
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	discovery "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	cache "k8s.io/client-go/tools/cache"
-	mcsapiv1alpha1 "sigs.k8s.io/mcs-api/pkg/apis/v1alpha1"
+	"k8s.io/client-go/tools/cache"
+	mcsapiv1beta1 "sigs.k8s.io/mcs-api/pkg/apis/v1beta1"
 
 	"github.com/cilium/cilium/operator/k8s"
 	"github.com/cilium/cilium/pkg/annotation"
 	"github.com/cilium/cilium/pkg/clustermesh/common"
+	"github.com/cilium/cilium/pkg/clustermesh/store"
 	"github.com/cilium/cilium/pkg/hive"
+	agentk8s "github.com/cilium/cilium/pkg/k8s"
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
+	k8sFakeClient "github.com/cilium/cilium/pkg/k8s/client/testutils"
 	"github.com/cilium/cilium/pkg/k8s/resource"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	"github.com/cilium/cilium/pkg/k8s/utils"
 	"github.com/cilium/cilium/pkg/loadbalancer"
-	"github.com/cilium/cilium/pkg/metrics/metric"
-	"github.com/cilium/cilium/pkg/service/store"
+	"github.com/cilium/cilium/pkg/testutils"
 )
 
 const (
@@ -79,54 +81,68 @@ func createGlobalService(
 	return clusterSvc
 }
 
-func getEndpointSlice(clientset k8sClient.Clientset, svcName string) (*discovery.EndpointSliceList, error) {
+func getEndpointSlice(ctx context.Context, clientset k8sClient.Clientset, svcName string) (*discovery.EndpointSliceList, error) {
 	labelSelector := metav1.LabelSelector{MatchLabels: map[string]string{
 		discovery.LabelServiceName: svcName,
 		discovery.LabelManagedBy:   utils.EndpointSliceMeshControllerName,
 	}}
 	return clientset.DiscoveryV1().EndpointSlices(svcName).
-		List(context.Background(), metav1.ListOptions{LabelSelector: metav1.FormatLabelSelector(&labelSelector)})
+		List(ctx, metav1.ListOptions{LabelSelector: metav1.FormatLabelSelector(&labelSelector)})
+}
+
+func TestMain(m *testing.M) {
+	testutils.GoleakVerifyTestMain(m)
 }
 
 func Test_meshEndpointSlice_Reconcile(t *testing.T) {
-	var fakeClient k8sClient.FakeClientset
+	var fakeClient *k8sFakeClient.FakeClientset
 	var services resource.Resource[*slim_corev1.Service]
-	logger := logrus.New()
+	logger := hivetest.Logger(t)
 	hive := hive.New(
-		k8sClient.FakeClientCell,
+		k8sFakeClient.FakeClientCell(),
+		cell.Provide(agentk8s.ServiceResource),
 		k8s.ResourcesCell,
 		cell.Invoke(func(
-			c *k8sClient.FakeClientset,
+			c *k8sFakeClient.FakeClientset,
 			svc resource.Resource[*slim_corev1.Service],
 		) error {
-			fakeClient = *c
+			fakeClient = c
 			services = svc
 			return nil
 		}),
 	)
 	tlog := hivetest.Logger(t)
-	err := hive.Start(tlog, context.Background())
+	err := hive.Start(tlog, t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer hive.Stop(tlog, context.Background())
 
-	globalService := common.NewGlobalServiceCache(metric.NewGauge(metric.GaugeOpts{}))
+	var wg sync.WaitGroup
+	ctx, cancel := context.WithCancel(t.Context())
+
+	globalService := common.NewGlobalServiceCache(hivetest.Logger(t))
 	podInformer := newMeshPodInformer(logger, globalService)
 	nodeInformer := newMeshNodeInformer(logger)
 	controller, serviceInformer, endpointsliceInformer := newEndpointSliceMeshController(
-		context.Background(), logger,
+		ctx, logger,
 		EndpointSliceSyncConfig{ClusterMeshMaxEndpointsPerSlice: 100},
-		podInformer, nodeInformer, &fakeClient, services, globalService,
+		podInformer, nodeInformer, fakeClient, services, globalService,
 	)
-	endpointsliceInformer.Start(context.Background().Done())
-	go serviceInformer.Start(context.Background())
-	cache.WaitForCacheSync(context.Background().Done(), serviceInformer.HasSynced)
+	endpointsliceInformer.Start(ctx.Done())
+	wg.Go(func() { serviceInformer.Start(ctx) })
+	cache.WaitForCacheSync(ctx.Done(), serviceInformer.HasSynced)
 
-	go controller.Run(context.Background(), 1)
+	wg.Go(func() { controller.Run(ctx, 1) })
 	nodeInformer.onClusterAdd(remoteClusterName)
 
-	svcStore, _ := services.Store(context.Background())
+	svcStore, _ := services.Store(ctx)
+
+	defer func() {
+		cancel()
+		endpointsliceInformer.Shutdown()
+		wg.Wait()
+	}()
 
 	tick := 10 * time.Millisecond
 	timeout := 200 * time.Millisecond
@@ -143,16 +159,16 @@ func Test_meshEndpointSlice_Reconcile(t *testing.T) {
 
 		var epList *discovery.EndpointSliceList
 		require.EventuallyWithT(t, func(c *assert.CollectT) {
-			epList, err = getEndpointSlice(&fakeClient, svcName)
+			epList, err = getEndpointSlice(ctx, fakeClient, svcName)
 			assert.NoError(c, err)
 			assert.Len(c, epList.Items, 1)
 		}, timeout, tick, "endpointslice is not reconciled correctly")
 
 		require.Equal(t, map[string]string{
-			discovery.LabelServiceName:        svcName,
-			discovery.LabelManagedBy:          utils.EndpointSliceMeshControllerName,
-			mcsapiv1alpha1.LabelSourceCluster: remoteClusterName,
-			corev1.IsHeadlessService:          "",
+			discovery.LabelServiceName:       svcName,
+			discovery.LabelManagedBy:         utils.EndpointSliceMeshControllerName,
+			mcsapiv1beta1.LabelSourceCluster: remoteClusterName,
+			corev1.IsHeadlessService:         "",
 		}, epList.Items[0].Labels)
 		require.Len(t, epList.Items[0].Endpoints, 1)
 
@@ -174,16 +190,16 @@ func Test_meshEndpointSlice_Reconcile(t *testing.T) {
 
 		var epList *discovery.EndpointSliceList
 		require.EventuallyWithT(t, func(c *assert.CollectT) {
-			epList, err = getEndpointSlice(&fakeClient, svcName)
+			epList, err = getEndpointSlice(ctx, fakeClient, svcName)
 			assert.NoError(c, err)
 			assert.Len(c, epList.Items, 1)
 		}, timeout, tick, "endpointslice is not reconciled correctly")
 
 		require.Equal(t, map[string]string{
-			discovery.LabelServiceName:        svcName,
-			discovery.LabelManagedBy:          utils.EndpointSliceMeshControllerName,
-			mcsapiv1alpha1.LabelSourceCluster: remoteClusterName,
-			corev1.IsHeadlessService:          "",
+			discovery.LabelServiceName:       svcName,
+			discovery.LabelManagedBy:         utils.EndpointSliceMeshControllerName,
+			mcsapiv1beta1.LabelSourceCluster: remoteClusterName,
+			corev1.IsHeadlessService:         "",
 		}, epList.Items[0].Labels)
 	})
 
@@ -197,7 +213,7 @@ func Test_meshEndpointSlice_Reconcile(t *testing.T) {
 		createGlobalService(globalService, podInformer, svcName, nil)
 
 		require.EventuallyWithT(t, func(c *assert.CollectT) {
-			epList, err := getEndpointSlice(&fakeClient, svcName)
+			epList, err := getEndpointSlice(ctx, fakeClient, svcName)
 			assert.NoError(c, err)
 			assert.Len(c, epList.Items, 1)
 		}, timeout, tick, "endpointslice is not reconciled correctly")
@@ -213,7 +229,7 @@ func Test_meshEndpointSlice_Reconcile(t *testing.T) {
 		var epList *discovery.EndpointSliceList
 		require.EventuallyWithT(t, func(c *assert.CollectT) {
 			// Make sure that we have 1 endpointslice
-			epList, err = getEndpointSlice(&fakeClient, svcName)
+			epList, err = getEndpointSlice(ctx, fakeClient, svcName)
 			assert.NoError(c, err)
 			assert.Len(c, epList.Items, 1)
 		}, timeout, tick, "endpointslice is not reconciled correctly")
@@ -223,9 +239,9 @@ func Test_meshEndpointSlice_Reconcile(t *testing.T) {
 		serviceInformer.refreshAllCluster(svc1)
 
 		require.EventuallyWithT(t, func(c *assert.CollectT) {
-			epList, err := getEndpointSlice(&fakeClient, svcName)
+			epList, err := getEndpointSlice(ctx, fakeClient, svcName)
 			assert.NoError(c, err)
-			assert.Len(c, epList.Items, 0)
+			assert.Empty(c, epList.Items)
 		}, timeout, tick, "endpointslice is not reconciled correctly")
 	})
 
@@ -239,7 +255,7 @@ func Test_meshEndpointSlice_Reconcile(t *testing.T) {
 		var epList *discovery.EndpointSliceList
 		require.EventuallyWithT(t, func(c *assert.CollectT) {
 			// Make sure that we have 1 endpointslice
-			epList, err = getEndpointSlice(&fakeClient, svcName)
+			epList, err = getEndpointSlice(ctx, fakeClient, svcName)
 			assert.NoError(c, err)
 			assert.Len(c, epList.Items, 1)
 		}, timeout, tick, "endpointslice is not reconciled correctly")
@@ -249,9 +265,9 @@ func Test_meshEndpointSlice_Reconcile(t *testing.T) {
 		podInformer.onClusterServiceDelete(clusterSvc)
 
 		require.EventuallyWithT(t, func(c *assert.CollectT) {
-			epList, err := getEndpointSlice(&fakeClient, svcName)
+			epList, err := getEndpointSlice(ctx, fakeClient, svcName)
 			assert.NoError(c, err)
-			assert.Len(c, epList.Items, 0)
+			assert.Empty(c, epList.Items)
 		}, timeout, tick, "endpointslice is not reconciled correctly")
 	})
 }

@@ -5,6 +5,30 @@
 
 package v2
 
+// CiliumBGPAdvertisementListerExpansion allows custom methods to be added to
+// CiliumBGPAdvertisementLister.
+type CiliumBGPAdvertisementListerExpansion interface{}
+
+// CiliumBGPClusterConfigListerExpansion allows custom methods to be added to
+// CiliumBGPClusterConfigLister.
+type CiliumBGPClusterConfigListerExpansion interface{}
+
+// CiliumBGPNodeConfigListerExpansion allows custom methods to be added to
+// CiliumBGPNodeConfigLister.
+type CiliumBGPNodeConfigListerExpansion interface{}
+
+// CiliumBGPNodeConfigOverrideListerExpansion allows custom methods to be added to
+// CiliumBGPNodeConfigOverrideLister.
+type CiliumBGPNodeConfigOverrideListerExpansion interface{}
+
+// CiliumBGPPeerConfigListerExpansion allows custom methods to be added to
+// CiliumBGPPeerConfigLister.
+type CiliumBGPPeerConfigListerExpansion interface{}
+
+// CiliumCIDRGroupListerExpansion allows custom methods to be added to
+// CiliumCIDRGroupLister.
+type CiliumCIDRGroupListerExpansion interface{}
+
 // CiliumClusterwideEnvoyConfigListerExpansion allows custom methods to be added to
 // CiliumClusterwideEnvoyConfigLister.
 type CiliumClusterwideEnvoyConfigListerExpansion interface{}
@@ -33,13 +57,13 @@ type CiliumEnvoyConfigListerExpansion interface{}
 // CiliumEnvoyConfigNamespaceLister.
 type CiliumEnvoyConfigNamespaceListerExpansion interface{}
 
-// CiliumExternalWorkloadListerExpansion allows custom methods to be added to
-// CiliumExternalWorkloadLister.
-type CiliumExternalWorkloadListerExpansion interface{}
-
 // CiliumIdentityListerExpansion allows custom methods to be added to
 // CiliumIdentityLister.
 type CiliumIdentityListerExpansion interface{}
+
+// CiliumLoadBalancerIPPoolListerExpansion allows custom methods to be added to
+// CiliumLoadBalancerIPPoolLister.
+type CiliumLoadBalancerIPPoolListerExpansion interface{}
 
 // CiliumLocalRedirectPolicyListerExpansion allows custom methods to be added to
 // CiliumLocalRedirectPolicyLister.
@@ -68,3 +92,7 @@ type CiliumNodeConfigListerExpansion interface{}
 // CiliumNodeConfigNamespaceListerExpansion allows custom methods to be added to
 // CiliumNodeConfigNamespaceLister.
 type CiliumNodeConfigNamespaceListerExpansion interface{}
+
+// CiliumPodIPPoolListerExpansion allows custom methods to be added to
+// CiliumPodIPPoolLister.
+type CiliumPodIPPoolListerExpansion interface{}

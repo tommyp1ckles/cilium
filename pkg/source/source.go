@@ -3,6 +3,12 @@
 
 package source
 
+import (
+	"sync"
+
+	"github.com/cilium/hive/cell"
+)
+
 // Source describes the source of a definition
 type Source string
 
@@ -52,61 +58,60 @@ const (
 	// Directory is the source used for watching and reading
 	// cilium network policy files from specific directory.
 	Directory Source = "directory"
+
+	// Please remember to add your source to defaultSources below.
 )
+
+// Sources is a priority-sorted slice of sources.
+type Sources []Source
+
+// The ordering in defaultSources is critical and it should only be changed
+// with care because as it determines the behavior of AllowOverwrite().
+// It is from highest precedence to lowest precedence.
+var defaultSources Sources = []Source{
+	KubeAPIServer,
+	Local,
+	KVStore,
+	CustomResource,
+	Kubernetes,
+	ClusterMesh,
+	Directory,
+	LocalAPI,
+	Generated,
+	Restored,
+	Unspec,
+}
+
+var getSourcePriorities = sync.OnceValue(func() map[Source]int {
+	m := make(map[Source]int, len(defaultSources))
+	for i, src := range defaultSources {
+		m[src] = i
+	}
+	return m
+})
 
 // AllowOverwrite returns true if new state from a particular source is allowed
 // to overwrite existing state from another source
-func AllowOverwrite(existing, new Source) bool {
-	switch existing {
-
-	// KubeAPIServer state can only be overwritten by other kube-apiserver
-	// state.
-	case KubeAPIServer:
-		return new == KubeAPIServer
-
-	// Local state can only be overwritten by other local state or
-	// kube-apiserver state.
-	case Local:
-		return new == Local || new == KubeAPIServer
-
-	// KVStore can be overwritten by other kvstore, local state, or
-	// kube-apiserver state.
-	case KVStore:
-		return new == KVStore || new == Local || new == KubeAPIServer
-
-	// Custom-resource state can be overwritten by other CRD, kvstore,
-	// local or kube-apiserver state.
-	case CustomResource:
-		return new == CustomResource || new == KVStore || new == Local || new == KubeAPIServer
-
-	// Kubernetes state can be overwritten by everything except clustermesh,
-	// local API, generated, restored and unspecified state.
-	case Kubernetes:
-		return new != ClusterMesh && new != LocalAPI && new != Generated && new != Restored && new != Unspec
-
-	// ClusterMesh state can be overwritten by everything except local API,
-	// generated, restored and unspecified state.
-	case ClusterMesh:
-		return new != LocalAPI && new != Generated && new != Restored && new != Unspec
-
-	// Local API state can be overwritten by everything except restored,
-	// generated and unspecified state
-	case LocalAPI:
-		return new != Generated && new != Restored && new != Unspec
-
-	// Generated can be overwritten by everything except by Restored and
-	// Unspecified
-	case Generated:
-		return new != Restored && new != Unspec
-
-	// Restored can be overwritten by everything except by Unspecified
-	case Restored:
-		return new != Unspec
-
-	// Unspecified state can be overwritten by everything
-	case Unspec:
-		return true
+func AllowOverwrite(existing, next Source) bool {
+	priorities := getSourcePriorities()
+	pNext, ok := priorities[next]
+	if !ok {
+		pNext = len(defaultSources)
 	}
+	pExisting, ok := priorities[existing]
+	if !ok {
+		pExisting = len(defaultSources)
+	}
+	return pNext <= pExisting
+}
 
-	return true
+var Cell = cell.Module(
+	"source",
+	"Definitions and priorities of data sources",
+	cell.Provide(NewSources),
+)
+
+// NewSources returns sources ordered from the most preferred.
+func NewSources() Sources {
+	return defaultSources
 }

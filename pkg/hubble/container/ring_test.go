@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"reflect"
 	"sync"
 	"testing"
 
@@ -18,19 +17,19 @@ import (
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/goleak"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	flowpb "github.com/cilium/cilium/api/v1/flow"
 	v1 "github.com/cilium/cilium/pkg/hubble/api/v1"
+	"github.com/cilium/cilium/pkg/testutils"
 )
 
 func BenchmarkRingWrite(b *testing.B) {
 	entry := &v1.Event{}
 	s := NewRing(capacity(b.N))
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		s.Write(entry)
 	}
 }
@@ -40,12 +39,12 @@ func BenchmarkRingRead(b *testing.B) {
 	s := NewRing(capacity(b.N))
 	a := make([]*v1.Event, b.N)
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		s.Write(entry)
 	}
-	b.ResetTimer()
+
 	lastWriteIdx := s.LastWriteParallel()
-	for i := 0; i < b.N; i++ {
+	for i := 0; b.Loop(); i++ {
 		a[i], _ = s.read(lastWriteIdx)
 		lastWriteIdx--
 	}
@@ -57,7 +56,7 @@ func BenchmarkTimeLibListRead(b *testing.B) {
 	a := make([]*v1.Event, b.N)
 	i := 0
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		s.PushFront(entry)
 	}
 	b.ResetTimer()
@@ -72,12 +71,12 @@ func BenchmarkTimeLibRingRead(b *testing.B) {
 	a := make([]*v1.Event, b.N)
 	i := 0
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		s.Value = entry
 		s.Next()
 	}
-	s.Do(func(e interface{}) {
+	s.Do(func(e any) {
 		a[i], _ = e.(*v1.Event)
 		i++
 	})
@@ -126,7 +125,7 @@ func TestNewCapacity(t *testing.T) {
 		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
 			c, err := NewCapacity(n)
 			assert.Nil(t, c)
-			assert.NotNil(t, err)
+			assert.Error(t, err)
 		})
 	}
 }
@@ -140,7 +139,7 @@ func TestNewRing(t *testing.T) {
 			assert.Equal(t, uint64(0), r.Len())
 			assert.Equal(t, uint64(n), r.Cap())
 			// fill half the buffer
-			for j := 0; j < n/2; j++ {
+			for range n / 2 {
 				r.Write(&v1.Event{})
 			}
 			assert.Equal(t, uint64(n/2), r.Len())
@@ -152,7 +151,7 @@ func TestNewRing(t *testing.T) {
 			assert.Equal(t, uint64(n), r.Len())
 			assert.Equal(t, uint64(n), r.Cap())
 			// write more events
-			for j := 0; j < n; j++ {
+			for range n {
 				r.Write(&v1.Event{})
 			}
 			assert.Equal(t, uint64(n), r.Len())
@@ -397,9 +396,7 @@ func TestRing_Read(t *testing.T) {
 					t.Errorf("LostEvent mismatch (-want +got):\n%s", diff)
 				}
 			} else {
-				if !reflect.DeepEqual(got, tt.want) {
-					t.Errorf("Ring.read() got = %v, want %v", got, tt.want)
-				}
+				assert.Equal(t, tt.want, got)
 			}
 			if !errors.Is(got1, tt.wantErr) {
 				t.Errorf("Ring.read() got1 = %v, want %v", got1, tt.wantErr)
@@ -489,7 +486,7 @@ func TestRing_Write(t *testing.T) {
 				data: tt.want.data,
 			}
 			want.write.Store(tt.want.write)
-			reflect.DeepEqual(want, r)
+			assert.Equal(t, want, r)
 		})
 	}
 }
@@ -711,12 +708,11 @@ func TestRingFunctionalitySerialized(t *testing.T) {
 }
 
 func TestRing_ReadFrom_Test_1(t *testing.T) {
-	defer goleak.VerifyNone(
+	defer testutils.GoleakVerifyNone(
 		t,
-		// ignore goroutines started by the redirect we do from klog to logrus
-		goleak.IgnoreTopFunction("k8s.io/klog.(*loggingT).flushDaemon"),
-		goleak.IgnoreTopFunction("k8s.io/klog/v2.(*loggingT).flushDaemon"),
-		goleak.IgnoreTopFunction("io.(*pipe).read"))
+		testutils.GoleakIgnoreTopFunction("k8s.io/klog.(*loggingT).flushDaemon"),
+		testutils.GoleakIgnoreTopFunction("k8s.io/klog/v2.(*loggingT).flushDaemon"),
+		testutils.GoleakIgnoreTopFunction("io.(*pipe).read"))
 	r := NewRing(Capacity15)
 	if len(r.data) != 0x10 {
 		t.Errorf("r.data should have a length of 0x10. Got %x", len(r.data))
@@ -733,7 +729,7 @@ func TestRing_ReadFrom_Test_1(t *testing.T) {
 	}
 
 	// Add 5 events
-	for i := uint64(0); i < 5; i++ {
+	for i := range uint64(5) {
 		r.Write(&v1.Event{Timestamp: &timestamppb.Timestamp{Seconds: int64(i)}})
 		lastWrite = r.LastWrite()
 		if lastWrite != i {
@@ -741,14 +737,12 @@ func TestRing_ReadFrom_Test_1(t *testing.T) {
 		}
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	ch := make(chan *v1.Event, 30)
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
+	wg.Go(func() {
 		r.readFrom(ctx, 0, ch)
-		wg.Done()
-	}()
+	})
 	i := int64(0)
 	for entry := range ch {
 		require.NotNil(t, entry)
@@ -772,12 +766,11 @@ func TestRing_ReadFrom_Test_1(t *testing.T) {
 }
 
 func TestRing_ReadFrom_Test_2(t *testing.T) {
-	defer goleak.VerifyNone(
+	defer testutils.GoleakVerifyNone(
 		t,
-		// ignore goroutines started by the redirect we do from klog to logrus
-		goleak.IgnoreTopFunction("k8s.io/klog.(*loggingT).flushDaemon"),
-		goleak.IgnoreTopFunction("k8s.io/klog/v2.(*loggingT).flushDaemon"),
-		goleak.IgnoreTopFunction("io.(*pipe).read"))
+		testutils.GoleakIgnoreTopFunction("k8s.io/klog.(*loggingT).flushDaemon"),
+		testutils.GoleakIgnoreTopFunction("k8s.io/klog/v2.(*loggingT).flushDaemon"),
+		testutils.GoleakIgnoreTopFunction("io.(*pipe).read"))
 
 	r := NewRing(Capacity15)
 	if len(r.data) != 0x10 {
@@ -795,7 +788,7 @@ func TestRing_ReadFrom_Test_2(t *testing.T) {
 	}
 
 	// Add 20 events
-	for i := uint64(0); i < 20; i++ {
+	for i := range uint64(20) {
 		r.Write(&v1.Event{Timestamp: &timestamppb.Timestamp{Seconds: int64(i)}})
 		lastWrite = r.LastWrite()
 		if lastWrite != i {
@@ -803,16 +796,14 @@ func TestRing_ReadFrom_Test_2(t *testing.T) {
 		}
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	// We should be able to read from a previous 'cycles' and ReadFrom will
 	// be able to catch up with the writer.
 	ch := make(chan *v1.Event, 30)
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		r.readFrom(ctx, 1, ch)
-	}()
+	})
 	i := int64(1) // ReadFrom
 	for event := range ch {
 		require.NotNil(t, event)
@@ -854,7 +845,7 @@ func TestRing_ReadFrom_Test_2(t *testing.T) {
 	}
 
 	// Add 20 more events that we read back immediately
-	for i := uint64(0); i < 20; i++ {
+	for i := range uint64(20) {
 		r.Write(&v1.Event{Timestamp: &timestamppb.Timestamp{Seconds: int64(20 + i)}})
 
 		want := &timestamppb.Timestamp{Seconds: int64(20 + (i - 1))}
@@ -871,12 +862,11 @@ func TestRing_ReadFrom_Test_2(t *testing.T) {
 }
 
 func TestRing_ReadFrom_Test_3(t *testing.T) {
-	defer goleak.VerifyNone(
+	defer testutils.GoleakVerifyNone(
 		t,
-		// ignore goroutines started by the redirect we do from klog to logrus
-		goleak.IgnoreTopFunction("k8s.io/klog.(*loggingT).flushDaemon"),
-		goleak.IgnoreTopFunction("k8s.io/klog/v2.(*loggingT).flushDaemon"),
-		goleak.IgnoreTopFunction("io.(*pipe).read"))
+		testutils.GoleakIgnoreTopFunction("k8s.io/klog.(*loggingT).flushDaemon"),
+		testutils.GoleakIgnoreTopFunction("k8s.io/klog/v2.(*loggingT).flushDaemon"),
+		testutils.GoleakIgnoreTopFunction("io.(*pipe).read"))
 	r := NewRing(Capacity15)
 	if len(r.data) != 0x10 {
 		t.Errorf("r.data should have a length of 0x10. Got %x", len(r.data))
@@ -893,7 +883,7 @@ func TestRing_ReadFrom_Test_3(t *testing.T) {
 	}
 
 	// Add 20 events
-	for i := uint64(0); i < 20; i++ {
+	for i := range uint64(20) {
 		r.Write(&v1.Event{Timestamp: &timestamppb.Timestamp{Seconds: int64(i)}})
 		lastWrite = r.LastWrite()
 		if lastWrite != i {
@@ -901,16 +891,14 @@ func TestRing_ReadFrom_Test_3(t *testing.T) {
 		}
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	// We should be able to read from a previous 'cycles' and ReadFrom will
 	// be able to catch up with the writer.
 	ch := make(chan *v1.Event, 30)
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
+	wg.Go(func() {
 		r.readFrom(ctx, ^uint64(0)-15, ch)
-		wg.Done()
-	}()
+	})
 	i := ^uint64(0) - 15
 	for entry := range ch {
 		require.NotNil(t, entry)
@@ -952,7 +940,7 @@ func TestRing_ReadFrom_Test_3(t *testing.T) {
 	}
 
 	// Add 20 more events that we read back immediately
-	for i := uint64(0); i < 20; i++ {
+	for i := range uint64(20) {
 		r.Write(&v1.Event{Timestamp: &timestamppb.Timestamp{Seconds: int64(20 + i)}})
 
 		want := &timestamppb.Timestamp{Seconds: int64(20 + (i - 1))}

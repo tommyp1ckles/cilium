@@ -10,24 +10,28 @@ import (
 	"github.com/vishvananda/netlink"
 
 	"github.com/cilium/cilium/pkg/datapath/linux/linux_defaults"
-	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/datapath/linux/safenetlink"
 	"github.com/cilium/cilium/pkg/time"
 
+	"k8s.io/utils/clock"
 	baseclocktest "k8s.io/utils/clock/testing"
 )
 
-func TestXfrmStateListCache(t *testing.T) {
-	setupIPSecSuitePrivileged(t)
+func newTestableXfrmStateListCache(ttl time.Duration, enableCaching bool, clock clock.PassiveClock) *xfrmStateListCache {
+	return &xfrmStateListCache{
+		ttl:           ttl,
+		enableCaching: enableCaching,
+		clock:         clock,
+	}
+}
 
-	backupOption := option.Config.EnableIPSecXfrmStateCaching
-	defer func() {
-		option.Config.EnableIPSecXfrmStateCaching = backupOption
-	}()
-	option.Config.EnableIPSecXfrmStateCaching = true
+func TestPrivilegedXfrmStateListCache(t *testing.T) {
+	setup(t, "ipv4")
 
 	fakeClock := baseclocktest.NewFakeClock(time.Now())
 	xfrmStateCache := newTestableXfrmStateListCache(
 		time.Second,
+		true,
 		fakeClock,
 	)
 
@@ -62,7 +66,7 @@ func TestXfrmStateListCache(t *testing.T) {
 	require.True(t, xfrmStateCache.isExpired(), "Cache should be expired after timeout")
 	stateList, err = xfrmStateCache.XfrmStateList()
 	require.NoError(t, err)
-	require.Len(t, stateList, 0)
+	require.Empty(t, stateList)
 
 	// Create new xfrm state and check that cache is atomatically updated
 	require.True(t, xfrmStateCache.isExpired(), "Cache should be expired when list is empty")
@@ -93,20 +97,15 @@ func TestXfrmStateListCache(t *testing.T) {
 	require.True(t, xfrmStateCache.isExpired(), "Cache should be expired after deleting state")
 	stateList, err = xfrmStateCache.XfrmStateList()
 	require.NoError(t, err)
-	require.Len(t, stateList, 0)
+	require.Empty(t, stateList)
 }
 
-func TestXfrmStateListCacheDisabled(t *testing.T) {
-	setupIPSecSuitePrivileged(t)
-
-	backupOption := option.Config.EnableIPSecXfrmStateCaching
-	defer func() {
-		option.Config.EnableIPSecXfrmStateCaching = backupOption
-	}()
-	option.Config.EnableIPSecXfrmStateCaching = false
+func TestPrivilegedXfrmStateListCacheDisabled(t *testing.T) {
+	setup(t, "ipv4")
 
 	xfrmStateCache := newTestableXfrmStateListCache(
 		time.Second,
+		false,
 		baseclocktest.NewFakeClock(time.Now()),
 	)
 
@@ -125,7 +124,7 @@ func TestXfrmStateListCacheDisabled(t *testing.T) {
 }
 
 func cleanIPSecStatesAndPolicies(t *testing.T) {
-	xfrmStateList, err := netlink.XfrmStateList(netlink.FAMILY_ALL)
+	xfrmStateList, err := safenetlink.XfrmStateList(netlink.FAMILY_ALL)
 	if err != nil {
 		t.Fatalf("Can't list XFRM states: %v", err)
 	}
@@ -137,7 +136,7 @@ func cleanIPSecStatesAndPolicies(t *testing.T) {
 
 	}
 
-	xfrmPolicyList, err := netlink.XfrmPolicyList(netlink.FAMILY_ALL)
+	xfrmPolicyList, err := safenetlink.XfrmPolicyList(netlink.FAMILY_ALL)
 	if err != nil {
 		t.Fatalf("Can't list XFRM policies: %v", err)
 	}

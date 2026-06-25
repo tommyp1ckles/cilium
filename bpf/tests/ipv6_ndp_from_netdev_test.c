@@ -1,258 +1,463 @@
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 /* Copyright Authors of Cilium */
 
-#include "common.h"
 #include <bpf/ctx/skb.h>
+#include "common.h"
 #include "pktgen.h"
-#define ROUTER_IP
-#define HOST_IP
-#undef ROUTER_IP
-#undef HOST_IP
 
 #define ENABLE_IPV4
 #define ENABLE_IPV6
-#define SECCTX_FROM_IPCACHE 1
 
-#include "bpf_host.c"
+#include "lib/bpf_host.h"
 
 #include "lib/ipcache.h"
 #include "lib/endpoint.h"
 
-#define FROM_NETDEV 0
+#include "scapy.h"
 
-struct {
-	__uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-	__uint(key_size, sizeof(__u32));
-	__uint(max_entries, 1);
-	__array(values, int());
-} entry_call_map __section(".maps") = {
-	.values = {
-		[FROM_NETDEV] = &cil_from_netdev,
-	},
+ASSIGN_CONFIG(union macaddr, interface_mac, {.addr = mac_two_addr})
+
+/* packet defined in ./scapy/ipv6_ndp_pkt_defs.py */
+const __u8 v6_ndp_pod_ns_llopt[] = {
+	SCAPY_BUF_BYTES(v6_ndp_pod_ns_llopt)
 };
 
-PKTGEN("tc", "01_ipv6_from_netdev_ns_for_pod")
-int ipv6_from_netdev_ns_for_pod_pktgen(struct __ctx_buff *ctx)
+/* packet defined in ./scapy/ipv6_ndp_pkt_defs.py */
+const __u8 v6_ndp_pod_ns[] = {
+	SCAPY_BUF_BYTES(v6_ndp_pod_ns)
+};
+
+/* packet defined in ./scapy/ipv6_ndp_pkt_defs.py */
+const __u8 v6_ndp_pod_na_llopt[] = {
+	SCAPY_BUF_BYTES(v6_ndp_pod_na_llopt)
+};
+
+/* packet defined in ./scapy/ipv6_ndp_pkt_defs.py */
+const __u8 v6_ndp_pod_ns_mcast_llopt[] = {
+	SCAPY_BUF_BYTES(v6_ndp_pod_ns_mcast_llopt)
+};
+
+/* packet defined in ./scapy/ipv6_ndp_pkt_defs.py */
+const __u8 v6_ndp_pod_ns_mcast[] = {
+	SCAPY_BUF_BYTES(v6_ndp_pod_ns_mcast)
+};
+
+/* packet defined in ./scapy/ipv6_ndp_pkt_defs.py */
+const __u8 v6_ndp_node_ns_llopt[] = {
+	SCAPY_BUF_BYTES(v6_ndp_node_ns_llopt)
+};
+
+/* packet defined in ./scapy/ipv6_ndp_pkt_defs.py */
+const __u8 v6_ndp_node_ns[] = {
+	SCAPY_BUF_BYTES(v6_ndp_node_ns)
+};
+
+/* packet defined in ./scapy/ipv6_ndp_pkt_defs.py */
+const __u8 v6_ndp_node_ns_mcast_llopt[] = {
+	SCAPY_BUF_BYTES(v6_ndp_node_ns_mcast_llopt)
+};
+
+/* packet defined in ./scapy/ipv6_ndp_pkt_defs.py */
+const __u8 v6_ndp_node_ns_mcast[] = {
+	SCAPY_BUF_BYTES(v6_ndp_node_ns_mcast)
+};
+
+struct test_args {
+	__u32 status_code; /* Only used in generic _check */
+
+	__u8 mac_src[ETH_ALEN];
+	__u8 mac_dst[ETH_ALEN];
+
+	union v6addr ip_src;
+	union v6addr ip_dst;
+
+	__u8 icmp_type; /* Only used in generic _check */
+	union v6addr icmp_ns_addr;
+	bool llsrc_opt;
+	struct {
+		__u8 type;
+		__u8 length;
+		__u8 llsrc_mac[ETH_ALEN];
+	} __packed icmp_opt;
+};
+
+/*
+ * Generic
+ */
+static __always_inline
+bool __check_ret_code(const struct __ctx_buff *ctx, const __u32 exp_rc)
 {
-	struct pktgen builder;
-	struct icmp6hdr *l4;
 	void *data;
+	void *data_end;
+	__u32 *status_code;
 
-	pktgen__init(&builder, ctx);
+	data = (void *)(long)ctx->data;
+	data_end = (void *)(long)ctx->data_end;
 
-	l4 = pktgen__push_ipv6_icmp6_packet(&builder,
-					    (__u8 *)mac_one, (__u8 *)mac_two,
-					    (__u8 *)v6_pod_one, (__u8 *)v6_pod_two,
-					    ICMP6_NS_MSG_TYPE);
-	if (!l4)
-		return TEST_ERROR;
+	if (data + sizeof(*status_code) > data_end)
+		return false;
 
-	data = pktgen__push_data(&builder, (__u8 *)v6_pod_three, 16);
-	if (!data)
-		return TEST_ERROR;
-
-	__u8 options[] = {0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1};
-
-	data = pktgen__push_data(&builder, (__u8 *)options, 8);
-
-	pktgen__finish(&builder);
-	return 0;
+	status_code = data;
+	return *status_code == exp_rc;
 }
 
-SETUP("tc", "01_ipv6_from_netdev_ns_for_pod")
-int ipv6_from_netdev_ns_for_pod_setup(struct __ctx_buff *ctx)
+/*
+ * These tests make sure that ND packets directed to a Pod IP are answered
+ * directly from BPF.
+ */
+
+static __always_inline
+int __ipv6_from_netdev_ns_pod_setup(struct __ctx_buff *ctx)
 {
 	endpoint_v6_add_entry((union v6addr *)v6_pod_three, 0, 0, 0, 0,
 			      (__u8 *)mac_three, (__u8 *)mac_two);
-	tail_call_static(ctx, entry_call_map, FROM_NETDEV);
-	return TEST_ERROR;
+
+	return netdev_receive_packet(ctx);
 }
 
-CHECK("tc", "01_ipv6_from_netdev_ns_for_pod")
-int ipv6_from_netdev_ns_for_pod_check(const struct __ctx_buff *ctx)
-{
-	void *data;
-	void *data_end;
-	__u32 *status_code;
-	struct ethhdr *l2;
-	struct ipv6hdr *l3;
-	struct icmp6hdr *l4;
-	void *payload;
-
-	test_init();
-
-	data = (void *)(long)ctx->data;
-	data_end = (void *)(long)ctx->data_end;
-
-	if (data + sizeof(*status_code) > data_end)
-		test_fatal("status code out of bounds");
-
-	status_code = data;
-	printk("status_code: %d\n", *status_code);
-	assert(*status_code == CTX_ACT_REDIRECT);
-
-	l2 = data + sizeof(*status_code);
-
-	if ((void *)l2 + sizeof(struct ethhdr) > data_end)
-		test_fatal("l2 out of bounds");
-
-	if (l2->h_proto != bpf_htons(ETH_P_IPV6))
-		test_fatal("l2 proto hasn't been set to ETH_P_IP");
-
-	union macaddr node_mac = THIS_INTERFACE_MAC;
-
-	if (memcmp(l2->h_source, (__u8 *)&node_mac.addr, ETH_ALEN) != 0)
-		test_fatal("src mac hasn't been set to node mac");
-
-	if (memcmp(l2->h_dest, (__u8 *)mac_one, ETH_ALEN) != 0)
-		test_fatal("dest mac hasn't been set to source mac");
-
-	l3 = (void *)l2 + sizeof(struct ethhdr);
-
-	if ((void *)l3 + sizeof(struct ipv6hdr) > data_end)
-		test_fatal("l3 out of bounds");
-
-	union v6addr router_ip;
-
-	BPF_V6(router_ip, ROUTER_IP);
-	if (memcmp((__u8 *)&l3->saddr, (__u8 *)&router_ip, 16) != 0)
-		test_fatal("src IP hasn't been set to router IP");
-
-	if (memcmp((__u8 *)&l3->daddr, (__u8 *)v6_pod_one, 16) != 0)
-		test_fatal("dest IP hasn't been set to source IP");
-
-	l4 = (void *)l3 + sizeof(struct ipv6hdr);
-
-	if ((void *)l4 + sizeof(struct icmp6hdr) > data_end)
-		test_fatal("l4 out of bounds");
-
-	if (l4->icmp6_type != ICMP6_NA_MSG_TYPE)
-		test_fatal("icmp6 type hasn't been set to ICMP6_NA_MSG_TYPE");
-
-	payload = (void *)l4 + sizeof(struct icmp6hdr);
-	if ((void *)payload + 24 > data_end)
-		test_fatal("payload out of bounds");
-
-	void *target = payload;
-
-	if (memcmp(target, (__u8 *)v6_pod_three, 16) != 0)
-		test_fatal("icmp6 payload target hasn't been set properly");
-
-	void *target_lladdr = payload + 16 + 2;
-
-	if (memcmp(target_lladdr, (__u8 *)&node_mac.addr, ETH_ALEN) != 0)
-		test_fatal("icmp6 payload target_lladdr hasn't been set properly");
-
-	test_finish();
-}
-
-PKTGEN("tc", "02_ipv6_from_netdev_ns_for_node_ip")
-int ipv6_from_netdev_ns_for_node_ip_pktgen(struct __ctx_buff *ctx)
+PKTGEN("tc", "011_ipv6_from_netdev_ns_pod")
+int ipv6_from_netdev_ns_pod_pktgen(struct __ctx_buff *ctx)
 {
 	struct pktgen builder;
-	struct icmp6hdr *l4;
-	void *data;
 
 	pktgen__init(&builder, ctx);
 
-	l4 = pktgen__push_ipv6_icmp6_packet(&builder,
-					    (__u8 *)mac_one, (__u8 *)mac_two,
-					    (__u8 *)v6_pod_one, (__u8 *)v6_pod_two,
-					    ICMP6_NS_MSG_TYPE);
-	if (!l4)
-		return TEST_ERROR;
-
-	union v6addr node_ip;
-
-	BPF_V6(node_ip, HOST_IP);
-	data = pktgen__push_data(&builder, (__u8 *)&node_ip, 16);
-	if (!data)
-		return TEST_ERROR;
-
-	__u8 options[] = {0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1};
-
-	data = pktgen__push_data(&builder, (__u8 *)options, 8);
+	scapy_push_data(&builder, v6_ndp_pod_ns_llopt, sizeof(v6_ndp_pod_ns_llopt));
 
 	pktgen__finish(&builder);
 	return 0;
 }
 
-SETUP("tc", "02_ipv6_from_netdev_ns_for_node_ip")
-int ipv6_from_netdev_ns_for_node_ip_setup(struct __ctx_buff *ctx)
+SETUP("tc", "011_ipv6_from_netdev_ns_pod")
+int ipv6_from_netdev_ns_pod_setup(struct __ctx_buff *ctx)
 {
-	union v6addr node_ip;
-
-	BPF_V6(node_ip, HOST_IP);
-	endpoint_v6_add_entry((union v6addr *)&node_ip, 0, 0, ENDPOINT_F_HOST, 0,
-			      (__u8 *)mac_three, (__u8 *)mac_two);
-	tail_call_static(ctx, entry_call_map, FROM_NETDEV);
-	return TEST_ERROR;
+	return __ipv6_from_netdev_ns_pod_setup(ctx);
 }
 
-CHECK("tc", "02_ipv6_from_netdev_ns_for_node_ip")
-int ipv6_from_netdev_ns_for_node_ip_check(const struct __ctx_buff *ctx)
+CHECK("tc", "011_ipv6_from_netdev_ns_pod")
+int ipv6_from_netdev_ns_pod_check(const struct __ctx_buff *ctx)
 {
-	void *data;
-	void *data_end;
-	__u32 *status_code;
-	struct ethhdr *l2;
-	struct ipv6hdr *l3;
-	struct icmp6hdr *l4;
-	void *payload;
-
 	test_init();
 
-	data = (void *)(long)ctx->data;
-	data_end = (void *)(long)ctx->data_end;
+	endpoint_v6_del_entry((union v6addr *)v6_pod_three);
 
-	if (data + sizeof(*status_code) > data_end)
-		test_fatal("status code out of bounds");
+	assert(__check_ret_code(ctx, CTX_ACT_REDIRECT));
 
-	status_code = data;
-	printk("status_code: %d\n", *status_code);
-	assert(*status_code == CTX_ACT_OK);
-
-	l2 = data + sizeof(*status_code);
-	if ((void *)l2 + sizeof(struct ethhdr) > data_end)
-		test_fatal("l2 out of bounds");
-
-	if (l2->h_proto != bpf_htons(ETH_P_IPV6))
-		test_fatal("l2 proto hasn't been set to ETH_P_IP");
-
-	if (memcmp(l2->h_source, (__u8 *)mac_one, ETH_ALEN) != 0)
-		test_fatal("src mac hasn't been set to source ep's mac");
-
-	if (memcmp(l2->h_dest, (__u8 *)mac_two, ETH_ALEN) != 0)
-		test_fatal("dest mac hasn't been set to dest ep's mac");
-
-	l3 = (void *)l2 + sizeof(struct ethhdr);
-
-	if ((void *)l3 + sizeof(struct ipv6hdr) > data_end)
-		test_fatal("l3 out of bounds");
-
-	if (memcmp((__u8 *)&l3->saddr, (__u8 *)v6_pod_one, 16) != 0)
-		test_fatal("src IP was changed");
-
-	if (memcmp((__u8 *)&l3->daddr, (__u8 *)v6_pod_two, 16) != 0)
-		test_fatal("dest IP was changed");
-
-	l4 = (void *)l3 + sizeof(struct ipv6hdr);
-
-	if ((void *)l4 + sizeof(struct icmp6hdr) > data_end)
-		test_fatal("l4 out of bounds");
-
-	if (l4->icmp6_type != ICMP6_NS_MSG_TYPE)
-		test_fatal("icmp6 type was changed");
-
-	payload = (void *)l4 + sizeof(struct icmp6hdr);
-	if ((void *)payload + 24 > data_end)
-		test_fatal("payload out of bounds");
-
-	union v6addr node_ip;
-
-	BPF_V6(node_ip, HOST_IP);
-	if (memcmp(payload, (__u8 *)&node_ip, 16) != 0)
-		test_fatal("icmp6 payload target was changed");
-
+	ASSERT_CTX_BUF_OFF("pod_na_ns_llopt_ok", "Ether", ctx, sizeof(__u32),
+			   v6_ndp_pod_na_llopt,
+			   sizeof(v6_ndp_pod_na_llopt));
 	test_finish();
+
+	return 0;
+}
+
+PKTGEN("tc", "011_ipv6_from_netdev_ns_pod_noopt")
+int ipv6_from_netdev_ns_pod_pktgen_noopt(struct __ctx_buff *ctx)
+{
+	struct pktgen builder;
+
+	pktgen__init(&builder, ctx);
+
+	scapy_push_data(&builder, v6_ndp_pod_ns, sizeof(v6_ndp_pod_ns));
+
+	pktgen__finish(&builder);
+
+	return 0;
+}
+
+SETUP("tc", "011_ipv6_from_netdev_ns_pod_noopt")
+int ipv6_from_netdev_ns_pod_setup_noopt(struct __ctx_buff *ctx)
+{
+	return __ipv6_from_netdev_ns_pod_setup(ctx);
+}
+
+CHECK("tc", "011_ipv6_from_netdev_ns_pod_noopt")
+int ipv6_from_netdev_ns_pod_check_noopt(const struct __ctx_buff *ctx)
+{
+	test_init();
+
+	endpoint_v6_del_entry((union v6addr *)v6_pod_three);
+
+	assert(__check_ret_code(ctx, CTX_ACT_REDIRECT));
+
+	/* Note we always return NA with llopt */
+	ASSERT_CTX_BUF_OFF("pod_na_ns_noopt_ok", "Ether", ctx, sizeof(__u32),
+			   v6_ndp_pod_na_llopt,
+			   sizeof(v6_ndp_pod_na_llopt));
+	test_finish();
+
+	return 0;
+}
+
+/* Bcast NS */
+
+static __always_inline
+int __ipv6_from_netdev_ns_pod_setup_mcast(struct __ctx_buff *ctx)
+{
+	endpoint_v6_add_entry((union v6addr *)v6_pod_three, 0, 0, 0, 0,
+			      (__u8 *)mac_three, (__u8 *)mac_two);
+
+	return netdev_receive_packet(ctx);
+}
+
+PKTGEN("tc", "012_ipv6_from_netdev_ns_pod_mcast")
+int ipv6_from_netdev_ns_pod_pktgen_mcast(struct __ctx_buff *ctx)
+{
+	struct pktgen builder;
+
+	pktgen__init(&builder, ctx);
+
+	scapy_push_data(&builder, v6_ndp_pod_ns_mcast_llopt,
+			sizeof(v6_ndp_pod_ns_mcast_llopt));
+
+	pktgen__finish(&builder);
+
+	return 0;
+}
+
+SETUP("tc", "012_ipv6_from_netdev_ns_pod_mcast")
+int ipv6_from_netdev_ns_pod_setup_mcast(struct __ctx_buff *ctx)
+{
+	return __ipv6_from_netdev_ns_pod_setup_mcast(ctx);
+}
+
+CHECK("tc", "012_ipv6_from_netdev_ns_pod_mcast")
+int ipv6_from_netdev_ns_pod_check_mcast(const struct __ctx_buff *ctx)
+{
+	test_init();
+
+	endpoint_v6_del_entry((union v6addr *)v6_pod_three);
+
+	assert(__check_ret_code(ctx, CTX_ACT_REDIRECT));
+
+	/* Note we always return NA with llopt */
+	ASSERT_CTX_BUF_OFF("pod_na_ns_mcast_ok", "Ether", ctx, sizeof(__u32),
+			   v6_ndp_pod_na_llopt,
+			   sizeof(v6_ndp_pod_na_llopt));
+	test_finish();
+
+	return 0;
+}
+
+PKTGEN("tc", "012_ipv6_from_netdev_ns_pod_mcast_noopt")
+int ipv6_from_netdev_ns_pod_pktgen_mcast_noopt(struct __ctx_buff *ctx)
+{
+	struct pktgen builder;
+
+	pktgen__init(&builder, ctx);
+
+	scapy_push_data(&builder, v6_ndp_pod_ns_mcast, sizeof(v6_ndp_pod_ns_mcast));
+
+	pktgen__finish(&builder);
+
+	return 0;
+}
+
+SETUP("tc", "012_ipv6_from_netdev_ns_pod_mcast_noopt")
+int ipv6_from_netdev_ns_pod_setup_mcast_noopt(struct __ctx_buff *ctx)
+{
+	return __ipv6_from_netdev_ns_pod_setup_mcast(ctx);
+}
+
+CHECK("tc", "012_ipv6_from_netdev_ns_pod_mcast_noopt")
+int ipv6_from_netdev_ns_pod_check_mcast_noopt(const struct __ctx_buff *ctx)
+{
+	test_init();
+
+	endpoint_v6_del_entry((union v6addr *)v6_pod_three);
+
+	assert(__check_ret_code(ctx, CTX_ACT_REDIRECT));
+
+	/* Note we always return NA with llopt */
+	ASSERT_CTX_BUF_OFF("pod_na_ns_mcast_noopt_ok", "Ether", ctx,
+			   sizeof(__u32),
+			   v6_ndp_pod_na_llopt,
+			   sizeof(v6_ndp_pod_na_llopt));
+	test_finish();
+
+	return 0;
+}
+
+/*
+ * These tests make sure that ND packets directed to the node IP make it
+ * to the stack unmodified
+ */
+
+/* "Targeted" NS */
+static __always_inline
+int __ipv6_from_netdev_ns_node_ip_setup(struct __ctx_buff *ctx)
+{
+	endpoint_v6_add_entry((union v6addr *)v6_node_one, 0, 0, ENDPOINT_F_HOST,
+			      0, (__u8 *)mac_three, (__u8 *)mac_two);
+
+	return netdev_receive_packet(ctx);
+}
+
+/* With LL SRC option */
+PKTGEN("tc", "0211_ipv6_from_netdev_ns_node_ip")
+int ipv6_from_netdev_ns_node_ip_pktgen(struct __ctx_buff *ctx)
+{
+	struct pktgen builder;
+
+	pktgen__init(&builder, ctx);
+
+	scapy_push_data(&builder, v6_ndp_node_ns_llopt, sizeof(v6_ndp_node_ns_llopt));
+
+	pktgen__finish(&builder);
+
+	return 0;
+}
+
+SETUP("tc", "0211_ipv6_from_netdev_ns_node_ip")
+int ipv6_from_netdev_ns_node_ip_setup(struct __ctx_buff *ctx)
+{
+	return __ipv6_from_netdev_ns_node_ip_setup(ctx);
+}
+
+CHECK("tc", "0211_ipv6_from_netdev_ns_node_ip")
+int ipv6_from_netdev_ns_node_ip_check(const struct __ctx_buff *ctx)
+{
+	test_init();
+
+	endpoint_v6_del_entry((union v6addr *)v6_node_one);
+
+	assert(__check_ret_code(ctx, CTX_ACT_OK));
+
+	/* Packet should not be modified */
+	ASSERT_CTX_BUF_OFF("node_ns_pass", "Ether", ctx,
+			   sizeof(__u32),
+			   v6_ndp_node_ns_llopt,
+			   sizeof(v6_ndp_node_ns_llopt));
+	test_finish();
+
+	return 0;
+}
+
+/* Without LL SRC option */
+PKTGEN("tc", "0212_ipv6_from_netdev_ns_node_ip_noopt")
+int ipv6_from_netdev_ns_node_ip_pktgen_noopt(struct __ctx_buff *ctx)
+{
+	struct pktgen builder;
+
+	pktgen__init(&builder, ctx);
+
+	scapy_push_data(&builder, v6_ndp_node_ns, sizeof(v6_ndp_node_ns));
+
+	pktgen__finish(&builder);
+
+	return 0;
+}
+
+SETUP("tc", "0212_ipv6_from_netdev_ns_node_ip_noopt")
+int ipv6_from_netdev_ns_node_ip_setup_noopt(struct __ctx_buff *ctx)
+{
+	return __ipv6_from_netdev_ns_node_ip_setup(ctx);
+}
+
+CHECK("tc", "0212_ipv6_from_netdev_ns_node_ip_noopt")
+int ipv6_from_netdev_ns_node_ip_check_noopt(const struct __ctx_buff *ctx)
+{
+	test_init();
+
+	endpoint_v6_del_entry((union v6addr *)v6_node_one);
+
+	assert(__check_ret_code(ctx, CTX_ACT_OK));
+
+	/* Packet should not be modified */
+	ASSERT_CTX_BUF_OFF("node_ns_pass", "Ether", ctx,
+			   sizeof(__u32),
+			   v6_ndp_node_ns,
+			   sizeof(v6_ndp_node_ns));
+	test_finish();
+
+	return 0;
+}
+
+/* Bcast NS */
+static __always_inline
+int __ipv6_from_netdev_ns_node_ip_setup_mcast(struct __ctx_buff *ctx)
+{
+	endpoint_v6_add_entry((union v6addr *)&v6_node_one, 0, 0, ENDPOINT_F_HOST,
+			      0, (__u8 *)mac_three, (__u8 *)mac_two);
+
+	return netdev_receive_packet(ctx);
+}
+
+PKTGEN("tc", "022_ipv6_from_netdev_ns_node_ip_mcast")
+int ipv6_from_netdev_ns_node_ip_pktgen_mcast(struct __ctx_buff *ctx)
+{
+	struct pktgen builder;
+
+	pktgen__init(&builder, ctx);
+
+	scapy_push_data(&builder, v6_ndp_node_ns_mcast_llopt,
+			sizeof(v6_ndp_node_ns_mcast_llopt));
+
+	pktgen__finish(&builder);
+
+	return 0;
+}
+
+SETUP("tc", "022_ipv6_from_netdev_ns_node_ip_mcast")
+int ipv6_from_netdev_ns_node_ip_setup_mcast(struct __ctx_buff *ctx)
+{
+	return __ipv6_from_netdev_ns_node_ip_setup_mcast(ctx);
+}
+
+CHECK("tc", "022_ipv6_from_netdev_ns_node_ip_mcast")
+int ipv6_from_netdev_ns_node_ip_check_mcast(const struct __ctx_buff *ctx)
+{
+	test_init();
+
+	endpoint_v6_del_entry((union v6addr *)v6_node_one);
+
+	assert(__check_ret_code(ctx, CTX_ACT_OK));
+
+	/* Packet should not be modified */
+	ASSERT_CTX_BUF_OFF("node_ns_mcast_pass", "Ether", ctx,
+			   sizeof(__u32),
+			   v6_ndp_node_ns_mcast_llopt,
+			   sizeof(v6_ndp_node_ns_mcast_llopt));
+	test_finish();
+
+	return 0;
+}
+
+PKTGEN("tc", "022_ipv6_from_netdev_ns_node_ip_mcast_noopt")
+int ipv6_from_netdev_ns_node_ip_pktgen_mcast_noopt(struct __ctx_buff *ctx)
+{
+	struct pktgen builder;
+
+	pktgen__init(&builder, ctx);
+
+	scapy_push_data(&builder, v6_ndp_node_ns_mcast, sizeof(v6_ndp_node_ns_mcast));
+
+	pktgen__finish(&builder);
+
+	return 0;
+}
+
+SETUP("tc", "022_ipv6_from_netdev_ns_node_ip_mcast_noopt")
+int ipv6_from_netdev_ns_node_ip_setup_mcast_noopt(struct __ctx_buff *ctx)
+{
+	return __ipv6_from_netdev_ns_node_ip_setup_mcast(ctx);
+}
+
+CHECK("tc", "022_ipv6_from_netdev_ns_node_ip_mcast_noopt")
+int ipv6_from_netdev_ns_node_ip_check_mcast_noopt(const struct __ctx_buff *ctx)
+{
+	test_init();
+
+	endpoint_v6_del_entry((union v6addr *)v6_node_one);
+
+	assert(__check_ret_code(ctx, CTX_ACT_OK));
+
+	/* Packet should not be modified */
+	ASSERT_CTX_BUF_OFF("node_ns_mcast_noopt_pass", "Ether", ctx,
+			   sizeof(__u32),
+			   v6_ndp_node_ns_mcast,
+			   sizeof(v6_ndp_node_ns_mcast));
+	test_finish();
+
+	return 0;
 }

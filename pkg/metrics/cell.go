@@ -5,6 +5,7 @@ package metrics
 
 import (
 	"fmt"
+	"log/slog"
 	"reflect"
 
 	"github.com/cilium/hive/cell"
@@ -13,17 +14,54 @@ import (
 	pkgmetric "github.com/cilium/cilium/pkg/metrics/metric"
 )
 
+// NewCell constructs a metrics cell for the provided module.
+// The returned cell is barebones with an empty registry configured with default
+// sampler and metrics script commands.
+func NewCell(module string) cell.Cell {
+	return cell.Module(
+		fmt.Sprintf("%s-metrics", module),
+		fmt.Sprintf("Metrics for %s module", module),
+		cell.Config(defaultSamplerConfig),
+		cell.Provide(NewRegistry),
+		cell.Provide(metricsCommands, newSampler),
+	)
+}
+
+// Cell provides metrics registry and the 'metrics*' shell commands.
 var Cell = cell.Module("metrics", "Metrics",
 	// Provide registry to hive, but also invoke if case no cells decide to use as dependency
-	cell.Provide(NewRegistry),
-	Metric(NewLegacyMetrics),
+	cell.Provide(NewAgentRegistry),
 	cell.Config(defaultRegistryConfig),
-	cell.Invoke(func(_ *Registry) {
-		// This is a hack to ensure that errors/warnings collected in the pre hive initialization
-		// phase are emitted as metrics.
-		FlushLoggingMetrics()
-	}),
-	cell.Provide(newMetricsRestApiHandler),
+	cell.Config(defaultSamplerConfig),
+	cell.Provide(
+		metricsCommands,
+		newSampler,
+	),
+)
+
+// AgentCell provides metrics for the Cilium Agent. Includes [Cell] and sets up the global registry
+// variable for legacy uses. Separate allow use of [Cell] without data race issues in parallel tests
+// and without pulling in the legacy metrics.
+var AgentCell = cell.Group(
+	Cell,
+	Metric(NewLegacyMetrics),
+	cell.Invoke(
+		func(logger *slog.Logger, reg *Registry) {
+			// Register the agent status and BPF metrics.
+			// Don't register status and BPF collectors into the [r.collectors] as it is
+			// expensive to sample and currently not terrible useful to keep data on.
+			reg.inner.MustRegister(pkgmetric.EnabledCollector{C: newStatusCollector(logger)})
+			reg.inner.MustRegister(pkgmetric.EnabledCollector{C: newbpfCollector(logger)})
+
+			// Resolve the global registry variable for as long as we still have global functions
+			registryResolver.Resolve(reg)
+
+			// This is a hack to ensure that errors/warnings collected in the pre hive initialization
+			// phase are emitted as metrics.
+			FlushLoggingMetrics()
+
+		},
+	),
 )
 
 // Metric constructs a new metric cell.
@@ -37,14 +75,9 @@ var Cell = cell.Module("metrics", "Metrics",
 // `github.com/cilium/cilium/pkg/metrics/metric.WithMetadata`
 // and `github.com/prometheus/client_golang/prometheus.Collector` interfaces.
 func Metric[S any](ctor func() S) cell.Cell {
-	var (
-		withMeta  pkgmetric.WithMetadata
-		collector prometheus.Collector
-	)
-
 	var nilOut S
 	outTyp := reflect.TypeOf(nilOut)
-	if outTyp.Kind() == reflect.Ptr {
+	if outTyp.Kind() == reflect.Pointer {
 		outTyp = outTyp.Elem()
 	}
 
@@ -64,10 +97,7 @@ func Metric[S any](ctor func() S) cell.Cell {
 		))
 	}
 
-	withMetaTyp := reflect.TypeOf(&withMeta).Elem()
-	collectorTyp := reflect.TypeOf(&collector).Elem()
-	for i := 0; i < outTyp.NumField(); i++ {
-		field := outTyp.Field(i)
+	for field := range outTyp.Fields() {
 		if !field.IsExported() {
 			panic(fmt.Errorf(
 				"The struct returned by the constructor passed to metrics.Metric has a private field '%s', which "+
@@ -76,14 +106,14 @@ func Metric[S any](ctor func() S) cell.Cell {
 			))
 		}
 
-		if !field.Type.Implements(withMetaTyp) {
+		if !field.Type.Implements(reflect.TypeFor[pkgmetric.WithMetadata]()) {
 			panic(fmt.Errorf(
 				"The struct returned by the constructor passed to metrics.Metric has a field '%s', which is not metric.WithMetadata.",
 				field.Name,
 			))
 		}
 
-		if !field.Type.Implements(collectorTyp) {
+		if !field.Type.Implements(reflect.TypeFor[prometheus.Collector]()) {
 			panic(fmt.Errorf(
 				"The struct returned by the constructor passed to metrics.Metric has a field '%s', which is not prometheus.Collector.",
 				field.Name,
@@ -114,7 +144,7 @@ func provideMetrics[S any](metricSet S) hiveMetricOut {
 		return hiveMetricOut{}
 	}
 
-	for i := 0; i < typ.NumField(); i++ {
+	for i := range typ.NumField() {
 		if withMeta, ok := value.Field(i).Interface().(pkgmetric.WithMetadata); ok {
 			metrics = append(metrics, withMeta)
 		}

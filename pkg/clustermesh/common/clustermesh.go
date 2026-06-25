@@ -6,6 +6,7 @@ package common
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/cilium/hive/cell"
@@ -25,22 +26,24 @@ type RemoteClusterCreatorFunc func(name string, status StatusFunc) RemoteCluster
 // Configuration is the configuration that must be provided to
 // NewClusterMesh()
 type Configuration struct {
+	Logger *slog.Logger
+
 	Config
 
-	// ClusterInfo is the id/name of the local cluster. This is used for logging and metrics
+	// ClusterInfo is the id/name of the local cluster.
 	ClusterInfo types.ClusterInfo
+
+	// RemoteClientFactory is the factory to create new backend instances.
+	RemoteClientFactory RemoteClientFactoryFn
 
 	// NewRemoteCluster is a function returning a new implementation of the remote cluster business logic.
 	NewRemoteCluster RemoteClusterCreatorFunc
 
-	// nodeName is the name of the local node. This is used for logging and metrics
-	NodeName string
-
 	// ClusterSizeDependantInterval allows to calculate intervals based on cluster size.
 	ClusterSizeDependantInterval kvstore.ClusterSizeDependantIntervalFunc
 
-	// ServiceResolver, if not nil, is used to create a custom dialer for service resolution.
-	ServiceResolver *dial.ServiceResolver
+	// Resolvers, if provided, are used to create a custom dialer to connect to etcd.
+	Resolvers []dial.Resolver
 
 	// Metrics holds the different clustermesh metrics.
 	Metrics Metrics
@@ -94,7 +97,7 @@ func NewClusterMesh(c Configuration) ClusterMesh {
 }
 
 func (cm *clusterMesh) Start(cell.HookContext) error {
-	w, err := createConfigDirectoryWatcher(cm.conf.ClusterMeshConfig, cm)
+	w, err := createConfigDirectoryWatcher(cm.conf.Logger, cm.conf.ClusterMeshConfig, cm)
 	if err != nil {
 		return fmt.Errorf("unable to create config directory watcher: %w", err)
 	}
@@ -137,39 +140,44 @@ func (cm *clusterMesh) newRemoteCluster(name, path string) *remoteCluster {
 		configPath:                   path,
 		clusterSizeDependantInterval: cm.conf.ClusterSizeDependantInterval,
 
-		resolvers: func() []dial.Resolver {
-			if cm.conf.ServiceResolver != nil {
-				return []dial.Resolver{cm.conf.ServiceResolver}
-			}
-			return nil
-		}(),
+		resolvers: cm.conf.Resolvers,
 
 		controllers:                    controller.NewManager(),
 		remoteConnectionControllerName: fmt.Sprintf("remote-etcd-%s", name),
 
-		logger: log.WithField(logfields.ClusterName, name),
+		logger: cm.conf.Logger.With(logfields.ClusterName, name),
 
-		backendFactory:     kvstore.NewClient,
-		clusterLockFactory: newClusterLock,
+		remoteClientFactory: cm.conf.RemoteClientFactory,
+		clusterLockFactory:  newClusterLock,
 
-		metricLastFailureTimestamp: cm.conf.Metrics.LastFailureTimestamp.WithLabelValues(cm.conf.ClusterInfo.Name, cm.conf.NodeName, name),
-		metricReadinessStatus:      cm.conf.Metrics.ReadinessStatus.WithLabelValues(cm.conf.ClusterInfo.Name, cm.conf.NodeName, name),
-		metricTotalFailures:        cm.conf.Metrics.TotalFailures.WithLabelValues(cm.conf.ClusterInfo.Name, cm.conf.NodeName, name),
+		metricLastFailureTimestamp:  cm.conf.Metrics.LastFailureTimestamp.WithLabelValues(name),
+		metricReadinessStatus:       cm.conf.Metrics.ReadinessStatus.WithLabelValues(name),
+		metricTotalFailures:         cm.conf.Metrics.TotalFailures.WithLabelValues(name),
+		metricTotalCacheRevocations: cm.conf.Metrics.TotalCacheRevocations.WithLabelValues(name),
 	}
 
 	rc.RemoteCluster = cm.conf.NewRemoteCluster(name, rc.status)
+	onExpiration := func(ctx context.Context) {
+		rc.metricTotalCacheRevocations.Inc()
+		rc.RevokeCache(ctx)
+	}
+	rc.ttlChecker = newTTLChecker(rc.logger, cm.conf.ClusterMeshCacheTTL, onExpiration)
 	return rc
 }
 
 func (cm *clusterMesh) add(name, path string) {
 	if name == cm.conf.ClusterInfo.Name {
-		log.WithField(fieldClusterName, name).Debug("Ignoring configuration for own cluster")
+		cm.conf.Logger.Debug("Ignoring configuration for own cluster", fieldClusterName, name)
 		return
 	}
 
 	if err := types.ValidateClusterName(name); err != nil {
-		log.WithField(fieldClusterName, name).WithError(err).
-			Error("Remote cluster name is invalid. The connection will be forbidden starting from Cilium v1.17")
+		cm.conf.Logger.Error(
+			"Cannot connect to remote cluster",
+			logfields.Error, fmt.Errorf("invalid cluster name: %w", err),
+			fieldClusterName, name,
+		)
+		return
 	}
 
 	cm.mutex.Lock()
@@ -182,7 +190,7 @@ func (cm *clusterMesh) addLocked(name, path string) {
 		// The configuration for this cluster has been recreated before the cleanup
 		// of the same cluster completed. Let's queue it for delayed processing.
 		cm.tombstones[name] = path
-		log.WithField(fieldClusterName, name).Info("Delaying configuration of remote cluster, which is still being removed")
+		cm.conf.Logger.Info("Delaying configuration of remote cluster, which is still being removed", fieldClusterName, name)
 		return
 	}
 
@@ -192,7 +200,7 @@ func (cm *clusterMesh) addLocked(name, path string) {
 		cm.clusters[name] = cluster
 	}
 
-	cm.conf.Metrics.TotalRemoteClusters.WithLabelValues(cm.conf.ClusterInfo.Name, cm.conf.NodeName).Set(float64(len(cm.clusters)))
+	cm.conf.Metrics.TotalRemoteClusters.Set(float64(len(cm.clusters)))
 
 	cluster.connect()
 }
@@ -215,11 +223,9 @@ func (cm *clusterMesh) remove(name string) {
 
 	cm.tombstones[name] = removed
 	delete(cm.clusters, name)
-	cm.conf.Metrics.TotalRemoteClusters.WithLabelValues(cm.conf.ClusterInfo.Name, cm.conf.NodeName).Set(float64(len(cm.clusters)))
+	cm.conf.Metrics.TotalRemoteClusters.Set(float64(len(cm.clusters)))
 
-	cm.wg.Add(1)
-	go func() {
-		defer cm.wg.Done()
+	cm.wg.Go(func() {
 
 		// Run onRemove in a separate go routing as potentially slow, to avoid
 		// blocking the processing of further events in the meanwhile.
@@ -231,13 +237,13 @@ func (cm *clusterMesh) remove(name string) {
 
 		if path != removed {
 			// Let's replay the queued add event.
-			log.WithField(fieldClusterName, name).Info("Replaying delayed configuration of new remote cluster after removal")
+			cm.conf.Logger.Info("Replaying delayed configuration of new remote cluster after removal", fieldClusterName, name)
 			cm.addLocked(name, path)
 		}
 		cm.mutex.Unlock()
-	}()
+	})
 
-	log.WithField(fieldClusterName, name).Debug("Remote cluster configuration removed")
+	cm.conf.Logger.Debug("Remote cluster configuration removed", fieldClusterName, name)
 }
 
 // NumReadyClusters returns the number of remote clusters to which a connection

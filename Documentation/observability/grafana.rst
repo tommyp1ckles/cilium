@@ -19,7 +19,7 @@ deployment.
 .. admonition:: Video
  :class: attention
 
-  You can also see Cilium and Grafana in action on `eCHO episode 68: Cilium & Grafana <https://www.youtube.com/watch?v=DdWksYq5Pv4>`__.
+  You can see Cilium, Prometheus and Grafana in action together in the KubeCon + CloudNativeCon talk `Effortless Open Source Observability with Cilium, Prometheus and Grafana <https://www.youtube.com/watch?v=l3zY7wHUkBA>`__.
 
 The default installation contains:
 
@@ -72,15 +72,29 @@ Refer to :ref:`metrics` for more details about the individual metrics.
 
 Deploy Cilium via Helm as follows to enable all metrics:
 
-.. parsed-literal::
+.. cilium-helm-install::
+   :namespace: kube-system
+   :set: prometheus.enabled=true
+         operator.prometheus.enabled=true
+         hubble.enabled=true
+         hubble.metrics.enableOpenMetrics=true
+         hubble.metrics.enabled="{dns,drop,tcp,flow,port-distribution,icmp,httpV2:exemplars=true;labelsContext=source_ip\\,source_namespace\\,source_workload\\,destination_ip\\,destination_namespace\\,destination_workload\\,traffic_direction}"
 
-   helm install cilium |CHART_RELEASE| \\
-      --namespace kube-system \\
-      --set prometheus.enabled=true \\
-      --set operator.prometheus.enabled=true \\
-      --set hubble.enabled=true \\
-      --set hubble.metrics.enableOpenMetrics=true \\
-      --set hubble.metrics.enabled="{dns,drop,tcp,flow,port-distribution,icmp,httpV2:exemplars=true;labelsContext=source_ip\\,source_namespace\\,source_workload\\,destination_ip\\,destination_namespace\\,destination_workload\\,traffic_direction}"
+Configure Operator Prometheus TLS
+---------------------------------
+
+To enable TLS on Operator Prometheus, you must first create a secret containing keys ``tls.crt`` and ``tls.key``. Then, add the following flags to your Helm command to enable TLS:
+
+::
+
+    --set operator.prometheus.tls.enabled=true                      # Enable TLS on Operator Prometheus
+    --set operator.prometheus.tls.server.existingSecret=secret-name # TLS secret name
+
+If you also want to enable mTLS, add key ``ca.crt`` to above secret. Then, add the following Helm flag to your list of options:
+
+::
+
+    --set operator.prometheus.tls.server.mtls.enabled=true # Use ca.crt of secret to verify client certificates
 
 .. note::
 

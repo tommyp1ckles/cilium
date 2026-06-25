@@ -101,7 +101,18 @@ func (c *customChain) exists(prog runnable) (bool, error) {
 		if strings.Contains(err.Error(), fmt.Sprintf("chain `%s' in table `%s' is incompatible, use 'nft' tool.", c.name, c.table)) {
 			return false, nil
 		}
-
+		// with iptables-nft = 1.8.10, when we try to list the rules of a non existing
+		// chain, the command will return an error in the format:
+		//
+		// iptables: Incompatible with this kernel.
+		// ip6tables: Incompatible with this kernel.
+		//
+		// rather than the usual one.
+		// This is fixed in 1.8.11. RHEL 9.4 ships however 1.8.10 and is used by all the latest OpenShift versions at
+		// the time of writing: 4.16, 4.17 and 4.18
+		if strings.Contains(err.Error(), "tables: Incompatible with this kernel.") {
+			return false, nil
+		}
 		return false, fmt.Errorf("unable to list %s chain: %s (%w)", c.name, string(output), err)
 	}
 
@@ -119,7 +130,7 @@ func (c *customChain) doAdd(prog runnable) error {
 	return nil
 }
 
-func (c *customChain) add(ipv4, ipv6 bool) error {
+func (c *customChain) add(ipv4, ipv6 bool, ip4tables, ip6tables iptablesInterface) error {
 	if ipv4 {
 		if err := c.doAdd(ip4tables); err != nil {
 			return err
@@ -151,7 +162,7 @@ func (c *customChain) doRename(prog runnable, newName string) error {
 	return nil
 }
 
-func (c *customChain) rename(ipv4, ipv6 bool, name string) error {
+func (c *customChain) rename(ipv4, ipv6 bool, name string, ip4tables, ip6tables iptablesInterface) error {
 	if ipv4 {
 		if err := c.doRename(ip4tables, name); err != nil {
 			return err
@@ -190,7 +201,7 @@ func (c *customChain) doRemove(prog iptablesInterface) error {
 	return nil
 }
 
-func (c *customChain) remove(ipv4, ipv6 bool) error {
+func (c *customChain) remove(ipv4, ipv6 bool, ip4tables, ip6tables iptablesInterface) error {
 	if ipv4 {
 		if err := c.doRemove(ip4tables); err != nil {
 			return err
@@ -222,7 +233,7 @@ func (c *customChain) doInstallFeeder(prog iptablesInterface, prepend bool) erro
 	return nil
 }
 
-func (c *customChain) installFeeder(ipv4, ipv6, prepend bool) error {
+func (c *customChain) installFeeder(ipv4, ipv6, prepend bool, ip4tables, ip6tables iptablesInterface) error {
 	if ipv4 {
 		if err := c.doInstallFeeder(ip4tables, prepend); err != nil {
 			return err

@@ -11,8 +11,9 @@ import (
 
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
+	"github.com/prometheus/common/model"
 
-	"github.com/cilium/cilium/cilium-cli/k8s"
+	"github.com/cilium/cilium/pkg/k8s/portforward"
 )
 
 // metricsURLFormat is the path format to retrieve the metrics on the
@@ -68,12 +69,12 @@ func (a *Action) collectMetricsForPod(pod Pod, port string) (promMetricsFamily, 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	p := k8s.PortForwardParameters{
+	p := portforward.PortForwardParameters{
 		Namespace:  pod.Namespace(),
 		Pod:        pod.NameWithoutNamespace(),
 		Ports:      []string{fmt.Sprintf(":%s", port)},
 		Addresses:  nil, // default is localhost
-		OutWriters: k8s.OutWriters{Out: &debugWriter{ct: a.test.ctx}, ErrOut: &warnWriter{ct: a.test.ctx}},
+		OutWriters: portforward.OutWriters{Out: &debugWriter{ct: a.test.ctx}, ErrOut: &warnWriter{ct: a.test.ctx}},
 	}
 
 	// Call the k8s dialer to port forward,
@@ -103,7 +104,7 @@ func (a *Action) collectMetricsForPod(pod Pod, port string) (promMetricsFamily, 
 // parseMetrics transforms the response from the call to prometheus metric endpoint
 // into a dto model MetricFamily.
 func parseMetrics(reader io.Reader) (promMetricsFamily, error) {
-	var parser expfmt.TextParser
+	var parser = expfmt.NewTextParser(model.LegacyValidation)
 	mf, err := parser.TextToMetricFamilies(reader)
 	if err != nil {
 		return nil, err

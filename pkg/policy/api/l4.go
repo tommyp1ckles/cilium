@@ -3,10 +3,6 @@
 
 package api
 
-import (
-	"github.com/cilium/proxy/pkg/policy/api/kafka"
-)
-
 // L4Proto is a layer 4 protocol name
 type L4Proto string
 
@@ -18,7 +14,15 @@ const (
 	ProtoSCTP   L4Proto = "SCTP"
 	ProtoICMP   L4Proto = "ICMP"
 	ProtoICMPv6 L4Proto = "ICMPV6"
-	ProtoAny    L4Proto = "ANY"
+	ProtoVRRP   L4Proto = "VRRP"
+	ProtoIGMP   L4Proto = "IGMP"
+	// Tunnel/Encapsulation protocols (no transport-layer ports)
+	ProtoGRE  L4Proto = "GRE"  // Generic Routing Encapsulation (protocol 47)
+	ProtoIPIP L4Proto = "IPIP" // IP-in-IP Encapsulation (protocol 4)
+	ProtoIPv6 L4Proto = "IPV6" // IPv6 Encapsulation / 6in4 (protocol 41)
+	ProtoESP  L4Proto = "ESP"  // Encapsulating Security Payload / IPsec (protocol 50)
+	ProtoAH   L4Proto = "AH"   // Authentication Header / IPsec (protocol 51)
+	ProtoAny  L4Proto = "ANY"
 
 	PortProtocolAny = "0/ANY"
 )
@@ -28,13 +32,19 @@ func (l4 L4Proto) IsAny() bool {
 	return l4 == ProtoAny || string(l4) == ""
 }
 
+// SupportedProtocols returns the currently supported protocols in the policy
+// engine, excluding "ANY".
+func SupportedProtocols() []L4Proto {
+	return []L4Proto{ProtoTCP, ProtoUDP, ProtoSCTP}
+}
+
 // PortProtocol specifies an L4 port with an optional transport protocol
 type PortProtocol struct {
 	// Port can be an L4 port number, or a name in the form of "http"
 	// or "http-8080".
 	//
 	// +kubebuilder:validation:Pattern=`^(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[0-9]{1,4})|([a-zA-Z0-9]-?)*[a-zA-Z](-?[a-zA-Z0-9])*$`
-	Port string `json:"port"`
+	Port string `json:"port,omitempty"`
 
 	// EndPort can only be an L4 port number.
 	//
@@ -43,15 +53,22 @@ type PortProtocol struct {
 	// +kubebuilder:validation:Optional
 	EndPort int32 `json:"endPort,omitempty"`
 
-	// Protocol is the L4 protocol. If omitted or empty, any protocol
-	// matches. Accepted values: "TCP", "UDP", "SCTP", "ANY"
+	// Protocol is the L4 protocol. If "ANY", omitted or empty, any protocols
+	// with transport ports (TCP, UDP, SCTP) match.
+	//
+	// Accepted values: "TCP", "UDP", "SCTP", "VRRP", "IGMP", "GRE", "IPIP",
+	// "IPV6", "ESP", "AH", "ANY"
+	//
+	// Tunnel/encapsulation protocols (GRE, IPIP, IPV6, ESP, AH) and other
+	// extended IP protocols (VRRP, IGMP) require the --enable-extended-ip-protocols
+	// flag to be set. These protocols do not use transport-layer ports.
 	//
 	// Matching on ICMP is not supported.
 	//
 	// Named port specified for a container may narrow this down, but may not
 	// contradict this.
 	//
-	// +kubebuilder:validation:Enum=TCP;UDP;SCTP;ANY
+	// +kubebuilder:validation:Enum=TCP;UDP;SCTP;VRRP;IGMP;GRE;IPIP;IPV6;ESP;AH;ANY
 	// +kubebuilder:validation:Optional
 	Protocol L4Proto `json:"protocol,omitempty"`
 }
@@ -160,8 +177,33 @@ type Listener struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=100
 	// +kubebuilder:validation:Optional
-	Priority uint16 `json:"priority"`
+	Priority uint8 `json:"priority"`
 }
+
+// ServerName allows using '*' wildcard specifier for matching server names with
+// the below semantics.
+//
+// - `*` matches 0 or more DNS valid characters, and may occur anywhere in the pattern.
+// - `**.` is a special prefix which matches all multilevel subdomains in the prefix.
+//
+// As a special case the name "*" matches all valid DNS names.
+//
+// Examples:
+//  1. `*.cilium.io` matches subdomains of cilium at that level
+//     www.cilium.io and blog.cilium.io match, cilium.io and google.com do not
+//  2. `*cilium.io` matches cilium.io and all subdomains ends with "cilium.io"
+//     except those containing "." separator, subcilium.io and sub-cilium.io match,
+//     www.cilium.io and blog.cilium.io does not
+//  3. `sub*.cilium.io` matches subdomains of cilium where the subdomain component
+//     begins with "sub". sub.cilium.io and subdomain.cilium.io match while www.cilium.io,
+//     blog.cilium.io, cilium.io and google.com do not
+//  4. `**.cilium.io` matches all multilevel subdomains of cilium.io.
+//     "app.cilium.io" and "test.app.cilium.io" match but not "cilium.io"
+//
+// +kubebuilder:validation:MaxLength=255
+// +kubebuilder:validation:Pattern=`^([-a-zA-Z0-9_*]+[.]?)+$`
+// +kubebuilder:validation:OneOf
+type ServerName string
 
 // PortRule is a list of ports/protocol combinations with optional Layer 7
 // rules which must be met.
@@ -197,7 +239,9 @@ type PortRule struct {
 	// TLS handshake.
 	//
 	// +kubebuilder:validation:Optional
-	ServerNames []string `json:"serverNames,omitempty"`
+	// +kubebuilder:validation:MinItems=1
+	// +listType=set
+	ServerNames []ServerName `json:"serverNames,omitempty"`
 
 	// listener specifies the name of a custom Envoy listener to which this traffic should be
 	// redirected to.
@@ -221,6 +265,14 @@ func (pd PortRule) GetPortProtocols() []PortProtocol {
 // GetPortRule returns the PortRule.
 func (pd *PortRule) GetPortRule() *PortRule {
 	return pd
+}
+
+func (pd *PortRule) GetServerNames() []string {
+	res := make([]string, 0, len(pd.ServerNames))
+	for _, sn := range pd.ServerNames {
+		res = append(res, string(sn))
+	}
+	return res
 }
 
 // PortDenyRule is a list of ports/protocol that should be used for deny
@@ -251,30 +303,13 @@ type L7Rules struct {
 	//
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:OneOf
-	HTTP []PortRuleHTTP `json:"http,omitempty"`
-
-	// Kafka-specific rules.
-	//
-	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:OneOf
-	Kafka []kafka.PortRule `json:"kafka,omitempty"`
+	HTTP PortRulesHTTP `json:"http,omitempty"`
 
 	// DNS-specific rules.
 	//
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:OneOf
-	DNS []PortRuleDNS `json:"dns,omitempty"`
-
-	// Name of the L7 protocol for which the Key-value pair rules apply.
-	//
-	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:OneOf
-	L7Proto string `json:"l7proto,omitempty"`
-
-	// Key-value pair rules.
-	//
-	// +kubebuilder:validation:Optional
-	L7 []PortRuleL7 `json:"l7,omitempty"`
+	DNS PortRulesDNS `json:"dns,omitempty"`
 }
 
 // Len returns the total number of rules inside `L7Rules`.
@@ -283,7 +318,7 @@ func (rules *L7Rules) Len() int {
 	if rules == nil {
 		return 0
 	}
-	return len(rules.HTTP) + len(rules.Kafka) + len(rules.DNS) + len(rules.L7)
+	return len(rules.HTTP) + len(rules.DNS)
 }
 
 // IsEmpty returns whether the `L7Rules` is nil or contains no rules.

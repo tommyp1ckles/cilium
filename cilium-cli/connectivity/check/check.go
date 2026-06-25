@@ -7,9 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"regexp"
 	"strings"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
 
 	"github.com/cilium/cilium/api/v1/flow"
 	"github.com/cilium/cilium/api/v1/observer"
@@ -19,81 +22,118 @@ import (
 )
 
 type PerfParameters struct {
-	ReportDir   string
-	Duration    time.Duration
-	HostNet     bool
-	PodNet      bool
-	Samples     int
-	MessageSize int
-	Mixed       bool
-	Throughput  bool
-	CRR         bool
-	RR          bool
-	UDP         bool
-	Image       string
+	ReportDir       string
+	Duration        time.Duration
+	SetupDelay      time.Duration
+	HostNet         bool
+	PodNet          bool
+	PodToHost       bool
+	HostToPod       bool
+	SameNode        bool
+	OtherNode       bool
+	Samples         int
+	MessageSize     int
+	Streams         uint
+	Throughput      bool
+	ThroughputMulti bool
+	CRR             bool
+	RR              bool
+	UDP             bool
+	Image           string
+	NetQos          bool
+	KernelProfiles  bool
+	Bandwidth       bool
+
+	NodeSelectorServer map[string]string
+	NodeSelectorClient map[string]string
 }
 
 type Parameters struct {
-	AssumeCiliumVersion    string
-	CiliumNamespace        string
-	TestNamespace          string
-	TestNamespaceIndex     int
-	TestConcurrency        int
-	SingleNode             bool
-	PrintFlows             bool
-	ForceDeploy            bool
-	Hubble                 bool
-	HubbleServer           string
-	K8sLocalHostTest       bool
-	MultiCluster           string
-	RunTests               []*regexp.Regexp
-	SkipTests              []*regexp.Regexp
-	PostTestSleepDuration  time.Duration
-	FlowValidation         string
-	AllFlows               bool
-	Writer                 io.ReadWriter
-	Verbose                bool
-	Debug                  bool
-	Timestamp              bool
-	PauseOnFail            bool
-	SkipIPCacheCheck       bool
-	Perf                   bool
-	PerfParameters         PerfParameters
-	CurlImage              string
-	JSONMockImage          string
-	TestConnDisruptImage   string
-	FRRImage               string
-	AgentDaemonSetName     string
-	DNSTestServerImage     string
-	IncludeUnsafeTests     bool
-	AgentPodSelector       string
-	CiliumPodSelector      string
-	NodeSelector           map[string]string
-	DeploymentAnnotations  annotationsMap
-	NamespaceAnnotations   annotations
-	ExternalTarget         string
-	ExternalCIDR           string
-	ExternalIP             string
-	ExternalDeploymentPort int
-	ExternalOtherIP        string
-	ServiceType            string
-	EchoServerHostPort     int
-	PodCIDRs               []podCIDRs
-	NodeCIDRs              []string
-	ControlPlaneCIDRs      []string
-	K8sCIDR                string
-	NodesWithoutCiliumIPs  []nodesWithoutCiliumIP
-	JunitFile              string
-	JunitProperties        map[string]string
+	AssumeCiliumVersion       string
+	CiliumNamespace           string
+	TestNamespace             string
+	SharedTestNamespace       string
+	TestNamespaceIndex        int
+	TestConcurrency           int
+	SingleNode                bool
+	PrintFlows                bool
+	ForceDeploy               bool
+	CleanupOnly               bool
+	Hubble                    bool
+	HubbleServer              string
+	K8sLocalHostTest          bool
+	MultiCluster              string
+	RunTests                  []*regexp.Regexp
+	SkipTests                 []*regexp.Regexp
+	PostTestSleepDuration     time.Duration
+	FlowValidation            string
+	AllFlows                  bool
+	Writer                    io.ReadWriter
+	Verbose                   bool
+	Debug                     bool
+	Timestamp                 bool
+	PauseOnFail               bool
+	Perf                      bool
+	PerfParameters            PerfParameters
+	CurlImage                 string
+	JSONMockImage             string
+	TestConnDisruptImage      string
+	EchoImage                 string
+	FRRImage                  string
+	SocatImage                string
+	AgentDaemonSetName        string
+	DNSTestServerImage        string
+	PrintImageArtifacts       bool
+	IncludeUnsafeTests        bool
+	AgentPodSelector          string
+	CiliumPodSelector         string
+	NodeSelector              map[string]string
+	Tolerations               []string
+	DeploymentAnnotations     annotationsMap
+	NamespaceLabels           map[string]string
+	NamespaceAnnotations      map[string]string
+	ExternalTargetIPv6Capable bool
+	ExternalTargetFakeDNS     bool
+	ExternalTarget            string
+	ExternalOtherTarget       string
+	ExternalCIDRv4            string
+	ExternalCIDRv6            string
+	ExternalIPv4              string
+	ExternalIPv6              string
+	ExternalDeploymentPort    int
+	ExternalOtherIPv4         string
+	ExternalOtherIPv6         string
+	ServiceType               string
+	EchoServerHostPort        int
+	PodCIDRs                  []podCIDRs
+	NodeCIDRs                 []string
+	ControlPlaneCIDRs         []string
+	K8sCIDR                   string
+	NodesWithoutCiliumIPs     []nodesWithoutCiliumIP
+	JunitFile                 string
+	JunitProperties           map[string]string
+	ImpersonateAs             string
+	ImpersonateGroups         []string
+	IPFamilies                []string
 
-	IncludeConnDisruptTest        bool
-	ConnDisruptTestSetup          bool
-	ConnDisruptTestRestartsPath   string
-	ConnDisruptTestXfrmErrorsPath string
-	ConnDisruptDispatchInterval   time.Duration
+	IncludeConnDisruptTest              bool
+	IncludeConnDisruptTestNSTraffic     bool
+	IncludeConnDisruptTestEgressGateway bool
+	IncludeConnDisruptTestL7Traffic     bool
+	ConnDisruptTestSetup                bool
+	ConnDisruptTestRestartsPath         string
+	ConnDisruptTestXfrmErrorsPath       string
+	ConnDisruptDispatchInterval         time.Duration
 
 	ExpectedDropReasons []string
 	ExpectedXFRMErrors  []string
+
+	CodeOwners              []string
+	LogCodeOwners           bool
+	ExcludeCodeOwners       []string
+	LogCheckLevels          []string
+	LogCheckExtraExceptions []string
+	LogCheckOnlyTestTime    bool
 
 	FlushCT               bool
 	SecondaryNetworkIface string
@@ -108,7 +148,9 @@ type Parameters struct {
 	ConnectTimeout time.Duration
 	RequestTimeout time.Duration
 	CurlInsecure   bool
+	CurlParallel   uint
 
+	ExitZeroOnFailure       bool
 	CollectSysdumpOnFailure bool
 	SysdumpOptions          sysdump.Options
 
@@ -116,6 +158,14 @@ type Parameters struct {
 	ExternalTargetCAName      string
 
 	Timeout time.Duration
+}
+
+func (p *Parameters) GetTolerations() []corev1.Toleration {
+	tolerations := make([]corev1.Toleration, 0, len(p.Tolerations))
+	for _, t := range p.Tolerations {
+		tolerations = append(tolerations, corev1.Toleration{Key: t, Operator: corev1.TolerationOpExists})
+	}
+	return tolerations
 }
 
 type podCIDRs struct {
@@ -277,9 +327,7 @@ func (r *FlowRequirementResults) Merge(from *FlowRequirementResults) {
 	if r.Matched == nil {
 		r.Matched = from.Matched
 	} else {
-		for k, v := range from.Matched {
-			r.Matched[k] = v
-		}
+		maps.Copy(r.Matched, from.Matched)
 	}
 	r.Failures += from.Failures
 	r.NeedMoreFlows = r.NeedMoreFlows || from.NeedMoreFlows

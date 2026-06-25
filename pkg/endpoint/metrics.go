@@ -4,8 +4,11 @@
 package endpoint
 
 import (
+	"maps"
+
 	"github.com/cilium/cilium/api/v1/models"
 	loaderMetrics "github.com/cilium/cilium/pkg/datapath/loader/metrics"
+	"github.com/cilium/cilium/pkg/endpoint/regeneration"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/metrics/metric"
@@ -38,34 +41,51 @@ func sendMetrics(stats statistics, metric metric.Vec[metric.Observer]) {
 }
 
 type regenerationStatistics struct {
-	success                    bool
-	endpointID                 uint16
-	policyStatus               models.EndpointPolicyEnabled
+	regenReason        regeneration.Reason
+	regenFailureReason regenerationFailureReason
+
+	success      bool
+	endpointID   uint16
+	policyStatus models.EndpointPolicyEnabled
+
+	buildPermitAcquisition     spanstat.SpanStat
 	totalTime                  spanstat.SpanStat
 	waitingForLock             spanstat.SpanStat
 	waitingForPolicyRepository spanstat.SpanStat
 	waitingForCTClean          spanstat.SpanStat
 	policyCalculation          spanstat.SpanStat
+	waitForPolicyCompute       spanstat.SpanStat
+	endpointPolicyCalculation  spanstat.SpanStat
 	proxyConfiguration         spanstat.SpanStat
 	proxyPolicyCalculation     spanstat.SpanStat
 	proxyWaitForAck            spanstat.SpanStat
 	datapathRealization        loaderMetrics.SpanStat
 	mapSync                    spanstat.SpanStat
 	prepareBuild               spanstat.SpanStat
+	// policyDetachedTimestamp tracks the time the selector policy of the endpoint was detached.
+	// This is nil if the selector policy was still attached when the operation (policy update or endpoint regeneration)
+	// started
+	policyDetachedTimestamp *time.Time
+	// Reflects the number of proxy redirects that were expected but not programmed during regeneration.
+	missingProxyRedirectsCount uint
 }
 
 // SendMetrics sends the regeneration statistics for this endpoint to
 // Prometheus.
 func (s *regenerationStatistics) SendMetrics() {
-	endpointPolicyStatus.Update(s.endpointID, s.policyStatus)
+	endpointPolicyStatus.Update(s.endpointID, s.policyStatus, s.missingProxyRedirectsCount)
+
+	if s.policyDetachedTimestamp != nil {
+		metrics.EndpointDetachedSelectorPolicyTimeStats.WithLabelValues("regeneration").Observe(time.Since(*s.policyDetachedTimestamp).Seconds())
+	}
 
 	if !s.success {
 		// Endpoint regeneration failed, increase on failed metrics
-		metrics.EndpointRegenerationTotal.WithLabelValues(metrics.LabelValueOutcomeFail).Inc()
+		metrics.EndpointRegenerationTotal.WithLabelValues(s.regenReason, metrics.LabelValueOutcomeFail, s.regenFailureReason.String()).Inc()
 		return
 	}
 
-	metrics.EndpointRegenerationTotal.WithLabelValues(metrics.LabelValueOutcomeSuccess).Inc()
+	metrics.EndpointRegenerationTotal.WithLabelValues(s.regenReason, metrics.LabelValueOutcomeSuccess, s.regenFailureReason.String()).Inc()
 
 	sendMetrics(s, metrics.EndpointRegenerationTimeStats)
 }
@@ -78,34 +98,48 @@ func (s *regenerationStatistics) GetMap() map[string]*spanstat.SpanStat {
 		"waitingForCTClean":          &s.waitingForCTClean,
 		"policyCalculation":          &s.policyCalculation,
 		"proxyConfiguration":         &s.proxyConfiguration,
+		"waitForPolicyCompute":       &s.waitForPolicyCompute,
+		"endpointPolicyCalculation":  &s.endpointPolicyCalculation,
 		"proxyPolicyCalculation":     &s.proxyPolicyCalculation,
 		"proxyWaitForAck":            &s.proxyWaitForAck,
 		"mapSync":                    &s.mapSync,
 		"prepareBuild":               &s.prepareBuild,
 		"total":                      &s.totalTime,
+		"buildPermitAcquisition":     &s.buildPermitAcquisition,
 	}
-	for k, v := range s.datapathRealization.GetMap() {
-		result[k] = v
-	}
+	maps.Copy(result, s.datapathRealization.GetMap())
 	return result
+}
+
+// used by PolicyRepository.GetSelectorPolicy
+func (s *regenerationStatistics) WaitingForPolicyRepository() *spanstat.SpanStat {
+	return &s.waitingForPolicyRepository
 }
 
 // endpointPolicyStatusMap is a map to store the endpoint id and the policy
 // enforcement status. It is used only to send metrics to prometheus.
 type endpointPolicyStatusMap struct {
 	mutex lock.Mutex
-	m     map[uint16]models.EndpointPolicyEnabled
+	m     map[uint16]epPolicyStatus
+}
+
+type epPolicyStatus struct {
+	enforcementStatus     models.EndpointPolicyEnabled
+	missingRedirectsCount uint
 }
 
 func newEndpointPolicyStatusMap() endpointPolicyStatusMap {
-	return endpointPolicyStatusMap{m: make(map[uint16]models.EndpointPolicyEnabled)}
+	return endpointPolicyStatusMap{m: make(map[uint16]epPolicyStatus)}
 }
 
 // Update adds or updates a new endpoint to the map and update the metrics
 // related
-func (epPolicyMaps *endpointPolicyStatusMap) Update(endpointID uint16, policyStatus models.EndpointPolicyEnabled) {
+func (epPolicyMaps *endpointPolicyStatusMap) Update(endpointID uint16, enforcementStatus models.EndpointPolicyEnabled, missingRedirectsCount uint) {
 	epPolicyMaps.mutex.Lock()
-	epPolicyMaps.m[endpointID] = policyStatus
+	epPolicyMaps.m[endpointID] = epPolicyStatus{
+		enforcementStatus:     enforcementStatus,
+		missingRedirectsCount: missingRedirectsCount,
+	}
 	epPolicyMaps.mutex.Unlock()
 	endpointPolicyStatus.UpdateMetrics()
 }
@@ -120,6 +154,7 @@ func (epPolicyMaps *endpointPolicyStatusMap) Remove(endpointID uint16) {
 
 // UpdateMetrics update the policy enforcement metrics statistics for the endpoints.
 func (epPolicyMaps *endpointPolicyStatusMap) UpdateMetrics() {
+	var totalMissingRedirects uint
 	policyStatus := map[models.EndpointPolicyEnabled]float64{
 		models.EndpointPolicyEnabledNone:             0,
 		models.EndpointPolicyEnabledEgress:           0,
@@ -132,11 +167,13 @@ func (epPolicyMaps *endpointPolicyStatusMap) UpdateMetrics() {
 
 	epPolicyMaps.mutex.Lock()
 	for _, value := range epPolicyMaps.m {
-		policyStatus[value]++
+		policyStatus[value.enforcementStatus]++
+		totalMissingRedirects += value.missingRedirectsCount
 	}
 	epPolicyMaps.mutex.Unlock()
 
 	for k, v := range policyStatus {
 		metrics.PolicyEndpointStatus.WithLabelValues(string(k)).Set(v)
 	}
+	metrics.PolicyMissingProxyRedirects.WithLabelValues().Set(float64(totalMissingRedirects))
 }

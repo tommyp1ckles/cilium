@@ -9,42 +9,40 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cilium/hive/cell"
+	"github.com/cilium/hive/hivetest"
+	"github.com/stretchr/testify/assert"
+
 	"github.com/cilium/cilium/pkg/hive"
+	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/maps/nat"
-	"github.com/cilium/cilium/pkg/promise"
 	"github.com/cilium/cilium/pkg/testutils"
 	"github.com/cilium/cilium/pkg/tuple"
 	"github.com/cilium/cilium/pkg/types"
 	"github.com/cilium/cilium/pkg/u8proto"
-
-	"github.com/cilium/hive/cell"
-	"github.com/cilium/hive/hivetest"
-	"github.com/cilium/hive/job"
-
-	"github.com/stretchr/testify/assert"
 )
 
 func Test_topk(t *testing.T) {
-	top5 := newTopK[key4](5)
-	for i := byte(0); i < 10; i++ {
+	top5 := newTopK(5)
+	for i := range byte(10) {
 		ip := types.IPv4{10, 0, 0, i}
-		k := key4{
+		k := SNATTuple4{
 			DestAddr: ip,
 		}
 		top5.Push(k, int(i))
 	}
 	out := []int{}
-	top5.popForEach(func(key key4, count, ith int) { out = append(out, count) })
+	top5.popForEach(func(key SNATTupleAccessor, count, ith int) { out = append(out, count) })
 	assert.Equal(t, []int{5, 6, 7, 8, 9}, out)
 }
 
-func Test_countNat(t *testing.T) {
+func TestPrivilegedCountNat(t *testing.T) {
 	testutils.PrivilegedTest(t)
 
-	ip4Map := nat.NewMap("test_nat_map_ip4", nat.IPv4, 262144)
+	ip4Map := nat.NewMap(nil, "test_nat_map_ip4", nat.IPv4, 262144)
 	err := ip4Map.OpenOrCreate()
 	assert.NoError(t, err)
-	ip6Map := nat.NewMap("test_nat_map_ip6", nat.IPv6, 262144)
+	ip6Map := nat.NewMap(nil, "test_nat_map_ip6", nat.IPv6, 262144)
 	err = ip6Map.OpenOrCreate()
 	assert.NoError(t, err)
 	t.Cleanup(func() {
@@ -52,8 +50,8 @@ func Test_countNat(t *testing.T) {
 		ip6Map.UnpinIfExists()
 	})
 
-	for addr := byte(0); addr < 20; addr++ {
-		for i := uint16(0); i < uint16(addr); i++ {
+	for addr := range byte(20) {
+		for i := range uint16(addr) {
 			ip := types.IPv4{10, 0, 0, addr}
 			mapKey := &nat.NatKey4{}
 			mapKey.TupleKey4.SourceAddr = ip
@@ -104,15 +102,9 @@ func Test_countNat(t *testing.T) {
 	ms := make(fakeMetrics)
 	h := hive.New(
 		cell.Provide(newTables),
-		cell.Provide(func(jg job.Registry) job.Group {
-			return jg.NewGroup(nil)
-		}),
-		cell.Provide(func() (promise.Promise[nat.NatMap4], promise.Promise[nat.NatMap6], Config, natMetrics) {
-			r4, p4 := promise.New[nat.NatMap4]()
-			r6, p6 := promise.New[nat.NatMap6]()
-			r4.Resolve(ip4Map)
-			r6.Resolve(ip6Map)
-			return p4, p6, Config{NATMapStatInterval: 30 * time.Second, NatMapStatKStoredEntries: 10}, ms
+		cell.Provide(func() loadbalancer.Config { return loadbalancer.DefaultConfig }),
+		cell.Provide(func() (nat.NatMap4, nat.NatMap6, Config, natMetrics) {
+			return ip4Map, ip6Map, Config{NATMapStatInterval: 30 * time.Second, NatMapStatKStoredEntries: 10}, ms
 		}),
 		cell.Provide(newStats),
 		cell.Invoke(func(s *Stats, lc cell.Lifecycle) {
@@ -130,7 +122,6 @@ func Test_countNat(t *testing.T) {
 				default:
 					assert.FailNow(t, "unexpected family type")
 				}
-				assert.Equal(t, 8019-(o.Nth-1), int(o.RemotePort))
 				freq[o.Type]++
 			}
 			assert.Equal(t, 19, ms[nat.IPv4.String()])
