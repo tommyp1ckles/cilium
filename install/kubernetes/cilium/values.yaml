@@ -1168,8 +1168,8 @@ encryption:
       allowRemoteNodeIdentities: false
     ingress:
       # -- Enable strict ingress encryption.
-      # When enabled, all unencrypted overlay ingress traffic will be dropped.
-      # This option is only applicable when WireGuard and tunneling are enabled.
+      # When enabled, all unencrypted pod-to-pod ingress traffic will be dropped.
+      # This option requires WireGuard encryption.
       enabled: false
   ipsec:
     # -- Name of the key file inside the Kubernetes secret configured via secretName.
@@ -2719,6 +2719,19 @@ dashboards:
   annotations: {}
 # Configure Cilium Envoy options.
 envoy:
+  # @schema
+  # oneOf:
+  # - type: [null]
+  # - enum: ["split", "ads", "strict-ads"]
+  # @schema
+  # -- xDS server operating mode for Envoy proxy configuration. Supported
+  # values are: "split" for the existing per-resource-type xDS,
+  # "ads" for the ADS (Aggregated Discovery Service) xDS, and
+  # "strict-ads" for ADS with strict snapshot cache behavior and generated
+  # snapshot consistency checks. Null value omits setting this option.
+  # Cilium Agent defaults missing option to "split" to keep upgrades in the legacy mode.
+  # @default -- `ads` for new 1.20+ installations; none when `upgradeCompatibility` is set below `1.20`
+  xdsMode: ~
   # @schema
   # type: [null, boolean]
   # @schema
@@ -4373,8 +4386,8 @@ authentication:
           # @schema
           override: ~
           repository: "docker.io/library/busybox"
-          tag: "1.37.0"
-          digest: "sha256:b3255e7dfbcd10cb367af0d409747d511aeb66dfac98cf30e97e87e4207dd76f"
+          tag: "1.38.0"
+          digest: "sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d"
           useDigest: true
           pullPolicy: "Always"
         # SPIRE agent configuration

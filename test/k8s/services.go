@@ -167,7 +167,6 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sDatapathServicesTest", func()
 				})
 				testExternalTrafficPolicyLocal(kubectl, ni)
 				deploymentManager.DeleteAll()
-				deploymentManager.DeleteCilium()
 			})
 
 			It("with the host firewall and externalTrafficPolicy=Local", func() {
@@ -395,7 +394,6 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sDatapathServicesTest", func()
 				"loadBalancer.mode":         "snat",
 				"loadBalancer.algorithm":    "maglev",
 				"l2NeighDiscovery.enabled":  "true",
-				"maglev.tableSize":          "251",
 				"routingMode":               "native",
 				"autoDirectNodeRoutes":      "true",
 				"devices":                   fmt.Sprintf(`'{%s}'`, ni.PrivateIface),
@@ -427,7 +425,6 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sDatapathServicesTest", func()
 				"loadBalancer.mode":         "hybrid",
 				"loadBalancer.algorithm":    "maglev",
 				"l2NeighDiscovery.enabled":  "true",
-				"maglev.tableSize":          "251",
 				"routingMode":               "native",
 				"autoDirectNodeRoutes":      "true",
 				"devices":                   fmt.Sprintf(`'{%s}'`, ni.PrivateIface),
@@ -457,7 +454,6 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sDatapathServicesTest", func()
 				"loadBalancer.mode":         "dsr",
 				"loadBalancer.algorithm":    "maglev",
 				"l2NeighDiscovery.enabled":  "true",
-				"maglev.tableSize":          "251",
 				"routingMode":               "native",
 				"autoDirectNodeRoutes":      "true",
 				"devices":                   fmt.Sprintf(`'{%s}'`, ni.PrivateIface),
@@ -474,7 +470,6 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sDatapathServicesTest", func()
 				"loadBalancer.mode":         "dsr",
 				"loadBalancer.algorithm":    "maglev",
 				"l2NeighDiscovery.enabled":  "true",
-				"maglev.tableSize":          "251",
 				"routingMode":               "native",
 				"tunnelProtocol":            "geneve",
 				"autoDirectNodeRoutes":      "true",
@@ -504,7 +499,6 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sDatapathServicesTest", func()
 				"loadBalancer.acceleration": "disabled",
 				"loadBalancer.mode":         "dsr",
 				"loadBalancer.algorithm":    "maglev",
-				"maglev.tableSize":          "251",
 				"routingMode":               "native",
 				"tunnelProtocol":            "geneve",
 				"autoDirectNodeRoutes":      "true",
@@ -533,7 +527,6 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sDatapathServicesTest", func()
 				"loadBalancer.acceleration": "disabled",
 				"loadBalancer.mode":         "dsr",
 				"loadBalancer.algorithm":    "maglev",
-				"maglev.tableSize":          "251",
 				"tunnelProtocol":            "geneve",
 				"loadBalancer.dsrDispatch":  "geneve",
 				"devices":                   "'{}'", // Revert back to auto-detection after XDP.

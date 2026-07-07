@@ -2855,6 +2855,20 @@
         "useOriginalSourceAddress": {
           "type": "boolean"
         },
+        "xdsMode": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "enum": [
+                "split",
+                "ads",
+                "strict-ads"
+              ]
+            }
+          ]
+        },
         "xffNumTrustedHopsL7PolicyEgress": {
           "type": "integer"
         },
