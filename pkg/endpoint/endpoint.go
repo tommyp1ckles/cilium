@@ -392,6 +392,17 @@ type Endpoint struct {
 	// ep.mutex must be held.
 	realizedPolicy *policy.EndpointPolicy
 
+	// preservedRestoredPolicyEntries is set on the first regeneration after an
+	// agent restart when the pre-restart policy map entries were preserved
+	// (added to, but not deleted from) while the desired policy was still being
+	// resolved, to avoid dropping established L3/L4 connections. It records that
+	// the BPF policy map may legitimately still hold stale entries that are not
+	// part of realizedPolicy. The first full reconciliation
+	// (syncPolicyMapWithDump) that removes those leftovers is therefore expected
+	// rather than a symptom of a policy-map bug, and clears this flag.
+	// ep.mutex must be held.
+	preservedRestoredPolicyEntries bool
+
 	eventQueue *eventqueue.EventQueue
 
 	// skippedRegenerationLevel is the DatapathRegenerationLevel of the regeneration event that
@@ -528,7 +539,7 @@ func (e *Endpoint) LXCMac() mac.MAC {
 }
 
 func (e *Endpoint) IsAtHostNS() bool {
-	return e.isProperty(endpoint.PropertyAtHostNS)
+	return e.IsProperty(endpoint.PropertyAtHostNS)
 }
 
 func (e *Endpoint) IsHost() bool {
@@ -536,11 +547,11 @@ func (e *Endpoint) IsHost() bool {
 }
 
 func (e *Endpoint) SkipMasqueradeV4() bool {
-	return e.isProperty(endpoint.PropertySkipMasqueradeV4)
+	return e.IsProperty(endpoint.PropertySkipMasqueradeV4)
 }
 
 func (e *Endpoint) SkipMasqueradeV6() bool {
-	return e.isProperty(endpoint.PropertySkipMasqueradeV6)
+	return e.IsProperty(endpoint.PropertySkipMasqueradeV6)
 }
 
 // SetIsHost is a convenient method to create host endpoints for testing.
@@ -1320,7 +1331,7 @@ func (e *Endpoint) leaveLocked(conf DeleteConfig) []error {
 	e.controllers.RemoveAll()
 	e.cleanPolicySignals()
 
-	if !e.isProperty(endpoint.PropertyFakeEndpoint) {
+	if !e.isPropertyLocked(endpoint.PropertyFakeEndpoint) {
 		e.scrubIPsInConntrackTableLocked()
 	}
 
@@ -1389,7 +1400,10 @@ type CEPOwnerInterface interface {
 // GetCEPOwner retrieves the cep owner related to this endpoint which will be,
 // by default, the pod associated with this endpoint.
 func (e *Endpoint) GetCEPOwner() CEPOwnerInterface {
-	if cepOwnerInt, ok := e.properties[endpoint.PropertyCEPOwner]; ok {
+	e.mutex.RWMutex.RLock()
+	cepOwnerInt, ok := e.properties[endpoint.PropertyCEPOwner]
+	e.mutex.RWMutex.RUnlock()
+	if ok {
 		cepOwner, ok := cepOwnerInt.(CEPOwnerInterface)
 		if ok {
 			return cepOwner
@@ -2771,7 +2785,7 @@ func (e *Endpoint) Delete(conf DeleteConfig) []error {
 	}
 
 	// If dry mode is enabled, no changes to system state are made.
-	if !e.isProperty(endpoint.PropertyFakeEndpoint) {
+	if !e.isPropertyLocked(endpoint.PropertyFakeEndpoint) {
 		// Set the Endpoint's interface down to prevent it from passing any traffic
 		// after its tc filters are removed.
 		if err := e.setDown(); err != nil {
@@ -2894,14 +2908,14 @@ func (e *Endpoint) SetRTInfo(info uint32, t endpoint.RTInfoEncoding) {
 	defer e.mutex.RWMutex.Unlock()
 
 	e.rtInfo = info
-	e.setPropertyValue(endpoint.PropertyRTInfo, string(t))
+	e.setPropertyValueLocked(endpoint.PropertyRTInfo, string(t))
 
 }
 
 func (e *Endpoint) GetRTInfo() (uint32, endpoint.RTInfoEncoding) {
 	e.mutex.RWMutex.RLock()
 	defer e.mutex.RWMutex.RUnlock()
-	enc, _ := e.getPropertyValue(endpoint.PropertyRTInfo).(string)
+	enc, _ := e.getPropertyValueLocked(endpoint.PropertyRTInfo).(string)
 	return e.rtInfo, endpoint.RTInfoEncoding(enc)
 }
 
@@ -2912,7 +2926,7 @@ func (e *Endpoint) ClearRTInfo() {
 	delete(e.properties, endpoint.PropertyRTInfo)
 }
 
-func (e *Endpoint) getPropertyValue(key string) any {
+func (e *Endpoint) getPropertyValueLocked(key string) any {
 	return e.properties[key]
 }
 
@@ -2920,10 +2934,10 @@ func (e *Endpoint) getPropertyValue(key string) any {
 func (e *Endpoint) GetPropertyValue(key string) any {
 	e.mutex.RWMutex.RLock()
 	defer e.mutex.RWMutex.RUnlock()
-	return e.getPropertyValue(key)
+	return e.getPropertyValueLocked(key)
 }
 
-func (e *Endpoint) setPropertyValue(key string, value any) any {
+func (e *Endpoint) setPropertyValueLocked(key string, value any) any {
 	old := e.properties[key]
 	e.properties[key] = value
 	return old
@@ -2933,7 +2947,7 @@ func (e *Endpoint) setPropertyValue(key string, value any) any {
 func (e *Endpoint) SetPropertyValue(key string, value any) any {
 	e.mutex.RWMutex.Lock()
 	defer e.mutex.RWMutex.Unlock()
-	return e.setPropertyValue(key, value)
+	return e.setPropertyValueLocked(key, value)
 }
 
 // IsProperty checks if the value of the properties map is set, it's a boolean
@@ -2941,12 +2955,12 @@ func (e *Endpoint) SetPropertyValue(key string, value any) any {
 func (e *Endpoint) IsProperty(propertyKey string) bool {
 	e.mutex.RWMutex.RLock()
 	defer e.mutex.RWMutex.RUnlock()
-	return e.isProperty(propertyKey)
+	return e.isPropertyLocked(propertyKey)
 }
 
 // isProperty checks if the value of the properties map is set, it's a boolean
-// and its value is 'true'.
-func (e *Endpoint) isProperty(propertyKey string) bool {
+// and its value is 'true'. Must be called with the endpoint being (read)-locked.
+func (e *Endpoint) isPropertyLocked(propertyKey string) bool {
 	if v, ok := e.properties[propertyKey]; ok {
 		isSet, ok := v.(bool)
 		return ok && isSet
